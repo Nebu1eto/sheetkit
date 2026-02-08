@@ -448,6 +448,73 @@ impl Workbook {
     }
 
     // -----------------------------------------------------------------------
+    // Streaming
+    // -----------------------------------------------------------------------
+
+    /// Create a [`StreamWriter`](crate::stream::StreamWriter) for a new sheet.
+    ///
+    /// The sheet will be added to the workbook when the StreamWriter is applied
+    /// via [`apply_stream_writer`](Self::apply_stream_writer).
+    pub fn new_stream_writer(&self, sheet_name: &str) -> Result<crate::stream::StreamWriter> {
+        crate::sheet::validate_sheet_name(sheet_name)?;
+        if self.worksheets.iter().any(|(n, _)| n == sheet_name) {
+            return Err(Error::SheetAlreadyExists {
+                name: sheet_name.to_string(),
+            });
+        }
+        Ok(crate::stream::StreamWriter::new(sheet_name))
+    }
+
+    /// Apply a completed [`StreamWriter`](crate::stream::StreamWriter) to the
+    /// workbook, adding it as a new sheet.
+    ///
+    /// Returns the 0-based index of the new sheet.
+    pub fn apply_stream_writer(&mut self, writer: crate::stream::StreamWriter) -> Result<usize> {
+        let sheet_name = writer.sheet_name().to_string();
+        let (xml_bytes, sst) = writer.into_parts()?;
+
+        // Parse the XML back into WorksheetXml
+        let mut ws: WorksheetXml = quick_xml::de::from_str(
+            &String::from_utf8(xml_bytes).map_err(|e| Error::Internal(e.to_string()))?,
+        )
+        .map_err(|e| Error::XmlDeserialize(e.to_string()))?;
+
+        // Merge SST entries and build index mapping (old_index -> new_index)
+        let mut sst_remap: Vec<usize> = Vec::with_capacity(sst.len());
+        for i in 0..sst.len() {
+            if let Some(s) = sst.get(i) {
+                let new_idx = self.sst_runtime.add(s);
+                sst_remap.push(new_idx);
+            }
+        }
+
+        // Remap SST indices in the worksheet cells
+        for row in &mut ws.sheet_data.rows {
+            for cell in &mut row.cells {
+                if cell.t.as_deref() == Some("s") {
+                    if let Some(ref v) = cell.v {
+                        if let Ok(old_idx) = v.parse::<usize>() {
+                            if let Some(&new_idx) = sst_remap.get(old_idx) {
+                                cell.v = Some(new_idx.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Add the sheet
+        crate::sheet::add_sheet(
+            &mut self.workbook_xml,
+            &mut self.workbook_rels,
+            &mut self.content_types,
+            &mut self.worksheets,
+            &sheet_name,
+            ws,
+        )
+    }
+
+    // -----------------------------------------------------------------------
     // Row operations
     // -----------------------------------------------------------------------
 
@@ -1922,6 +1989,99 @@ mod tests {
         let mut wb = Workbook::new();
         let result = wb.remove_col("NoSheet", "A");
         assert!(matches!(result.unwrap_err(), Error::SheetNotFound { .. }));
+    }
+
+    // -----------------------------------------------------------------------
+    // StreamWriter integration tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_new_stream_writer_validates_name() {
+        let wb = Workbook::new();
+        let result = wb.new_stream_writer("Bad[Name");
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::InvalidSheetName(_)));
+    }
+
+    #[test]
+    fn test_new_stream_writer_rejects_duplicate() {
+        let wb = Workbook::new();
+        let result = wb.new_stream_writer("Sheet1");
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::SheetAlreadyExists { .. }
+        ));
+    }
+
+    #[test]
+    fn test_new_stream_writer_valid_name() {
+        let wb = Workbook::new();
+        let sw = wb.new_stream_writer("StreamSheet").unwrap();
+        assert_eq!(sw.sheet_name(), "StreamSheet");
+    }
+
+    #[test]
+    fn test_apply_stream_writer_adds_sheet() {
+        let mut wb = Workbook::new();
+        let mut sw = wb.new_stream_writer("StreamSheet").unwrap();
+        sw.write_row(1, &[CellValue::from("Hello"), CellValue::from(42)])
+            .unwrap();
+        let idx = wb.apply_stream_writer(sw).unwrap();
+        assert_eq!(idx, 1);
+        assert_eq!(wb.sheet_names(), vec!["Sheet1", "StreamSheet"]);
+    }
+
+    #[test]
+    fn test_apply_stream_writer_merges_sst() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", "Existing").unwrap();
+
+        let mut sw = wb.new_stream_writer("StreamSheet").unwrap();
+        sw.write_row(1, &[CellValue::from("New"), CellValue::from("Existing")])
+            .unwrap();
+        wb.apply_stream_writer(sw).unwrap();
+
+        assert!(wb.sst_runtime.len() >= 2);
+    }
+
+    #[test]
+    fn test_stream_writer_save_and_reopen() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("stream_test.xlsx");
+
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", "Normal").unwrap();
+
+        let mut sw = wb.new_stream_writer("Streamed").unwrap();
+        sw.write_row(1, &[CellValue::from("Name"), CellValue::from("Value")])
+            .unwrap();
+        sw.write_row(2, &[CellValue::from("Alice"), CellValue::from(100)])
+            .unwrap();
+        sw.write_row(3, &[CellValue::from("Bob"), CellValue::from(200)])
+            .unwrap();
+        wb.apply_stream_writer(sw).unwrap();
+
+        wb.save(&path).unwrap();
+
+        let wb2 = Workbook::open(&path).unwrap();
+        assert_eq!(wb2.sheet_names(), vec!["Sheet1", "Streamed"]);
+        assert_eq!(
+            wb2.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("Normal".to_string())
+        );
+        assert_eq!(
+            wb2.get_cell_value("Streamed", "A1").unwrap(),
+            CellValue::String("Name".to_string())
+        );
+        assert_eq!(
+            wb2.get_cell_value("Streamed", "B2").unwrap(),
+            CellValue::Number(100.0)
+        );
+        assert_eq!(
+            wb2.get_cell_value("Streamed", "A3").unwrap(),
+            CellValue::String("Bob".to_string())
+        );
     }
 
     // -----------------------------------------------------------------------

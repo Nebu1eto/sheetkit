@@ -12,6 +12,7 @@ use sheetkit_xml::shared_strings::{Si, Sst, T};
 ///
 /// Maintains both an ordered list of strings (for index-based lookup) and a
 /// reverse hash map (for deduplication when inserting).
+#[derive(Debug)]
 pub struct SharedStringTable {
     strings: Vec<String>,
     index_map: HashMap<String, usize>,
