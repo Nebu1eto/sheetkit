@@ -108,6 +108,52 @@ pub struct FillStyle {
     pub fg_color: Option<StyleColor>,
     /// Background color.
     pub bg_color: Option<StyleColor>,
+    /// Gradient fill (mutually exclusive with pattern fill when gradient is set).
+    pub gradient: Option<GradientFillStyle>,
+}
+
+/// Gradient fill style definition.
+#[derive(Debug, Clone)]
+pub struct GradientFillStyle {
+    /// Gradient type: linear or path.
+    pub gradient_type: GradientType,
+    /// Rotation angle in degrees for linear gradients.
+    pub degree: Option<f64>,
+    /// Left coordinate for path gradients (0.0-1.0).
+    pub left: Option<f64>,
+    /// Right coordinate for path gradients (0.0-1.0).
+    pub right: Option<f64>,
+    /// Top coordinate for path gradients (0.0-1.0).
+    pub top: Option<f64>,
+    /// Bottom coordinate for path gradients (0.0-1.0).
+    pub bottom: Option<f64>,
+    /// Gradient stops defining the color transitions.
+    pub stops: Vec<GradientStop>,
+}
+
+/// Gradient type.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum GradientType {
+    Linear,
+    Path,
+}
+
+impl GradientType {
+    fn from_str(s: &str) -> Self {
+        match s {
+            "path" => GradientType::Path,
+            _ => GradientType::Linear,
+        }
+    }
+}
+
+/// A single stop in a gradient fill.
+#[derive(Debug, Clone)]
+pub struct GradientStop {
+    /// Position of this stop (0.0-1.0).
+    pub position: f64,
+    /// Color at this stop.
+    pub color: StyleColor,
 }
 
 /// Pattern fill type.
@@ -406,6 +452,7 @@ impl StyleBuilder {
                 pattern: PatternType::None,
                 fg_color: None,
                 bg_color: None,
+                gradient: None,
             })
             .pattern = pattern;
         self
@@ -419,6 +466,7 @@ impl StyleBuilder {
                 pattern: PatternType::None,
                 fg_color: None,
                 bg_color: None,
+                gradient: None,
             })
             .fg_color = Some(color);
         self
@@ -437,6 +485,7 @@ impl StyleBuilder {
                 pattern: PatternType::None,
                 fg_color: None,
                 bg_color: None,
+                gradient: None,
             })
             .bg_color = Some(color);
         self
@@ -448,6 +497,7 @@ impl StyleBuilder {
             pattern: PatternType::Solid,
             fg_color: Some(StyleColor::Rgb(rgb.to_string())),
             bg_color: self.style.fill.and_then(|f| f.bg_color),
+            gradient: None,
         });
         self
     }
@@ -712,17 +762,78 @@ fn xml_font_to_style(font: &Font) -> FontStyle {
 
 /// Convert a `FillStyle` to the XML `Fill` struct.
 fn fill_style_to_xml(fill: &FillStyle) -> Fill {
+    if let Some(ref grad) = fill.gradient {
+        return Fill {
+            pattern_fill: None,
+            gradient_fill: Some(gradient_style_to_xml(grad)),
+        };
+    }
     Fill {
         pattern_fill: Some(PatternFill {
             pattern_type: Some(fill.pattern.as_str().to_string()),
             fg_color: fill.fg_color.as_ref().map(style_color_to_xml),
             bg_color: fill.bg_color.as_ref().map(style_color_to_xml),
         }),
+        gradient_fill: None,
+    }
+}
+
+/// Convert a `GradientFillStyle` to the XML `GradientFill` struct.
+fn gradient_style_to_xml(grad: &GradientFillStyle) -> sheetkit_xml::styles::GradientFill {
+    sheetkit_xml::styles::GradientFill {
+        gradient_type: match grad.gradient_type {
+            GradientType::Linear => None,
+            GradientType::Path => Some("path".to_string()),
+        },
+        degree: grad.degree,
+        left: grad.left,
+        right: grad.right,
+        top: grad.top,
+        bottom: grad.bottom,
+        stops: grad
+            .stops
+            .iter()
+            .map(|s| sheetkit_xml::styles::GradientStop {
+                position: s.position,
+                color: style_color_to_xml(&s.color),
+            })
+            .collect(),
     }
 }
 
 /// Convert an XML `Fill` to a `FillStyle`.
 fn xml_fill_to_style(fill: &Fill) -> Option<FillStyle> {
+    if let Some(ref gf) = fill.gradient_fill {
+        let gradient_type = gf
+            .gradient_type
+            .as_ref()
+            .map(|s| GradientType::from_str(s))
+            .unwrap_or(GradientType::Linear);
+        let stops: Vec<GradientStop> = gf
+            .stops
+            .iter()
+            .filter_map(|s| {
+                xml_color_to_style(&s.color).map(|c| GradientStop {
+                    position: s.position,
+                    color: c,
+                })
+            })
+            .collect();
+        return Some(FillStyle {
+            pattern: PatternType::None,
+            fg_color: None,
+            bg_color: None,
+            gradient: Some(GradientFillStyle {
+                gradient_type,
+                degree: gf.degree,
+                left: gf.left,
+                right: gf.right,
+                top: gf.top,
+                bottom: gf.bottom,
+                stops,
+            }),
+        });
+    }
     let pf = fill.pattern_fill.as_ref()?;
     let pattern = pf
         .pattern_type
@@ -733,6 +844,7 @@ fn xml_fill_to_style(fill: &Fill) -> Option<FillStyle> {
         pattern,
         fg_color: pf.fg_color.as_ref().and_then(xml_color_to_style),
         bg_color: pf.bg_color.as_ref().and_then(xml_color_to_style),
+        gradient: None,
     })
 }
 
@@ -841,7 +953,7 @@ fn fonts_equal(a: &Font, b: &Font) -> bool {
 
 /// Check if two XML `Fill` values are equivalent for deduplication purposes.
 fn fills_equal(a: &Fill, b: &Fill) -> bool {
-    a.pattern_fill == b.pattern_fill
+    a.pattern_fill == b.pattern_fill && a.gradient_fill == b.gradient_fill
 }
 
 /// Check if two XML `Border` values are equivalent for deduplication purposes.
@@ -1229,6 +1341,7 @@ mod tests {
                 pattern: PatternType::Solid,
                 fg_color: Some(StyleColor::Rgb("FFFFFF00".to_string())),
                 bg_color: None,
+                gradient: None,
             }),
             ..Style::default()
         };
@@ -1252,6 +1365,7 @@ mod tests {
                 pattern: PatternType::LightGray,
                 fg_color: None,
                 bg_color: None,
+                gradient: None,
             }),
             ..Style::default()
         };
@@ -1271,6 +1385,7 @@ mod tests {
                 pattern: PatternType::Solid,
                 fg_color: Some(StyleColor::Rgb("FFFF0000".to_string())),
                 bg_color: None,
+                gradient: None,
             }),
             ..Style::default()
         };
@@ -1556,6 +1671,7 @@ mod tests {
                 pattern: PatternType::Solid,
                 fg_color: Some(StyleColor::Rgb("FFFFFF00".to_string())),
                 bg_color: None,
+                gradient: None,
             }),
             border: Some(BorderStyle {
                 left: Some(BorderSideStyle {
@@ -1650,6 +1766,7 @@ mod tests {
                 pattern: PatternType::Solid,
                 fg_color: Some(StyleColor::Rgb("FFFF0000".to_string())),
                 bg_color: None,
+                gradient: None,
             }),
             ..Style::default()
         };

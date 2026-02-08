@@ -104,6 +104,10 @@ pub(crate) fn cell_value_to_parts(
             });
             ("date".to_string(), iso, Some(*serial), None)
         }
+        CellValue::RichString(runs) => {
+            let plain = sheetkit_core::rich_text::rich_text_to_plain(runs);
+            ("string".to_string(), Some(plain), None, None)
+        }
     }
 }
 
@@ -154,6 +158,9 @@ pub(crate) fn cell_value_to_either(
         }),
         CellValue::Formula { expr, .. } => Either5::D(expr),
         CellValue::Error(e) => Either5::D(e),
+        CellValue::RichString(runs) => {
+            Either5::D(sheetkit_core::rich_text::rich_text_to_plain(&runs))
+        }
     })
 }
 
@@ -244,6 +251,7 @@ pub(crate) fn js_style_to_core(js: &JsStyle) -> Style {
                 .unwrap_or(PatternType::None),
             fg_color: f.fg_color.as_ref().and_then(|s| parse_style_color(s)),
             bg_color: f.bg_color.as_ref().and_then(|s| parse_style_color(s)),
+            gradient: None,
         }),
         border: js.border.as_ref().map(|b| {
             let side = |s: &JsBorderSideStyle| BorderSideStyle {
@@ -550,6 +558,7 @@ pub(crate) fn js_conditional_style_to_core(js: &JsConditionalStyle) -> Condition
                 .unwrap_or(PatternType::None),
             fg_color: f.fg_color.as_ref().and_then(|s| parse_style_color(s)),
             bg_color: f.bg_color.as_ref().and_then(|s| parse_style_color(s)),
+            gradient: None,
         }),
         border: js.border.as_ref().map(|b| {
             let side = |s: &JsBorderSideStyle| BorderSideStyle {
@@ -1018,5 +1027,29 @@ pub(crate) fn parse_aggregate_function(s: &str) -> AggregateFunction {
         "var" => AggregateFunction::Var,
         "varp" => AggregateFunction::VarP,
         _ => AggregateFunction::Sum,
+    }
+}
+
+pub(crate) fn js_sparkline_to_core(
+    js: &crate::types::JsSparklineConfig,
+) -> sheetkit_core::sparkline::SparklineConfig {
+    use sheetkit_core::sparkline::{SparklineConfig, SparklineType};
+    SparklineConfig {
+        data_range: js.data_range.clone(),
+        location: js.location.clone(),
+        sparkline_type: js
+            .sparkline_type
+            .as_deref()
+            .and_then(SparklineType::parse)
+            .unwrap_or_default(),
+        markers: js.markers.unwrap_or(false),
+        high_point: js.high_point.unwrap_or(false),
+        low_point: js.low_point.unwrap_or(false),
+        first_point: js.first_point.unwrap_or(false),
+        last_point: js.last_point.unwrap_or(false),
+        negative_points: js.negative_points.unwrap_or(false),
+        show_axis: js.show_axis.unwrap_or(false),
+        line_weight: js.line_weight,
+        style: js.style,
     }
 }

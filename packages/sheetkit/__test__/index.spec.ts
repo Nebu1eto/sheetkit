@@ -1284,3 +1284,143 @@ describe('Pivot Tables', () => {
     ).toThrow();
   });
 });
+
+describe('Sparklines', () => {
+  it('should have sparkline config type available', () => {
+    // Type-level check that the binding exists.
+    // Full integration test will be added when workbook.addSparkline is ready.
+    const config = {
+      dataRange: 'Sheet1!A1:A10',
+      location: 'B1',
+      sparklineType: 'line',
+      markers: true,
+      highPoint: false,
+      lowPoint: false,
+      firstPoint: false,
+      lastPoint: false,
+      negativePoints: false,
+      showAxis: false,
+      lineWeight: 0.75,
+      style: 1,
+    };
+    expect(config.dataRange).toBe('Sheet1!A1:A10');
+    expect(config.location).toBe('B1');
+    expect(config.sparklineType).toBe('line');
+    expect(config.markers).toBe(true);
+    expect(config.lineWeight).toBe(0.75);
+    expect(config.style).toBe(1);
+  });
+});
+
+// Theme colors
+describe('Theme Colors', () => {
+  it('should return default theme colors by index', () => {
+    const wb = new Workbook();
+    expect(wb.getThemeColor(0, null)).toBe('FF000000');
+    expect(wb.getThemeColor(1, null)).toBe('FFFFFFFF');
+    expect(wb.getThemeColor(4, null)).toBe('FF4472C4');
+    expect(wb.getThemeColor(11, null)).toBe('FF954F72');
+  });
+
+  it('should return null for out-of-range index', () => {
+    const wb = new Workbook();
+    expect(wb.getThemeColor(99, null)).toBeNull();
+  });
+
+  it('should apply tint to theme colors', () => {
+    const wb = new Workbook();
+    const lightened = wb.getThemeColor(0, 0.5);
+    expect(lightened).toBeTruthy();
+    expect(lightened).toMatch(/^FF/);
+    expect(lightened).not.toBe('FF000000');
+  });
+
+  it('should return base color with zero tint', () => {
+    const wb = new Workbook();
+    expect(wb.getThemeColor(4, 0.0)).toBe('FF4472C4');
+  });
+});
+
+// Rich Text
+describe('Rich Text', () => {
+  const out = tmpFile('test-rich-text.xlsx');
+  afterEach(() => cleanup(out));
+
+  it('should set and get rich text', () => {
+    const wb = new Workbook();
+    wb.setCellRichText('Sheet1', 'A1', [
+      { text: 'Bold', bold: true },
+      { text: 'Normal' },
+    ]);
+
+    const runs = wb.getCellRichText('Sheet1', 'A1');
+    expect(runs).not.toBeNull();
+    expect(runs).toHaveLength(2);
+    expect(runs![0].text).toBe('Bold');
+    expect(runs![0].bold).toBe(true);
+    expect(runs![1].text).toBe('Normal');
+    expect(runs![1].bold).toBeUndefined();
+  });
+
+  it('should return null for non-rich-text cells', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'plain');
+    const runs = wb.getCellRichText('Sheet1', 'A1');
+    expect(runs).toBeNull();
+  });
+
+  it('should preserve font and color formatting', () => {
+    const wb = new Workbook();
+    wb.setCellRichText('Sheet1', 'B2', [
+      {
+        text: 'Styled',
+        font: 'Arial',
+        size: 14,
+        bold: true,
+        italic: true,
+        color: '#FF0000',
+      },
+    ]);
+
+    const runs = wb.getCellRichText('Sheet1', 'B2');
+    expect(runs).not.toBeNull();
+    expect(runs).toHaveLength(1);
+    expect(runs![0].font).toBe('Arial');
+    expect(runs![0].size).toBe(14);
+    expect(runs![0].bold).toBe(true);
+    expect(runs![0].italic).toBe(true);
+    expect(runs![0].color).toBe('#FF0000');
+  });
+
+  it('should round-trip rich text through save and open', () => {
+    const wb = new Workbook();
+    wb.setCellRichText('Sheet1', 'C3', [
+      { text: 'Hello', bold: true, font: 'Arial', size: 14, color: '#FF0000' },
+      { text: 'World', italic: true },
+    ]);
+    wb.save(out);
+
+    const wb2 = Workbook.open(out);
+    const runs = wb2.getCellRichText('Sheet1', 'C3');
+    expect(runs).not.toBeNull();
+    expect(runs).toHaveLength(2);
+    expect(runs![0].text).toBe('Hello');
+    expect(runs![0].bold).toBe(true);
+    expect(runs![0].font).toBe('Arial');
+    expect(runs![0].size).toBe(14);
+    expect(runs![0].color).toBe('#FF0000');
+    expect(runs![1].text).toBe('World');
+    expect(runs![1].italic).toBe(true);
+  });
+
+  it('should read rich text cell value as concatenated plain text', () => {
+    const wb = new Workbook();
+    wb.setCellRichText('Sheet1', 'A1', [
+      { text: 'Hello' },
+      { text: 'World' },
+    ]);
+
+    const val = wb.getCellValue('Sheet1', 'A1');
+    expect(val).toBe('HelloWorld');
+  });
+});

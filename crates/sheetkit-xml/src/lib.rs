@@ -23,6 +23,8 @@ pub mod pivot_cache;
 pub mod pivot_table;
 pub mod relationships;
 pub mod shared_strings;
+pub mod sparkline;
 pub mod styles;
+pub mod theme;
 pub mod workbook;
 pub mod worksheet;

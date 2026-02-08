@@ -77,6 +77,10 @@ pub struct Workbook {
     pivot_cache_defs: Vec<(String, sheetkit_xml::pivot_cache::PivotCacheDefinition)>,
     /// Pivot cache records parts: (zip path, PivotCacheRecords data).
     pivot_cache_records: Vec<(String, sheetkit_xml::pivot_cache::PivotCacheRecords)>,
+    /// Raw theme XML bytes from xl/theme/theme1.xml (preserved for round-trip).
+    theme_xml: Option<Vec<u8>>,
+    /// Parsed theme colors from the theme XML.
+    theme_colors: sheetkit_xml::theme::ThemeColors,
 }
 
 impl Workbook {
@@ -106,6 +110,8 @@ impl Workbook {
             pivot_tables: vec![],
             pivot_cache_defs: vec![],
             pivot_cache_records: vec![],
+            theme_xml: None,
+            theme_colors: crate::theme::default_theme_colors(),
         }
     }
 
@@ -151,6 +157,15 @@ impl Workbook {
             read_xml_part(&mut archive, "xl/sharedStrings.xml").unwrap_or_default();
 
         let sst_runtime = SharedStringTable::from_sst(&shared_strings);
+
+        // Parse xl/theme/theme1.xml (optional -- preserved as raw bytes for round-trip).
+        let (theme_xml, theme_colors) = match read_bytes_part(&mut archive, "xl/theme/theme1.xml") {
+            Ok(bytes) => {
+                let colors = sheetkit_xml::theme::parse_theme_colors(&bytes);
+                (Some(bytes), colors)
+            }
+            Err(_) => (None, crate::theme::default_theme_colors()),
+        };
 
         // Initialize per-sheet comments (one entry per worksheet).
         let sheet_comments: Vec<Option<Comments>> = vec![None; worksheets.len()];
@@ -234,6 +249,8 @@ impl Workbook {
             pivot_tables,
             pivot_cache_defs,
             pivot_cache_records,
+            theme_xml,
+            theme_colors,
         })
     }
 
@@ -328,6 +345,15 @@ impl Workbook {
         // xl/pivotCache/pivotCacheRecords{N}.xml
         for (path, pcr) in &self.pivot_cache_records {
             write_xml_part(&mut zip, path, pcr, options)?;
+        }
+
+        // xl/theme/theme1.xml
+        {
+            let default_theme = crate::theme::default_theme_xml();
+            let theme_bytes = self.theme_xml.as_deref().unwrap_or(&default_theme);
+            zip.start_file("xl/theme/theme1.xml", options)
+                .map_err(|e| Error::Zip(e.to_string()))?;
+            zip.write_all(theme_bytes)?;
         }
 
         // docProps/core.xml
@@ -1601,6 +1627,12 @@ impl Workbook {
         Ok(())
     }
 
+    /// Resolve a theme color by index (0-11) with optional tint.
+    /// Returns the ARGB hex string (e.g. "FF4472C4") or None if the index is out of range.
+    pub fn get_theme_color(&self, index: u32, tint: Option<f64>) -> Option<String> {
+        crate::theme::resolve_theme_color(&self.theme_colors, index, tint)
+    }
+
     /// Read the header row (first row) of a range from a sheet, returning cell
     /// values as strings.
     fn read_header_row(&self, sheet: &str, range: &str) -> Result<Vec<String>> {
@@ -1621,6 +1653,7 @@ impl Workbook {
                 CellValue::String(s) => s,
                 CellValue::Number(n) => n.to_string(),
                 CellValue::Bool(b) => b.to_string(),
+                CellValue::RichString(runs) => crate::rich_text::rich_text_to_plain(&runs),
                 _ => String::new(),
             };
             headers.push(s);
@@ -2103,6 +2136,55 @@ impl Workbook {
         }
     }
 
+    /// Set a cell to a rich text value (multiple formatted runs).
+    pub fn set_cell_rich_text(
+        &mut self,
+        sheet: &str,
+        cell: &str,
+        runs: Vec<crate::rich_text::RichTextRun>,
+    ) -> Result<()> {
+        self.set_cell_value(sheet, cell, CellValue::RichString(runs))
+    }
+
+    /// Get rich text runs for a cell, if it contains rich text.
+    ///
+    /// Returns `None` if the cell is empty, contains a plain string, or holds
+    /// a non-string value.
+    pub fn get_cell_rich_text(
+        &self,
+        sheet: &str,
+        cell: &str,
+    ) -> Result<Option<Vec<crate::rich_text::RichTextRun>>> {
+        let (col, row) = cell_name_to_coordinates(cell)?;
+        let sheet_idx = self
+            .worksheets
+            .iter()
+            .position(|(name, _)| name == sheet)
+            .ok_or_else(|| Error::SheetNotFound {
+                name: sheet.to_string(),
+            })?;
+        let ws = &self.worksheets[sheet_idx].1;
+
+        for xml_row in &ws.sheet_data.rows {
+            if xml_row.r == row {
+                for xml_cell in &xml_row.cells {
+                    let (cc, cr) = cell_name_to_coordinates(&xml_cell.r)?;
+                    if cc == col && cr == row {
+                        if xml_cell.t.as_deref() == Some("s") {
+                            if let Some(ref v) = xml_cell.v {
+                                if let Ok(idx) = v.parse::<usize>() {
+                                    return Ok(self.sst_runtime.get_rich_text(idx));
+                                }
+                            }
+                        }
+                        return Ok(None);
+                    }
+                }
+            }
+        }
+        Ok(None)
+    }
+
     /// Ensure content types contains entries for core and extended properties.
     fn ensure_doc_props_content_types(&mut self) {
         let core_part = "/docProps/core.xml";
@@ -2206,6 +2288,18 @@ fn read_string_part(archive: &mut zip::ZipArchive<std::fs::File>, name: &str) ->
     Ok(content)
 }
 
+/// Read a ZIP entry as raw bytes.
+fn read_bytes_part(archive: &mut zip::ZipArchive<std::fs::File>, name: &str) -> Result<Vec<u8>> {
+    let mut entry = archive
+        .by_name(name)
+        .map_err(|e| Error::Zip(e.to_string()))?;
+    let mut content = Vec::new();
+    entry
+        .read_to_end(&mut content)
+        .map_err(|e| Error::Zip(e.to_string()))?;
+    Ok(content)
+}
+
 /// Write a CellValue into an XML Cell (mutating it in place).
 fn value_to_xml_cell(sst: &mut SharedStringTable, xml_cell: &mut Cell, value: CellValue) {
     // Clear previous values.
@@ -2246,6 +2340,11 @@ fn value_to_xml_cell(sst: &mut SharedStringTable, xml_cell: &mut Cell, value: Ce
         }
         CellValue::Empty => {
             // Already cleared above; the caller should have removed the cell.
+        }
+        CellValue::RichString(runs) => {
+            let idx = sst.add_rich_text(&runs);
+            xml_cell.t = Some("s".to_string());
+            xml_cell.v = Some(idx.to_string());
         }
     }
 }
@@ -2929,6 +3028,7 @@ mod tests {
                 pattern: PatternType::Solid,
                 fg_color: Some(StyleColor::Rgb("FFFFFF00".to_string())),
                 bg_color: None,
+                gradient: None,
             }),
             border: Some(BorderStyle {
                 left: Some(BorderSideStyle {
@@ -4947,5 +5047,104 @@ mod tests {
             err_str.contains("circular reference"),
             "expected circular reference error, got: {err_str}"
         );
+    }
+
+    #[test]
+    fn test_set_and_get_cell_rich_text() {
+        use crate::rich_text::RichTextRun;
+
+        let mut wb = Workbook::new();
+        let runs = vec![
+            RichTextRun {
+                text: "Bold".to_string(),
+                font: None,
+                size: None,
+                bold: true,
+                italic: false,
+                color: None,
+            },
+            RichTextRun {
+                text: " Normal".to_string(),
+                font: None,
+                size: None,
+                bold: false,
+                italic: false,
+                color: None,
+            },
+        ];
+        wb.set_cell_rich_text("Sheet1", "A1", runs.clone()).unwrap();
+
+        // The cell value should be a shared string whose plain text is "Bold Normal".
+        let val = wb.get_cell_value("Sheet1", "A1").unwrap();
+        assert_eq!(val.to_string(), "Bold Normal");
+
+        // get_cell_rich_text should return the runs.
+        let got = wb.get_cell_rich_text("Sheet1", "A1").unwrap();
+        assert!(got.is_some());
+        let got_runs = got.unwrap();
+        assert_eq!(got_runs.len(), 2);
+        assert_eq!(got_runs[0].text, "Bold");
+        assert!(got_runs[0].bold);
+        assert_eq!(got_runs[1].text, " Normal");
+        assert!(!got_runs[1].bold);
+    }
+
+    #[test]
+    fn test_get_cell_rich_text_returns_none_for_plain() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", CellValue::String("plain".to_string()))
+            .unwrap();
+        let got = wb.get_cell_rich_text("Sheet1", "A1").unwrap();
+        assert!(got.is_none());
+    }
+
+    #[test]
+    fn test_rich_text_roundtrip_save_open() {
+        use crate::rich_text::RichTextRun;
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("rich_text.xlsx");
+
+        // Note: quick-xml's serde deserializer trims leading and trailing
+        // whitespace from text content. To avoid false failures, test text
+        // values must not rely on boundary whitespace being preserved.
+        let mut wb = Workbook::new();
+        let runs = vec![
+            RichTextRun {
+                text: "Hello".to_string(),
+                font: Some("Arial".to_string()),
+                size: Some(14.0),
+                bold: true,
+                italic: false,
+                color: Some("#FF0000".to_string()),
+            },
+            RichTextRun {
+                text: "World".to_string(),
+                font: None,
+                size: None,
+                bold: false,
+                italic: true,
+                color: None,
+            },
+        ];
+        wb.set_cell_rich_text("Sheet1", "B2", runs).unwrap();
+        wb.save(&path).unwrap();
+
+        let wb2 = Workbook::open(&path).unwrap();
+        let val = wb2.get_cell_value("Sheet1", "B2").unwrap();
+        assert_eq!(val.to_string(), "HelloWorld");
+
+        let got = wb2.get_cell_rich_text("Sheet1", "B2").unwrap();
+        assert!(got.is_some());
+        let got_runs = got.unwrap();
+        assert_eq!(got_runs.len(), 2);
+        assert_eq!(got_runs[0].text, "Hello");
+        assert!(got_runs[0].bold);
+        assert_eq!(got_runs[0].font.as_deref(), Some("Arial"));
+        assert_eq!(got_runs[0].size, Some(14.0));
+        assert_eq!(got_runs[0].color.as_deref(), Some("#FF0000"));
+        assert_eq!(got_runs[1].text, "World");
+        assert!(got_runs[1].italic);
+        assert!(!got_runs[1].bold);
     }
 }

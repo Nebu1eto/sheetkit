@@ -30,9 +30,12 @@ pub use sheetkit_core::page_layout::{Orientation, PageMarginsConfig, PaperSize};
 pub use sheetkit_core::pivot::{
     AggregateFunction, PivotDataField, PivotField, PivotTableConfig, PivotTableInfo,
 };
+pub use sheetkit_core::rich_text::{rich_text_to_plain, RichTextRun};
+pub use sheetkit_core::sparkline::{SparklineConfig, SparklineType};
 pub use sheetkit_core::style::{
     AlignmentStyle, BorderLineStyle, BorderSideStyle, BorderStyle, FillStyle, FontStyle,
-    HorizontalAlign, NumFmtStyle, PatternType, ProtectionStyle, Style, StyleColor, VerticalAlign,
+    GradientFillStyle, GradientStop, GradientType, HorizontalAlign, NumFmtStyle, PatternType,
+    ProtectionStyle, Style, StyleColor, VerticalAlign,
 };
 pub use sheetkit_core::validation::{
     DataValidationConfig, ErrorStyle, ValidationOperator, ValidationType,

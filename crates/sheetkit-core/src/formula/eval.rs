@@ -342,6 +342,12 @@ pub fn coerce_to_number(value: &CellValue) -> Result<f64> {
                 Ok(0.0)
             }
         }
+        CellValue::RichString(runs) => {
+            let plain = crate::rich_text::rich_text_to_plain(runs);
+            plain
+                .parse::<f64>()
+                .map_err(|_| Error::FormulaError(format!("cannot convert \"{plain}\" to number")))
+        }
     }
 }
 
@@ -373,6 +379,7 @@ pub fn coerce_to_string(value: &CellValue) -> String {
                 String::new()
             }
         }
+        CellValue::RichString(runs) => crate::rich_text::rich_text_to_plain(runs),
     }
 }
 
@@ -399,6 +406,16 @@ pub fn coerce_to_bool(value: &CellValue) -> Result<bool> {
                 Ok(false)
             }
         }
+        CellValue::RichString(runs) => {
+            let plain = crate::rich_text::rich_text_to_plain(runs);
+            match plain.to_ascii_uppercase().as_str() {
+                "TRUE" => Ok(true),
+                "FALSE" => Ok(false),
+                _ => Err(Error::FormulaError(format!(
+                    "cannot convert \"{plain}\" to boolean"
+                ))),
+            }
+        }
     }
 }
 
@@ -412,7 +429,7 @@ pub fn compare_values(lhs: &CellValue, rhs: &CellValue) -> std::cmp::Ordering {
         match v {
             CellValue::Empty => 0,
             CellValue::Number(_) | CellValue::Date(_) => 1,
-            CellValue::String(_) => 2,
+            CellValue::String(_) | CellValue::RichString(_) => 2,
             CellValue::Bool(_) => 3,
             CellValue::Error(_) => 4,
             CellValue::Formula { .. } => 5,

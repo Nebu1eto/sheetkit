@@ -207,6 +207,15 @@ export declare class Workbook {
   getPivotTables(): Array<JsPivotTableInfo>
   /** Delete a pivot table by name. */
   deletePivotTable(name: string): void
+  /** Set a cell to a rich text value with multiple formatted runs. */
+  setCellRichText(sheet: string, cell: string, runs: Array<JsRichTextRun>): void
+  /** Get rich text runs for a cell, or null if not rich text. */
+  getCellRichText(sheet: string, cell: string): Array<JsRichTextRun> | null
+  /**
+   * Resolve a theme color by index (0-11) with optional tint.
+   * Returns the ARGB hex string (e.g. "FF4472C4") or null if out of range.
+   */
+  getThemeColor(index: number, tint?: number | undefined | null): string | null
 }
 
 export interface DateValue {
@@ -522,6 +531,16 @@ export interface JsProtectionStyle {
   hidden?: boolean
 }
 
+/** A single formatted text segment within a rich text cell. */
+export interface JsRichTextRun {
+  text: string
+  font?: string
+  size?: number
+  bold?: boolean
+  italic?: boolean
+  color?: string
+}
+
 /** A single cell entry with its column name and value. */
 export interface JsRowCell {
   /** Column name (e.g., "A", "B", "AA"). */
@@ -542,6 +561,21 @@ export interface JsRowData {
   row: number
   /** Cells with data in this row. */
   cells: Array<JsRowCell>
+}
+
+export interface JsSparklineConfig {
+  dataRange: string
+  location: string
+  sparklineType?: string
+  markers?: boolean
+  highPoint?: boolean
+  lowPoint?: boolean
+  firstPoint?: boolean
+  lastPoint?: boolean
+  negativePoints?: boolean
+  showAxis?: boolean
+  lineWeight?: number
+  style?: number
 }
 
 export interface JsStyle {

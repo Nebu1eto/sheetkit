@@ -392,3 +392,30 @@ pub struct JsPivotTableInfo {
     pub target_sheet: String,
     pub location: String,
 }
+
+#[napi(object)]
+pub struct JsSparklineConfig {
+    pub data_range: String,
+    pub location: String,
+    pub sparkline_type: Option<String>,
+    pub markers: Option<bool>,
+    pub high_point: Option<bool>,
+    pub low_point: Option<bool>,
+    pub first_point: Option<bool>,
+    pub last_point: Option<bool>,
+    pub negative_points: Option<bool>,
+    pub show_axis: Option<bool>,
+    pub line_weight: Option<f64>,
+    pub style: Option<u32>,
+}
+
+/// A single formatted text segment within a rich text cell.
+#[napi(object)]
+pub struct JsRichTextRun {
+    pub text: String,
+    pub font: Option<String>,
+    pub size: Option<f64>,
+    pub bold: Option<bool>,
+    pub italic: Option<bool>,
+    pub color: Option<String>,
+}

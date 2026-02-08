@@ -61,6 +61,7 @@ fn main() -> sheetkit::Result<()> {
             pattern: PatternType::Solid,
             fg_color: Some(StyleColor::Rgb("#4472C4".into())),
             bg_color: None,
+            gradient: None,
         }),
         alignment: Some(AlignmentStyle {
             horizontal: Some(HorizontalAlign::Center),
@@ -83,6 +84,7 @@ fn main() -> sheetkit::Result<()> {
             pattern: PatternType::Solid,
             fg_color: Some(StyleColor::Rgb("#5B9BD5".into())),
             bg_color: None,
+            gradient: None,
         }),
         border: Some(BorderStyle {
             bottom: Some(BorderSideStyle {

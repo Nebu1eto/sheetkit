@@ -8,14 +8,18 @@ use std::collections::HashMap;
 
 use sheetkit_xml::shared_strings::{Si, Sst, T};
 
+use crate::rich_text::{xml_to_run, RichTextRun};
+
 /// Runtime shared string table for efficient string lookup and insertion.
 ///
 /// Maintains both an ordered list of strings (for index-based lookup) and a
-/// reverse hash map (for deduplication when inserting).
+/// reverse hash map (for deduplication when inserting). Also preserves rich
+/// text formatting information for round-tripping.
 #[derive(Debug)]
 pub struct SharedStringTable {
     strings: Vec<String>,
     index_map: HashMap<String, usize>,
+    rich_items: HashMap<usize, Si>,
 }
 
 impl SharedStringTable {
@@ -24,6 +28,7 @@ impl SharedStringTable {
         Self {
             strings: Vec::new(),
             index_map: HashMap::new(),
+            rich_items: HashMap::new(),
         }
     }
 
@@ -36,9 +41,11 @@ impl SharedStringTable {
 
         for si in &sst.items {
             let text = si_to_string(si);
-            // Insert without deduplication -- the SST index is positional.
             let idx = table.strings.len();
             table.index_map.entry(text.clone()).or_insert(idx);
+            if si.t.is_none() && !si.r.is_empty() {
+                table.rich_items.insert(idx, si.clone());
+            }
             table.strings.push(text);
         }
 
@@ -50,21 +57,28 @@ impl SharedStringTable {
         let items: Vec<Si> = self
             .strings
             .iter()
-            .map(|s| Si {
-                t: Some(T {
-                    xml_space: if s.starts_with(' ')
-                        || s.ends_with(' ')
-                        || s.contains("  ")
-                        || s.contains('\n')
-                        || s.contains('\t')
-                    {
-                        Some("preserve".to_string())
-                    } else {
-                        None
-                    },
-                    value: s.clone(),
-                }),
-                r: vec![],
+            .enumerate()
+            .map(|(idx, s)| {
+                if let Some(rich_si) = self.rich_items.get(&idx) {
+                    rich_si.clone()
+                } else {
+                    Si {
+                        t: Some(T {
+                            xml_space: if s.starts_with(' ')
+                                || s.ends_with(' ')
+                                || s.contains("  ")
+                                || s.contains('\n')
+                                || s.contains('\t')
+                            {
+                                Some("preserve".to_string())
+                            } else {
+                                None
+                            },
+                            value: s.clone(),
+                        }),
+                        r: vec![],
+                    }
+                }
             })
             .collect();
 
@@ -93,6 +107,31 @@ impl SharedStringTable {
         self.strings.push(s.to_string());
         self.index_map.insert(s.to_string(), idx);
         idx
+    }
+
+    /// Add rich text runs, returning the SST index.
+    ///
+    /// The plain-text concatenation of the runs is used for deduplication.
+    pub fn add_rich_text(&mut self, runs: &[RichTextRun]) -> usize {
+        let plain: String = runs.iter().map(|r| r.text.as_str()).collect();
+        if let Some(&idx) = self.index_map.get(&plain) {
+            return idx;
+        }
+        let idx = self.strings.len();
+        self.strings.push(plain.clone());
+        self.index_map.insert(plain, idx);
+        let si = crate::rich_text::runs_to_si(runs);
+        self.rich_items.insert(idx, si);
+        idx
+    }
+
+    /// Get rich text runs for an SST entry, if it has formatting.
+    ///
+    /// Returns `None` for plain-text entries.
+    pub fn get_rich_text(&self, index: usize) -> Option<Vec<RichTextRun>> {
+        self.rich_items
+            .get(&index)
+            .map(|si| si.r.iter().map(xml_to_run).collect())
     }
 
     /// Number of unique strings.
@@ -249,5 +288,71 @@ mod tests {
     fn test_sst_default() {
         let table = SharedStringTable::default();
         assert!(table.is_empty());
+    }
+
+    #[test]
+    fn test_add_rich_text() {
+        let mut table = SharedStringTable::new();
+        let runs = vec![
+            RichTextRun {
+                text: "Hello ".to_string(),
+                font: None,
+                size: None,
+                bold: true,
+                italic: false,
+                color: None,
+            },
+            RichTextRun {
+                text: "World".to_string(),
+                font: None,
+                size: None,
+                bold: false,
+                italic: false,
+                color: None,
+            },
+        ];
+        let idx = table.add_rich_text(&runs);
+        assert_eq!(idx, 0);
+        assert_eq!(table.get(0), Some("Hello World"));
+        assert!(table.get_rich_text(0).is_some());
+    }
+
+    #[test]
+    fn test_get_rich_text_none_for_plain() {
+        let mut table = SharedStringTable::new();
+        table.add("plain");
+        assert!(table.get_rich_text(0).is_none());
+    }
+
+    #[test]
+    fn test_rich_text_roundtrip_through_sst() {
+        let xml_sst = Sst {
+            xmlns: sheetkit_xml::namespaces::SPREADSHEET_ML.to_string(),
+            count: Some(1),
+            unique_count: Some(1),
+            items: vec![Si {
+                t: None,
+                r: vec![
+                    R {
+                        r_pr: None,
+                        t: T {
+                            xml_space: None,
+                            value: "Bold".to_string(),
+                        },
+                    },
+                    R {
+                        r_pr: None,
+                        t: T {
+                            xml_space: None,
+                            value: " Normal".to_string(),
+                        },
+                    },
+                ],
+            }],
+        };
+        let table = SharedStringTable::from_sst(&xml_sst);
+        let back = table.to_sst();
+        assert!(back.items[0].t.is_none());
+        assert_eq!(back.items[0].r.len(), 2);
     }
 }

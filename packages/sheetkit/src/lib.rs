@@ -1039,4 +1039,60 @@ impl Workbook {
             .delete_pivot_table(&name)
             .map_err(|e| Error::from_reason(e.to_string()))
     }
+
+    /// Set a cell to a rich text value with multiple formatted runs.
+    #[napi]
+    pub fn set_cell_rich_text(
+        &mut self,
+        sheet: String,
+        cell: String,
+        runs: Vec<JsRichTextRun>,
+    ) -> Result<()> {
+        let core_runs: Vec<sheetkit_core::rich_text::RichTextRun> = runs
+            .iter()
+            .map(|r| sheetkit_core::rich_text::RichTextRun {
+                text: r.text.clone(),
+                font: r.font.clone(),
+                size: r.size,
+                bold: r.bold.unwrap_or(false),
+                italic: r.italic.unwrap_or(false),
+                color: r.color.clone(),
+            })
+            .collect();
+        self.inner
+            .set_cell_rich_text(&sheet, &cell, core_runs)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Get rich text runs for a cell, or null if not rich text.
+    #[napi]
+    pub fn get_cell_rich_text(
+        &self,
+        sheet: String,
+        cell: String,
+    ) -> Result<Option<Vec<JsRichTextRun>>> {
+        let runs = self
+            .inner
+            .get_cell_rich_text(&sheet, &cell)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        Ok(runs.map(|rs| {
+            rs.iter()
+                .map(|r| JsRichTextRun {
+                    text: r.text.clone(),
+                    font: r.font.clone(),
+                    size: r.size,
+                    bold: if r.bold { Some(true) } else { None },
+                    italic: if r.italic { Some(true) } else { None },
+                    color: r.color.clone(),
+                })
+                .collect()
+        }))
+    }
+
+    /// Resolve a theme color by index (0-11) with optional tint.
+    /// Returns the ARGB hex string (e.g. "FF4472C4") or null if out of range.
+    #[napi]
+    pub fn get_theme_color(&self, index: u32, tint: Option<f64>) -> Option<String> {
+        self.inner.get_theme_color(index, tint)
+    }
 }

@@ -531,6 +531,17 @@ impl StreamWriter {
                 }
                 write!(self.buffer, " t=\"e\"><v>{}</v></c>", xml_escape(e)).unwrap();
             }
+            CellValue::RichString(runs) => {
+                let plain = crate::rich_text::rich_text_to_plain(runs);
+                let idx = self.sst.add(&plain);
+                self.buffer.push_str("<c r=\"");
+                self.buffer.push_str(cell_ref);
+                self.buffer.push('"');
+                if let Some(sid) = style_id {
+                    write!(self.buffer, " s=\"{}\"", sid).unwrap();
+                }
+                write!(self.buffer, " t=\"s\"><v>{}</v></c>", idx).unwrap();
+            }
         }
     }
 }

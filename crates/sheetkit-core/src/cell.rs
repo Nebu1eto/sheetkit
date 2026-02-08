@@ -31,6 +31,8 @@ pub enum CellValue {
     Date(f64),
     /// Error value (e.g. #DIV/0!, #N/A, #VALUE!).
     Error(String),
+    /// Rich text: multiple formatted runs within a single cell.
+    RichString(Vec<crate::rich_text::RichTextRun>),
 }
 
 impl fmt::Display for CellValue {
@@ -67,6 +69,9 @@ impl fmt::Display for CellValue {
                 }
             }
             CellValue::Error(e) => write!(f, "{e}"),
+            CellValue::RichString(runs) => {
+                write!(f, "{}", crate::rich_text::rich_text_to_plain(runs))
+            }
         }
     }
 }
