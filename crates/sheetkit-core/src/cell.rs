@@ -9,9 +9,10 @@ use std::fmt;
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime, Timelike};
 
 /// Represents the value of a cell.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum CellValue {
     /// No value (empty cell).
+    #[default]
     Empty,
     /// Boolean value.
     Bool(bool),
@@ -30,12 +31,6 @@ pub enum CellValue {
     Date(f64),
     /// Error value (e.g. #DIV/0!, #N/A, #VALUE!).
     Error(String),
-}
-
-impl Default for CellValue {
-    fn default() -> Self {
-        Self::Empty
-    }
 }
 
 impl fmt::Display for CellValue {
