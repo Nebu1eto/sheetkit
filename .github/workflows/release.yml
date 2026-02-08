@@ -36,6 +36,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # Setup Zig for cargo-zigbuild
+      - uses: mlugg/setup-zig@v2
+
       - uses: pnpm/action-setup@v4
 
       - uses: actions/setup-node@v4
