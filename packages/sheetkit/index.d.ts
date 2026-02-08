@@ -211,6 +211,12 @@ export declare class Workbook {
   getPivotTables(): Array<JsPivotTableInfo>
   /** Delete a pivot table by name. */
   deletePivotTable(name: string): void
+  /** Add a sparkline to a worksheet. */
+  addSparkline(sheet: string, config: JsSparklineConfig): void
+  /** Get all sparklines for a worksheet. */
+  getSparklines(sheet: string): Array<JsSparklineConfig>
+  /** Remove a sparkline by its location cell reference. */
+  removeSparkline(sheet: string, location: string): void
   /** Set a cell to a rich text value with multiple formatted runs. */
   setCellRichText(sheet: string, cell: string, runs: Array<JsRichTextRun>): void
   /** Get rich text runs for a cell, or null if not rich text. */

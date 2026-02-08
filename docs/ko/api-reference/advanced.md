@@ -1187,7 +1187,7 @@ assert!(!is_date_format_code("0%"));
 
 스파크라인은 워크시트 셀에 삽입되는 미니 차트이다. SheetKit은 Line, Column, Win/Loss 세 가지 스파크라인 유형을 지원한다. Excel은 36가지 스타일 프리셋(인덱스 0-35)을 정의한다.
 
-> **참고:** 스파크라인 타입, 설정, XML 변환이 구현되어 있다. 워크북 통합(`addSparkline` / `getSparklines`)은 향후 릴리스에서 추가될 예정이다.
+스파크라인은 OOXML 패키지의 x14 워크시트 확장으로 저장되며 저장/열기 라운드트립을 통해 보존된다.
 
 ### 타입
 
@@ -1243,6 +1243,78 @@ const config = {
 };
 ```
 
+### Workbook.addSparkline / Workbook::add_sparkline
+
+워크시트에 스파크라인을 추가한다.
+
+**Rust:**
+
+```rust
+use sheetkit::{Workbook, SparklineConfig, SparklineType};
+
+let mut wb = Workbook::new();
+
+let mut config = SparklineConfig::new("Sheet1!A1:A10", "B1");
+config.sparkline_type = SparklineType::Column;
+config.markers = true;
+config.high_point = true;
+
+wb.add_sparkline("Sheet1", &config).unwrap();
+```
+
+**TypeScript:**
+
+```typescript
+import { Workbook } from 'sheetkit';
+
+const wb = new Workbook();
+wb.addSparkline('Sheet1', {
+  dataRange: 'Sheet1!A1:A10',
+  location: 'B1',
+  sparklineType: 'column',
+  markers: true,
+  highPoint: true,
+});
+```
+
+### Workbook.getSparklines / Workbook::get_sparklines
+
+워크시트의 모든 스파크라인을 조회한다.
+
+**Rust:**
+
+```rust
+let sparklines = wb.get_sparklines("Sheet1").unwrap();
+for s in &sparklines {
+    println!("{} -> {}", s.data_range, s.location);
+}
+```
+
+**TypeScript:**
+
+```typescript
+const sparklines = wb.getSparklines('Sheet1');
+for (const s of sparklines) {
+  console.log(`${s.dataRange} -> ${s.location}`);
+}
+```
+
+### Workbook.removeSparkline / Workbook::remove_sparkline
+
+위치 셀 참조로 스파크라인을 제거한다.
+
+**Rust:**
+
+```rust
+wb.remove_sparkline("Sheet1", "B1").unwrap();
+```
+
+**TypeScript:**
+
+```typescript
+wb.removeSparkline('Sheet1', 'B1');
+```
+
 ### 유효성 검사
 
 `validate_sparkline_config` 함수(Rust)는 다음을 확인한다:
@@ -1250,6 +1322,8 @@ const config = {
 - `location`이 비어 있지 않음
 - `line_weight`(설정된 경우) 양수 여부
 - `style`(설정된 경우) 0-35 범위 내 여부
+
+`add_sparkline` 호출 시 유효성 검사가 자동으로 적용된다.
 
 ```rust
 use sheetkit_core::sparkline::{SparklineConfig, validate_sparkline_config};

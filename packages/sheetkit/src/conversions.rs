@@ -1057,7 +1057,6 @@ pub(crate) fn js_sheet_protection_to_core(
     }
 }
 
-#[allow(dead_code)]
 pub(crate) fn js_sparkline_to_core(
     js: &crate::types::JsSparklineConfig,
 ) -> sheetkit_core::sparkline::SparklineConfig {
@@ -1079,5 +1078,33 @@ pub(crate) fn js_sparkline_to_core(
         show_axis: js.show_axis.unwrap_or(false),
         line_weight: js.line_weight,
         style: js.style,
+    }
+}
+
+pub(crate) fn core_sparkline_to_js(
+    config: &sheetkit_core::sparkline::SparklineConfig,
+) -> crate::types::JsSparklineConfig {
+    use sheetkit_core::sparkline::SparklineType;
+    crate::types::JsSparklineConfig {
+        data_range: config.data_range.clone(),
+        location: config.location.clone(),
+        sparkline_type: match config.sparkline_type {
+            SparklineType::Line => Some("line".to_string()),
+            SparklineType::Column => Some("column".to_string()),
+            SparklineType::WinLoss => Some("stacked".to_string()),
+        },
+        markers: if config.markers { Some(true) } else { None },
+        high_point: if config.high_point { Some(true) } else { None },
+        low_point: if config.low_point { Some(true) } else { None },
+        first_point: if config.first_point { Some(true) } else { None },
+        last_point: if config.last_point { Some(true) } else { None },
+        negative_points: if config.negative_points {
+            Some(true)
+        } else {
+            None
+        },
+        show_axis: if config.show_axis { Some(true) } else { None },
+        line_weight: config.line_weight,
+        style: config.style,
     }
 }

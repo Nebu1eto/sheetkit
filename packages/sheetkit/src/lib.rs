@@ -1054,6 +1054,33 @@ impl Workbook {
             .map_err(|e| Error::from_reason(e.to_string()))
     }
 
+    /// Add a sparkline to a worksheet.
+    #[napi]
+    pub fn add_sparkline(&mut self, sheet: String, config: JsSparklineConfig) -> Result<()> {
+        let core_config = js_sparkline_to_core(&config);
+        self.inner
+            .add_sparkline(&sheet, &core_config)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Get all sparklines for a worksheet.
+    #[napi]
+    pub fn get_sparklines(&self, sheet: String) -> Result<Vec<JsSparklineConfig>> {
+        let sparklines = self
+            .inner
+            .get_sparklines(&sheet)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        Ok(sparklines.iter().map(core_sparkline_to_js).collect())
+    }
+
+    /// Remove a sparkline by its location cell reference.
+    #[napi]
+    pub fn remove_sparkline(&mut self, sheet: String, location: String) -> Result<()> {
+        self.inner
+            .remove_sparkline(&sheet, &location)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
     /// Set a cell to a rich text value with multiple formatted runs.
     #[napi]
     pub fn set_cell_rich_text(

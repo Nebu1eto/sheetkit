@@ -1158,7 +1158,7 @@ assert!(!is_date_format_code("0%"));
 
 Sparklines are mini-charts embedded in worksheet cells. SheetKit supports three sparkline types: Line, Column, and Win/Loss. Excel defines 36 style presets (indices 0-35).
 
-> **Note:** Sparkline types, configuration, and XML conversion are available. Workbook integration (`addSparkline` / `getSparklines`) will be added in a future release.
+Sparklines are stored as x14 worksheet extensions in the OOXML package and persist through save/open roundtrips.
 
 ### Types
 
@@ -1214,6 +1214,78 @@ const config = {
 };
 ```
 
+### Workbook.addSparkline / Workbook::add_sparkline
+
+Add a sparkline to a worksheet.
+
+**Rust:**
+
+```rust
+use sheetkit::{Workbook, SparklineConfig, SparklineType};
+
+let mut wb = Workbook::new();
+
+let mut config = SparklineConfig::new("Sheet1!A1:A10", "B1");
+config.sparkline_type = SparklineType::Column;
+config.markers = true;
+config.high_point = true;
+
+wb.add_sparkline("Sheet1", &config).unwrap();
+```
+
+**TypeScript:**
+
+```typescript
+import { Workbook } from 'sheetkit';
+
+const wb = new Workbook();
+wb.addSparkline('Sheet1', {
+  dataRange: 'Sheet1!A1:A10',
+  location: 'B1',
+  sparklineType: 'column',
+  markers: true,
+  highPoint: true,
+});
+```
+
+### Workbook.getSparklines / Workbook::get_sparklines
+
+Retrieve all sparklines for a worksheet.
+
+**Rust:**
+
+```rust
+let sparklines = wb.get_sparklines("Sheet1").unwrap();
+for s in &sparklines {
+    println!("{} -> {}", s.data_range, s.location);
+}
+```
+
+**TypeScript:**
+
+```typescript
+const sparklines = wb.getSparklines('Sheet1');
+for (const s of sparklines) {
+  console.log(`${s.dataRange} -> ${s.location}`);
+}
+```
+
+### Workbook.removeSparkline / Workbook::remove_sparkline
+
+Remove a sparkline by its location cell reference.
+
+**Rust:**
+
+```rust
+wb.remove_sparkline("Sheet1", "B1").unwrap();
+```
+
+**TypeScript:**
+
+```typescript
+wb.removeSparkline('Sheet1', 'B1');
+```
+
 ### Validation
 
 The `validate_sparkline_config` function (Rust) checks that:
@@ -1221,6 +1293,8 @@ The `validate_sparkline_config` function (Rust) checks that:
 - `location` is not empty
 - `line_weight` (if set) is positive
 - `style` (if set) is in range 0-35
+
+Validation is automatically applied when calling `add_sparkline`.
 
 ```rust
 use sheetkit_core::sparkline::{SparklineConfig, validate_sparkline_config};

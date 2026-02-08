@@ -88,6 +88,8 @@ pub struct Workbook {
     theme_xml: Option<Vec<u8>>,
     /// Parsed theme colors from the theme XML.
     theme_colors: sheetkit_xml::theme::ThemeColors,
+    /// Per-sheet sparkline configurations, parallel to the `worksheets` vector.
+    sheet_sparklines: Vec<Vec<crate::sparkline::SparklineConfig>>,
 }
 
 impl Workbook {
@@ -120,6 +122,7 @@ impl Workbook {
             pivot_cache_records: vec![],
             theme_xml: None,
             theme_colors: crate::theme::default_theme_colors(),
+            sheet_sparklines: vec![vec![]],
         }
     }
 
@@ -356,6 +359,18 @@ impl Workbook {
             }
         }
 
+        // Parse sparklines from worksheet extension lists.
+        let mut sheet_sparklines: Vec<Vec<crate::sparkline::SparklineConfig>> =
+            vec![vec![]; worksheets.len()];
+        for (i, ws_path) in worksheet_paths.iter().enumerate() {
+            if let Ok(raw) = read_string_part(&mut archive, ws_path) {
+                let parsed = parse_sparklines_from_xml(&raw);
+                if !parsed.is_empty() {
+                    sheet_sparklines[i] = parsed;
+                }
+            }
+        }
+
         Ok(Self {
             content_types,
             package_rels,
@@ -381,6 +396,7 @@ impl Workbook {
             pivot_cache_records,
             theme_xml,
             theme_colors,
+            sheet_sparklines,
         })
     }
 
@@ -454,7 +470,15 @@ impl Workbook {
         // xl/worksheets/sheet{N}.xml
         for (i, (_name, ws)) in self.worksheets.iter().enumerate() {
             let entry_name = self.sheet_part_path(i);
-            write_xml_part(&mut zip, &entry_name, ws, options)?;
+            let sparklines = self.sheet_sparklines.get(i).cloned().unwrap_or_default();
+            if sparklines.is_empty() {
+                write_xml_part(&mut zip, &entry_name, ws, options)?;
+            } else {
+                let xml = serialize_worksheet_with_sparklines(ws, &sparklines)?;
+                zip.start_file(&entry_name, options)
+                    .map_err(|e| Error::Zip(e.to_string()))?;
+                zip.write_all(xml.as_bytes())?;
+            }
         }
 
         // xl/styles.xml
@@ -708,6 +732,9 @@ impl Workbook {
         if self.sheet_comments.len() < self.worksheets.len() {
             self.sheet_comments.push(None);
         }
+        if self.sheet_sparklines.len() < self.worksheets.len() {
+            self.sheet_sparklines.push(vec![]);
+        }
         Ok(idx)
     }
 
@@ -724,6 +751,9 @@ impl Workbook {
 
         if idx < self.sheet_comments.len() {
             self.sheet_comments.remove(idx);
+        }
+        if idx < self.sheet_sparklines.len() {
+            self.sheet_sparklines.remove(idx);
         }
         self.reindex_sheet_maps_after_delete(idx);
         Ok(())
@@ -751,6 +781,16 @@ impl Workbook {
         )?;
         if self.sheet_comments.len() < self.worksheets.len() {
             self.sheet_comments.push(None);
+        }
+        let source_sparklines = {
+            let src_idx = self.sheet_index(source).unwrap_or(0);
+            self.sheet_sparklines
+                .get(src_idx)
+                .cloned()
+                .unwrap_or_default()
+        };
+        if self.sheet_sparklines.len() < self.worksheets.len() {
+            self.sheet_sparklines.push(source_sparklines);
         }
         Ok(idx)
     }
@@ -1868,6 +1908,46 @@ impl Workbook {
         Ok(())
     }
 
+    /// Add a sparkline to a worksheet.
+    pub fn add_sparkline(
+        &mut self,
+        sheet: &str,
+        config: &crate::sparkline::SparklineConfig,
+    ) -> Result<()> {
+        let idx = self.sheet_index(sheet)?;
+        crate::sparkline::validate_sparkline_config(config)?;
+        while self.sheet_sparklines.len() <= idx {
+            self.sheet_sparklines.push(vec![]);
+        }
+        self.sheet_sparklines[idx].push(config.clone());
+        Ok(())
+    }
+
+    /// Get all sparklines for a worksheet.
+    pub fn get_sparklines(&self, sheet: &str) -> Result<Vec<crate::sparkline::SparklineConfig>> {
+        let idx = self.sheet_index(sheet)?;
+        Ok(self.sheet_sparklines.get(idx).cloned().unwrap_or_default())
+    }
+
+    /// Remove a sparkline by its location cell reference.
+    pub fn remove_sparkline(&mut self, sheet: &str, location: &str) -> Result<()> {
+        let idx = self.sheet_index(sheet)?;
+        let sparklines = self
+            .sheet_sparklines
+            .get_mut(idx)
+            .ok_or_else(|| Error::Internal(format!("no sparkline data for sheet '{sheet}'")))?;
+        let pos = sparklines
+            .iter()
+            .position(|s| s.location == location)
+            .ok_or_else(|| {
+                Error::Internal(format!(
+                    "sparkline at location '{location}' not found on sheet '{sheet}'"
+                ))
+            })?;
+        sparklines.remove(pos);
+        Ok(())
+    }
+
     /// Resolve a theme color by index (0-11) with optional tint.
     /// Returns the ARGB hex string (e.g. "FF4472C4") or None if the index is out of range.
     pub fn get_theme_color(&self, index: u32, tint: Option<f64>) -> Option<String> {
@@ -2783,6 +2863,186 @@ fn read_bytes_part(archive: &mut zip::ZipArchive<std::fs::File>, name: &str) -> 
         .read_to_end(&mut content)
         .map_err(|e| Error::Zip(e.to_string()))?;
     Ok(content)
+}
+
+/// Serialize a worksheet with sparkline extension list appended.
+fn serialize_worksheet_with_sparklines(
+    ws: &WorksheetXml,
+    sparklines: &[crate::sparkline::SparklineConfig],
+) -> Result<String> {
+    let body = quick_xml::se::to_string(ws).map_err(|e| Error::XmlParse(e.to_string()))?;
+
+    let closing = "</worksheet>";
+    let ext_xml = build_sparkline_ext_xml(sparklines);
+    if let Some(pos) = body.rfind(closing) {
+        let mut result =
+            String::with_capacity(XML_DECLARATION.len() + 1 + body.len() + ext_xml.len());
+        result.push_str(XML_DECLARATION);
+        result.push('\n');
+        result.push_str(&body[..pos]);
+        result.push_str(&ext_xml);
+        result.push_str(closing);
+        Ok(result)
+    } else {
+        Ok(format!("{XML_DECLARATION}\n{body}"))
+    }
+}
+
+/// Build the extLst XML block for sparklines using manual string construction.
+fn build_sparkline_ext_xml(sparklines: &[crate::sparkline::SparklineConfig]) -> String {
+    use std::fmt::Write;
+    let mut xml = String::new();
+    let _ = write!(
+        xml,
+        "<extLst>\
+         <ext xmlns:x14=\"http://schemas.microsoft.com/office/spreadsheetml/2009/9/main\" \
+         uri=\"{{05C60535-1F16-4fd2-B633-F4F36F0B64E0}}\">\
+         <x14:sparklineGroups \
+         xmlns:xm=\"http://schemas.microsoft.com/office/excel/2006/main\">"
+    );
+    for config in sparklines {
+        let group = crate::sparkline::config_to_xml_group(config);
+        let _ = write!(xml, "<x14:sparklineGroup");
+        if let Some(ref t) = group.sparkline_type {
+            let _ = write!(xml, " type=\"{t}\"");
+        }
+        if group.markers == Some(true) {
+            let _ = write!(xml, " markers=\"1\"");
+        }
+        if group.high == Some(true) {
+            let _ = write!(xml, " high=\"1\"");
+        }
+        if group.low == Some(true) {
+            let _ = write!(xml, " low=\"1\"");
+        }
+        if group.first == Some(true) {
+            let _ = write!(xml, " first=\"1\"");
+        }
+        if group.last == Some(true) {
+            let _ = write!(xml, " last=\"1\"");
+        }
+        if group.negative == Some(true) {
+            let _ = write!(xml, " negative=\"1\"");
+        }
+        if group.display_x_axis == Some(true) {
+            let _ = write!(xml, " displayXAxis=\"1\"");
+        }
+        if let Some(w) = group.line_weight {
+            let _ = write!(xml, " lineWeight=\"{w}\"");
+        }
+        let _ = write!(xml, "><x14:sparklines>");
+        for sp in &group.sparklines.items {
+            let _ = write!(
+                xml,
+                "<x14:sparkline><xm:f>{}</xm:f><xm:sqref>{}</xm:sqref></x14:sparkline>",
+                sp.formula, sp.sqref
+            );
+        }
+        let _ = write!(xml, "</x14:sparklines></x14:sparklineGroup>");
+    }
+    let _ = write!(xml, "</x14:sparklineGroups></ext></extLst>");
+    xml
+}
+
+/// Parse sparkline configurations from raw worksheet XML content.
+fn parse_sparklines_from_xml(xml: &str) -> Vec<crate::sparkline::SparklineConfig> {
+    use crate::sparkline::{SparklineConfig, SparklineType};
+
+    let mut sparklines = Vec::new();
+
+    // Find all sparklineGroup elements and parse their attributes and children.
+    let mut search_from = 0;
+    while let Some(group_start) = xml[search_from..].find("<x14:sparklineGroup") {
+        let abs_start = search_from + group_start;
+        let group_end_tag = "</x14:sparklineGroup>";
+        let abs_end = match xml[abs_start..].find(group_end_tag) {
+            Some(pos) => abs_start + pos + group_end_tag.len(),
+            None => break,
+        };
+        let group_xml = &xml[abs_start..abs_end];
+
+        // Parse group-level attributes.
+        let sparkline_type = extract_xml_attr(group_xml, "type")
+            .and_then(|s| SparklineType::parse(&s))
+            .unwrap_or_default();
+        let markers = extract_xml_bool_attr(group_xml, "markers");
+        let high_point = extract_xml_bool_attr(group_xml, "high");
+        let low_point = extract_xml_bool_attr(group_xml, "low");
+        let first_point = extract_xml_bool_attr(group_xml, "first");
+        let last_point = extract_xml_bool_attr(group_xml, "last");
+        let negative_points = extract_xml_bool_attr(group_xml, "negative");
+        let show_axis = extract_xml_bool_attr(group_xml, "displayXAxis");
+        let line_weight =
+            extract_xml_attr(group_xml, "lineWeight").and_then(|s| s.parse::<f64>().ok());
+
+        // Parse individual sparkline entries within this group.
+        let mut sp_from = 0;
+        while let Some(sp_start) = group_xml[sp_from..].find("<x14:sparkline>") {
+            let sp_abs = sp_from + sp_start;
+            let sp_end_tag = "</x14:sparkline>";
+            let sp_abs_end = match group_xml[sp_abs..].find(sp_end_tag) {
+                Some(pos) => sp_abs + pos + sp_end_tag.len(),
+                None => break,
+            };
+            let sp_xml = &group_xml[sp_abs..sp_abs_end];
+
+            let formula = extract_xml_element(sp_xml, "xm:f").unwrap_or_default();
+            let sqref = extract_xml_element(sp_xml, "xm:sqref").unwrap_or_default();
+
+            if !formula.is_empty() && !sqref.is_empty() {
+                sparklines.push(SparklineConfig {
+                    data_range: formula,
+                    location: sqref,
+                    sparkline_type: sparkline_type.clone(),
+                    markers,
+                    high_point,
+                    low_point,
+                    first_point,
+                    last_point,
+                    negative_points,
+                    show_axis,
+                    line_weight,
+                    style: None,
+                });
+            }
+            sp_from = sp_abs_end;
+        }
+        search_from = abs_end;
+    }
+    sparklines
+}
+
+/// Extract an XML attribute value from an element's opening tag.
+fn extract_xml_attr(xml: &str, attr: &str) -> Option<String> {
+    // Look for attr="value" or attr='value' patterns.
+    let patterns = [format!(" {attr}=\""), format!(" {attr}='")];
+    for pat in &patterns {
+        if let Some(start) = xml.find(pat.as_str()) {
+            let val_start = start + pat.len();
+            let quote = pat.chars().last().unwrap();
+            if let Some(end) = xml[val_start..].find(quote) {
+                return Some(xml[val_start..val_start + end].to_string());
+            }
+        }
+    }
+    None
+}
+
+/// Extract a boolean attribute from an XML element (true for "1" or "true").
+fn extract_xml_bool_attr(xml: &str, attr: &str) -> bool {
+    extract_xml_attr(xml, attr)
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+/// Extract the text content of an XML element like `<tag>content</tag>`.
+fn extract_xml_element(xml: &str, tag: &str) -> Option<String> {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let start = xml.find(&open)?;
+    let content_start = start + open.len();
+    let end = xml[content_start..].find(&close)?;
+    Some(xml[content_start..content_start + end].to_string())
 }
 
 /// Write a CellValue into an XML Cell (mutating it in place).
@@ -6148,5 +6408,122 @@ mod tests {
 
         let wb2 = Workbook::open(&path).unwrap();
         assert!(wb2.is_sheet_protected("Sheet1").unwrap());
+    }
+
+    #[test]
+    fn test_add_sparkline_and_get_sparklines() {
+        let mut wb = Workbook::new();
+        let config = crate::sparkline::SparklineConfig::new("Sheet1!A1:A10", "B1");
+        wb.add_sparkline("Sheet1", &config).unwrap();
+
+        let sparklines = wb.get_sparklines("Sheet1").unwrap();
+        assert_eq!(sparklines.len(), 1);
+        assert_eq!(sparklines[0].data_range, "Sheet1!A1:A10");
+        assert_eq!(sparklines[0].location, "B1");
+    }
+
+    #[test]
+    fn test_add_multiple_sparklines_to_same_sheet() {
+        let mut wb = Workbook::new();
+        let config1 = crate::sparkline::SparklineConfig::new("Sheet1!A1:A10", "B1");
+        let config2 = crate::sparkline::SparklineConfig::new("Sheet1!A1:A10", "B2");
+        let mut config3 = crate::sparkline::SparklineConfig::new("Sheet1!C1:C10", "D1");
+        config3.sparkline_type = crate::sparkline::SparklineType::Column;
+
+        wb.add_sparkline("Sheet1", &config1).unwrap();
+        wb.add_sparkline("Sheet1", &config2).unwrap();
+        wb.add_sparkline("Sheet1", &config3).unwrap();
+
+        let sparklines = wb.get_sparklines("Sheet1").unwrap();
+        assert_eq!(sparklines.len(), 3);
+        assert_eq!(
+            sparklines[2].sparkline_type,
+            crate::sparkline::SparklineType::Column
+        );
+    }
+
+    #[test]
+    fn test_remove_sparkline_by_location() {
+        let mut wb = Workbook::new();
+        let config1 = crate::sparkline::SparklineConfig::new("Sheet1!A1:A10", "B1");
+        let config2 = crate::sparkline::SparklineConfig::new("Sheet1!A1:A10", "B2");
+        wb.add_sparkline("Sheet1", &config1).unwrap();
+        wb.add_sparkline("Sheet1", &config2).unwrap();
+
+        wb.remove_sparkline("Sheet1", "B1").unwrap();
+
+        let sparklines = wb.get_sparklines("Sheet1").unwrap();
+        assert_eq!(sparklines.len(), 1);
+        assert_eq!(sparklines[0].location, "B2");
+    }
+
+    #[test]
+    fn test_remove_nonexistent_sparkline_returns_error() {
+        let mut wb = Workbook::new();
+        let result = wb.remove_sparkline("Sheet1", "Z99");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_sparkline_on_nonexistent_sheet_returns_error() {
+        let mut wb = Workbook::new();
+        let config = crate::sparkline::SparklineConfig::new("Sheet1!A1:A10", "B1");
+        let result = wb.add_sparkline("NoSuchSheet", &config);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::SheetNotFound { .. }));
+
+        let result = wb.get_sparklines("NoSuchSheet");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_sparkline_save_open_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("sparkline_roundtrip.xlsx");
+
+        let mut wb = Workbook::new();
+        for i in 1..=10 {
+            wb.set_cell_value(
+                "Sheet1",
+                &format!("A{i}"),
+                CellValue::Number(i as f64 * 10.0),
+            )
+            .unwrap();
+        }
+
+        let mut config = crate::sparkline::SparklineConfig::new("Sheet1!A1:A10", "B1");
+        config.sparkline_type = crate::sparkline::SparklineType::Column;
+        config.markers = true;
+        config.high_point = true;
+        config.line_weight = Some(1.5);
+
+        wb.add_sparkline("Sheet1", &config).unwrap();
+
+        let config2 = crate::sparkline::SparklineConfig::new("Sheet1!A1:A5", "C1");
+        wb.add_sparkline("Sheet1", &config2).unwrap();
+
+        wb.save(&path).unwrap();
+
+        let wb2 = Workbook::open(&path).unwrap();
+        let sparklines = wb2.get_sparklines("Sheet1").unwrap();
+        assert_eq!(sparklines.len(), 2);
+        assert_eq!(sparklines[0].data_range, "Sheet1!A1:A10");
+        assert_eq!(sparklines[0].location, "B1");
+        assert_eq!(
+            sparklines[0].sparkline_type,
+            crate::sparkline::SparklineType::Column
+        );
+        assert!(sparklines[0].markers);
+        assert!(sparklines[0].high_point);
+        assert_eq!(sparklines[0].line_weight, Some(1.5));
+        assert_eq!(sparklines[1].data_range, "Sheet1!A1:A5");
+        assert_eq!(sparklines[1].location, "C1");
+    }
+
+    #[test]
+    fn test_sparkline_empty_sheet_returns_empty_vec() {
+        let wb = Workbook::new();
+        let sparklines = wb.get_sparklines("Sheet1").unwrap();
+        assert!(sparklines.is_empty());
     }
 }
