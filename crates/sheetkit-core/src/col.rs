@@ -206,9 +206,9 @@ pub fn remove_col(ws: &mut WorksheetXml, col: &str) -> Result<()> {
 
         // Shift cells that are to the right of the removed column.
         for cell in row.cells.iter_mut() {
-            let (c, r) = cell_name_to_coordinates(&cell.r).unwrap();
+            let (c, r) = cell_name_to_coordinates(&cell.r)?;
             if c > col_num {
-                cell.r = coordinates_to_cell_name(c - 1, r).unwrap();
+                cell.r = coordinates_to_cell_name(c - 1, r)?;
             }
         }
     }
@@ -564,6 +564,21 @@ mod tests {
     fn test_remove_col_invalid_column_returns_error() {
         let mut ws = WorksheetXml::default();
         let result = remove_col(&mut ws, "XFE");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_remove_col_invalid_cell_reference_returns_error() {
+        let mut ws = sample_ws();
+        ws.sheet_data.rows[0].cells.push(Cell {
+            r: "INVALID".to_string(),
+            s: None,
+            t: None,
+            v: Some("1".to_string()),
+            f: None,
+            is: None,
+        });
+        let result = remove_col(&mut ws, "A");
         assert!(result.is_err());
     }
 
