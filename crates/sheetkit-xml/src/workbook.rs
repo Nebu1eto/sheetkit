@@ -195,9 +195,13 @@ pub struct DefinedName {
     #[serde(rename = "@localSheetId", skip_serializing_if = "Option::is_none")]
     pub local_sheet_id: Option<u32>,
 
+    #[serde(rename = "@comment", skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
+
     #[serde(rename = "@hidden", skip_serializing_if = "Option::is_none")]
     pub hidden: Option<bool>,
 
+    /// The formula/reference value (element text content).
     #[serde(rename = "$value")]
     pub value: String,
 }

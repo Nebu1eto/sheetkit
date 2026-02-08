@@ -114,6 +114,26 @@ export interface JsWorkbookProtectionConfig {
   lockWindows?: boolean
   lockRevision?: boolean
 }
+export interface JsHyperlinkOptions {
+  /** Type of hyperlink: "external", "internal", or "email". */
+  linkType: string
+  /** The target URL, sheet reference, or email address. */
+  target: string
+  /** Optional display text. */
+  display?: string
+  /** Optional tooltip text. */
+  tooltip?: string
+}
+export interface JsHyperlinkInfo {
+  /** Type of hyperlink: "external", "internal", or "email". */
+  linkType: string
+  /** The target URL, sheet reference, or email address. */
+  target: string
+  /** Optional display text. */
+  display?: string
+  /** Optional tooltip text. */
+  tooltip?: string
+}
 /** Excel workbook for reading and writing .xlsx files. */
 export declare class Workbook {
   /** Create a new empty workbook with a single sheet named "Sheet1". */
@@ -154,12 +174,24 @@ export declare class Workbook {
   getRowHeight(sheet: string, row: number): number | null
   /** Set whether a row is visible. */
   setRowVisible(sheet: string, row: number, visible: boolean): void
+  /** Get whether a row is visible. Returns true if visible (not hidden). */
+  getRowVisible(sheet: string, row: number): boolean
+  /** Set the outline level of a row (0-7). */
+  setRowOutlineLevel(sheet: string, row: number, level: number): void
+  /** Get the outline level of a row. Returns 0 if not set. */
+  getRowOutlineLevel(sheet: string, row: number): number
   /** Set the width of a column (e.g., "A", "B", "AA"). */
   setColWidth(sheet: string, col: string, width: number): void
   /** Get the width of a column, or null if not explicitly set. */
   getColWidth(sheet: string, col: string): number | null
   /** Set whether a column is visible. */
   setColVisible(sheet: string, col: string, visible: boolean): void
+  /** Get whether a column is visible. Returns true if visible (not hidden). */
+  getColVisible(sheet: string, col: string): boolean
+  /** Set the outline level of a column (0-7). */
+  setColOutlineLevel(sheet: string, col: string, level: number): void
+  /** Get the outline level of a column. Returns 0 if not set. */
+  getColOutlineLevel(sheet: string, col: string): number
   /** Insert empty columns starting at the given column letter. */
   insertCols(sheet: string, col: string, count: number): void
   /** Remove a column by letter. */
@@ -174,6 +206,12 @@ export declare class Workbook {
   addChart(sheet: string, fromCell: string, toCell: string, config: JsChartConfig): void
   /** Add an image to a sheet. */
   addImage(sheet: string, config: JsImageConfig): void
+  /** Merge a range of cells on a sheet. */
+  mergeCells(sheet: string, topLeft: string, bottomRight: string): void
+  /** Remove a merged cell range from a sheet. */
+  unmergeCell(sheet: string, reference: string): void
+  /** Get all merged cell ranges on a sheet. */
+  getMergeCells(sheet: string): Array<string>
   /** Add a data validation rule to a sheet. */
   addDataValidation(sheet: string, config: JsDataValidationConfig): void
   /** Get all data validations on a sheet. */
@@ -214,6 +252,12 @@ export declare class Workbook {
   unprotectWorkbook(): void
   /** Check if the workbook is protected. */
   isWorkbookProtected(): boolean
+  /** Set a hyperlink on a cell. */
+  setCellHyperlink(sheet: string, cell: string, opts: JsHyperlinkOptions): void
+  /** Get hyperlink information for a cell, or null if no hyperlink exists. */
+  getCellHyperlink(sheet: string, cell: string): JsHyperlinkInfo | null
+  /** Delete a hyperlink from a cell. */
+  deleteCellHyperlink(sheet: string, cell: string): void
 }
 /** Forward-only streaming writer for large sheets. */
 export declare class JsStreamWriter {

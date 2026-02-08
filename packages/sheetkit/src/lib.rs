@@ -8,6 +8,7 @@ use sheetkit_core::cell::CellValue;
 use sheetkit_core::chart::{ChartConfig, ChartSeries, ChartType};
 use sheetkit_core::comment::CommentConfig;
 use sheetkit_core::doc_props::{AppProperties, CustomPropertyValue, DocProperties};
+use sheetkit_core::hyperlink::{HyperlinkInfo, HyperlinkType};
 use sheetkit_core::image::{ImageConfig, ImageFormat};
 use sheetkit_core::protection::WorkbookProtectionConfig;
 use sheetkit_core::stream::StreamWriter;
@@ -158,6 +159,56 @@ pub struct JsWorkbookProtectionConfig {
     pub lock_structure: Option<bool>,
     pub lock_windows: Option<bool>,
     pub lock_revision: Option<bool>,
+}
+
+#[napi(object)]
+pub struct JsHyperlinkOptions {
+    /// Type of hyperlink: "external", "internal", or "email".
+    pub link_type: String,
+    /// The target URL, sheet reference, or email address.
+    pub target: String,
+    /// Optional display text.
+    pub display: Option<String>,
+    /// Optional tooltip text.
+    pub tooltip: Option<String>,
+}
+
+#[napi(object)]
+pub struct JsHyperlinkInfo {
+    /// Type of hyperlink: "external", "internal", or "email".
+    pub link_type: String,
+    /// The target URL, sheet reference, or email address.
+    pub target: String,
+    /// Optional display text.
+    pub display: Option<String>,
+    /// Optional tooltip text.
+    pub tooltip: Option<String>,
+}
+
+fn parse_hyperlink_type(opts: &JsHyperlinkOptions) -> Result<HyperlinkType> {
+    match opts.link_type.to_lowercase().as_str() {
+        "external" => Ok(HyperlinkType::External(opts.target.clone())),
+        "internal" => Ok(HyperlinkType::Internal(opts.target.clone())),
+        "email" => Ok(HyperlinkType::Email(opts.target.clone())),
+        _ => Err(Error::from_reason(format!(
+            "unknown hyperlink type: {}",
+            opts.link_type
+        ))),
+    }
+}
+
+fn hyperlink_info_to_js(info: &HyperlinkInfo) -> JsHyperlinkInfo {
+    let (link_type, target) = match &info.link_type {
+        HyperlinkType::External(url) => ("external".to_string(), url.clone()),
+        HyperlinkType::Internal(loc) => ("internal".to_string(), loc.clone()),
+        HyperlinkType::Email(email) => ("email".to_string(), email.clone()),
+    };
+    JsHyperlinkInfo {
+        link_type,
+        target,
+        display: info.display.clone(),
+        tooltip: info.tooltip.clone(),
+    }
 }
 
 fn js_to_cell_value(value: JsUnknown) -> Result<CellValue> {
@@ -648,6 +699,30 @@ impl Workbook {
             .map_err(|e| Error::from_reason(e.to_string()))
     }
 
+    /// Get whether a row is visible. Returns true if visible (not hidden).
+    #[napi]
+    pub fn get_row_visible(&self, sheet: String, row: u32) -> Result<bool> {
+        self.inner
+            .get_row_visible(&sheet, row)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Set the outline level of a row (0-7).
+    #[napi]
+    pub fn set_row_outline_level(&mut self, sheet: String, row: u32, level: u8) -> Result<()> {
+        self.inner
+            .set_row_outline_level(&sheet, row, level)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Get the outline level of a row. Returns 0 if not set.
+    #[napi]
+    pub fn get_row_outline_level(&self, sheet: String, row: u32) -> Result<u8> {
+        self.inner
+            .get_row_outline_level(&sheet, row)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
     /// Set the width of a column (e.g., "A", "B", "AA").
     #[napi]
     pub fn set_col_width(&mut self, sheet: String, col: String, width: f64) -> Result<()> {
@@ -669,6 +744,30 @@ impl Workbook {
     pub fn set_col_visible(&mut self, sheet: String, col: String, visible: bool) -> Result<()> {
         self.inner
             .set_col_visible(&sheet, &col, visible)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Get whether a column is visible. Returns true if visible (not hidden).
+    #[napi]
+    pub fn get_col_visible(&self, sheet: String, col: String) -> Result<bool> {
+        self.inner
+            .get_col_visible(&sheet, &col)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Set the outline level of a column (0-7).
+    #[napi]
+    pub fn set_col_outline_level(&mut self, sheet: String, col: String, level: u8) -> Result<()> {
+        self.inner
+            .set_col_outline_level(&sheet, &col, level)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Get the outline level of a column. Returns 0 if not set.
+    #[napi]
+    pub fn get_col_outline_level(&self, sheet: String, col: String) -> Result<u8> {
+        self.inner
+            .get_col_outline_level(&sheet, &col)
             .map_err(|e| Error::from_reason(e.to_string()))
     }
 
@@ -753,6 +852,35 @@ impl Workbook {
         };
         self.inner
             .add_image(&sheet, &core_config)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Merge a range of cells on a sheet.
+    #[napi]
+    pub fn merge_cells(
+        &mut self,
+        sheet: String,
+        top_left: String,
+        bottom_right: String,
+    ) -> Result<()> {
+        self.inner
+            .merge_cells(&sheet, &top_left, &bottom_right)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Remove a merged cell range from a sheet.
+    #[napi]
+    pub fn unmerge_cell(&mut self, sheet: String, reference: String) -> Result<()> {
+        self.inner
+            .unmerge_cell(&sheet, &reference)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Get all merged cell ranges on a sheet.
+    #[napi]
+    pub fn get_merge_cells(&self, sheet: String) -> Result<Vec<String>> {
+        self.inner
+            .get_merge_cells(&sheet)
             .map_err(|e| Error::from_reason(e.to_string()))
     }
 
@@ -979,6 +1107,48 @@ impl Workbook {
     #[napi]
     pub fn is_workbook_protected(&self) -> bool {
         self.inner.is_workbook_protected()
+    }
+
+    /// Set a hyperlink on a cell.
+    #[napi]
+    pub fn set_cell_hyperlink(
+        &mut self,
+        sheet: String,
+        cell: String,
+        opts: JsHyperlinkOptions,
+    ) -> Result<()> {
+        let link = parse_hyperlink_type(&opts)?;
+        self.inner
+            .set_cell_hyperlink(
+                &sheet,
+                &cell,
+                link,
+                opts.display.as_deref(),
+                opts.tooltip.as_deref(),
+            )
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Get hyperlink information for a cell, or null if no hyperlink exists.
+    #[napi]
+    pub fn get_cell_hyperlink(
+        &self,
+        sheet: String,
+        cell: String,
+    ) -> Result<Option<JsHyperlinkInfo>> {
+        let info = self
+            .inner
+            .get_cell_hyperlink(&sheet, &cell)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        Ok(info.as_ref().map(hyperlink_info_to_js))
+    }
+
+    /// Delete a hyperlink from a cell.
+    #[napi]
+    pub fn delete_cell_hyperlink(&mut self, sheet: String, cell: String) -> Result<()> {
+        self.inner
+            .delete_cell_hyperlink(&sheet, &cell)
+            .map_err(|e| Error::from_reason(e.to_string()))
     }
 }
 

@@ -164,6 +164,69 @@ describe('Phase 3 - Row/Column Operations', () => {
     });
 });
 
+describe('Row/Col Getters & Outline Levels', () => {
+    it('should get row visible default as true', () => {
+        const wb = new Workbook();
+        expect(wb.getRowVisible('Sheet1', 1)).toBe(true);
+    });
+
+    it('should get row visible false after hiding', () => {
+        const wb = new Workbook();
+        wb.setRowVisible('Sheet1', 1, false);
+        expect(wb.getRowVisible('Sheet1', 1)).toBe(false);
+    });
+
+    it('should get row visible true after show', () => {
+        const wb = new Workbook();
+        wb.setRowVisible('Sheet1', 1, false);
+        wb.setRowVisible('Sheet1', 1, true);
+        expect(wb.getRowVisible('Sheet1', 1)).toBe(true);
+    });
+
+    it('should set and get row outline level', () => {
+        const wb = new Workbook();
+        wb.setRowOutlineLevel('Sheet1', 1, 3);
+        expect(wb.getRowOutlineLevel('Sheet1', 1)).toBe(3);
+    });
+
+    it('should return 0 for default row outline level', () => {
+        const wb = new Workbook();
+        expect(wb.getRowOutlineLevel('Sheet1', 1)).toBe(0);
+    });
+
+    it('should get col visible default as true', () => {
+        const wb = new Workbook();
+        expect(wb.getColVisible('Sheet1', 'A')).toBe(true);
+    });
+
+    it('should get col visible false after hiding', () => {
+        const wb = new Workbook();
+        wb.setColVisible('Sheet1', 'B', false);
+        expect(wb.getColVisible('Sheet1', 'B')).toBe(false);
+    });
+
+    it('should set and get col outline level', () => {
+        const wb = new Workbook();
+        wb.setColOutlineLevel('Sheet1', 'A', 5);
+        expect(wb.getColOutlineLevel('Sheet1', 'A')).toBe(5);
+    });
+
+    it('should return 0 for default col outline level', () => {
+        const wb = new Workbook();
+        expect(wb.getColOutlineLevel('Sheet1', 'A')).toBe(0);
+    });
+
+    it('should reject outline level > 7 for row', () => {
+        const wb = new Workbook();
+        expect(() => wb.setRowOutlineLevel('Sheet1', 1, 8)).toThrow();
+    });
+
+    it('should reject outline level > 7 for col', () => {
+        const wb = new Workbook();
+        expect(() => wb.setColOutlineLevel('Sheet1', 'A', 8)).toThrow();
+    });
+});
+
 describe('Phase 4 - Style', () => {
     it('should add a style with font and apply to cell', () => {
         const wb = new Workbook();
@@ -295,6 +358,62 @@ describe('Phase 8 - Data Validation', () => {
     });
 });
 
+describe('Merge Cells', () => {
+    const out = tmpFile('test-merge.xlsx');
+    afterEach(() => cleanup(out));
+
+    it('should merge and get merge cells', () => {
+        const wb = new Workbook();
+        wb.mergeCells('Sheet1', 'A1', 'B2');
+        const merged = wb.getMergeCells('Sheet1');
+        expect(merged).toEqual(['A1:B2']);
+    });
+
+    it('should merge multiple ranges', () => {
+        const wb = new Workbook();
+        wb.mergeCells('Sheet1', 'A1', 'B2');
+        wb.mergeCells('Sheet1', 'D1', 'F3');
+        const merged = wb.getMergeCells('Sheet1');
+        expect(merged.length).toBe(2);
+        expect(merged).toContain('A1:B2');
+        expect(merged).toContain('D1:F3');
+    });
+
+    it('should detect overlapping merge ranges', () => {
+        const wb = new Workbook();
+        wb.mergeCells('Sheet1', 'A1', 'C3');
+        expect(() => wb.mergeCells('Sheet1', 'B2', 'D4')).toThrow();
+    });
+
+    it('should unmerge a range', () => {
+        const wb = new Workbook();
+        wb.mergeCells('Sheet1', 'A1', 'B2');
+        wb.unmergeCell('Sheet1', 'A1:B2');
+        expect(wb.getMergeCells('Sheet1').length).toBe(0);
+    });
+
+    it('should throw when unmerging non-existent range', () => {
+        const wb = new Workbook();
+        expect(() => wb.unmergeCell('Sheet1', 'A1:B2')).toThrow();
+    });
+
+    it('should return empty array for no merge cells', () => {
+        const wb = new Workbook();
+        expect(wb.getMergeCells('Sheet1')).toEqual([]);
+    });
+
+    it('should roundtrip merge cells through save/open', () => {
+        const wb = new Workbook();
+        wb.setCellValue('Sheet1', 'A1', 'Merged');
+        wb.mergeCells('Sheet1', 'A1', 'C3');
+        wb.save(out);
+
+        const wb2 = Workbook.open(out);
+        const merged = wb2.getMergeCells('Sheet1');
+        expect(merged).toEqual(['A1:C3']);
+    });
+});
+
 describe('Phase 8 - Auto-filter', () => {
     const out = tmpFile('test-autofilter.xlsx');
     afterEach(() => cleanup(out));
@@ -412,5 +531,143 @@ describe('Phase 10 - Workbook Protection', () => {
 
         const wb2 = Workbook.open(out);
         expect(wb2.isWorkbookProtected()).toBe(true);
+    });
+});
+
+describe('Hyperlinks', () => {
+    const out = tmpFile('test-hyperlink.xlsx');
+    afterEach(() => cleanup(out));
+
+    it('should set and get external hyperlink', () => {
+        const wb = new Workbook();
+        wb.setCellHyperlink('Sheet1', 'A1', {
+            linkType: 'external',
+            target: 'https://example.com',
+            display: 'Example',
+            tooltip: 'Visit Example',
+        });
+        const info = wb.getCellHyperlink('Sheet1', 'A1');
+        expect(info).not.toBeNull();
+        expect(info!.linkType).toBe('external');
+        expect(info!.target).toBe('https://example.com');
+        expect(info!.display).toBe('Example');
+        expect(info!.tooltip).toBe('Visit Example');
+    });
+
+    it('should set and get internal hyperlink', () => {
+        const wb = new Workbook();
+        wb.setCellHyperlink('Sheet1', 'B2', {
+            linkType: 'internal',
+            target: 'Sheet1!C1',
+            display: 'Go to C1',
+        });
+        const info = wb.getCellHyperlink('Sheet1', 'B2');
+        expect(info).not.toBeNull();
+        expect(info!.linkType).toBe('internal');
+        expect(info!.target).toBe('Sheet1!C1');
+        expect(info!.display).toBe('Go to C1');
+    });
+
+    it('should set and get email hyperlink', () => {
+        const wb = new Workbook();
+        wb.setCellHyperlink('Sheet1', 'C3', {
+            linkType: 'email',
+            target: 'mailto:user@example.com',
+        });
+        const info = wb.getCellHyperlink('Sheet1', 'C3');
+        expect(info).not.toBeNull();
+        expect(info!.linkType).toBe('email');
+        expect(info!.target).toBe('mailto:user@example.com');
+    });
+
+    it('should return null for cell without hyperlink', () => {
+        const wb = new Workbook();
+        const info = wb.getCellHyperlink('Sheet1', 'Z99');
+        expect(info).toBeNull();
+    });
+
+    it('should delete a hyperlink', () => {
+        const wb = new Workbook();
+        wb.setCellHyperlink('Sheet1', 'A1', {
+            linkType: 'external',
+            target: 'https://example.com',
+        });
+        wb.deleteCellHyperlink('Sheet1', 'A1');
+        expect(wb.getCellHyperlink('Sheet1', 'A1')).toBeNull();
+    });
+
+    it('should overwrite existing hyperlink', () => {
+        const wb = new Workbook();
+        wb.setCellHyperlink('Sheet1', 'A1', {
+            linkType: 'external',
+            target: 'https://old.com',
+        });
+        wb.setCellHyperlink('Sheet1', 'A1', {
+            linkType: 'external',
+            target: 'https://new.com',
+            display: 'New Link',
+        });
+        const info = wb.getCellHyperlink('Sheet1', 'A1');
+        expect(info!.target).toBe('https://new.com');
+        expect(info!.display).toBe('New Link');
+    });
+
+    it('should handle multiple hyperlinks on different cells', () => {
+        const wb = new Workbook();
+        wb.setCellHyperlink('Sheet1', 'A1', {
+            linkType: 'external',
+            target: 'https://example.com',
+        });
+        wb.setCellHyperlink('Sheet1', 'B1', {
+            linkType: 'internal',
+            target: 'Sheet1!C1',
+        });
+        wb.setCellHyperlink('Sheet1', 'C1', {
+            linkType: 'email',
+            target: 'mailto:test@test.com',
+        });
+
+        expect(wb.getCellHyperlink('Sheet1', 'A1')!.linkType).toBe('external');
+        expect(wb.getCellHyperlink('Sheet1', 'B1')!.linkType).toBe('internal');
+        expect(wb.getCellHyperlink('Sheet1', 'C1')!.linkType).toBe('email');
+    });
+
+    it('should roundtrip hyperlinks through save/open', () => {
+        const wb = new Workbook();
+        wb.setCellHyperlink('Sheet1', 'A1', {
+            linkType: 'external',
+            target: 'https://rust-lang.org',
+            display: 'Rust',
+            tooltip: 'Rust Homepage',
+        });
+        wb.setCellHyperlink('Sheet1', 'B1', {
+            linkType: 'internal',
+            target: 'Sheet1!C1',
+            display: 'Go to C1',
+        });
+        wb.setCellHyperlink('Sheet1', 'C1', {
+            linkType: 'email',
+            target: 'mailto:hello@example.com',
+            display: 'Email',
+        });
+        wb.save(out);
+
+        const wb2 = Workbook.open(out);
+        const a1 = wb2.getCellHyperlink('Sheet1', 'A1');
+        expect(a1).not.toBeNull();
+        expect(a1!.linkType).toBe('external');
+        expect(a1!.target).toBe('https://rust-lang.org');
+        expect(a1!.display).toBe('Rust');
+        expect(a1!.tooltip).toBe('Rust Homepage');
+
+        const b1 = wb2.getCellHyperlink('Sheet1', 'B1');
+        expect(b1).not.toBeNull();
+        expect(b1!.linkType).toBe('internal');
+        expect(b1!.target).toBe('Sheet1!C1');
+
+        const c1 = wb2.getCellHyperlink('Sheet1', 'C1');
+        expect(c1).not.toBeNull();
+        expect(c1!.linkType).toBe('email');
+        expect(c1!.target).toBe('mailto:hello@example.com');
     });
 });

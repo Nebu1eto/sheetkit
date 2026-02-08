@@ -322,6 +322,310 @@ pub struct ProtectionStyle {
     pub hidden: bool,
 }
 
+/// Builder for creating Style objects with a fluent API.
+///
+/// Each setter method initializes the relevant sub-struct if it has not been
+/// set yet, then applies the value. Call `build()` to obtain the final Style.
+pub struct StyleBuilder {
+    style: Style,
+}
+
+impl StyleBuilder {
+    /// Create a new StyleBuilder with all fields set to None.
+    pub fn new() -> Self {
+        Self {
+            style: Style::default(),
+        }
+    }
+
+    // -- Font methods --
+
+    /// Set the bold flag on the font.
+    pub fn bold(mut self, bold: bool) -> Self {
+        self.style.font.get_or_insert_with(FontStyle::default).bold = bold;
+        self
+    }
+
+    /// Set the italic flag on the font.
+    pub fn italic(mut self, italic: bool) -> Self {
+        self.style
+            .font
+            .get_or_insert_with(FontStyle::default)
+            .italic = italic;
+        self
+    }
+
+    /// Set the underline flag on the font.
+    pub fn underline(mut self, underline: bool) -> Self {
+        self.style
+            .font
+            .get_or_insert_with(FontStyle::default)
+            .underline = underline;
+        self
+    }
+
+    /// Set the strikethrough flag on the font.
+    pub fn strikethrough(mut self, strikethrough: bool) -> Self {
+        self.style
+            .font
+            .get_or_insert_with(FontStyle::default)
+            .strikethrough = strikethrough;
+        self
+    }
+
+    /// Set the font name (e.g. "Arial", "Calibri").
+    pub fn font_name(mut self, name: &str) -> Self {
+        self.style.font.get_or_insert_with(FontStyle::default).name = Some(name.to_string());
+        self
+    }
+
+    /// Set the font size in points.
+    pub fn font_size(mut self, size: f64) -> Self {
+        self.style.font.get_or_insert_with(FontStyle::default).size = Some(size);
+        self
+    }
+
+    /// Set the font color using a StyleColor value.
+    pub fn font_color(mut self, color: StyleColor) -> Self {
+        self.style.font.get_or_insert_with(FontStyle::default).color = Some(color);
+        self
+    }
+
+    /// Set the font color using an ARGB hex string (e.g. "FF0000FF").
+    pub fn font_color_rgb(self, rgb: &str) -> Self {
+        self.font_color(StyleColor::Rgb(rgb.to_string()))
+    }
+
+    // -- Fill methods --
+
+    /// Set the fill pattern type.
+    pub fn fill_pattern(mut self, pattern: PatternType) -> Self {
+        self.style
+            .fill
+            .get_or_insert(FillStyle {
+                pattern: PatternType::None,
+                fg_color: None,
+                bg_color: None,
+            })
+            .pattern = pattern;
+        self
+    }
+
+    /// Set the fill foreground color.
+    pub fn fill_fg_color(mut self, color: StyleColor) -> Self {
+        self.style
+            .fill
+            .get_or_insert(FillStyle {
+                pattern: PatternType::None,
+                fg_color: None,
+                bg_color: None,
+            })
+            .fg_color = Some(color);
+        self
+    }
+
+    /// Set the fill foreground color using an ARGB hex string.
+    pub fn fill_fg_color_rgb(self, rgb: &str) -> Self {
+        self.fill_fg_color(StyleColor::Rgb(rgb.to_string()))
+    }
+
+    /// Set the fill background color.
+    pub fn fill_bg_color(mut self, color: StyleColor) -> Self {
+        self.style
+            .fill
+            .get_or_insert(FillStyle {
+                pattern: PatternType::None,
+                fg_color: None,
+                bg_color: None,
+            })
+            .bg_color = Some(color);
+        self
+    }
+
+    /// Convenience method: set a solid fill with the given ARGB foreground color.
+    pub fn solid_fill(mut self, rgb: &str) -> Self {
+        self.style.fill = Some(FillStyle {
+            pattern: PatternType::Solid,
+            fg_color: Some(StyleColor::Rgb(rgb.to_string())),
+            bg_color: self.style.fill.and_then(|f| f.bg_color),
+        });
+        self
+    }
+
+    // -- Border methods --
+
+    /// Set the left border style and color.
+    pub fn border_left(mut self, style: BorderLineStyle, color: StyleColor) -> Self {
+        self.style
+            .border
+            .get_or_insert_with(BorderStyle::default)
+            .left = Some(BorderSideStyle {
+            style,
+            color: Some(color),
+        });
+        self
+    }
+
+    /// Set the right border style and color.
+    pub fn border_right(mut self, style: BorderLineStyle, color: StyleColor) -> Self {
+        self.style
+            .border
+            .get_or_insert_with(BorderStyle::default)
+            .right = Some(BorderSideStyle {
+            style,
+            color: Some(color),
+        });
+        self
+    }
+
+    /// Set the top border style and color.
+    pub fn border_top(mut self, style: BorderLineStyle, color: StyleColor) -> Self {
+        self.style
+            .border
+            .get_or_insert_with(BorderStyle::default)
+            .top = Some(BorderSideStyle {
+            style,
+            color: Some(color),
+        });
+        self
+    }
+
+    /// Set the bottom border style and color.
+    pub fn border_bottom(mut self, style: BorderLineStyle, color: StyleColor) -> Self {
+        self.style
+            .border
+            .get_or_insert_with(BorderStyle::default)
+            .bottom = Some(BorderSideStyle {
+            style,
+            color: Some(color),
+        });
+        self
+    }
+
+    /// Set all four border sides (left, right, top, bottom) to the same style and color.
+    pub fn border_all(mut self, style: BorderLineStyle, color: StyleColor) -> Self {
+        let side = || BorderSideStyle {
+            style,
+            color: Some(color.clone()),
+        };
+        let border = self.style.border.get_or_insert_with(BorderStyle::default);
+        border.left = Some(side());
+        border.right = Some(side());
+        border.top = Some(side());
+        border.bottom = Some(side());
+        self
+    }
+
+    // -- Alignment methods --
+
+    /// Set horizontal alignment.
+    pub fn horizontal_align(mut self, align: HorizontalAlign) -> Self {
+        self.style
+            .alignment
+            .get_or_insert_with(AlignmentStyle::default)
+            .horizontal = Some(align);
+        self
+    }
+
+    /// Set vertical alignment.
+    pub fn vertical_align(mut self, align: VerticalAlign) -> Self {
+        self.style
+            .alignment
+            .get_or_insert_with(AlignmentStyle::default)
+            .vertical = Some(align);
+        self
+    }
+
+    /// Set the wrap text flag.
+    pub fn wrap_text(mut self, wrap: bool) -> Self {
+        self.style
+            .alignment
+            .get_or_insert_with(AlignmentStyle::default)
+            .wrap_text = wrap;
+        self
+    }
+
+    /// Set text rotation in degrees.
+    pub fn text_rotation(mut self, degrees: u32) -> Self {
+        self.style
+            .alignment
+            .get_or_insert_with(AlignmentStyle::default)
+            .text_rotation = Some(degrees);
+        self
+    }
+
+    /// Set the indent level.
+    pub fn indent(mut self, indent: u32) -> Self {
+        self.style
+            .alignment
+            .get_or_insert_with(AlignmentStyle::default)
+            .indent = Some(indent);
+        self
+    }
+
+    /// Set the shrink to fit flag.
+    pub fn shrink_to_fit(mut self, shrink: bool) -> Self {
+        self.style
+            .alignment
+            .get_or_insert_with(AlignmentStyle::default)
+            .shrink_to_fit = shrink;
+        self
+    }
+
+    // -- Number format methods --
+
+    /// Set a built-in number format by ID (see `builtin_num_fmts` constants).
+    pub fn num_format_builtin(mut self, id: u32) -> Self {
+        self.style.num_fmt = Some(NumFmtStyle::Builtin(id));
+        self
+    }
+
+    /// Set a custom number format string (e.g. "#,##0.00").
+    pub fn num_format_custom(mut self, format: &str) -> Self {
+        self.style.num_fmt = Some(NumFmtStyle::Custom(format.to_string()));
+        self
+    }
+
+    // -- Protection methods --
+
+    /// Set the locked flag for cell protection.
+    pub fn locked(mut self, locked: bool) -> Self {
+        self.style
+            .protection
+            .get_or_insert(ProtectionStyle {
+                locked: true,
+                hidden: false,
+            })
+            .locked = locked;
+        self
+    }
+
+    /// Set the hidden flag for cell protection.
+    pub fn hidden(mut self, hidden: bool) -> Self {
+        self.style
+            .protection
+            .get_or_insert(ProtectionStyle {
+                locked: true,
+                hidden: false,
+            })
+            .hidden = hidden;
+        self
+    }
+
+    // -- Build --
+
+    /// Consume the builder and return the constructed Style.
+    pub fn build(self) -> Style {
+        self.style
+    }
+}
+
+impl Default for StyleBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Convert a `StyleColor` to the XML `Color` struct.
 fn style_color_to_xml(color: &StyleColor) -> Color {
     match color {
@@ -1603,5 +1907,241 @@ mod tests {
         };
         add_style(&mut ss, &style).unwrap();
         assert_eq!(ss.cell_xfs.count, Some(2));
+    }
+
+    // -- StyleBuilder tests --
+
+    #[test]
+    fn test_style_builder_empty() {
+        let style = StyleBuilder::new().build();
+        assert!(style.font.is_none());
+        assert!(style.fill.is_none());
+        assert!(style.border.is_none());
+        assert!(style.alignment.is_none());
+        assert!(style.num_fmt.is_none());
+        assert!(style.protection.is_none());
+    }
+
+    #[test]
+    fn test_style_builder_default_equivalent() {
+        let style = StyleBuilder::default().build();
+        assert!(style.font.is_none());
+        assert!(style.fill.is_none());
+    }
+
+    #[test]
+    fn test_style_builder_font() {
+        let style = StyleBuilder::new()
+            .bold(true)
+            .italic(true)
+            .font_size(14.0)
+            .font_name("Arial")
+            .font_color_rgb("FF0000FF")
+            .build();
+        let font = style.font.unwrap();
+        assert!(font.bold);
+        assert!(font.italic);
+        assert_eq!(font.size, Some(14.0));
+        assert_eq!(font.name, Some("Arial".to_string()));
+        assert_eq!(font.color, Some(StyleColor::Rgb("FF0000FF".to_string())));
+    }
+
+    #[test]
+    fn test_style_builder_font_underline_strikethrough() {
+        let style = StyleBuilder::new()
+            .underline(true)
+            .strikethrough(true)
+            .build();
+        let font = style.font.unwrap();
+        assert!(font.underline);
+        assert!(font.strikethrough);
+    }
+
+    #[test]
+    fn test_style_builder_font_color_typed() {
+        let style = StyleBuilder::new().font_color(StyleColor::Theme(4)).build();
+        let font = style.font.unwrap();
+        assert_eq!(font.color, Some(StyleColor::Theme(4)));
+    }
+
+    #[test]
+    fn test_style_builder_solid_fill() {
+        let style = StyleBuilder::new().solid_fill("FFFF0000").build();
+        let fill = style.fill.unwrap();
+        assert_eq!(fill.pattern, PatternType::Solid);
+        assert_eq!(fill.fg_color, Some(StyleColor::Rgb("FFFF0000".to_string())));
+    }
+
+    #[test]
+    fn test_style_builder_fill_pattern_and_colors() {
+        let style = StyleBuilder::new()
+            .fill_pattern(PatternType::Gray125)
+            .fill_fg_color_rgb("FFAABBCC")
+            .fill_bg_color(StyleColor::Indexed(64))
+            .build();
+        let fill = style.fill.unwrap();
+        assert_eq!(fill.pattern, PatternType::Gray125);
+        assert_eq!(fill.fg_color, Some(StyleColor::Rgb("FFAABBCC".to_string())));
+        assert_eq!(fill.bg_color, Some(StyleColor::Indexed(64)));
+    }
+
+    #[test]
+    fn test_style_builder_border_individual_sides() {
+        let style = StyleBuilder::new()
+            .border_left(
+                BorderLineStyle::Thin,
+                StyleColor::Rgb("FF000000".to_string()),
+            )
+            .border_right(
+                BorderLineStyle::Medium,
+                StyleColor::Rgb("FF111111".to_string()),
+            )
+            .border_top(
+                BorderLineStyle::Thick,
+                StyleColor::Rgb("FF222222".to_string()),
+            )
+            .border_bottom(
+                BorderLineStyle::Dashed,
+                StyleColor::Rgb("FF333333".to_string()),
+            )
+            .build();
+        let border = style.border.unwrap();
+
+        let left = border.left.unwrap();
+        assert_eq!(left.style, BorderLineStyle::Thin);
+        assert_eq!(left.color, Some(StyleColor::Rgb("FF000000".to_string())));
+
+        let right = border.right.unwrap();
+        assert_eq!(right.style, BorderLineStyle::Medium);
+
+        let top = border.top.unwrap();
+        assert_eq!(top.style, BorderLineStyle::Thick);
+
+        let bottom = border.bottom.unwrap();
+        assert_eq!(bottom.style, BorderLineStyle::Dashed);
+    }
+
+    #[test]
+    fn test_style_builder_border_all() {
+        let style = StyleBuilder::new()
+            .border_all(
+                BorderLineStyle::Thin,
+                StyleColor::Rgb("FF000000".to_string()),
+            )
+            .build();
+        let border = style.border.unwrap();
+        assert!(border.left.is_some());
+        assert!(border.right.is_some());
+        assert!(border.top.is_some());
+        assert!(border.bottom.is_some());
+        // diagonal should not be set by border_all
+        assert!(border.diagonal.is_none());
+
+        let left = border.left.unwrap();
+        assert_eq!(left.style, BorderLineStyle::Thin);
+        assert_eq!(left.color, Some(StyleColor::Rgb("FF000000".to_string())));
+    }
+
+    #[test]
+    fn test_style_builder_alignment() {
+        let style = StyleBuilder::new()
+            .horizontal_align(HorizontalAlign::Center)
+            .vertical_align(VerticalAlign::Center)
+            .wrap_text(true)
+            .text_rotation(45)
+            .indent(2)
+            .shrink_to_fit(true)
+            .build();
+        let align = style.alignment.unwrap();
+        assert_eq!(align.horizontal, Some(HorizontalAlign::Center));
+        assert_eq!(align.vertical, Some(VerticalAlign::Center));
+        assert!(align.wrap_text);
+        assert_eq!(align.text_rotation, Some(45));
+        assert_eq!(align.indent, Some(2));
+        assert!(align.shrink_to_fit);
+    }
+
+    #[test]
+    fn test_style_builder_num_format_builtin() {
+        let style = StyleBuilder::new().num_format_builtin(2).build();
+        match style.num_fmt.unwrap() {
+            NumFmtStyle::Builtin(id) => assert_eq!(id, 2),
+            _ => panic!("expected builtin format"),
+        }
+    }
+
+    #[test]
+    fn test_style_builder_num_format_custom() {
+        let style = StyleBuilder::new().num_format_custom("#,##0.00").build();
+        match style.num_fmt.unwrap() {
+            NumFmtStyle::Custom(fmt) => assert_eq!(fmt, "#,##0.00"),
+            _ => panic!("expected custom format"),
+        }
+    }
+
+    #[test]
+    fn test_style_builder_protection() {
+        let style = StyleBuilder::new().locked(true).hidden(true).build();
+        let prot = style.protection.unwrap();
+        assert!(prot.locked);
+        assert!(prot.hidden);
+    }
+
+    #[test]
+    fn test_style_builder_protection_unlock() {
+        let style = StyleBuilder::new().locked(false).hidden(false).build();
+        let prot = style.protection.unwrap();
+        assert!(!prot.locked);
+        assert!(!prot.hidden);
+    }
+
+    #[test]
+    fn test_style_builder_full_style() {
+        let style = StyleBuilder::new()
+            .bold(true)
+            .font_size(12.0)
+            .solid_fill("FFFFFF00")
+            .border_all(
+                BorderLineStyle::Thin,
+                StyleColor::Rgb("FF000000".to_string()),
+            )
+            .horizontal_align(HorizontalAlign::Center)
+            .num_format_builtin(2)
+            .locked(true)
+            .build();
+        assert!(style.font.is_some());
+        assert!(style.fill.is_some());
+        assert!(style.border.is_some());
+        assert!(style.alignment.is_some());
+        assert!(style.num_fmt.is_some());
+        assert!(style.protection.is_some());
+
+        // Verify specific values survived the chaining
+        assert!(style.font.as_ref().unwrap().bold);
+        assert_eq!(style.font.as_ref().unwrap().size, Some(12.0));
+        assert_eq!(style.fill.as_ref().unwrap().pattern, PatternType::Solid);
+    }
+
+    #[test]
+    fn test_style_builder_integrates_with_add_style() {
+        let mut ss = default_stylesheet();
+        let style = StyleBuilder::new()
+            .bold(true)
+            .font_size(11.0)
+            .solid_fill("FFFF0000")
+            .horizontal_align(HorizontalAlign::Center)
+            .build();
+
+        let id = add_style(&mut ss, &style).unwrap();
+        assert!(id > 0);
+
+        // Round-trip: get the style back and verify
+        let retrieved = get_style(&ss, id).unwrap();
+        assert!(retrieved.font.as_ref().unwrap().bold);
+        assert_eq!(retrieved.fill.as_ref().unwrap().pattern, PatternType::Solid);
+        assert_eq!(
+            retrieved.alignment.as_ref().unwrap().horizontal,
+            Some(HorizontalAlign::Center)
+        );
     }
 }

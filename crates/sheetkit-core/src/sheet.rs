@@ -6,10 +6,14 @@
 use sheetkit_xml::content_types::{mime_types, ContentTypeOverride, ContentTypes};
 use sheetkit_xml::relationships::{rel_types, Relationship, Relationships};
 use sheetkit_xml::workbook::{SheetEntry, WorkbookXml};
-use sheetkit_xml::worksheet::WorksheetXml;
+use sheetkit_xml::worksheet::{SheetFormatPr, SheetPr, SheetProtection, TabColor, WorksheetXml};
 
 use crate::error::{Error, Result};
-use crate::utils::constants::{MAX_SHEET_NAME_LENGTH, SHEET_NAME_INVALID_CHARS};
+use crate::protection::legacy_password_hash;
+use crate::utils::constants::{
+    DEFAULT_ROW_HEIGHT, MAX_COLUMN_WIDTH, MAX_ROW_HEIGHT, MAX_SHEET_NAME_LENGTH,
+    SHEET_NAME_INVALID_CHARS,
+};
 
 /// Validate a sheet name according to Excel rules.
 ///
@@ -236,6 +240,173 @@ pub fn set_active_sheet_index(workbook_xml: &mut WorkbookXml, index: u32) {
     }
 }
 
+/// Configuration for sheet protection.
+///
+/// All boolean fields default to `false`, meaning the corresponding action is
+/// forbidden when protection is enabled. Set a field to `true` to allow that
+/// action even when the sheet is protected.
+#[derive(Debug, Clone, Default)]
+pub struct SheetProtectionConfig {
+    /// Optional password. Hashed with the legacy Excel algorithm.
+    pub password: Option<String>,
+    /// Allow selecting locked cells.
+    pub select_locked_cells: bool,
+    /// Allow selecting unlocked cells.
+    pub select_unlocked_cells: bool,
+    /// Allow formatting cells.
+    pub format_cells: bool,
+    /// Allow formatting columns.
+    pub format_columns: bool,
+    /// Allow formatting rows.
+    pub format_rows: bool,
+    /// Allow inserting columns.
+    pub insert_columns: bool,
+    /// Allow inserting rows.
+    pub insert_rows: bool,
+    /// Allow inserting hyperlinks.
+    pub insert_hyperlinks: bool,
+    /// Allow deleting columns.
+    pub delete_columns: bool,
+    /// Allow deleting rows.
+    pub delete_rows: bool,
+    /// Allow sorting.
+    pub sort: bool,
+    /// Allow using auto-filter.
+    pub auto_filter: bool,
+    /// Allow using pivot tables.
+    pub pivot_tables: bool,
+}
+
+/// Protect a sheet with optional password and permission settings.
+///
+/// When a sheet is protected, users cannot edit cells unless specific
+/// permissions are granted via the config. The password is hashed using
+/// the legacy Excel algorithm.
+pub fn protect_sheet(ws: &mut WorksheetXml, config: &SheetProtectionConfig) -> Result<()> {
+    let hashed = config.password.as_ref().map(|p| {
+        let h = legacy_password_hash(p);
+        format!("{:04X}", h)
+    });
+
+    let to_opt = |v: bool| if v { Some(true) } else { None };
+
+    ws.sheet_protection = Some(SheetProtection {
+        password: hashed,
+        sheet: Some(true),
+        objects: Some(true),
+        scenarios: Some(true),
+        select_locked_cells: to_opt(config.select_locked_cells),
+        select_unlocked_cells: to_opt(config.select_unlocked_cells),
+        format_cells: to_opt(config.format_cells),
+        format_columns: to_opt(config.format_columns),
+        format_rows: to_opt(config.format_rows),
+        insert_columns: to_opt(config.insert_columns),
+        insert_rows: to_opt(config.insert_rows),
+        insert_hyperlinks: to_opt(config.insert_hyperlinks),
+        delete_columns: to_opt(config.delete_columns),
+        delete_rows: to_opt(config.delete_rows),
+        sort: to_opt(config.sort),
+        auto_filter: to_opt(config.auto_filter),
+        pivot_tables: to_opt(config.pivot_tables),
+    });
+
+    Ok(())
+}
+
+/// Remove sheet protection.
+pub fn unprotect_sheet(ws: &mut WorksheetXml) -> Result<()> {
+    ws.sheet_protection = None;
+    Ok(())
+}
+
+/// Check if a sheet is protected.
+pub fn is_sheet_protected(ws: &WorksheetXml) -> bool {
+    ws.sheet_protection
+        .as_ref()
+        .and_then(|p| p.sheet)
+        .unwrap_or(false)
+}
+
+/// Set the tab color of a sheet using an RGB hex string (e.g. "FF0000" for red).
+pub fn set_tab_color(ws: &mut WorksheetXml, rgb: &str) -> Result<()> {
+    let sheet_pr = ws.sheet_pr.get_or_insert_with(SheetPr::default);
+    sheet_pr.tab_color = Some(TabColor {
+        rgb: Some(rgb.to_string()),
+        theme: None,
+        indexed: None,
+    });
+    Ok(())
+}
+
+/// Get the tab color of a sheet as an RGB hex string.
+pub fn get_tab_color(ws: &WorksheetXml) -> Option<String> {
+    ws.sheet_pr
+        .as_ref()
+        .and_then(|pr| pr.tab_color.as_ref())
+        .and_then(|tc| tc.rgb.clone())
+}
+
+/// Set the default row height for a sheet.
+///
+/// Returns an error if the height exceeds [`MAX_ROW_HEIGHT`] (409).
+pub fn set_default_row_height(ws: &mut WorksheetXml, height: f64) -> Result<()> {
+    if height > MAX_ROW_HEIGHT {
+        return Err(Error::RowHeightExceeded {
+            height,
+            max: MAX_ROW_HEIGHT,
+        });
+    }
+    let fmt = ws.sheet_format_pr.get_or_insert(SheetFormatPr {
+        default_row_height: DEFAULT_ROW_HEIGHT,
+        default_col_width: None,
+        custom_height: None,
+        outline_level_row: None,
+        outline_level_col: None,
+    });
+    fmt.default_row_height = height;
+    Ok(())
+}
+
+/// Get the default row height for a sheet.
+///
+/// Returns [`DEFAULT_ROW_HEIGHT`] (15.0) if no sheet format properties are set.
+pub fn get_default_row_height(ws: &WorksheetXml) -> f64 {
+    ws.sheet_format_pr
+        .as_ref()
+        .map(|f| f.default_row_height)
+        .unwrap_or(DEFAULT_ROW_HEIGHT)
+}
+
+/// Set the default column width for a sheet.
+///
+/// Returns an error if the width exceeds [`MAX_COLUMN_WIDTH`] (255).
+pub fn set_default_col_width(ws: &mut WorksheetXml, width: f64) -> Result<()> {
+    if width > MAX_COLUMN_WIDTH {
+        return Err(Error::ColumnWidthExceeded {
+            width,
+            max: MAX_COLUMN_WIDTH,
+        });
+    }
+    let fmt = ws.sheet_format_pr.get_or_insert(SheetFormatPr {
+        default_row_height: DEFAULT_ROW_HEIGHT,
+        default_col_width: None,
+        custom_height: None,
+        outline_level_row: None,
+        outline_level_col: None,
+    });
+    fmt.default_col_width = Some(width);
+    Ok(())
+}
+
+/// Get the default column width for a sheet.
+///
+/// Returns `None` if no default column width has been set.
+pub fn get_default_col_width(ws: &WorksheetXml) -> Option<f64> {
+    ws.sheet_format_pr
+        .as_ref()
+        .and_then(|f| f.default_col_width)
+}
+
 /// Rebuild content type overrides for worksheets so they match the current
 /// worksheet indices (sheet1.xml, sheet2.xml, ...).
 fn rebuild_content_type_overrides(content_types: &mut ContentTypes, sheet_count: usize) {
@@ -281,6 +452,196 @@ mod tests {
     use sheetkit_xml::relationships;
     use sheetkit_xml::workbook::WorkbookXml;
     use sheetkit_xml::worksheet::WorksheetXml;
+
+    // -- Sheet protection tests --
+
+    #[test]
+    fn test_protect_sheet_no_password() {
+        let mut ws = WorksheetXml::default();
+        let config = SheetProtectionConfig::default();
+        protect_sheet(&mut ws, &config).unwrap();
+
+        assert!(ws.sheet_protection.is_some());
+        let prot = ws.sheet_protection.as_ref().unwrap();
+        assert_eq!(prot.sheet, Some(true));
+        assert_eq!(prot.objects, Some(true));
+        assert_eq!(prot.scenarios, Some(true));
+        assert!(prot.password.is_none());
+    }
+
+    #[test]
+    fn test_protect_sheet_with_password() {
+        let mut ws = WorksheetXml::default();
+        let config = SheetProtectionConfig {
+            password: Some("secret".to_string()),
+            ..SheetProtectionConfig::default()
+        };
+        protect_sheet(&mut ws, &config).unwrap();
+
+        let prot = ws.sheet_protection.as_ref().unwrap();
+        assert!(prot.password.is_some());
+        let pw = prot.password.as_ref().unwrap();
+        // Should be a 4-char uppercase hex string
+        assert_eq!(pw.len(), 4);
+        assert!(pw.chars().all(|c| c.is_ascii_hexdigit()));
+        // Should be deterministic
+        let expected = format!("{:04X}", legacy_password_hash("secret"));
+        assert_eq!(pw, &expected);
+    }
+
+    #[test]
+    fn test_unprotect_sheet() {
+        let mut ws = WorksheetXml::default();
+        let config = SheetProtectionConfig {
+            password: Some("test".to_string()),
+            ..SheetProtectionConfig::default()
+        };
+        protect_sheet(&mut ws, &config).unwrap();
+        assert!(ws.sheet_protection.is_some());
+
+        unprotect_sheet(&mut ws).unwrap();
+        assert!(ws.sheet_protection.is_none());
+    }
+
+    #[test]
+    fn test_is_sheet_protected() {
+        let mut ws = WorksheetXml::default();
+        assert!(!is_sheet_protected(&ws));
+
+        let config = SheetProtectionConfig::default();
+        protect_sheet(&mut ws, &config).unwrap();
+        assert!(is_sheet_protected(&ws));
+
+        unprotect_sheet(&mut ws).unwrap();
+        assert!(!is_sheet_protected(&ws));
+    }
+
+    #[test]
+    fn test_protect_sheet_with_permissions() {
+        let mut ws = WorksheetXml::default();
+        let config = SheetProtectionConfig {
+            password: None,
+            format_cells: true,
+            insert_rows: true,
+            delete_columns: true,
+            sort: true,
+            ..SheetProtectionConfig::default()
+        };
+        protect_sheet(&mut ws, &config).unwrap();
+
+        let prot = ws.sheet_protection.as_ref().unwrap();
+        assert_eq!(prot.format_cells, Some(true));
+        assert_eq!(prot.insert_rows, Some(true));
+        assert_eq!(prot.delete_columns, Some(true));
+        assert_eq!(prot.sort, Some(true));
+        // Fields not set should be None (meaning forbidden)
+        assert!(prot.format_columns.is_none());
+        assert!(prot.format_rows.is_none());
+        assert!(prot.insert_columns.is_none());
+        assert!(prot.insert_hyperlinks.is_none());
+        assert!(prot.delete_rows.is_none());
+        assert!(prot.auto_filter.is_none());
+        assert!(prot.pivot_tables.is_none());
+        assert!(prot.select_locked_cells.is_none());
+        assert!(prot.select_unlocked_cells.is_none());
+    }
+
+    // -- Tab color tests --
+
+    #[test]
+    fn test_set_tab_color() {
+        let mut ws = WorksheetXml::default();
+        set_tab_color(&mut ws, "FF0000").unwrap();
+
+        assert!(ws.sheet_pr.is_some());
+        let tab_color = ws.sheet_pr.as_ref().unwrap().tab_color.as_ref().unwrap();
+        assert_eq!(tab_color.rgb, Some("FF0000".to_string()));
+    }
+
+    #[test]
+    fn test_get_tab_color() {
+        let mut ws = WorksheetXml::default();
+        set_tab_color(&mut ws, "00FF00").unwrap();
+        assert_eq!(get_tab_color(&ws), Some("00FF00".to_string()));
+    }
+
+    #[test]
+    fn test_get_tab_color_none() {
+        let ws = WorksheetXml::default();
+        assert_eq!(get_tab_color(&ws), None);
+    }
+
+    // -- Default row height tests --
+
+    #[test]
+    fn test_set_default_row_height() {
+        let mut ws = WorksheetXml::default();
+        set_default_row_height(&mut ws, 20.0).unwrap();
+
+        assert!(ws.sheet_format_pr.is_some());
+        assert_eq!(
+            ws.sheet_format_pr.as_ref().unwrap().default_row_height,
+            20.0
+        );
+    }
+
+    #[test]
+    fn test_get_default_row_height() {
+        let ws = WorksheetXml::default();
+        assert_eq!(get_default_row_height(&ws), DEFAULT_ROW_HEIGHT);
+
+        let mut ws2 = WorksheetXml::default();
+        set_default_row_height(&mut ws2, 25.0).unwrap();
+        assert_eq!(get_default_row_height(&ws2), 25.0);
+    }
+
+    #[test]
+    fn test_set_default_row_height_exceeds_max() {
+        let mut ws = WorksheetXml::default();
+        let result = set_default_row_height(&mut ws, 500.0);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::RowHeightExceeded { .. }
+        ));
+    }
+
+    // -- Default column width tests --
+
+    #[test]
+    fn test_set_default_col_width() {
+        let mut ws = WorksheetXml::default();
+        set_default_col_width(&mut ws, 12.0).unwrap();
+
+        assert!(ws.sheet_format_pr.is_some());
+        assert_eq!(
+            ws.sheet_format_pr.as_ref().unwrap().default_col_width,
+            Some(12.0)
+        );
+    }
+
+    #[test]
+    fn test_get_default_col_width() {
+        let ws = WorksheetXml::default();
+        assert_eq!(get_default_col_width(&ws), None);
+
+        let mut ws2 = WorksheetXml::default();
+        set_default_col_width(&mut ws2, 18.5).unwrap();
+        assert_eq!(get_default_col_width(&ws2), Some(18.5));
+    }
+
+    #[test]
+    fn test_set_default_col_width_exceeds_max() {
+        let mut ws = WorksheetXml::default();
+        let result = set_default_col_width(&mut ws, 300.0);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::ColumnWidthExceeded { .. }
+        ));
+    }
+
+    // -- Existing tests below --
 
     #[test]
     fn test_validate_empty_name() {

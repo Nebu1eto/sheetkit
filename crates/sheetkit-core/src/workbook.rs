@@ -144,6 +144,15 @@ impl Workbook {
         // Initialize per-sheet comments (one entry per worksheet).
         let sheet_comments: Vec<Option<Comments>> = vec![None; worksheets.len()];
 
+        // Parse per-sheet worksheet relationship files (optional).
+        let mut worksheet_rels: HashMap<usize, Relationships> = HashMap::new();
+        for i in 0..worksheets.len() {
+            let rels_path = format!("xl/worksheets/_rels/sheet{}.xml.rels", i + 1);
+            if let Ok(rels) = read_xml_part::<Relationships>(&mut archive, &rels_path) {
+                worksheet_rels.insert(i, rels);
+            }
+        }
+
         // Parse docProps/core.xml (optional - uses manual XML parsing)
         let core_properties = read_string_part(&mut archive, "docProps/core.xml")
             .ok()
@@ -176,7 +185,7 @@ impl Workbook {
             drawings: vec![],
             images: vec![],
             worksheet_drawings: HashMap::new(),
-            worksheet_rels: HashMap::new(),
+            worksheet_rels,
             drawing_rels: HashMap::new(),
             core_properties,
             app_properties,
@@ -590,6 +599,24 @@ impl Workbook {
         crate::row::set_row_visible(ws, row, visible)
     }
 
+    /// Get the visibility of a row. Returns true if visible (not hidden).
+    pub fn get_row_visible(&self, sheet: &str, row: u32) -> Result<bool> {
+        let ws = self.worksheet_ref(sheet)?;
+        Ok(crate::row::get_row_visible(ws, row))
+    }
+
+    /// Set the outline level of a row.
+    pub fn set_row_outline_level(&mut self, sheet: &str, row: u32, level: u8) -> Result<()> {
+        let ws = self.worksheet_mut(sheet)?;
+        crate::row::set_row_outline_level(ws, row, level)
+    }
+
+    /// Get the outline level of a row. Returns 0 if not set.
+    pub fn get_row_outline_level(&self, sheet: &str, row: u32) -> Result<u8> {
+        let ws = self.worksheet_ref(sheet)?;
+        Ok(crate::row::get_row_outline_level(ws, row))
+    }
+
     /// Set the width of a column.
     pub fn set_col_width(&mut self, sheet: &str, col: &str, width: f64) -> Result<()> {
         let ws = self.worksheet_mut(sheet)?;
@@ -606,6 +633,24 @@ impl Workbook {
     pub fn set_col_visible(&mut self, sheet: &str, col: &str, visible: bool) -> Result<()> {
         let ws = self.worksheet_mut(sheet)?;
         crate::col::set_col_visible(ws, col, visible)
+    }
+
+    /// Get the visibility of a column. Returns true if visible (not hidden).
+    pub fn get_col_visible(&self, sheet: &str, col: &str) -> Result<bool> {
+        let ws = self.worksheet_ref(sheet)?;
+        crate::col::get_col_visible(ws, col)
+    }
+
+    /// Set the outline level of a column.
+    pub fn set_col_outline_level(&mut self, sheet: &str, col: &str, level: u8) -> Result<()> {
+        let ws = self.worksheet_mut(sheet)?;
+        crate::col::set_col_outline_level(ws, col, level)
+    }
+
+    /// Get the outline level of a column. Returns 0 if not set.
+    pub fn get_col_outline_level(&self, sheet: &str, col: &str) -> Result<u8> {
+        let ws = self.worksheet_ref(sheet)?;
+        crate::col::get_col_outline_level(ws, col)
     }
 
     /// Insert `count` columns starting at `col` in the named sheet.
@@ -723,6 +768,31 @@ impl Workbook {
         Ok(())
     }
 
+    /// Merge a range of cells on the given sheet.
+    ///
+    /// `top_left` and `bottom_right` are cell references like "A1" and "C3".
+    /// Returns an error if the range overlaps with an existing merge region.
+    pub fn merge_cells(&mut self, sheet: &str, top_left: &str, bottom_right: &str) -> Result<()> {
+        let ws = self.worksheet_mut(sheet)?;
+        crate::merge::merge_cells(ws, top_left, bottom_right)
+    }
+
+    /// Remove a merged cell range from the given sheet.
+    ///
+    /// `reference` is the exact range string like "A1:C3".
+    pub fn unmerge_cell(&mut self, sheet: &str, reference: &str) -> Result<()> {
+        let ws = self.worksheet_mut(sheet)?;
+        crate::merge::unmerge_cell(ws, reference)
+    }
+
+    /// Get all merged cell ranges on the given sheet.
+    ///
+    /// Returns a list of range strings like `["A1:B2", "D1:F3"]`.
+    pub fn get_merge_cells(&self, sheet: &str) -> Result<Vec<String>> {
+        let ws = self.worksheet_ref(sheet)?;
+        Ok(crate::merge::get_merge_cells(ws))
+    }
+
     /// Add a data validation rule to a sheet.
     pub fn add_data_validation(
         &mut self,
@@ -776,6 +846,66 @@ impl Workbook {
         let ws = self.worksheet_mut(sheet)?;
         crate::table::remove_auto_filter(ws);
         Ok(())
+    }
+
+    /// Set a hyperlink on a cell.
+    ///
+    /// For external URLs and email links, a relationship entry is created in
+    /// the worksheet's `.rels` file. Internal sheet references use only the
+    /// `location` attribute without a relationship.
+    pub fn set_cell_hyperlink(
+        &mut self,
+        sheet: &str,
+        cell: &str,
+        link: crate::hyperlink::HyperlinkType,
+        display: Option<&str>,
+        tooltip: Option<&str>,
+    ) -> Result<()> {
+        let sheet_idx = self.sheet_index(sheet)?;
+        let ws = &mut self.worksheets[sheet_idx].1;
+        let rels = self
+            .worksheet_rels
+            .entry(sheet_idx)
+            .or_insert_with(|| Relationships {
+                xmlns: sheetkit_xml::namespaces::PACKAGE_RELATIONSHIPS.to_string(),
+                relationships: vec![],
+            });
+        crate::hyperlink::set_cell_hyperlink(ws, rels, cell, &link, display, tooltip)
+    }
+
+    /// Get hyperlink information for a cell.
+    ///
+    /// Returns `None` if the cell has no hyperlink.
+    pub fn get_cell_hyperlink(
+        &self,
+        sheet: &str,
+        cell: &str,
+    ) -> Result<Option<crate::hyperlink::HyperlinkInfo>> {
+        let sheet_idx = self.sheet_index(sheet)?;
+        let ws = &self.worksheets[sheet_idx].1;
+        let empty_rels = Relationships {
+            xmlns: sheetkit_xml::namespaces::PACKAGE_RELATIONSHIPS.to_string(),
+            relationships: vec![],
+        };
+        let rels = self.worksheet_rels.get(&sheet_idx).unwrap_or(&empty_rels);
+        crate::hyperlink::get_cell_hyperlink(ws, rels, cell)
+    }
+
+    /// Delete a hyperlink from a cell.
+    ///
+    /// Removes both the hyperlink element from the worksheet XML and any
+    /// associated relationship entry.
+    pub fn delete_cell_hyperlink(&mut self, sheet: &str, cell: &str) -> Result<()> {
+        let sheet_idx = self.sheet_index(sheet)?;
+        let ws = &mut self.worksheets[sheet_idx].1;
+        let rels = self
+            .worksheet_rels
+            .entry(sheet_idx)
+            .or_insert_with(|| Relationships {
+                xmlns: sheetkit_xml::namespaces::PACKAGE_RELATIONSHIPS.to_string(),
+                relationships: vec![],
+            });
+        crate::hyperlink::delete_cell_hyperlink(ws, rels, cell)
     }
 
     /// Add a chart to a sheet, anchored between two cells.
@@ -3037,5 +3167,169 @@ mod tests {
         assert!(app.app_version.is_none());
         assert!(app.manager.is_none());
         assert!(app.template.is_none());
+    }
+
+    #[test]
+    fn test_set_and_get_external_hyperlink() {
+        use crate::hyperlink::HyperlinkType;
+
+        let mut wb = Workbook::new();
+        wb.set_cell_hyperlink(
+            "Sheet1",
+            "A1",
+            HyperlinkType::External("https://example.com".to_string()),
+            Some("Example"),
+            Some("Visit Example"),
+        )
+        .unwrap();
+
+        let info = wb.get_cell_hyperlink("Sheet1", "A1").unwrap().unwrap();
+        assert_eq!(
+            info.link_type,
+            HyperlinkType::External("https://example.com".to_string())
+        );
+        assert_eq!(info.display, Some("Example".to_string()));
+        assert_eq!(info.tooltip, Some("Visit Example".to_string()));
+    }
+
+    #[test]
+    fn test_set_and_get_internal_hyperlink() {
+        use crate::hyperlink::HyperlinkType;
+
+        let mut wb = Workbook::new();
+        wb.new_sheet("Data").unwrap();
+        wb.set_cell_hyperlink(
+            "Sheet1",
+            "B2",
+            HyperlinkType::Internal("Data!A1".to_string()),
+            Some("Go to Data"),
+            None,
+        )
+        .unwrap();
+
+        let info = wb.get_cell_hyperlink("Sheet1", "B2").unwrap().unwrap();
+        assert_eq!(
+            info.link_type,
+            HyperlinkType::Internal("Data!A1".to_string())
+        );
+        assert_eq!(info.display, Some("Go to Data".to_string()));
+    }
+
+    #[test]
+    fn test_set_and_get_email_hyperlink() {
+        use crate::hyperlink::HyperlinkType;
+
+        let mut wb = Workbook::new();
+        wb.set_cell_hyperlink(
+            "Sheet1",
+            "C3",
+            HyperlinkType::Email("mailto:user@example.com".to_string()),
+            None,
+            None,
+        )
+        .unwrap();
+
+        let info = wb.get_cell_hyperlink("Sheet1", "C3").unwrap().unwrap();
+        assert_eq!(
+            info.link_type,
+            HyperlinkType::Email("mailto:user@example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn test_delete_hyperlink_via_workbook() {
+        use crate::hyperlink::HyperlinkType;
+
+        let mut wb = Workbook::new();
+        wb.set_cell_hyperlink(
+            "Sheet1",
+            "A1",
+            HyperlinkType::External("https://example.com".to_string()),
+            None,
+            None,
+        )
+        .unwrap();
+
+        wb.delete_cell_hyperlink("Sheet1", "A1").unwrap();
+
+        let info = wb.get_cell_hyperlink("Sheet1", "A1").unwrap();
+        assert!(info.is_none());
+    }
+
+    #[test]
+    fn test_hyperlink_roundtrip_save_open() {
+        use crate::hyperlink::HyperlinkType;
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("hyperlink.xlsx");
+
+        let mut wb = Workbook::new();
+        wb.set_cell_hyperlink(
+            "Sheet1",
+            "A1",
+            HyperlinkType::External("https://rust-lang.org".to_string()),
+            Some("Rust"),
+            Some("Rust Homepage"),
+        )
+        .unwrap();
+        wb.set_cell_hyperlink(
+            "Sheet1",
+            "B1",
+            HyperlinkType::Internal("Sheet1!C1".to_string()),
+            Some("Go to C1"),
+            None,
+        )
+        .unwrap();
+        wb.set_cell_hyperlink(
+            "Sheet1",
+            "C1",
+            HyperlinkType::Email("mailto:hello@example.com".to_string()),
+            Some("Email"),
+            None,
+        )
+        .unwrap();
+        wb.save(&path).unwrap();
+
+        let wb2 = Workbook::open(&path).unwrap();
+
+        // External link roundtrip.
+        let a1 = wb2.get_cell_hyperlink("Sheet1", "A1").unwrap().unwrap();
+        assert_eq!(
+            a1.link_type,
+            HyperlinkType::External("https://rust-lang.org".to_string())
+        );
+        assert_eq!(a1.display, Some("Rust".to_string()));
+        assert_eq!(a1.tooltip, Some("Rust Homepage".to_string()));
+
+        // Internal link roundtrip.
+        let b1 = wb2.get_cell_hyperlink("Sheet1", "B1").unwrap().unwrap();
+        assert_eq!(
+            b1.link_type,
+            HyperlinkType::Internal("Sheet1!C1".to_string())
+        );
+        assert_eq!(b1.display, Some("Go to C1".to_string()));
+
+        // Email link roundtrip.
+        let c1 = wb2.get_cell_hyperlink("Sheet1", "C1").unwrap().unwrap();
+        assert_eq!(
+            c1.link_type,
+            HyperlinkType::Email("mailto:hello@example.com".to_string())
+        );
+        assert_eq!(c1.display, Some("Email".to_string()));
+    }
+
+    #[test]
+    fn test_hyperlink_on_nonexistent_sheet() {
+        use crate::hyperlink::HyperlinkType;
+
+        let mut wb = Workbook::new();
+        let result = wb.set_cell_hyperlink(
+            "NoSheet",
+            "A1",
+            HyperlinkType::External("https://example.com".to_string()),
+            None,
+            None,
+        );
+        assert!(result.is_err());
     }
 }

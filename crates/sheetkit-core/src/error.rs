@@ -80,6 +80,22 @@ pub enum Error {
     #[error("cannot set column width after rows have been written")]
     StreamColumnsAfterRows,
 
+    /// Merge cell ranges overlap.
+    #[error("merge cell range '{new}' overlaps with existing range '{existing}'")]
+    MergeCellOverlap { new: String, existing: String },
+
+    /// The specified merge cell range was not found.
+    #[error("merge cell range '{0}' not found")]
+    MergeCellNotFound(String),
+
+    /// The defined name is invalid.
+    #[error("invalid defined name: {0}")]
+    InvalidDefinedName(String),
+
+    /// The specified defined name was not found.
+    #[error("defined name '{name}' not found")]
+    DefinedNameNotFound { name: String },
+
     /// An internal or otherwise unclassified error.
     #[error("internal error: {0}")]
     Internal(String),

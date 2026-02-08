@@ -53,6 +53,57 @@ pub fn set_col_visible(ws: &mut WorksheetXml, col: &str, visible: bool) -> Resul
     Ok(())
 }
 
+/// Get the visibility of a column. Returns true if visible (not hidden).
+///
+/// Columns are visible by default, so this returns true if no `Col` entry
+/// exists or if it has no `hidden` attribute set.
+pub fn get_col_visible(ws: &WorksheetXml, col: &str) -> Result<bool> {
+    let col_num = column_name_to_number(col)?;
+    let hidden = ws
+        .cols
+        .as_ref()
+        .and_then(|cols| {
+            cols.cols
+                .iter()
+                .find(|c| col_num >= c.min && col_num <= c.max)
+        })
+        .and_then(|c| c.hidden)
+        .unwrap_or(false);
+    Ok(!hidden)
+}
+
+/// Set the outline (grouping) level of a column.
+///
+/// Valid range: `0..=7` (Excel supports up to 7 outline levels).
+pub fn set_col_outline_level(ws: &mut WorksheetXml, col: &str, level: u8) -> Result<()> {
+    let col_num = column_name_to_number(col)?;
+    if level > 7 {
+        return Err(Error::Internal(format!(
+            "outline level {level} exceeds maximum 7"
+        )));
+    }
+
+    let col_entry = find_or_create_col(ws, col_num);
+    col_entry.outline_level = if level == 0 { None } else { Some(level) };
+    Ok(())
+}
+
+/// Get the outline (grouping) level of a column. Returns 0 if not set.
+pub fn get_col_outline_level(ws: &WorksheetXml, col: &str) -> Result<u8> {
+    let col_num = column_name_to_number(col)?;
+    let level = ws
+        .cols
+        .as_ref()
+        .and_then(|cols| {
+            cols.cols
+                .iter()
+                .find(|c| col_num >= c.min && col_num <= c.max)
+        })
+        .and_then(|c| c.outline_level)
+        .unwrap_or(0);
+    Ok(level)
+}
+
 /// Insert `count` columns starting at `col`, shifting existing columns at
 /// and to the right of `col` further right.
 ///
@@ -472,5 +523,96 @@ mod tests {
         set_col_width(&mut ws, "A", 25.0).unwrap();
 
         assert_eq!(get_col_width(&ws, "A"), Some(25.0));
+    }
+
+    #[test]
+    fn test_get_col_visible_default_is_true() {
+        let ws = WorksheetXml::default();
+        assert!(get_col_visible(&ws, "A").unwrap());
+    }
+
+    #[test]
+    fn test_get_col_visible_after_hide() {
+        let mut ws = WorksheetXml::default();
+        set_col_visible(&mut ws, "B", false).unwrap();
+        assert!(!get_col_visible(&ws, "B").unwrap());
+    }
+
+    #[test]
+    fn test_get_col_visible_after_hide_then_show() {
+        let mut ws = WorksheetXml::default();
+        set_col_visible(&mut ws, "A", false).unwrap();
+        set_col_visible(&mut ws, "A", true).unwrap();
+        assert!(get_col_visible(&ws, "A").unwrap());
+    }
+
+    #[test]
+    fn test_get_col_visible_invalid_column_returns_error() {
+        let ws = WorksheetXml::default();
+        let result = get_col_visible(&ws, "XFE");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_set_col_outline_level() {
+        let mut ws = WorksheetXml::default();
+        set_col_outline_level(&mut ws, "A", 3).unwrap();
+
+        let col = &ws.cols.as_ref().unwrap().cols[0];
+        assert_eq!(col.outline_level, Some(3));
+    }
+
+    #[test]
+    fn test_set_col_outline_level_zero_clears() {
+        let mut ws = WorksheetXml::default();
+        set_col_outline_level(&mut ws, "A", 3).unwrap();
+        set_col_outline_level(&mut ws, "A", 0).unwrap();
+
+        let col = &ws.cols.as_ref().unwrap().cols[0];
+        assert_eq!(col.outline_level, None);
+    }
+
+    #[test]
+    fn test_set_col_outline_level_exceeds_max_returns_error() {
+        let mut ws = WorksheetXml::default();
+        let result = set_col_outline_level(&mut ws, "A", 8);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_set_col_outline_level_max_valid() {
+        let mut ws = WorksheetXml::default();
+        set_col_outline_level(&mut ws, "A", 7).unwrap();
+
+        let col = &ws.cols.as_ref().unwrap().cols[0];
+        assert_eq!(col.outline_level, Some(7));
+    }
+
+    #[test]
+    fn test_get_col_outline_level_default_is_zero() {
+        let ws = WorksheetXml::default();
+        assert_eq!(get_col_outline_level(&ws, "A").unwrap(), 0);
+    }
+
+    #[test]
+    fn test_get_col_outline_level_after_set() {
+        let mut ws = WorksheetXml::default();
+        set_col_outline_level(&mut ws, "B", 5).unwrap();
+        assert_eq!(get_col_outline_level(&ws, "B").unwrap(), 5);
+    }
+
+    #[test]
+    fn test_get_col_outline_level_after_clear() {
+        let mut ws = WorksheetXml::default();
+        set_col_outline_level(&mut ws, "C", 4).unwrap();
+        set_col_outline_level(&mut ws, "C", 0).unwrap();
+        assert_eq!(get_col_outline_level(&ws, "C").unwrap(), 0);
+    }
+
+    #[test]
+    fn test_get_col_outline_level_invalid_column_returns_error() {
+        let ws = WorksheetXml::default();
+        let result = get_col_outline_level(&ws, "XFE");
+        assert!(result.is_err());
     }
 }
