@@ -11,6 +11,7 @@
 
 // Re-export core types
 pub use sheetkit_core::error::{Error, Result};
+pub use sheetkit_core::stream::StreamWriter;
 pub use sheetkit_core::workbook::Workbook;
 
 /// Utility functions for cell reference conversion.

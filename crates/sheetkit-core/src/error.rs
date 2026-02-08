@@ -74,6 +74,19 @@ pub enum Error {
     #[error("cell styles exceeded maximum ({max})")]
     CellStylesExceeded { max: usize },
 
+    // ===== Streaming errors =====
+    /// A row has already been written; rows must be written in ascending order.
+    #[error("row {row} has already been written (must write rows in ascending order)")]
+    StreamRowAlreadyWritten { row: u32 },
+
+    /// The stream writer has already been finished.
+    #[error("stream writer already finished")]
+    StreamAlreadyFinished,
+
+    /// Column widths cannot be set after rows have been written.
+    #[error("cannot set column width after rows have been written")]
+    StreamColumnsAfterRows,
+
     /// An internal or otherwise unclassified error.
     #[error("internal error: {0}")]
     Internal(String),

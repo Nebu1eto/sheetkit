@@ -10,6 +10,7 @@ pub mod image;
 pub mod row;
 pub mod sheet;
 pub mod sst;
+pub mod stream;
 pub mod style;
 pub mod table;
 pub mod utils;
