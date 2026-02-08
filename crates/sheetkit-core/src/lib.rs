@@ -1,6 +1,7 @@
 //! sheetkit-core: Core spreadsheet engine -- reading, writing, and manipulating workbooks.
 
 pub mod cell;
+pub(crate) mod cell_ref_shift;
 pub mod chart;
 pub mod col;
 pub mod comment;
@@ -27,3 +28,4 @@ pub mod theme;
 pub mod utils;
 pub mod validation;
 pub mod workbook;
+pub(crate) mod workbook_paths;

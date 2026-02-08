@@ -4,7 +4,7 @@
 //! [`Workbook`] which holds the parsed XML structures in memory and can
 //! serialize them back to a valid `.xlsx` file.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{Read as _, Write as _};
 use std::path::Path;
 
@@ -24,6 +24,7 @@ use zip::write::SimpleFileOptions;
 use zip::CompressionMethod;
 
 use crate::cell::CellValue;
+use crate::cell_ref_shift::shift_cell_references_in_text;
 use crate::chart::ChartConfig;
 use crate::comment::CommentConfig;
 use crate::conditional::ConditionalFormatRule;
@@ -32,9 +33,13 @@ use crate::image::ImageConfig;
 use crate::pivot::{PivotTableConfig, PivotTableInfo};
 use crate::protection::WorkbookProtectionConfig;
 use crate::sst::SharedStringTable;
-use crate::utils::cell_ref::cell_name_to_coordinates;
+use crate::utils::cell_ref::{cell_name_to_coordinates, column_name_to_number};
 use crate::utils::constants::MAX_CELL_CHARS;
 use crate::validation::DataValidationConfig;
+use crate::workbook_paths::{
+    default_relationships, relationship_part_path, relative_relationship_target,
+    resolve_relationship_target,
+};
 
 /// XML declaration prepended to every XML part in the package.
 const XML_DECLARATION: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#;
@@ -54,6 +59,8 @@ pub struct Workbook {
     sheet_comments: Vec<Option<Comments>>,
     /// Chart parts: (zip path like "xl/charts/chart1.xml", ChartSpace data).
     charts: Vec<(String, ChartSpace)>,
+    /// Chart parts preserved as raw XML when typed parsing is not supported.
+    raw_charts: Vec<(String, Vec<u8>)>,
     /// Drawing parts: (zip path like "xl/drawings/drawing1.xml", WsDr data).
     drawings: Vec<(String, WsDr)>,
     /// Image parts: (zip path like "xl/media/image1.png", raw bytes).
@@ -99,6 +106,7 @@ impl Workbook {
             sst_runtime,
             sheet_comments: vec![None],
             charts: vec![],
+            raw_charts: vec![],
             drawings: vec![],
             images: vec![],
             worksheet_drawings: HashMap::new(),
@@ -133,20 +141,27 @@ impl Workbook {
         let workbook_rels: Relationships =
             read_xml_part(&mut archive, "xl/_rels/workbook.xml.rels")?;
 
-        // Parse each worksheet referenced in the workbook
+        // Parse each worksheet referenced in the workbook.
         let mut worksheets = Vec::new();
+        let mut worksheet_paths = Vec::new();
         for sheet_entry in &workbook_xml.sheets.sheets {
-            // Find the relationship target for this sheet's rId
+            // Find the relationship target for this sheet's rId.
             let rel = workbook_rels
                 .relationships
                 .iter()
                 .find(|r| r.id == sheet_entry.r_id && r.rel_type == rel_types::WORKSHEET);
 
-            if let Some(rel) = rel {
-                let sheet_path = format!("xl/{}", rel.target);
-                let ws: WorksheetXml = read_xml_part(&mut archive, &sheet_path)?;
-                worksheets.push((sheet_entry.name.clone(), ws));
-            }
+            let rel = rel.ok_or_else(|| {
+                Error::Internal(format!(
+                    "missing worksheet relationship for sheet '{}'",
+                    sheet_entry.name
+                ))
+            })?;
+
+            let sheet_path = resolve_relationship_target("xl/workbook.xml", &rel.target);
+            let ws: WorksheetXml = read_xml_part(&mut archive, &sheet_path)?;
+            worksheets.push((sheet_entry.name.clone(), ws));
+            worksheet_paths.push(sheet_path);
         }
 
         // Parse xl/styles.xml
@@ -167,15 +182,129 @@ impl Workbook {
             Err(_) => (None, crate::theme::default_theme_colors()),
         };
 
-        // Initialize per-sheet comments (one entry per worksheet).
-        let sheet_comments: Vec<Option<Comments>> = vec![None; worksheets.len()];
-
         // Parse per-sheet worksheet relationship files (optional).
         let mut worksheet_rels: HashMap<usize, Relationships> = HashMap::new();
-        for i in 0..worksheets.len() {
-            let rels_path = format!("xl/worksheets/_rels/sheet{}.xml.rels", i + 1);
+        for (i, sheet_path) in worksheet_paths.iter().enumerate() {
+            let rels_path = relationship_part_path(sheet_path);
             if let Ok(rels) = read_xml_part::<Relationships>(&mut archive, &rels_path) {
                 worksheet_rels.insert(i, rels);
+            }
+        }
+
+        // Parse comments, drawings, drawing rels, charts, and images.
+        let mut sheet_comments: Vec<Option<Comments>> = vec![None; worksheets.len()];
+        let mut drawings: Vec<(String, WsDr)> = Vec::new();
+        let mut worksheet_drawings: HashMap<usize, usize> = HashMap::new();
+        let mut drawing_path_to_idx: HashMap<String, usize> = HashMap::new();
+
+        for (sheet_idx, sheet_path) in worksheet_paths.iter().enumerate() {
+            let Some(rels) = worksheet_rels.get(&sheet_idx) else {
+                continue;
+            };
+
+            if let Some(comment_rel) = rels
+                .relationships
+                .iter()
+                .find(|r| r.rel_type == rel_types::COMMENTS)
+            {
+                let comment_path = resolve_relationship_target(sheet_path, &comment_rel.target);
+                if let Ok(comments) = read_xml_part::<Comments>(&mut archive, &comment_path) {
+                    sheet_comments[sheet_idx] = Some(comments);
+                }
+            }
+
+            if let Some(drawing_rel) = rels
+                .relationships
+                .iter()
+                .find(|r| r.rel_type == rel_types::DRAWING)
+            {
+                let drawing_path = resolve_relationship_target(sheet_path, &drawing_rel.target);
+                let drawing_idx = if let Some(idx) = drawing_path_to_idx.get(&drawing_path) {
+                    *idx
+                } else if let Ok(drawing) = read_xml_part::<WsDr>(&mut archive, &drawing_path) {
+                    let idx = drawings.len();
+                    drawings.push((drawing_path.clone(), drawing));
+                    drawing_path_to_idx.insert(drawing_path.clone(), idx);
+                    idx
+                } else {
+                    continue;
+                };
+                worksheet_drawings.insert(sheet_idx, drawing_idx);
+            }
+        }
+
+        // Fallback: load drawing parts listed in content types even when they
+        // are not discoverable via worksheet rel parsing.
+        for ovr in &content_types.overrides {
+            if ovr.content_type != mime_types::DRAWING {
+                continue;
+            }
+            let drawing_path = ovr.part_name.trim_start_matches('/').to_string();
+            if drawing_path_to_idx.contains_key(&drawing_path) {
+                continue;
+            }
+            if let Ok(drawing) = read_xml_part::<WsDr>(&mut archive, &drawing_path) {
+                let idx = drawings.len();
+                drawings.push((drawing_path.clone(), drawing));
+                drawing_path_to_idx.insert(drawing_path, idx);
+            }
+        }
+
+        let mut drawing_rels: HashMap<usize, Relationships> = HashMap::new();
+        let mut charts: Vec<(String, ChartSpace)> = Vec::new();
+        let mut raw_charts: Vec<(String, Vec<u8>)> = Vec::new();
+        let mut images: Vec<(String, Vec<u8>)> = Vec::new();
+        let mut seen_chart_paths: HashSet<String> = HashSet::new();
+        let mut seen_image_paths: HashSet<String> = HashSet::new();
+
+        for (drawing_idx, (drawing_path, _)) in drawings.iter().enumerate() {
+            let drawing_rels_path = relationship_part_path(drawing_path);
+            let Ok(rels) = read_xml_part::<Relationships>(&mut archive, &drawing_rels_path) else {
+                continue;
+            };
+
+            for rel in &rels.relationships {
+                if rel.rel_type == rel_types::CHART {
+                    let chart_path = resolve_relationship_target(drawing_path, &rel.target);
+                    if seen_chart_paths.insert(chart_path.clone()) {
+                        match read_xml_part::<ChartSpace>(&mut archive, &chart_path) {
+                            Ok(chart) => charts.push((chart_path, chart)),
+                            Err(_) => {
+                                if let Ok(bytes) = read_bytes_part(&mut archive, &chart_path) {
+                                    raw_charts.push((chart_path, bytes));
+                                }
+                            }
+                        }
+                    }
+                } else if rel.rel_type == rel_types::IMAGE {
+                    let image_path = resolve_relationship_target(drawing_path, &rel.target);
+                    if seen_image_paths.insert(image_path.clone()) {
+                        if let Ok(bytes) = read_bytes_part(&mut archive, &image_path) {
+                            images.push((image_path, bytes));
+                        }
+                    }
+                }
+            }
+
+            drawing_rels.insert(drawing_idx, rels);
+        }
+
+        // Fallback: load chart parts listed in content types even when no
+        // drawing relationship was read.
+        for ovr in &content_types.overrides {
+            if ovr.content_type != mime_types::CHART {
+                continue;
+            }
+            let chart_path = ovr.part_name.trim_start_matches('/').to_string();
+            if seen_chart_paths.insert(chart_path.clone()) {
+                match read_xml_part::<ChartSpace>(&mut archive, &chart_path) {
+                    Ok(chart) => charts.push((chart_path, chart)),
+                    Err(_) => {
+                        if let Ok(bytes) = read_bytes_part(&mut archive, &chart_path) {
+                            raw_charts.push((chart_path, bytes));
+                        }
+                    }
+                }
             }
         }
 
@@ -237,12 +366,13 @@ impl Workbook {
             shared_strings,
             sst_runtime,
             sheet_comments,
-            charts: vec![],
-            drawings: vec![],
-            images: vec![],
-            worksheet_drawings: HashMap::new(),
+            charts,
+            raw_charts,
+            drawings,
+            images,
+            worksheet_drawings,
             worksheet_rels,
-            drawing_rels: HashMap::new(),
+            drawing_rels,
             core_properties,
             app_properties,
             custom_properties,
@@ -259,14 +389,53 @@ impl Workbook {
         let file = std::fs::File::create(path)?;
         let mut zip = zip::ZipWriter::new(file);
         let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+        let mut content_types = self.content_types.clone();
+        let mut worksheet_rels = self.worksheet_rels.clone();
+
+        // Synchronize comment parts with worksheet relationships/content types.
+        for sheet_idx in 0..self.worksheets.len() {
+            let has_comments = self
+                .sheet_comments
+                .get(sheet_idx)
+                .and_then(|c| c.as_ref())
+                .is_some();
+            if let Some(rels) = worksheet_rels.get_mut(&sheet_idx) {
+                rels.relationships
+                    .retain(|r| r.rel_type != rel_types::COMMENTS);
+            }
+            if !has_comments {
+                continue;
+            }
+
+            let comment_path = format!("xl/comments{}.xml", sheet_idx + 1);
+            let part_name = format!("/{}", comment_path);
+            if !content_types
+                .overrides
+                .iter()
+                .any(|o| o.part_name == part_name && o.content_type == mime_types::COMMENTS)
+            {
+                content_types.overrides.push(ContentTypeOverride {
+                    part_name,
+                    content_type: mime_types::COMMENTS.to_string(),
+                });
+            }
+
+            let sheet_path = self.sheet_part_path(sheet_idx);
+            let target = relative_relationship_target(&sheet_path, &comment_path);
+            let rels = worksheet_rels
+                .entry(sheet_idx)
+                .or_insert_with(default_relationships);
+            let rid = crate::sheet::next_rid(&rels.relationships);
+            rels.relationships.push(Relationship {
+                id: rid,
+                rel_type: rel_types::COMMENTS.to_string(),
+                target,
+                target_mode: None,
+            });
+        }
 
         // [Content_Types].xml
-        write_xml_part(
-            &mut zip,
-            "[Content_Types].xml",
-            &self.content_types,
-            options,
-        )?;
+        write_xml_part(&mut zip, "[Content_Types].xml", &content_types, options)?;
 
         // _rels/.rels
         write_xml_part(&mut zip, "_rels/.rels", &self.package_rels, options)?;
@@ -284,7 +453,7 @@ impl Workbook {
 
         // xl/worksheets/sheet{N}.xml
         for (i, (_name, ws)) in self.worksheets.iter().enumerate() {
-            let entry_name = format!("xl/worksheets/sheet{}.xml", i + 1);
+            let entry_name = self.sheet_part_path(i);
             write_xml_part(&mut zip, &entry_name, ws, options)?;
         }
 
@@ -312,6 +481,14 @@ impl Workbook {
         for (path, chart) in &self.charts {
             write_xml_part(&mut zip, path, chart, options)?;
         }
+        for (path, data) in &self.raw_charts {
+            if self.charts.iter().any(|(p, _)| p == path) {
+                continue;
+            }
+            zip.start_file(path, options)
+                .map_err(|e| Error::Zip(e.to_string()))?;
+            zip.write_all(data)?;
+        }
 
         // xl/media/image{N}.{ext} -- write image data
         for (path, data) in &self.images {
@@ -321,15 +498,18 @@ impl Workbook {
         }
 
         // xl/worksheets/_rels/sheet{N}.xml.rels -- write worksheet relationships
-        for (sheet_idx, rels) in &self.worksheet_rels {
-            let path = format!("xl/worksheets/_rels/sheet{}.xml.rels", sheet_idx + 1);
+        for (sheet_idx, rels) in &worksheet_rels {
+            let sheet_path = self.sheet_part_path(*sheet_idx);
+            let path = relationship_part_path(&sheet_path);
             write_xml_part(&mut zip, &path, rels, options)?;
         }
 
         // xl/drawings/_rels/drawing{N}.xml.rels -- write drawing relationships
         for (drawing_idx, rels) in &self.drawing_rels {
-            let path = format!("xl/drawings/_rels/drawing{}.xml.rels", drawing_idx + 1);
-            write_xml_part(&mut zip, &path, rels, options)?;
+            if let Some((drawing_path, _)) = self.drawings.get(*drawing_idx) {
+                let path = relationship_part_path(drawing_path);
+                write_xml_part(&mut zip, &path, rels, options)?;
+            }
         }
 
         // xl/pivotTables/pivotTable{N}.xml
@@ -517,25 +697,36 @@ impl Workbook {
 
     /// Create a new empty sheet with the given name. Returns the 0-based sheet index.
     pub fn new_sheet(&mut self, name: &str) -> Result<usize> {
-        crate::sheet::add_sheet(
+        let idx = crate::sheet::add_sheet(
             &mut self.workbook_xml,
             &mut self.workbook_rels,
             &mut self.content_types,
             &mut self.worksheets,
             name,
             WorksheetXml::default(),
-        )
+        )?;
+        if self.sheet_comments.len() < self.worksheets.len() {
+            self.sheet_comments.push(None);
+        }
+        Ok(idx)
     }
 
     /// Delete a sheet by name.
     pub fn delete_sheet(&mut self, name: &str) -> Result<()> {
+        let idx = self.sheet_index(name)?;
         crate::sheet::delete_sheet(
             &mut self.workbook_xml,
             &mut self.workbook_rels,
             &mut self.content_types,
             &mut self.worksheets,
             name,
-        )
+        )?;
+
+        if idx < self.sheet_comments.len() {
+            self.sheet_comments.remove(idx);
+        }
+        self.reindex_sheet_maps_after_delete(idx);
+        Ok(())
     }
 
     /// Rename a sheet.
@@ -550,14 +741,18 @@ impl Workbook {
 
     /// Copy a sheet, returning the 0-based index of the new copy.
     pub fn copy_sheet(&mut self, source: &str, target: &str) -> Result<usize> {
-        crate::sheet::copy_sheet(
+        let idx = crate::sheet::copy_sheet(
             &mut self.workbook_xml,
             &mut self.workbook_rels,
             &mut self.content_types,
             &mut self.worksheets,
             source,
             target,
-        )
+        )?;
+        if self.sheet_comments.len() < self.worksheets.len() {
+            self.sheet_comments.push(None);
+        }
+        Ok(idx)
     }
 
     /// Get a sheet's 0-based index by name. Returns `None` if not found.
@@ -638,26 +833,50 @@ impl Workbook {
         }
 
         // Add the sheet
-        crate::sheet::add_sheet(
+        let idx = crate::sheet::add_sheet(
             &mut self.workbook_xml,
             &mut self.workbook_rels,
             &mut self.content_types,
             &mut self.worksheets,
             &sheet_name,
             ws,
-        )
+        )?;
+        if self.sheet_comments.len() < self.worksheets.len() {
+            self.sheet_comments.push(None);
+        }
+        Ok(idx)
     }
 
     /// Insert `count` empty rows starting at `start_row` in the named sheet.
     pub fn insert_rows(&mut self, sheet: &str, start_row: u32, count: u32) -> Result<()> {
-        let ws = self.worksheet_mut(sheet)?;
-        crate::row::insert_rows(ws, start_row, count)
+        let sheet_idx = self.sheet_index(sheet)?;
+        {
+            let ws = &mut self.worksheets[sheet_idx].1;
+            crate::row::insert_rows(ws, start_row, count)?;
+        }
+        self.apply_reference_shift_for_sheet(sheet_idx, |col, row| {
+            if row >= start_row {
+                (col, row + count)
+            } else {
+                (col, row)
+            }
+        })
     }
 
     /// Remove a single row from the named sheet, shifting rows below it up.
     pub fn remove_row(&mut self, sheet: &str, row: u32) -> Result<()> {
-        let ws = self.worksheet_mut(sheet)?;
-        crate::row::remove_row(ws, row)
+        let sheet_idx = self.sheet_index(sheet)?;
+        {
+            let ws = &mut self.worksheets[sheet_idx].1;
+            crate::row::remove_row(ws, row)?;
+        }
+        self.apply_reference_shift_for_sheet(sheet_idx, |col, r| {
+            if r > row {
+                (col, r - 1)
+            } else {
+                (col, r)
+            }
+        })
     }
 
     /// Duplicate a row, inserting the copy directly below.
@@ -794,14 +1013,36 @@ impl Workbook {
 
     /// Insert `count` columns starting at `col` in the named sheet.
     pub fn insert_cols(&mut self, sheet: &str, col: &str, count: u32) -> Result<()> {
-        let ws = self.worksheet_mut(sheet)?;
-        crate::col::insert_cols(ws, col, count)
+        let sheet_idx = self.sheet_index(sheet)?;
+        let start_col = column_name_to_number(col)?;
+        {
+            let ws = &mut self.worksheets[sheet_idx].1;
+            crate::col::insert_cols(ws, col, count)?;
+        }
+        self.apply_reference_shift_for_sheet(sheet_idx, |c, row| {
+            if c >= start_col {
+                (c + count, row)
+            } else {
+                (c, row)
+            }
+        })
     }
 
     /// Remove a single column from the named sheet.
     pub fn remove_col(&mut self, sheet: &str, col: &str) -> Result<()> {
-        let ws = self.worksheet_mut(sheet)?;
-        crate::col::remove_col(ws, col)
+        let sheet_idx = self.sheet_index(sheet)?;
+        let col_num = column_name_to_number(col)?;
+        {
+            let ws = &mut self.worksheets[sheet_idx].1;
+            crate::col::remove_col(ws, col)?;
+        }
+        self.apply_reference_shift_for_sheet(sheet_idx, |c, row| {
+            if c > col_num {
+                (c - 1, row)
+            } else {
+                (c, row)
+            }
+        })
     }
 
     /// Register a new style and return its ID.
@@ -1953,6 +2194,159 @@ impl Workbook {
             .map(|r| r.relationships.as_slice())
             .unwrap_or(&[]);
         crate::sheet::next_rid(existing)
+    }
+
+    /// Resolve the part path for a sheet index from workbook relationships.
+    /// Falls back to the default `xl/worksheets/sheet{N}.xml` naming.
+    fn sheet_part_path(&self, sheet_idx: usize) -> String {
+        if let Some(sheet_entry) = self.workbook_xml.sheets.sheets.get(sheet_idx) {
+            if let Some(rel) = self
+                .workbook_rels
+                .relationships
+                .iter()
+                .find(|r| r.id == sheet_entry.r_id && r.rel_type == rel_types::WORKSHEET)
+            {
+                return resolve_relationship_target("xl/workbook.xml", &rel.target);
+            }
+        }
+        format!("xl/worksheets/sheet{}.xml", sheet_idx + 1)
+    }
+
+    /// Reindex per-sheet maps after deleting a sheet.
+    fn reindex_sheet_maps_after_delete(&mut self, removed_idx: usize) {
+        self.worksheet_rels = self
+            .worksheet_rels
+            .iter()
+            .filter_map(|(idx, rels)| {
+                if *idx == removed_idx {
+                    None
+                } else if *idx > removed_idx {
+                    Some((idx - 1, rels.clone()))
+                } else {
+                    Some((*idx, rels.clone()))
+                }
+            })
+            .collect();
+
+        self.worksheet_drawings = self
+            .worksheet_drawings
+            .iter()
+            .filter_map(|(idx, drawing_idx)| {
+                if *idx == removed_idx {
+                    None
+                } else if *idx > removed_idx {
+                    Some((idx - 1, *drawing_idx))
+                } else {
+                    Some((*idx, *drawing_idx))
+                }
+            })
+            .collect();
+    }
+
+    /// Apply a cell-reference shift transformation to sheet-scoped structures.
+    fn apply_reference_shift_for_sheet<F>(&mut self, sheet_idx: usize, shift_cell: F) -> Result<()>
+    where
+        F: Fn(u32, u32) -> (u32, u32) + Copy,
+    {
+        {
+            let ws = &mut self.worksheets[sheet_idx].1;
+
+            // Cell formulas.
+            for row in &mut ws.sheet_data.rows {
+                for cell in &mut row.cells {
+                    if let Some(ref mut f) = cell.f {
+                        if let Some(ref mut expr) = f.value {
+                            *expr = shift_cell_references_in_text(expr, shift_cell)?;
+                        }
+                    }
+                }
+            }
+
+            // Merged ranges.
+            if let Some(ref mut merges) = ws.merge_cells {
+                for mc in &mut merges.merge_cells {
+                    mc.reference = shift_cell_references_in_text(&mc.reference, shift_cell)?;
+                }
+            }
+
+            // Auto-filter.
+            if let Some(ref mut af) = ws.auto_filter {
+                af.reference = shift_cell_references_in_text(&af.reference, shift_cell)?;
+            }
+
+            // Data validations.
+            if let Some(ref mut dvs) = ws.data_validations {
+                for dv in &mut dvs.data_validations {
+                    dv.sqref = shift_cell_references_in_text(&dv.sqref, shift_cell)?;
+                    if let Some(ref mut f1) = dv.formula1 {
+                        *f1 = shift_cell_references_in_text(f1, shift_cell)?;
+                    }
+                    if let Some(ref mut f2) = dv.formula2 {
+                        *f2 = shift_cell_references_in_text(f2, shift_cell)?;
+                    }
+                }
+            }
+
+            // Conditional formatting ranges/formulas.
+            for cf in &mut ws.conditional_formatting {
+                cf.sqref = shift_cell_references_in_text(&cf.sqref, shift_cell)?;
+                for rule in &mut cf.cf_rules {
+                    for f in &mut rule.formulas {
+                        *f = shift_cell_references_in_text(f, shift_cell)?;
+                    }
+                }
+            }
+
+            // Hyperlinks.
+            if let Some(ref mut hyperlinks) = ws.hyperlinks {
+                for hl in &mut hyperlinks.hyperlinks {
+                    hl.reference = shift_cell_references_in_text(&hl.reference, shift_cell)?;
+                    if let Some(ref mut loc) = hl.location {
+                        *loc = shift_cell_references_in_text(loc, shift_cell)?;
+                    }
+                }
+            }
+
+            // Pane/selection references.
+            if let Some(ref mut views) = ws.sheet_views {
+                for view in &mut views.sheet_views {
+                    if let Some(ref mut pane) = view.pane {
+                        if let Some(ref mut top_left) = pane.top_left_cell {
+                            *top_left = shift_cell_references_in_text(top_left, shift_cell)?;
+                        }
+                    }
+                    for sel in &mut view.selection {
+                        if let Some(ref mut ac) = sel.active_cell {
+                            *ac = shift_cell_references_in_text(ac, shift_cell)?;
+                        }
+                        if let Some(ref mut sqref) = sel.sqref {
+                            *sqref = shift_cell_references_in_text(sqref, shift_cell)?;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Drawing anchors attached to this sheet.
+        if let Some(&drawing_idx) = self.worksheet_drawings.get(&sheet_idx) {
+            if let Some((_, drawing)) = self.drawings.get_mut(drawing_idx) {
+                for anchor in &mut drawing.one_cell_anchors {
+                    let (new_col, new_row) = shift_cell(anchor.from.col + 1, anchor.from.row + 1);
+                    anchor.from.col = new_col - 1;
+                    anchor.from.row = new_row - 1;
+                }
+                for anchor in &mut drawing.two_cell_anchors {
+                    let (from_col, from_row) = shift_cell(anchor.from.col + 1, anchor.from.row + 1);
+                    anchor.from.col = from_col - 1;
+                    anchor.from.row = from_row - 1;
+                    let (to_col, to_row) = shift_cell(anchor.to.col + 1, anchor.to.row + 1);
+                    anchor.to.col = to_col - 1;
+                    anchor.to.row = to_row - 1;
+                }
+            }
+        }
+
+        Ok(())
     }
 
     /// Get the 0-based index of a sheet by name.
@@ -3109,6 +3503,44 @@ mod tests {
     }
 
     #[test]
+    fn test_workbook_insert_rows_updates_formula_and_ranges() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value(
+            "Sheet1",
+            "C1",
+            CellValue::Formula {
+                expr: "SUM(A2:B2)".to_string(),
+                result: None,
+            },
+        )
+        .unwrap();
+        wb.add_data_validation(
+            "Sheet1",
+            &crate::validation::DataValidationConfig::whole_number("A2:A5", 1, 9),
+        )
+        .unwrap();
+        wb.set_auto_filter("Sheet1", "A2:B10").unwrap();
+        wb.merge_cells("Sheet1", "A2", "B3").unwrap();
+
+        wb.insert_rows("Sheet1", 2, 1).unwrap();
+
+        match wb.get_cell_value("Sheet1", "C1").unwrap() {
+            CellValue::Formula { expr, .. } => assert_eq!(expr, "SUM(A3:B3)"),
+            other => panic!("expected formula, got {other:?}"),
+        }
+
+        let validations = wb.get_data_validations("Sheet1").unwrap();
+        assert_eq!(validations.len(), 1);
+        assert_eq!(validations[0].sqref, "A3:A6");
+
+        let merges = wb.get_merge_cells("Sheet1").unwrap();
+        assert_eq!(merges, vec!["A3:B4".to_string()]);
+
+        let ws = wb.worksheet_ref("Sheet1").unwrap();
+        assert_eq!(ws.auto_filter.as_ref().unwrap().reference, "A3:B11");
+    }
+
+    #[test]
     fn test_workbook_insert_rows_sheet_not_found() {
         let mut wb = Workbook::new();
         let result = wb.insert_rows("NoSheet", 1, 1);
@@ -3227,6 +3659,44 @@ mod tests {
             wb.get_cell_value("Sheet1", "C1").unwrap(),
             CellValue::String("b".to_string())
         );
+    }
+
+    #[test]
+    fn test_workbook_insert_cols_updates_formula_and_ranges() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value(
+            "Sheet1",
+            "D1",
+            CellValue::Formula {
+                expr: "SUM(A1:B1)".to_string(),
+                result: None,
+            },
+        )
+        .unwrap();
+        wb.add_data_validation(
+            "Sheet1",
+            &crate::validation::DataValidationConfig::whole_number("B2:C3", 1, 9),
+        )
+        .unwrap();
+        wb.set_auto_filter("Sheet1", "A1:C10").unwrap();
+        wb.merge_cells("Sheet1", "B3", "C4").unwrap();
+
+        wb.insert_cols("Sheet1", "B", 2).unwrap();
+
+        match wb.get_cell_value("Sheet1", "F1").unwrap() {
+            CellValue::Formula { expr, .. } => assert_eq!(expr, "SUM(A1:D1)"),
+            other => panic!("expected formula, got {other:?}"),
+        }
+
+        let validations = wb.get_data_validations("Sheet1").unwrap();
+        assert_eq!(validations.len(), 1);
+        assert_eq!(validations[0].sqref, "D2:E3");
+
+        let merges = wb.get_merge_cells("Sheet1").unwrap();
+        assert_eq!(merges, vec!["D3:E4".to_string()]);
+
+        let ws = wb.worksheet_ref("Sheet1").unwrap();
+        assert_eq!(ws.auto_filter.as_ref().unwrap().reference, "A1:E10");
     }
 
     #[test]
@@ -3500,6 +3970,31 @@ mod tests {
             archive.by_name("xl/comments1.xml").is_ok(),
             "comments1.xml should be present in the ZIP"
         );
+    }
+
+    #[test]
+    fn test_workbook_comment_roundtrip_open() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("comment_roundtrip_open.xlsx");
+
+        let mut wb = Workbook::new();
+        wb.add_comment(
+            "Sheet1",
+            &crate::comment::CommentConfig {
+                cell: "A1".to_string(),
+                author: "Author".to_string(),
+                text: "Persist me".to_string(),
+            },
+        )
+        .unwrap();
+        wb.save(&path).unwrap();
+
+        let wb2 = Workbook::open(&path).unwrap();
+        let comments = wb2.get_comments("Sheet1").unwrap();
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments[0].cell, "A1");
+        assert_eq!(comments[0].author, "Author");
+        assert_eq!(comments[0].text, "Persist me");
     }
 
     #[test]
@@ -3864,6 +4359,69 @@ mod tests {
         let wb2 = Workbook::open(&path).unwrap();
         let ws = wb2.worksheet_ref("Sheet1").unwrap();
         assert!(ws.drawing.is_some());
+    }
+
+    #[test]
+    fn test_open_save_preserves_existing_drawing_chart_and_image_parts() {
+        use crate::chart::{ChartConfig, ChartSeries, ChartType};
+        use crate::image::{ImageConfig, ImageFormat};
+        let dir = TempDir::new().unwrap();
+        let path1 = dir.path().join("source_with_parts.xlsx");
+        let path2 = dir.path().join("resaved_with_parts.xlsx");
+
+        let mut wb = Workbook::new();
+        wb.add_chart(
+            "Sheet1",
+            "E1",
+            "L10",
+            &ChartConfig {
+                chart_type: ChartType::Col,
+                title: Some("Chart".to_string()),
+                series: vec![ChartSeries {
+                    name: "Series 1".to_string(),
+                    categories: "Sheet1!$A$1:$A$3".to_string(),
+                    values: "Sheet1!$B$1:$B$3".to_string(),
+                    x_values: None,
+                    bubble_sizes: None,
+                }],
+                show_legend: true,
+                view_3d: None,
+            },
+        )
+        .unwrap();
+        wb.add_image(
+            "Sheet1",
+            &ImageConfig {
+                data: vec![0x89, 0x50, 0x4E, 0x47],
+                format: ImageFormat::Png,
+                from_cell: "E12".to_string(),
+                width_px: 120,
+                height_px: 80,
+            },
+        )
+        .unwrap();
+        wb.save(&path1).unwrap();
+
+        let wb2 = Workbook::open(&path1).unwrap();
+        assert_eq!(wb2.charts.len() + wb2.raw_charts.len(), 1);
+        assert_eq!(wb2.drawings.len(), 1);
+        assert_eq!(wb2.images.len(), 1);
+        assert_eq!(wb2.drawing_rels.len(), 1);
+        assert_eq!(wb2.worksheet_drawings.len(), 1);
+
+        wb2.save(&path2).unwrap();
+
+        let file = std::fs::File::open(&path2).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        assert!(archive.by_name("xl/charts/chart1.xml").is_ok());
+        assert!(archive.by_name("xl/drawings/drawing1.xml").is_ok());
+        assert!(archive.by_name("xl/media/image1.png").is_ok());
+        assert!(archive
+            .by_name("xl/worksheets/_rels/sheet1.xml.rels")
+            .is_ok());
+        assert!(archive
+            .by_name("xl/drawings/_rels/drawing1.xml.rels")
+            .is_ok());
     }
 
     #[test]
