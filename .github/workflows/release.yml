@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write  # Required for OIDC
 
 env:
   CARGO_TERM_COLOR: always
@@ -90,18 +91,8 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Publish sheetkit-xml to crates.io
-        run: cargo publish -p sheetkit-xml
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-
-      - name: Publish sheetkit-core to crates.io
-        run: cargo publish -p sheetkit-core
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-
-      - name: Publish sheetkit to crates.io
-        run: cargo publish -p sheetkit
+      - name: Publish to crates.io
+        run: cargo publish --workspace
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
@@ -117,25 +108,8 @@ jobs:
 
       - name: Move artifacts
         working-directory: packages/sheetkit
-        run: pnpm artifacts
+        run: pnpm artifacts --npm-dir ../
 
-      - name: List packages
+      - name: Publish packages to npm
         working-directory: packages/sheetkit
-        run: ls -R npm
-
-      - name: Publish platform packages to npm
-        working-directory: packages/sheetkit
-        run: |
-          for dir in npm/*/; do
-            if [ -f "$dir/package.json" ]; then
-              npm publish "$dir" --access public --provenance
-            fi
-          done
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - name: Publish main package to npm
-        working-directory: packages/sheetkit
-        run: npm publish --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: pnpm publish --access public --provenance --no-git-checks --recursive
