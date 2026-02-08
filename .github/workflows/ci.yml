@@ -74,9 +74,5 @@ jobs:
       - name: Build napi binding
         run: pnpm --filter @sheetkit/node build
 
-      - name: Restore ESM wrapper
-        working-directory: packages/sheetkit
-        run: git checkout -- index.js
-
       - name: Test
         run: pnpm test
