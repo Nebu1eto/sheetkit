@@ -120,6 +120,9 @@ pub mod mime_types {
     // Table
     pub const TABLE: &str = "application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml";
 
+    // VML Drawing
+    pub const VML_DRAWING: &str = "application/vnd.openxmlformats-officedocument.vmlDrawing";
+
     // Comments
     pub const COMMENTS: &str =
         "application/vnd.openxmlformats-officedocument.spreadsheetml.comments+xml";

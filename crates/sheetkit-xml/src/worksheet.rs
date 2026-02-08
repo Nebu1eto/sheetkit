@@ -74,6 +74,9 @@ pub struct WorksheetXml {
     #[serde(rename = "drawing", skip_serializing_if = "Option::is_none")]
     pub drawing: Option<DrawingRef>,
 
+    #[serde(rename = "legacyDrawing", skip_serializing_if = "Option::is_none")]
+    pub legacy_drawing: Option<LegacyDrawingRef>,
+
     #[serde(rename = "tableParts", skip_serializing_if = "Option::is_none")]
     pub table_parts: Option<TableParts>,
 }
@@ -618,6 +621,13 @@ pub struct DrawingRef {
     pub r_id: String,
 }
 
+/// Legacy drawing reference (VML).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LegacyDrawingRef {
+    #[serde(rename = "@r:id", alias = "@id")]
+    pub r_id: String,
+}
+
 /// Table parts container.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TableParts {
@@ -773,6 +783,7 @@ impl Default for WorksheetXml {
             header_footer: None,
             row_breaks: None,
             drawing: None,
+            legacy_drawing: None,
             table_parts: None,
         }
     }

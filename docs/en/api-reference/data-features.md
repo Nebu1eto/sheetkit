@@ -504,6 +504,10 @@ Used with `Whole`, `Decimal`, `Date`, `Time`, and `TextLength` types:
 
 Comments (also known as notes) attach text annotations to individual cells.
 
+When a comment is added, SheetKit automatically generates a VML (Vector Markup Language) drawing part (`xl/drawings/vmlDrawingN.vml`) and a `<legacyDrawing>` reference in the worksheet XML. This ensures that comments render correctly in the Excel UI, which requires VML legacy drawing support for note pop-up boxes.
+
+When opening an existing workbook that already contains VML comment drawings, SheetKit preserves the VML parts through the save/open cycle. When all comments on a sheet are removed, the associated VML part and relationships are cleaned up automatically.
+
 ### `add_comment` / `addComment`
 
 Add a comment to a cell.
@@ -564,6 +568,18 @@ wb.remove_comment("Sheet1", "A1")?;
 ```typescript
 wb.removeComment("Sheet1", "A1");
 ```
+
+### VML Compatibility
+
+Excel uses VML (Vector Markup Language) for rendering comment note boxes. SheetKit handles the following automatically:
+
+- Generating minimal VML drawing parts when new comments are created.
+- Preserving existing VML parts from workbooks opened from disk.
+- Wiring `<legacyDrawing>` relationship references in worksheet XML.
+- Adding the appropriate content type entries for VML parts.
+- Cleaning up VML parts and relationships when all comments on a sheet are removed.
+
+No additional API calls are needed. The VML handling is transparent to the user.
 
 ---
 
