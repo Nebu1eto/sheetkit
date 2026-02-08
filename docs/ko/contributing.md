@@ -52,28 +52,17 @@ cargo fmt --check              # 포매팅 확인
 
 ### Node.js 바인딩
 
-napi 빌드 과정은 순서대로 수행해야 하는 세 단계로 구성된다:
-
 ```bash
 cd packages/sheetkit
 
-# 1단계: 네이티브 애드온 빌드. Rust cdylib을 컴파일하고
-# index.js (CJS 바인딩 로더)와 index.d.ts (TypeScript 선언)를 생성한다.
-npx napi build --platform
+# 네이티브 애드온 빌드 (Rust cdylib 컴파일, index.js와 index.d.ts 생성)
+pnpm build
 
-# 2단계: 생성된 CJS 파일 이름 변경. napi 빌드는 index.js를
-# CJS 모듈로 덮어쓰지만, ESM 래퍼를 index.js로 유지해야 한다.
-cp index.js binding.cjs
-
-# 3단계: ESM 래퍼 복원. 실제 index.js는 createRequire를 통해
-# binding.cjs를 로드하는 ESM 모듈이다. git에서 복원한다.
-git checkout -- index.js
-
-# 4단계: Node.js 테스트 스위트 실행.
-npx vitest run
+# Node.js 테스트 스위트 실행
+pnpm test
 ```
 
-ESM 래퍼 (`index.js`)는 저장소에 체크인되어 있으며, napi 빌드 출력으로 영구적으로 덮어써서는 안 된다. Node.js `createRequire`를 사용하여 CJS 바인딩을 로드한다.
+`pnpm build` 명령은 `napi build --platform --release --esm`을 실행하며, ESM 출력을 직접 생성한다. 수동 파일 이름 변경이 필요 없다.
 
 ## 5. 개발 워크플로우
 
@@ -103,7 +92,7 @@ SheetKit은 TDD (테스트 주도 개발) 접근 방식을 따른다:
 ### TypeScript / JavaScript
 
 - 포매팅과 린팅에 Biome을 사용한다.
-- 모든 JavaScript 및 TypeScript 코드에 ESM만 사용한다. napi CJS 출력 (`binding.cjs`)이 유일한 예외이며 ESM 래퍼에서 `createRequire`를 통해 로드된다.
+- 모든 JavaScript 및 TypeScript 코드에 ESM만 사용한다.
 
 ### 일반 규칙
 
@@ -197,7 +186,7 @@ SimpleFileOptions::default().compression_method(CompressionMethod::Deflated)
 
 ### napi 빌드 출력
 
-napi 빌드는 ESM 래퍼를 덮어쓰는 CJS `index.js`를 생성한다. 빌드 후 항상 `binding.cjs`로 이름을 변경하고 git에서 ESM 래퍼를 복원한다.
+napi v3와 `--esm` 플래그를 사용하면 ESM 출력이 직접 생성된다. `packages/sheetkit`에서 `pnpm build`를 실행하면 `index.js`와 `index.d.ts`가 바로 사용 가능하다.
 
 ### 파일 구성
 
