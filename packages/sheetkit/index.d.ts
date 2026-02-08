@@ -26,6 +26,14 @@ export declare class Workbook {
   saveSync(path: string): void
   /** Save the workbook to a .xlsx file asynchronously. */
   save(path: string): Promise<void>
+  /** Open an encrypted .xlsx file using a password. */
+  static openWithPasswordSync(path: string, password: string): Workbook
+  /** Open an encrypted .xlsx file using a password asynchronously. */
+  static openWithPassword(path: string, password: string): Promise<Workbook>
+  /** Save the workbook as an encrypted .xlsx file. */
+  saveWithPasswordSync(path: string, password: string): void
+  /** Save the workbook as an encrypted .xlsx file asynchronously. */
+  saveWithPassword(path: string, password: string): Promise<void>
   /** Get the names of all sheets in workbook order. */
   get sheetNames(): Array<string>
   /** Get the value of a cell. Returns string, number, boolean, DateValue, or null. */

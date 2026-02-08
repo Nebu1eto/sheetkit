@@ -72,6 +72,34 @@ impl Workbook {
         self.save_sync(path)
     }
 
+    /// Open an encrypted .xlsx file using a password.
+    #[napi(factory, js_name = "openWithPasswordSync")]
+    pub fn open_with_password_sync(path: String, password: String) -> Result<Self> {
+        let inner = sheetkit_core::workbook::Workbook::open_with_password(&path, &password)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        Ok(Self { inner })
+    }
+
+    /// Open an encrypted .xlsx file using a password asynchronously.
+    #[napi(factory)]
+    pub async fn open_with_password(path: String, password: String) -> Result<Self> {
+        Self::open_with_password_sync(path, password)
+    }
+
+    /// Save the workbook as an encrypted .xlsx file.
+    #[napi(js_name = "saveWithPasswordSync")]
+    pub fn save_with_password_sync(&self, path: String, password: String) -> Result<()> {
+        self.inner
+            .save_with_password(&path, &password)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Save the workbook as an encrypted .xlsx file asynchronously.
+    #[napi]
+    pub async fn save_with_password(&self, path: String, password: String) -> Result<()> {
+        self.save_with_password_sync(path, password)
+    }
+
     /// Get the names of all sheets in workbook order.
     #[napi(getter)]
     pub fn sheet_names(&self) -> Vec<String> {

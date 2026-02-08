@@ -7,7 +7,7 @@ SheetKit is a Rust library for reading and writing Excel (.xlsx) files, with Nod
 ### Crate Structure
 
 - **sheetkit-xml** (`crates/sheetkit-xml`): Serde-based XML schema types for OOXML. Low-level XML data structures.
-- **sheetkit-core** (`crates/sheetkit-core`): Business logic -- workbook operations, cell manipulation, styles, formulas, charts, images, streaming, and more. Modules: cell, chart, col, comment, doc_props, error, formula, image, protection, row, sheet, sst, stream, style, table, utils, validation, workbook.
+- **sheetkit-core** (`crates/sheetkit-core`): Business logic -- workbook operations, cell manipulation, styles, formulas, charts, images, streaming, encryption, and more. Modules: cell, chart, col, comment, crypt (feature-gated), doc_props, error, formula, image, protection, row, sheet, sst, stream, style, table, utils, validation, workbook.
 - **sheetkit** (`crates/sheetkit`): Public facade crate that re-exports types from sheetkit-core for end users.
 - **sheetkit-node** (`packages/sheetkit`): Node.js bindings via napi-rs. The Rust crate produces a cdylib, and an ESM wrapper (`index.js`) loads the CJS binding.
 
@@ -21,6 +21,7 @@ SheetKit is a Rust library for reading and writing Excel (.xlsx) files, with Nod
 - **napi / napi-derive**: Node.js native addon bindings
 - **chrono**: Date/time handling
 - **tempfile**, **pretty_assertions**: Testing utilities
+- **aes**, **cbc**, **ecb**, **sha1**, **sha2**, **hmac**, **rand**, **cfb**, **base64** (optional, behind `encryption` feature): File-level encryption/decryption
 
 ## Development Workflow
 
@@ -77,7 +78,7 @@ Serde-based XML schema types mapping to OOXML structures. Used by sheetkit-core 
 
 ### Core Layer (sheetkit-core)
 
-All business logic lives here: workbook open/save, cell get/set, SST (shared strings table) management, sheet operations, row/column manipulation, style system, formula parsing, chart/image/drawing support, data validation, comments, streaming writer, document properties, and workbook protection.
+All business logic lives here: workbook open/save, cell get/set, SST (shared strings table) management, sheet operations, row/column manipulation, style system, formula parsing, chart/image/drawing support, data validation, comments, streaming writer, document properties, workbook protection, and file-level encryption (`crypt` module, behind `encryption` feature flag).
 
 ### Facade Layer (sheetkit)
 
@@ -93,6 +94,8 @@ napi-rs bindings that wrap sheetkit-core types for JavaScript consumption. The n
 - SharedStrings (SST) is optional on open -- use `Sst::default()` if the file has no sharedStrings.xml.
 - DC namespace (`dc:`, `dcterms:`, `cp:`) and `vt:` prefix require manual quick-xml Writer/Reader because serde does not handle namespace prefixes correctly.
 - napi Workbook wraps core Workbook with an `inner` field.
+- Encrypted `.xlsx` files use OLE/CFB containers (not ZIP). Detection is by magic bytes: ZIP = `PK\x03\x04`, CFB = `D0CF11E0A1B11AE1`.
+- The `encryption` feature flag gates all crypto dependencies and the `crypt` module. Node.js bindings always enable it.
 
 ## Testing
 
@@ -102,6 +105,8 @@ Run the full test suite:
 
 ```bash
 cargo test --workspace
+# With encryption feature (needed for crypt module tests)
+cargo test --workspace --features sheetkit-core/encryption
 ```
 
 Test files are co-located with their modules using `#[cfg(test)]` inline test modules.

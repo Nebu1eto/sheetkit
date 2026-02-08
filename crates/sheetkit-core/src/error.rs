@@ -132,6 +132,18 @@ pub enum Error {
     #[error("unsupported image format: {format}")]
     UnsupportedImageFormat { format: String },
 
+    /// The file is encrypted and requires a password to open.
+    #[error("file is encrypted, password required")]
+    FileEncrypted,
+
+    /// The provided password is incorrect.
+    #[error("incorrect password")]
+    IncorrectPassword,
+
+    /// The encryption method is not supported.
+    #[error("unsupported encryption method: {0}")]
+    UnsupportedEncryption(String),
+
     /// An internal or otherwise unclassified error.
     #[error("internal error: {0}")]
     Internal(String),

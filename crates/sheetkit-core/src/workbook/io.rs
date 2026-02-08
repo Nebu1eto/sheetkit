@@ -36,22 +36,42 @@ impl Workbook {
     }
 
     /// Open an existing `.xlsx` file from disk.
+    ///
+    /// If the file is encrypted (CFB container), returns
+    /// [`Error::FileEncrypted`]. Use [`Workbook::open_with_password`] instead.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let file = std::fs::File::open(path)?;
-        let mut archive = zip::ZipArchive::new(file).map_err(|e| Error::Zip(e.to_string()))?;
+        let data = std::fs::read(path.as_ref())?;
 
+        // Detect encrypted files (CFB container)
+        #[cfg(feature = "encryption")]
+        if data.len() >= 8 {
+            if let Ok(crate::crypt::ContainerFormat::Cfb) =
+                crate::crypt::detect_container_format(&data)
+            {
+                return Err(Error::FileEncrypted);
+            }
+        }
+
+        let cursor = std::io::Cursor::new(data);
+        let mut archive = zip::ZipArchive::new(cursor).map_err(|e| Error::Zip(e.to_string()))?;
+        Self::from_archive(&mut archive)
+    }
+
+    /// Build a Workbook from an already-opened ZIP archive.
+    fn from_archive<R: std::io::Read + std::io::Seek>(
+        archive: &mut zip::ZipArchive<R>,
+    ) -> Result<Self> {
         // Parse [Content_Types].xml
-        let content_types: ContentTypes = read_xml_part(&mut archive, "[Content_Types].xml")?;
+        let content_types: ContentTypes = read_xml_part(archive, "[Content_Types].xml")?;
 
         // Parse _rels/.rels
-        let package_rels: Relationships = read_xml_part(&mut archive, "_rels/.rels")?;
+        let package_rels: Relationships = read_xml_part(archive, "_rels/.rels")?;
 
         // Parse xl/workbook.xml
-        let workbook_xml: WorkbookXml = read_xml_part(&mut archive, "xl/workbook.xml")?;
+        let workbook_xml: WorkbookXml = read_xml_part(archive, "xl/workbook.xml")?;
 
         // Parse xl/_rels/workbook.xml.rels
-        let workbook_rels: Relationships =
-            read_xml_part(&mut archive, "xl/_rels/workbook.xml.rels")?;
+        let workbook_rels: Relationships = read_xml_part(archive, "xl/_rels/workbook.xml.rels")?;
 
         // Parse each worksheet referenced in the workbook.
         let mut worksheets = Vec::new();
@@ -71,22 +91,22 @@ impl Workbook {
             })?;
 
             let sheet_path = resolve_relationship_target("xl/workbook.xml", &rel.target);
-            let ws: WorksheetXml = read_xml_part(&mut archive, &sheet_path)?;
+            let ws: WorksheetXml = read_xml_part(archive, &sheet_path)?;
             worksheets.push((sheet_entry.name.clone(), ws));
             worksheet_paths.push(sheet_path);
         }
 
         // Parse xl/styles.xml
-        let stylesheet: StyleSheet = read_xml_part(&mut archive, "xl/styles.xml")?;
+        let stylesheet: StyleSheet = read_xml_part(archive, "xl/styles.xml")?;
 
         // Parse xl/sharedStrings.xml (optional -- may not exist for workbooks with no strings)
         let shared_strings: Sst =
-            read_xml_part(&mut archive, "xl/sharedStrings.xml").unwrap_or_default();
+            read_xml_part(archive, "xl/sharedStrings.xml").unwrap_or_default();
 
         let sst_runtime = SharedStringTable::from_sst(&shared_strings);
 
         // Parse xl/theme/theme1.xml (optional -- preserved as raw bytes for round-trip).
-        let (theme_xml, theme_colors) = match read_bytes_part(&mut archive, "xl/theme/theme1.xml") {
+        let (theme_xml, theme_colors) = match read_bytes_part(archive, "xl/theme/theme1.xml") {
             Ok(bytes) => {
                 let colors = sheetkit_xml::theme::parse_theme_colors(&bytes);
                 (Some(bytes), colors)
@@ -98,7 +118,7 @@ impl Workbook {
         let mut worksheet_rels: HashMap<usize, Relationships> = HashMap::new();
         for (i, sheet_path) in worksheet_paths.iter().enumerate() {
             let rels_path = relationship_part_path(sheet_path);
-            if let Ok(rels) = read_xml_part::<Relationships>(&mut archive, &rels_path) {
+            if let Ok(rels) = read_xml_part::<Relationships, _>(archive, &rels_path) {
                 worksheet_rels.insert(i, rels);
             }
         }
@@ -121,7 +141,7 @@ impl Workbook {
                 .find(|r| r.rel_type == rel_types::COMMENTS)
             {
                 let comment_path = resolve_relationship_target(sheet_path, &comment_rel.target);
-                if let Ok(comments) = read_xml_part::<Comments>(&mut archive, &comment_path) {
+                if let Ok(comments) = read_xml_part::<Comments, _>(archive, &comment_path) {
                     sheet_comments[sheet_idx] = Some(comments);
                 }
             }
@@ -132,7 +152,7 @@ impl Workbook {
                 .find(|r| r.rel_type == rel_types::VML_DRAWING)
             {
                 let vml_path = resolve_relationship_target(sheet_path, &vml_rel.target);
-                if let Ok(bytes) = read_bytes_part(&mut archive, &vml_path) {
+                if let Ok(bytes) = read_bytes_part(archive, &vml_path) {
                     sheet_vml[sheet_idx] = Some(bytes);
                 }
             }
@@ -145,7 +165,7 @@ impl Workbook {
                 let drawing_path = resolve_relationship_target(sheet_path, &drawing_rel.target);
                 let drawing_idx = if let Some(idx) = drawing_path_to_idx.get(&drawing_path) {
                     *idx
-                } else if let Ok(drawing) = read_xml_part::<WsDr>(&mut archive, &drawing_path) {
+                } else if let Ok(drawing) = read_xml_part::<WsDr, _>(archive, &drawing_path) {
                     let idx = drawings.len();
                     drawings.push((drawing_path.clone(), drawing));
                     drawing_path_to_idx.insert(drawing_path.clone(), idx);
@@ -167,7 +187,7 @@ impl Workbook {
             if drawing_path_to_idx.contains_key(&drawing_path) {
                 continue;
             }
-            if let Ok(drawing) = read_xml_part::<WsDr>(&mut archive, &drawing_path) {
+            if let Ok(drawing) = read_xml_part::<WsDr, _>(archive, &drawing_path) {
                 let idx = drawings.len();
                 drawings.push((drawing_path.clone(), drawing));
                 drawing_path_to_idx.insert(drawing_path, idx);
@@ -183,7 +203,7 @@ impl Workbook {
 
         for (drawing_idx, (drawing_path, _)) in drawings.iter().enumerate() {
             let drawing_rels_path = relationship_part_path(drawing_path);
-            let Ok(rels) = read_xml_part::<Relationships>(&mut archive, &drawing_rels_path) else {
+            let Ok(rels) = read_xml_part::<Relationships, _>(archive, &drawing_rels_path) else {
                 continue;
             };
 
@@ -191,10 +211,10 @@ impl Workbook {
                 if rel.rel_type == rel_types::CHART {
                     let chart_path = resolve_relationship_target(drawing_path, &rel.target);
                     if seen_chart_paths.insert(chart_path.clone()) {
-                        match read_xml_part::<ChartSpace>(&mut archive, &chart_path) {
+                        match read_xml_part::<ChartSpace, _>(archive, &chart_path) {
                             Ok(chart) => charts.push((chart_path, chart)),
                             Err(_) => {
-                                if let Ok(bytes) = read_bytes_part(&mut archive, &chart_path) {
+                                if let Ok(bytes) = read_bytes_part(archive, &chart_path) {
                                     raw_charts.push((chart_path, bytes));
                                 }
                             }
@@ -203,7 +223,7 @@ impl Workbook {
                 } else if rel.rel_type == rel_types::IMAGE {
                     let image_path = resolve_relationship_target(drawing_path, &rel.target);
                     if seen_image_paths.insert(image_path.clone()) {
-                        if let Ok(bytes) = read_bytes_part(&mut archive, &image_path) {
+                        if let Ok(bytes) = read_bytes_part(archive, &image_path) {
                             images.push((image_path, bytes));
                         }
                     }
@@ -221,10 +241,10 @@ impl Workbook {
             }
             let chart_path = ovr.part_name.trim_start_matches('/').to_string();
             if seen_chart_paths.insert(chart_path.clone()) {
-                match read_xml_part::<ChartSpace>(&mut archive, &chart_path) {
+                match read_xml_part::<ChartSpace, _>(archive, &chart_path) {
                     Ok(chart) => charts.push((chart_path, chart)),
                     Err(_) => {
-                        if let Ok(bytes) = read_bytes_part(&mut archive, &chart_path) {
+                        if let Ok(bytes) = read_bytes_part(archive, &chart_path) {
                             raw_charts.push((chart_path, bytes));
                         }
                     }
@@ -233,7 +253,7 @@ impl Workbook {
         }
 
         // Parse docProps/core.xml (optional - uses manual XML parsing)
-        let core_properties = read_string_part(&mut archive, "docProps/core.xml")
+        let core_properties = read_string_part(archive, "docProps/core.xml")
             .ok()
             .and_then(|xml_str| {
                 sheetkit_xml::doc_props::deserialize_core_properties(&xml_str).ok()
@@ -241,10 +261,10 @@ impl Workbook {
 
         // Parse docProps/app.xml (optional - uses serde)
         let app_properties: Option<sheetkit_xml::doc_props::ExtendedProperties> =
-            read_xml_part(&mut archive, "docProps/app.xml").ok();
+            read_xml_part(archive, "docProps/app.xml").ok();
 
         // Parse docProps/custom.xml (optional - uses manual XML parsing)
-        let custom_properties = read_string_part(&mut archive, "docProps/custom.xml")
+        let custom_properties = read_string_part(archive, "docProps/custom.xml")
             .ok()
             .and_then(|xml_str| {
                 sheetkit_xml::doc_props::deserialize_custom_properties(&xml_str).ok()
@@ -257,24 +277,21 @@ impl Workbook {
         for ovr in &content_types.overrides {
             let path = ovr.part_name.trim_start_matches('/');
             if ovr.content_type == mime_types::PIVOT_CACHE_DEFINITION {
-                if let Ok(pcd) = read_xml_part::<sheetkit_xml::pivot_cache::PivotCacheDefinition>(
-                    &mut archive,
-                    path,
+                if let Ok(pcd) = read_xml_part::<sheetkit_xml::pivot_cache::PivotCacheDefinition, _>(
+                    archive, path,
                 ) {
                     pivot_cache_defs.push((path.to_string(), pcd));
                 }
             } else if ovr.content_type == mime_types::PIVOT_TABLE {
-                if let Ok(pt) = read_xml_part::<sheetkit_xml::pivot_table::PivotTableDefinition>(
-                    &mut archive,
-                    path,
+                if let Ok(pt) = read_xml_part::<sheetkit_xml::pivot_table::PivotTableDefinition, _>(
+                    archive, path,
                 ) {
                     pivot_tables.push((path.to_string(), pt));
                 }
             } else if ovr.content_type == mime_types::PIVOT_CACHE_RECORDS {
-                if let Ok(pcr) = read_xml_part::<sheetkit_xml::pivot_cache::PivotCacheRecords>(
-                    &mut archive,
-                    path,
-                ) {
+                if let Ok(pcr) =
+                    read_xml_part::<sheetkit_xml::pivot_cache::PivotCacheRecords, _>(archive, path)
+                {
                     pivot_cache_records.push((path.to_string(), pcr));
                 }
             }
@@ -284,7 +301,7 @@ impl Workbook {
         let mut sheet_sparklines: Vec<Vec<crate::sparkline::SparklineConfig>> =
             vec![vec![]; worksheets.len()];
         for (i, ws_path) in worksheet_paths.iter().enumerate() {
-            if let Ok(raw) = read_string_part(&mut archive, ws_path) {
+            if let Ok(raw) = read_string_part(archive, ws_path) {
                 let parsed = parse_sparklines_from_xml(&raw);
                 if !parsed.is_empty() {
                     sheet_sparklines[i] = parsed;
@@ -327,6 +344,52 @@ impl Workbook {
         let file = std::fs::File::create(path)?;
         let mut zip = zip::ZipWriter::new(file);
         let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+        self.write_zip_contents(&mut zip, options)?;
+        zip.finish().map_err(|e| Error::Zip(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Open an encrypted `.xlsx` file using a password.
+    ///
+    /// The file must be in OLE/CFB container format. Supports both Standard
+    /// Encryption (Office 2007, AES-128-ECB) and Agile Encryption (Office
+    /// 2010+, AES-256-CBC).
+    #[cfg(feature = "encryption")]
+    pub fn open_with_password<P: AsRef<Path>>(path: P, password: &str) -> Result<Self> {
+        let data = std::fs::read(path.as_ref())?;
+        let decrypted_zip = crate::crypt::decrypt_xlsx(&data, password)?;
+        let cursor = std::io::Cursor::new(decrypted_zip);
+        let mut archive = zip::ZipArchive::new(cursor).map_err(|e| Error::Zip(e.to_string()))?;
+        Self::from_archive(&mut archive)
+    }
+
+    /// Save the workbook as an encrypted `.xlsx` file using Agile Encryption
+    /// (AES-256-CBC + SHA-512, 100K iterations).
+    #[cfg(feature = "encryption")]
+    pub fn save_with_password<P: AsRef<Path>>(&self, path: P, password: &str) -> Result<()> {
+        // First, serialize to an in-memory ZIP buffer
+        let mut zip_buf = Vec::new();
+        {
+            let cursor = std::io::Cursor::new(&mut zip_buf);
+            let mut zip = zip::ZipWriter::new(cursor);
+            let options =
+                SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+            self.write_zip_contents(&mut zip, options)?;
+            zip.finish().map_err(|e| Error::Zip(e.to_string()))?;
+        }
+
+        // Encrypt and write to CFB container
+        let cfb_data = crate::crypt::encrypt_xlsx(&zip_buf, password)?;
+        std::fs::write(path.as_ref(), &cfb_data)?;
+        Ok(())
+    }
+
+    /// Write all workbook parts into the given ZIP writer.
+    fn write_zip_contents<W: std::io::Write + std::io::Seek>(
+        &self,
+        zip: &mut zip::ZipWriter<W>,
+        options: SimpleFileOptions,
+    ) -> Result<()> {
         let mut content_types = self.content_types.clone();
         let mut worksheet_rels = self.worksheet_rels.clone();
 
@@ -433,17 +496,17 @@ impl Workbook {
         }
 
         // [Content_Types].xml
-        write_xml_part(&mut zip, "[Content_Types].xml", &content_types, options)?;
+        write_xml_part(zip, "[Content_Types].xml", &content_types, options)?;
 
         // _rels/.rels
-        write_xml_part(&mut zip, "_rels/.rels", &self.package_rels, options)?;
+        write_xml_part(zip, "_rels/.rels", &self.package_rels, options)?;
 
         // xl/workbook.xml
-        write_xml_part(&mut zip, "xl/workbook.xml", &self.workbook_xml, options)?;
+        write_xml_part(zip, "xl/workbook.xml", &self.workbook_xml, options)?;
 
         // xl/_rels/workbook.xml.rels
         write_xml_part(
-            &mut zip,
+            zip,
             "xl/_rels/workbook.xml.rels",
             &self.workbook_rels,
             options,
@@ -456,7 +519,7 @@ impl Workbook {
             let needs_legacy_drawing = legacy_drawing_rids.contains_key(&i);
 
             if !needs_legacy_drawing && sparklines.is_empty() {
-                write_xml_part(&mut zip, &entry_name, ws, options)?;
+                write_xml_part(zip, &entry_name, ws, options)?;
             } else {
                 let mut ws_clone = ws.clone();
                 if let Some(rid) = legacy_drawing_rids.get(&i) {
@@ -464,7 +527,7 @@ impl Workbook {
                         Some(sheetkit_xml::worksheet::LegacyDrawingRef { r_id: rid.clone() });
                 }
                 if sparklines.is_empty() {
-                    write_xml_part(&mut zip, &entry_name, &ws_clone, options)?;
+                    write_xml_part(zip, &entry_name, &ws_clone, options)?;
                 } else {
                     let xml = serialize_worksheet_with_sparklines(&ws_clone, &sparklines)?;
                     zip.start_file(&entry_name, options)
@@ -475,17 +538,17 @@ impl Workbook {
         }
 
         // xl/styles.xml
-        write_xml_part(&mut zip, "xl/styles.xml", &self.stylesheet, options)?;
+        write_xml_part(zip, "xl/styles.xml", &self.stylesheet, options)?;
 
         // xl/sharedStrings.xml -- write from the runtime SST
         let sst_xml = self.sst_runtime.to_sst();
-        write_xml_part(&mut zip, "xl/sharedStrings.xml", &sst_xml, options)?;
+        write_xml_part(zip, "xl/sharedStrings.xml", &sst_xml, options)?;
 
         // xl/comments{N}.xml -- write per-sheet comments
         for (i, comments) in self.sheet_comments.iter().enumerate() {
             if let Some(ref c) = comments {
                 let entry_name = format!("xl/comments{}.xml", i + 1);
-                write_xml_part(&mut zip, &entry_name, c, options)?;
+                write_xml_part(zip, &entry_name, c, options)?;
             }
         }
 
@@ -498,12 +561,12 @@ impl Workbook {
 
         // xl/drawings/drawing{N}.xml -- write drawing parts
         for (path, drawing) in &self.drawings {
-            write_xml_part(&mut zip, path, drawing, options)?;
+            write_xml_part(zip, path, drawing, options)?;
         }
 
         // xl/charts/chart{N}.xml -- write chart parts
         for (path, chart) in &self.charts {
-            write_xml_part(&mut zip, path, chart, options)?;
+            write_xml_part(zip, path, chart, options)?;
         }
         for (path, data) in &self.raw_charts {
             if self.charts.iter().any(|(p, _)| p == path) {
@@ -525,30 +588,30 @@ impl Workbook {
         for (sheet_idx, rels) in &worksheet_rels {
             let sheet_path = self.sheet_part_path(*sheet_idx);
             let path = relationship_part_path(&sheet_path);
-            write_xml_part(&mut zip, &path, rels, options)?;
+            write_xml_part(zip, &path, rels, options)?;
         }
 
         // xl/drawings/_rels/drawing{N}.xml.rels -- write drawing relationships
         for (drawing_idx, rels) in &self.drawing_rels {
             if let Some((drawing_path, _)) = self.drawings.get(*drawing_idx) {
                 let path = relationship_part_path(drawing_path);
-                write_xml_part(&mut zip, &path, rels, options)?;
+                write_xml_part(zip, &path, rels, options)?;
             }
         }
 
         // xl/pivotTables/pivotTable{N}.xml
         for (path, pt) in &self.pivot_tables {
-            write_xml_part(&mut zip, path, pt, options)?;
+            write_xml_part(zip, path, pt, options)?;
         }
 
         // xl/pivotCache/pivotCacheDefinition{N}.xml
         for (path, pcd) in &self.pivot_cache_defs {
-            write_xml_part(&mut zip, path, pcd, options)?;
+            write_xml_part(zip, path, pcd, options)?;
         }
 
         // xl/pivotCache/pivotCacheRecords{N}.xml
         for (path, pcr) in &self.pivot_cache_records {
-            write_xml_part(&mut zip, path, pcr, options)?;
+            write_xml_part(zip, path, pcr, options)?;
         }
 
         // xl/theme/theme1.xml
@@ -570,7 +633,7 @@ impl Workbook {
 
         // docProps/app.xml
         if let Some(ref props) = self.app_properties {
-            write_xml_part(&mut zip, "docProps/app.xml", props, options)?;
+            write_xml_part(zip, "docProps/app.xml", props, options)?;
         }
 
         // docProps/custom.xml
@@ -581,7 +644,6 @@ impl Workbook {
             zip.write_all(xml_str.as_bytes())?;
         }
 
-        zip.finish().map_err(|e| Error::Zip(e.to_string()))?;
         Ok(())
     }
 }
@@ -599,8 +661,8 @@ pub(crate) fn serialize_xml<T: Serialize>(value: &T) -> Result<String> {
 }
 
 /// Read a ZIP entry and deserialize it from XML.
-pub(crate) fn read_xml_part<T: serde::de::DeserializeOwned>(
-    archive: &mut zip::ZipArchive<std::fs::File>,
+pub(crate) fn read_xml_part<T: serde::de::DeserializeOwned, R: std::io::Read + std::io::Seek>(
+    archive: &mut zip::ZipArchive<R>,
     name: &str,
 ) -> Result<T> {
     let mut entry = archive
@@ -614,8 +676,8 @@ pub(crate) fn read_xml_part<T: serde::de::DeserializeOwned>(
 }
 
 /// Read a ZIP entry as a raw string (no serde deserialization).
-pub(crate) fn read_string_part(
-    archive: &mut zip::ZipArchive<std::fs::File>,
+pub(crate) fn read_string_part<R: std::io::Read + std::io::Seek>(
+    archive: &mut zip::ZipArchive<R>,
     name: &str,
 ) -> Result<String> {
     let mut entry = archive
@@ -629,8 +691,8 @@ pub(crate) fn read_string_part(
 }
 
 /// Read a ZIP entry as raw bytes.
-pub(crate) fn read_bytes_part(
-    archive: &mut zip::ZipArchive<std::fs::File>,
+pub(crate) fn read_bytes_part<R: std::io::Read + std::io::Seek>(
+    archive: &mut zip::ZipArchive<R>,
     name: &str,
 ) -> Result<Vec<u8>> {
     let mut entry = archive
@@ -932,5 +994,61 @@ mod tests {
         let xml = serialize_xml(&ct).unwrap();
         assert!(xml.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"));
         assert!(xml.contains("<Types"));
+    }
+
+    #[cfg(feature = "encryption")]
+    #[test]
+    fn test_save_and_open_with_password_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("encrypted.xlsx");
+
+        // Create a workbook with some data
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", CellValue::String("Hello".to_string()))
+            .unwrap();
+        wb.set_cell_value("Sheet1", "B2", CellValue::Number(42.0))
+            .unwrap();
+
+        // Save with password
+        wb.save_with_password(&path, "test123").unwrap();
+
+        // Verify it's a CFB file, not a ZIP
+        let data = std::fs::read(&path).unwrap();
+        assert_eq!(
+            &data[..8],
+            &[0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]
+        );
+
+        // Open without password should fail
+        let result = Workbook::open(&path);
+        assert!(matches!(result, Err(Error::FileEncrypted)));
+
+        // Open with wrong password should fail
+        let result = Workbook::open_with_password(&path, "wrong");
+        assert!(matches!(result, Err(Error::IncorrectPassword)));
+
+        // Open with correct password should succeed
+        let wb2 = Workbook::open_with_password(&path, "test123").unwrap();
+        assert_eq!(
+            wb2.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("Hello".to_string())
+        );
+        assert_eq!(
+            wb2.get_cell_value("Sheet1", "B2").unwrap(),
+            CellValue::Number(42.0)
+        );
+    }
+
+    #[cfg(feature = "encryption")]
+    #[test]
+    fn test_open_encrypted_file_without_password_returns_file_encrypted() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("encrypted2.xlsx");
+
+        let wb = Workbook::new();
+        wb.save_with_password(&path, "secret").unwrap();
+
+        let result = Workbook::open(&path);
+        assert!(matches!(result, Err(Error::FileEncrypted)))
     }
 }
