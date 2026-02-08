@@ -22,6 +22,9 @@ pub struct WorkbookXml {
     #[serde(rename = "workbookPr", skip_serializing_if = "Option::is_none")]
     pub workbook_pr: Option<WorkbookPr>,
 
+    #[serde(rename = "workbookProtection", skip_serializing_if = "Option::is_none")]
+    pub workbook_protection: Option<WorkbookProtection>,
+
     #[serde(rename = "bookViews", skip_serializing_if = "Option::is_none")]
     pub book_views: Option<BookViews>,
 
@@ -65,6 +68,66 @@ pub struct WorkbookPr {
         skip_serializing_if = "Option::is_none"
     )]
     pub default_theme_version: Option<u32>,
+
+    #[serde(rename = "@showObjects", skip_serializing_if = "Option::is_none")]
+    pub show_objects: Option<String>,
+
+    #[serde(rename = "@backupFile", skip_serializing_if = "Option::is_none")]
+    pub backup_file: Option<bool>,
+
+    #[serde(rename = "@codeName", skip_serializing_if = "Option::is_none")]
+    pub code_name: Option<String>,
+
+    #[serde(
+        rename = "@checkCompatibility",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub check_compatibility: Option<bool>,
+
+    #[serde(
+        rename = "@autoCompressPictures",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub auto_compress_pictures: Option<bool>,
+
+    #[serde(
+        rename = "@saveExternalLinkValues",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub save_external_link_values: Option<bool>,
+
+    #[serde(rename = "@updateLinks", skip_serializing_if = "Option::is_none")]
+    pub update_links: Option<String>,
+
+    #[serde(
+        rename = "@hidePivotFieldList",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub hide_pivot_field_list: Option<bool>,
+
+    #[serde(
+        rename = "@showPivotChartFilter",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub show_pivot_chart_filter: Option<bool>,
+
+    #[serde(rename = "@allowRefreshQuery", skip_serializing_if = "Option::is_none")]
+    pub allow_refresh_query: Option<bool>,
+
+    #[serde(rename = "@publishItems", skip_serializing_if = "Option::is_none")]
+    pub publish_items: Option<bool>,
+
+    #[serde(
+        rename = "@showBorderUnselectedTables",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub show_border_unselected_tables: Option<bool>,
+
+    #[serde(rename = "@promptedSolutions", skip_serializing_if = "Option::is_none")]
+    pub prompted_solutions: Option<bool>,
+
+    #[serde(rename = "@showInkAnnotation", skip_serializing_if = "Option::is_none")]
+    pub show_ink_annotation: Option<bool>,
 }
 
 /// Book views container.
@@ -139,6 +202,25 @@ pub struct DefinedName {
     pub value: String,
 }
 
+/// Workbook-level protection settings.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WorkbookProtection {
+    #[serde(rename = "@workbookPassword", skip_serializing_if = "Option::is_none")]
+    pub workbook_password: Option<String>,
+
+    #[serde(rename = "@lockStructure", skip_serializing_if = "Option::is_none")]
+    pub lock_structure: Option<bool>,
+
+    #[serde(rename = "@lockWindows", skip_serializing_if = "Option::is_none")]
+    pub lock_windows: Option<bool>,
+
+    #[serde(rename = "@revisionsPassword", skip_serializing_if = "Option::is_none")]
+    pub revisions_password: Option<String>,
+
+    #[serde(rename = "@lockRevision", skip_serializing_if = "Option::is_none")]
+    pub lock_revision: Option<bool>,
+}
+
 /// Calculation properties.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CalcPr {
@@ -150,6 +232,39 @@ pub struct CalcPr {
 
     #[serde(rename = "@fullCalcOnLoad", skip_serializing_if = "Option::is_none")]
     pub full_calc_on_load: Option<bool>,
+
+    #[serde(rename = "@refMode", skip_serializing_if = "Option::is_none")]
+    pub ref_mode: Option<String>,
+
+    #[serde(rename = "@iterate", skip_serializing_if = "Option::is_none")]
+    pub iterate: Option<bool>,
+
+    #[serde(rename = "@iterateCount", skip_serializing_if = "Option::is_none")]
+    pub iterate_count: Option<u32>,
+
+    #[serde(rename = "@iterateDelta", skip_serializing_if = "Option::is_none")]
+    pub iterate_delta: Option<f64>,
+
+    #[serde(rename = "@fullPrecision", skip_serializing_if = "Option::is_none")]
+    pub full_precision: Option<bool>,
+
+    #[serde(rename = "@calcCompleted", skip_serializing_if = "Option::is_none")]
+    pub calc_completed: Option<bool>,
+
+    #[serde(rename = "@calcOnSave", skip_serializing_if = "Option::is_none")]
+    pub calc_on_save: Option<bool>,
+
+    #[serde(rename = "@concurrentCalc", skip_serializing_if = "Option::is_none")]
+    pub concurrent_calc: Option<bool>,
+
+    #[serde(
+        rename = "@concurrentManualCount",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub concurrent_manual_count: Option<u32>,
+
+    #[serde(rename = "@forceFullCalc", skip_serializing_if = "Option::is_none")]
+    pub force_full_calc: Option<bool>,
 }
 
 impl Default for WorkbookXml {
@@ -159,6 +274,7 @@ impl Default for WorkbookXml {
             xmlns_r: namespaces::RELATIONSHIPS.to_string(),
             file_version: None,
             workbook_pr: None,
+            workbook_protection: None,
             book_views: None,
             sheets: Sheets {
                 sheets: vec![SheetEntry {
@@ -190,6 +306,7 @@ mod tests {
         assert!(wb.sheets.sheets[0].state.is_none());
         assert!(wb.file_version.is_none());
         assert!(wb.workbook_pr.is_none());
+        assert!(wb.workbook_protection.is_none());
         assert!(wb.book_views.is_none());
         assert!(wb.defined_names.is_none());
         assert!(wb.calc_pr.is_none());
@@ -228,6 +345,7 @@ mod tests {
         let xml = quick_xml::se::to_string(&wb).unwrap();
         assert!(!xml.contains("fileVersion"));
         assert!(!xml.contains("workbookPr"));
+        assert!(!xml.contains("workbookProtection"));
         assert!(!xml.contains("bookViews"));
         assert!(!xml.contains("definedNames"));
         assert!(!xml.contains("calcPr"));
@@ -248,7 +366,22 @@ mod tests {
                 date1904: Some(false),
                 filter_privacy: None,
                 default_theme_version: Some(166925),
+                show_objects: None,
+                backup_file: None,
+                code_name: None,
+                check_compatibility: None,
+                auto_compress_pictures: None,
+                save_external_link_values: None,
+                update_links: None,
+                hide_pivot_field_list: None,
+                show_pivot_chart_filter: None,
+                allow_refresh_query: None,
+                publish_items: None,
+                show_border_unselected_tables: None,
+                prompted_solutions: None,
+                show_ink_annotation: None,
             }),
+            workbook_protection: None,
             book_views: Some(BookViews {
                 workbook_views: vec![WorkbookView {
                     x_window: Some(0),
@@ -271,6 +404,16 @@ mod tests {
                 calc_id: Some(191029),
                 calc_mode: None,
                 full_calc_on_load: None,
+                ref_mode: None,
+                iterate: None,
+                iterate_count: None,
+                iterate_delta: None,
+                full_precision: None,
+                calc_completed: None,
+                calc_on_save: None,
+                concurrent_calc: None,
+                concurrent_manual_count: None,
+                force_full_calc: None,
             }),
         };
 
@@ -349,5 +492,191 @@ mod tests {
         };
         let xml = quick_xml::se::to_string(&entry).unwrap();
         assert!(!xml.contains("state"));
+    }
+
+    #[test]
+    fn test_extended_workbook_pr_roundtrip() {
+        let pr = WorkbookPr {
+            date1904: Some(false),
+            filter_privacy: Some(true),
+            default_theme_version: Some(166925),
+            show_objects: Some("all".to_string()),
+            backup_file: Some(true),
+            code_name: Some("ThisWorkbook".to_string()),
+            check_compatibility: Some(true),
+            auto_compress_pictures: Some(false),
+            save_external_link_values: Some(true),
+            update_links: Some("always".to_string()),
+            hide_pivot_field_list: Some(false),
+            show_pivot_chart_filter: Some(true),
+            allow_refresh_query: Some(true),
+            publish_items: Some(false),
+            show_border_unselected_tables: Some(true),
+            prompted_solutions: Some(false),
+            show_ink_annotation: Some(true),
+        };
+        let xml = quick_xml::se::to_string(&pr).unwrap();
+        let parsed: WorkbookPr = quick_xml::de::from_str(&xml).unwrap();
+        assert_eq!(pr, parsed);
+        assert!(xml.contains("showObjects=\"all\""));
+        assert!(xml.contains("backupFile=\"true\""));
+        assert!(xml.contains("codeName=\"ThisWorkbook\""));
+        assert!(xml.contains("checkCompatibility=\"true\""));
+        assert!(xml.contains("autoCompressPictures=\"false\""));
+        assert!(xml.contains("saveExternalLinkValues=\"true\""));
+        assert!(xml.contains("updateLinks=\"always\""));
+        assert!(xml.contains("hidePivotFieldList=\"false\""));
+        assert!(xml.contains("showPivotChartFilter=\"true\""));
+        assert!(xml.contains("allowRefreshQuery=\"true\""));
+        assert!(xml.contains("publishItems=\"false\""));
+        assert!(xml.contains("showBorderUnselectedTables=\"true\""));
+        assert!(xml.contains("promptedSolutions=\"false\""));
+        assert!(xml.contains("showInkAnnotation=\"true\""));
+    }
+
+    #[test]
+    fn test_extended_calc_pr_roundtrip() {
+        let calc = CalcPr {
+            calc_id: Some(191029),
+            calc_mode: Some("auto".to_string()),
+            full_calc_on_load: Some(true),
+            ref_mode: Some("A1".to_string()),
+            iterate: Some(true),
+            iterate_count: Some(100),
+            iterate_delta: Some(0.001),
+            full_precision: Some(true),
+            calc_completed: Some(true),
+            calc_on_save: Some(true),
+            concurrent_calc: Some(true),
+            concurrent_manual_count: Some(4),
+            force_full_calc: Some(false),
+        };
+        let xml = quick_xml::se::to_string(&calc).unwrap();
+        let parsed: CalcPr = quick_xml::de::from_str(&xml).unwrap();
+        assert_eq!(calc, parsed);
+        assert!(xml.contains("refMode=\"A1\""));
+        assert!(xml.contains("iterate=\"true\""));
+        assert!(xml.contains("iterateCount=\"100\""));
+        assert!(xml.contains("iterateDelta=\"0.001\""));
+        assert!(xml.contains("fullPrecision=\"true\""));
+        assert!(xml.contains("calcCompleted=\"true\""));
+        assert!(xml.contains("calcOnSave=\"true\""));
+        assert!(xml.contains("concurrentCalc=\"true\""));
+        assert!(xml.contains("concurrentManualCount=\"4\""));
+        assert!(xml.contains("forceFullCalc=\"false\""));
+    }
+
+    #[test]
+    fn test_workbook_protection_roundtrip() {
+        let prot = WorkbookProtection {
+            workbook_password: Some("ABCD".to_string()),
+            lock_structure: Some(true),
+            lock_windows: Some(false),
+            revisions_password: Some("1234".to_string()),
+            lock_revision: Some(true),
+        };
+        let xml = quick_xml::se::to_string(&prot).unwrap();
+        let parsed: WorkbookProtection = quick_xml::de::from_str(&xml).unwrap();
+        assert_eq!(prot, parsed);
+        assert!(xml.contains("workbookPassword=\"ABCD\""));
+        assert!(xml.contains("lockStructure=\"true\""));
+        assert!(xml.contains("lockWindows=\"false\""));
+        assert!(xml.contains("revisionsPassword=\"1234\""));
+        assert!(xml.contains("lockRevision=\"true\""));
+    }
+
+    #[test]
+    fn test_workbook_protection_optional_fields_skipped() {
+        let prot = WorkbookProtection {
+            workbook_password: None,
+            lock_structure: Some(true),
+            lock_windows: None,
+            revisions_password: None,
+            lock_revision: None,
+        };
+        let xml = quick_xml::se::to_string(&prot).unwrap();
+        assert!(!xml.contains("workbookPassword"));
+        assert!(xml.contains("lockStructure=\"true\""));
+        assert!(!xml.contains("lockWindows"));
+        assert!(!xml.contains("revisionsPassword"));
+        assert!(!xml.contains("lockRevision"));
+    }
+
+    #[test]
+    fn test_workbook_xml_with_protection_roundtrip() {
+        let wb = WorkbookXml {
+            workbook_protection: Some(WorkbookProtection {
+                workbook_password: Some("CC23".to_string()),
+                lock_structure: Some(true),
+                lock_windows: None,
+                revisions_password: None,
+                lock_revision: None,
+            }),
+            ..WorkbookXml::default()
+        };
+        let xml = quick_xml::se::to_string(&wb).unwrap();
+        let parsed: WorkbookXml = quick_xml::de::from_str(&xml).unwrap();
+        assert!(parsed.workbook_protection.is_some());
+        let prot = parsed.workbook_protection.unwrap();
+        assert_eq!(prot.workbook_password, Some("CC23".to_string()));
+        assert_eq!(prot.lock_structure, Some(true));
+    }
+
+    #[test]
+    fn test_workbook_xml_element_order() {
+        let wb = WorkbookXml {
+            workbook_pr: Some(WorkbookPr {
+                date1904: Some(false),
+                filter_privacy: None,
+                default_theme_version: None,
+                show_objects: None,
+                backup_file: None,
+                code_name: None,
+                check_compatibility: None,
+                auto_compress_pictures: None,
+                save_external_link_values: None,
+                update_links: None,
+                hide_pivot_field_list: None,
+                show_pivot_chart_filter: None,
+                allow_refresh_query: None,
+                publish_items: None,
+                show_border_unselected_tables: None,
+                prompted_solutions: None,
+                show_ink_annotation: None,
+            }),
+            workbook_protection: Some(WorkbookProtection {
+                workbook_password: None,
+                lock_structure: Some(true),
+                lock_windows: None,
+                revisions_password: None,
+                lock_revision: None,
+            }),
+            book_views: Some(BookViews {
+                workbook_views: vec![WorkbookView {
+                    x_window: Some(0),
+                    y_window: Some(0),
+                    window_width: Some(28800),
+                    window_height: Some(12210),
+                    active_tab: None,
+                }],
+            }),
+            ..WorkbookXml::default()
+        };
+        let xml = quick_xml::se::to_string(&wb).unwrap();
+        let pr_pos = xml
+            .find("workbookPr")
+            .expect("workbookPr should be present");
+        let prot_pos = xml
+            .find("workbookProtection")
+            .expect("workbookProtection should be present");
+        let bv_pos = xml.find("bookViews").expect("bookViews should be present");
+        assert!(
+            pr_pos < prot_pos,
+            "workbookPr ({pr_pos}) should come before workbookProtection ({prot_pos})"
+        );
+        assert!(
+            prot_pos < bv_pos,
+            "workbookProtection ({prot_pos}) should come before bookViews ({bv_pos})"
+        );
     }
 }

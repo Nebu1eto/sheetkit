@@ -119,6 +119,8 @@ pub mod mime_types {
     pub const CORE_PROPERTIES: &str = "application/vnd.openxmlformats-package.core-properties+xml";
     pub const EXTENDED_PROPERTIES: &str =
         "application/vnd.openxmlformats-officedocument.extended-properties+xml";
+    pub const CUSTOM_PROPERTIES: &str =
+        "application/vnd.openxmlformats-officedocument.custom-properties+xml";
 }
 
 #[cfg(test)]
