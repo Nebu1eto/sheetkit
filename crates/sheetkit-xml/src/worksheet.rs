@@ -43,17 +43,33 @@ pub struct WorksheetXml {
     #[serde(rename = "mergeCells", skip_serializing_if = "Option::is_none")]
     pub merge_cells: Option<MergeCells>,
 
+    #[serde(
+        rename = "conditionalFormatting",
+        default,
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub conditional_formatting: Vec<ConditionalFormatting>,
+
     #[serde(rename = "dataValidations", skip_serializing_if = "Option::is_none")]
     pub data_validations: Option<DataValidations>,
 
     #[serde(rename = "hyperlinks", skip_serializing_if = "Option::is_none")]
     pub hyperlinks: Option<Hyperlinks>,
 
+    #[serde(rename = "printOptions", skip_serializing_if = "Option::is_none")]
+    pub print_options: Option<PrintOptions>,
+
     #[serde(rename = "pageMargins", skip_serializing_if = "Option::is_none")]
     pub page_margins: Option<PageMargins>,
 
     #[serde(rename = "pageSetup", skip_serializing_if = "Option::is_none")]
     pub page_setup: Option<PageSetup>,
+
+    #[serde(rename = "headerFooter", skip_serializing_if = "Option::is_none")]
+    pub header_footer: Option<HeaderFooter>,
+
+    #[serde(rename = "rowBreaks", skip_serializing_if = "Option::is_none")]
+    pub row_breaks: Option<RowBreaks>,
 
     #[serde(rename = "drawing", skip_serializing_if = "Option::is_none")]
     pub drawing: Option<DrawingRef>,
@@ -514,12 +530,85 @@ pub struct PageSetup {
     #[serde(rename = "@orientation", skip_serializing_if = "Option::is_none")]
     pub orientation: Option<String>,
 
+    #[serde(rename = "@scale", skip_serializing_if = "Option::is_none")]
+    pub scale: Option<u32>,
+
+    #[serde(rename = "@fitToWidth", skip_serializing_if = "Option::is_none")]
+    pub fit_to_width: Option<u32>,
+
+    #[serde(rename = "@fitToHeight", skip_serializing_if = "Option::is_none")]
+    pub fit_to_height: Option<u32>,
+
+    #[serde(rename = "@firstPageNumber", skip_serializing_if = "Option::is_none")]
+    pub first_page_number: Option<u32>,
+
+    #[serde(rename = "@horizontalDpi", skip_serializing_if = "Option::is_none")]
+    pub horizontal_dpi: Option<u32>,
+
+    #[serde(rename = "@verticalDpi", skip_serializing_if = "Option::is_none")]
+    pub vertical_dpi: Option<u32>,
+
     #[serde(
         rename = "@r:id",
         alias = "@id",
         skip_serializing_if = "Option::is_none"
     )]
     pub r_id: Option<String>,
+}
+
+/// Header and footer for printing.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HeaderFooter {
+    #[serde(rename = "oddHeader", skip_serializing_if = "Option::is_none")]
+    pub odd_header: Option<String>,
+
+    #[serde(rename = "oddFooter", skip_serializing_if = "Option::is_none")]
+    pub odd_footer: Option<String>,
+}
+
+/// Print options.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PrintOptions {
+    #[serde(rename = "@gridLines", skip_serializing_if = "Option::is_none")]
+    pub grid_lines: Option<bool>,
+
+    #[serde(rename = "@headings", skip_serializing_if = "Option::is_none")]
+    pub headings: Option<bool>,
+
+    #[serde(
+        rename = "@horizontalCentered",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub horizontal_centered: Option<bool>,
+
+    #[serde(rename = "@verticalCentered", skip_serializing_if = "Option::is_none")]
+    pub vertical_centered: Option<bool>,
+}
+
+/// Row page breaks container.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RowBreaks {
+    #[serde(rename = "@count", skip_serializing_if = "Option::is_none")]
+    pub count: Option<u32>,
+
+    #[serde(rename = "@manualBreakCount", skip_serializing_if = "Option::is_none")]
+    pub manual_break_count: Option<u32>,
+
+    #[serde(rename = "brk", default)]
+    pub brk: Vec<Break>,
+}
+
+/// Individual page break entry.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Break {
+    #[serde(rename = "@id")]
+    pub id: u32,
+
+    #[serde(rename = "@max", skip_serializing_if = "Option::is_none")]
+    pub max: Option<u32>,
+
+    #[serde(rename = "@man", skip_serializing_if = "Option::is_none")]
+    pub man: Option<bool>,
 }
 
 /// Drawing reference.
@@ -546,6 +635,121 @@ pub struct TablePart {
     pub r_id: String,
 }
 
+/// Conditional formatting container.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConditionalFormatting {
+    #[serde(rename = "@sqref")]
+    pub sqref: String,
+
+    #[serde(rename = "cfRule", default)]
+    pub cf_rules: Vec<CfRule>,
+}
+
+/// Conditional formatting rule.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CfRule {
+    #[serde(rename = "@type")]
+    pub rule_type: String,
+
+    #[serde(rename = "@dxfId", skip_serializing_if = "Option::is_none")]
+    pub dxf_id: Option<u32>,
+
+    #[serde(rename = "@priority")]
+    pub priority: u32,
+
+    #[serde(rename = "@operator", skip_serializing_if = "Option::is_none")]
+    pub operator: Option<String>,
+
+    #[serde(rename = "@text", skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+
+    #[serde(rename = "@stopIfTrue", skip_serializing_if = "Option::is_none")]
+    pub stop_if_true: Option<bool>,
+
+    #[serde(rename = "@aboveAverage", skip_serializing_if = "Option::is_none")]
+    pub above_average: Option<bool>,
+
+    #[serde(rename = "@equalAverage", skip_serializing_if = "Option::is_none")]
+    pub equal_average: Option<bool>,
+
+    #[serde(rename = "@percent", skip_serializing_if = "Option::is_none")]
+    pub percent: Option<bool>,
+
+    #[serde(rename = "@rank", skip_serializing_if = "Option::is_none")]
+    pub rank: Option<u32>,
+
+    #[serde(rename = "@bottom", skip_serializing_if = "Option::is_none")]
+    pub bottom: Option<bool>,
+
+    #[serde(rename = "formula", default, skip_serializing_if = "Vec::is_empty")]
+    pub formulas: Vec<String>,
+
+    #[serde(rename = "colorScale", skip_serializing_if = "Option::is_none")]
+    pub color_scale: Option<CfColorScale>,
+
+    #[serde(rename = "dataBar", skip_serializing_if = "Option::is_none")]
+    pub data_bar: Option<CfDataBar>,
+
+    #[serde(rename = "iconSet", skip_serializing_if = "Option::is_none")]
+    pub icon_set: Option<CfIconSet>,
+}
+
+/// Color scale definition for conditional formatting.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CfColorScale {
+    #[serde(rename = "cfvo", default)]
+    pub cfvos: Vec<CfVo>,
+
+    #[serde(rename = "color", default)]
+    pub colors: Vec<CfColor>,
+}
+
+/// Data bar definition for conditional formatting.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CfDataBar {
+    #[serde(rename = "@showValue", skip_serializing_if = "Option::is_none")]
+    pub show_value: Option<bool>,
+
+    #[serde(rename = "cfvo", default)]
+    pub cfvos: Vec<CfVo>,
+
+    #[serde(rename = "color", skip_serializing_if = "Option::is_none")]
+    pub color: Option<CfColor>,
+}
+
+/// Icon set definition for conditional formatting.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CfIconSet {
+    #[serde(rename = "@iconSet", skip_serializing_if = "Option::is_none")]
+    pub icon_set: Option<String>,
+
+    #[serde(rename = "cfvo", default)]
+    pub cfvos: Vec<CfVo>,
+}
+
+/// Conditional formatting value object.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CfVo {
+    #[serde(rename = "@type")]
+    pub value_type: String,
+
+    #[serde(rename = "@val", skip_serializing_if = "Option::is_none")]
+    pub val: Option<String>,
+}
+
+/// Color reference for conditional formatting.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CfColor {
+    #[serde(rename = "@rgb", skip_serializing_if = "Option::is_none")]
+    pub rgb: Option<String>,
+
+    #[serde(rename = "@theme", skip_serializing_if = "Option::is_none")]
+    pub theme: Option<u32>,
+
+    #[serde(rename = "@tint", skip_serializing_if = "Option::is_none")]
+    pub tint: Option<f64>,
+}
+
 impl Default for WorksheetXml {
     fn default() -> Self {
         Self {
@@ -560,10 +764,14 @@ impl Default for WorksheetXml {
             sheet_protection: None,
             auto_filter: None,
             merge_cells: None,
+            conditional_formatting: vec![],
             data_validations: None,
             hyperlinks: None,
+            print_options: None,
             page_margins: None,
             page_setup: None,
+            header_footer: None,
+            row_breaks: None,
             drawing: None,
             table_parts: None,
         }

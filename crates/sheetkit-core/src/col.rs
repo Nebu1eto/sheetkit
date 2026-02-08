@@ -240,6 +240,32 @@ pub fn remove_col(ws: &mut WorksheetXml, col: &str) -> Result<()> {
     Ok(())
 }
 
+/// Set the style for an entire column. The `style_id` is the ID returned by
+/// `add_style()`.
+pub fn set_col_style(ws: &mut WorksheetXml, col: &str, style_id: u32) -> Result<()> {
+    let col_num = column_name_to_number(col)?;
+    let col_entry = find_or_create_col(ws, col_num);
+    col_entry.style = Some(style_id);
+    Ok(())
+}
+
+/// Get the style ID for a column. Returns 0 (default) if the column has no
+/// explicit style set.
+pub fn get_col_style(ws: &WorksheetXml, col: &str) -> Result<u32> {
+    let col_num = column_name_to_number(col)?;
+    let style = ws
+        .cols
+        .as_ref()
+        .and_then(|cols| {
+            cols.cols
+                .iter()
+                .find(|c| col_num >= c.min && col_num <= c.max)
+        })
+        .and_then(|c| c.style)
+        .unwrap_or(0);
+    Ok(style)
+}
+
 /// Find an existing Col entry that covers exactly `col_num`, or create a
 /// new single-column entry for it.
 fn find_or_create_col(ws: &mut WorksheetXml, col_num: u32) -> &mut Col {
@@ -831,5 +857,59 @@ mod tests {
         assert_eq!(cols[0].0, "A");
         assert_eq!(cols[1].0, "B");
         assert_eq!(cols[2].0, "AA");
+    }
+
+    // -- set_col_style / get_col_style tests --
+
+    #[test]
+    fn test_get_col_style_default_is_zero() {
+        let ws = WorksheetXml::default();
+        assert_eq!(get_col_style(&ws, "A").unwrap(), 0);
+    }
+
+    #[test]
+    fn test_set_col_style_applies_style() {
+        let mut ws = WorksheetXml::default();
+        set_col_style(&mut ws, "B", 4).unwrap();
+
+        let col = &ws.cols.as_ref().unwrap().cols[0];
+        assert_eq!(col.style, Some(4));
+    }
+
+    #[test]
+    fn test_get_col_style_after_set() {
+        let mut ws = WorksheetXml::default();
+        set_col_style(&mut ws, "C", 10).unwrap();
+        assert_eq!(get_col_style(&ws, "C").unwrap(), 10);
+    }
+
+    #[test]
+    fn test_set_col_style_creates_cols_container() {
+        let mut ws = WorksheetXml::default();
+        assert!(ws.cols.is_none());
+        set_col_style(&mut ws, "A", 2).unwrap();
+        assert!(ws.cols.is_some());
+    }
+
+    #[test]
+    fn test_set_col_style_overwrite() {
+        let mut ws = WorksheetXml::default();
+        set_col_style(&mut ws, "A", 3).unwrap();
+        set_col_style(&mut ws, "A", 7).unwrap();
+        assert_eq!(get_col_style(&ws, "A").unwrap(), 7);
+    }
+
+    #[test]
+    fn test_get_col_style_invalid_column_returns_error() {
+        let ws = WorksheetXml::default();
+        let result = get_col_style(&ws, "XFE");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_set_col_style_invalid_column_returns_error() {
+        let mut ws = WorksheetXml::default();
+        let result = set_col_style(&mut ws, "XFE", 1);
+        assert!(result.is_err());
     }
 }

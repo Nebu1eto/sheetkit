@@ -7,9 +7,13 @@ use napi_derive::napi;
 use sheetkit_core::cell::CellValue;
 use sheetkit_core::chart::{ChartConfig, ChartSeries, ChartType};
 use sheetkit_core::comment::CommentConfig;
+use sheetkit_core::conditional::{
+    CfOperator, CfValueType, ConditionalFormatRule, ConditionalFormatType, ConditionalStyle,
+};
 use sheetkit_core::doc_props::{AppProperties, CustomPropertyValue, DocProperties};
 use sheetkit_core::hyperlink::{HyperlinkInfo, HyperlinkType};
 use sheetkit_core::image::{ImageConfig, ImageFormat};
+use sheetkit_core::page_layout::{Orientation, PageMarginsConfig, PaperSize};
 use sheetkit_core::protection::WorkbookProtectionConfig;
 use sheetkit_core::stream::StreamWriter;
 use sheetkit_core::style::{
@@ -161,6 +165,102 @@ pub struct JsWorkbookProtectionConfig {
     pub lock_revision: Option<bool>,
 }
 
+/// Page margins configuration in inches.
+#[napi(object)]
+pub struct JsPageMargins {
+    /// Left margin in inches (default 0.7).
+    pub left: f64,
+    /// Right margin in inches (default 0.7).
+    pub right: f64,
+    /// Top margin in inches (default 0.75).
+    pub top: f64,
+    /// Bottom margin in inches (default 0.75).
+    pub bottom: f64,
+    /// Header margin in inches (default 0.3).
+    pub header: f64,
+    /// Footer margin in inches (default 0.3).
+    pub footer: f64,
+}
+
+/// Page setup configuration.
+#[napi(object)]
+pub struct JsPageSetup {
+    /// Paper size: "letter", "tabloid", "legal", "a3", "a4", "a5", "b4", "b5".
+    pub paper_size: Option<String>,
+    /// Orientation: "portrait" or "landscape".
+    pub orientation: Option<String>,
+    /// Print scale percentage (10-400).
+    pub scale: Option<u32>,
+    /// Fit to this many pages wide.
+    pub fit_to_width: Option<u32>,
+    /// Fit to this many pages tall.
+    pub fit_to_height: Option<u32>,
+}
+
+/// Print options configuration.
+#[napi(object)]
+pub struct JsPrintOptions {
+    /// Print gridlines.
+    pub grid_lines: Option<bool>,
+    /// Print row/column headings.
+    pub headings: Option<bool>,
+    /// Center horizontally on page.
+    pub horizontal_centered: Option<bool>,
+    /// Center vertically on page.
+    pub vertical_centered: Option<bool>,
+}
+
+/// Header and footer text.
+#[napi(object)]
+pub struct JsHeaderFooter {
+    /// Header text (may use Excel formatting codes like &L, &C, &R).
+    pub header: Option<String>,
+    /// Footer text (may use Excel formatting codes like &L, &C, &R).
+    pub footer: Option<String>,
+}
+
+fn parse_paper_size(s: &str) -> Option<PaperSize> {
+    match s.to_lowercase().as_str() {
+        "letter" => Some(PaperSize::Letter),
+        "tabloid" => Some(PaperSize::Tabloid),
+        "legal" => Some(PaperSize::Legal),
+        "a3" => Some(PaperSize::A3),
+        "a4" => Some(PaperSize::A4),
+        "a5" => Some(PaperSize::A5),
+        "b4" => Some(PaperSize::B4),
+        "b5" => Some(PaperSize::B5),
+        _ => None,
+    }
+}
+
+fn paper_size_to_string(ps: &PaperSize) -> String {
+    match ps {
+        PaperSize::Letter => "letter".to_string(),
+        PaperSize::Tabloid => "tabloid".to_string(),
+        PaperSize::Legal => "legal".to_string(),
+        PaperSize::A3 => "a3".to_string(),
+        PaperSize::A4 => "a4".to_string(),
+        PaperSize::A5 => "a5".to_string(),
+        PaperSize::B4 => "b4".to_string(),
+        PaperSize::B5 => "b5".to_string(),
+    }
+}
+
+fn parse_orientation(s: &str) -> Option<Orientation> {
+    match s.to_lowercase().as_str() {
+        "portrait" => Some(Orientation::Portrait),
+        "landscape" => Some(Orientation::Landscape),
+        _ => None,
+    }
+}
+
+fn orientation_to_string(o: &Orientation) -> String {
+    match o {
+        Orientation::Portrait => "portrait".to_string(),
+        Orientation::Landscape => "landscape".to_string(),
+    }
+}
+
 #[napi(object)]
 pub struct JsHyperlinkOptions {
     /// Type of hyperlink: "external", "internal", or "email".
@@ -183,6 +283,79 @@ pub struct JsHyperlinkInfo {
     pub display: Option<String>,
     /// Optional tooltip text.
     pub tooltip: Option<String>,
+}
+
+/// Conditional formatting style (differential format).
+#[napi(object)]
+pub struct JsConditionalStyle {
+    pub font: Option<JsFontStyle>,
+    pub fill: Option<JsFillStyle>,
+    pub border: Option<JsBorderStyle>,
+    pub custom_num_fmt: Option<String>,
+}
+
+/// Conditional formatting rule configuration.
+#[napi(object)]
+pub struct JsConditionalFormatRule {
+    /// Rule type: "cellIs", "expression", "colorScale", "dataBar",
+    /// "duplicateValues", "uniqueValues", "top10", "bottom10",
+    /// "aboveAverage", "containsBlanks", "notContainsBlanks",
+    /// "containsErrors", "notContainsErrors", "containsText",
+    /// "notContainsText", "beginsWith", "endsWith".
+    pub rule_type: String,
+    /// Comparison operator for cellIs rules.
+    pub operator: Option<String>,
+    /// First formula/value.
+    pub formula: Option<String>,
+    /// Second formula/value (for between/notBetween).
+    pub formula2: Option<String>,
+    /// Text for text-based rules.
+    pub text: Option<String>,
+    /// Rank for top10/bottom10 rules.
+    pub rank: Option<u32>,
+    /// Whether rank is a percentage.
+    pub percent: Option<bool>,
+    /// Whether rule is above average (for aboveAverage rules).
+    pub above: Option<bool>,
+    /// Whether equal values count as matching (for aboveAverage rules).
+    pub equal_average: Option<bool>,
+    /// Color scale minimum value type.
+    pub min_type: Option<String>,
+    /// Color scale minimum value.
+    pub min_value: Option<String>,
+    /// Color scale minimum color (ARGB hex).
+    pub min_color: Option<String>,
+    /// Color scale middle value type.
+    pub mid_type: Option<String>,
+    /// Color scale middle value.
+    pub mid_value: Option<String>,
+    /// Color scale middle color (ARGB hex).
+    pub mid_color: Option<String>,
+    /// Color scale maximum value type.
+    pub max_type: Option<String>,
+    /// Color scale maximum value.
+    pub max_value: Option<String>,
+    /// Color scale maximum color (ARGB hex).
+    pub max_color: Option<String>,
+    /// Data bar color (ARGB hex).
+    pub bar_color: Option<String>,
+    /// Whether to show the cell value alongside the data bar.
+    pub show_value: Option<bool>,
+    /// Differential style to apply.
+    pub format: Option<JsConditionalStyle>,
+    /// Rule priority (lower = higher precedence).
+    pub priority: Option<u32>,
+    /// If true, no lower-priority rules apply when this matches.
+    pub stop_if_true: Option<bool>,
+}
+
+/// Result of getting conditional formats from a sheet.
+#[napi(object)]
+pub struct JsConditionalFormatEntry {
+    /// Cell range (e.g., "A1:A100").
+    pub sqref: String,
+    /// Rules applied to this range.
+    pub rules: Vec<JsConditionalFormatRule>,
 }
 
 /// A single cell entry with its column name and value.
@@ -656,6 +829,529 @@ fn core_app_props_to_js(props: &AppProperties) -> JsAppProperties {
     }
 }
 
+fn parse_cf_operator(s: &str) -> Option<CfOperator> {
+    match s.to_lowercase().as_str() {
+        "lessthan" => Some(CfOperator::LessThan),
+        "lessthanorequal" => Some(CfOperator::LessThanOrEqual),
+        "equal" => Some(CfOperator::Equal),
+        "notequal" => Some(CfOperator::NotEqual),
+        "greaterthanorequal" => Some(CfOperator::GreaterThanOrEqual),
+        "greaterthan" => Some(CfOperator::GreaterThan),
+        "between" => Some(CfOperator::Between),
+        "notbetween" => Some(CfOperator::NotBetween),
+        _ => None,
+    }
+}
+
+fn cf_operator_to_string(op: &CfOperator) -> String {
+    match op {
+        CfOperator::LessThan => "lessThan".to_string(),
+        CfOperator::LessThanOrEqual => "lessThanOrEqual".to_string(),
+        CfOperator::Equal => "equal".to_string(),
+        CfOperator::NotEqual => "notEqual".to_string(),
+        CfOperator::GreaterThanOrEqual => "greaterThanOrEqual".to_string(),
+        CfOperator::GreaterThan => "greaterThan".to_string(),
+        CfOperator::Between => "between".to_string(),
+        CfOperator::NotBetween => "notBetween".to_string(),
+    }
+}
+
+fn parse_cf_value_type(s: &str) -> CfValueType {
+    match s.to_lowercase().as_str() {
+        "num" => CfValueType::Num,
+        "percent" => CfValueType::Percent,
+        "min" => CfValueType::Min,
+        "max" => CfValueType::Max,
+        "percentile" => CfValueType::Percentile,
+        "formula" => CfValueType::Formula,
+        _ => CfValueType::Num,
+    }
+}
+
+fn cf_value_type_to_string(vt: &CfValueType) -> String {
+    match vt {
+        CfValueType::Num => "num".to_string(),
+        CfValueType::Percent => "percent".to_string(),
+        CfValueType::Min => "min".to_string(),
+        CfValueType::Max => "max".to_string(),
+        CfValueType::Percentile => "percentile".to_string(),
+        CfValueType::Formula => "formula".to_string(),
+    }
+}
+
+fn js_conditional_style_to_core(js: &JsConditionalStyle) -> ConditionalStyle {
+    ConditionalStyle {
+        font: js.font.as_ref().map(|f| FontStyle {
+            name: f.name.clone(),
+            size: f.size,
+            bold: f.bold.unwrap_or(false),
+            italic: f.italic.unwrap_or(false),
+            underline: f.underline.unwrap_or(false),
+            strikethrough: f.strikethrough.unwrap_or(false),
+            color: f.color.as_ref().and_then(|s| parse_style_color(s)),
+        }),
+        fill: js.fill.as_ref().map(|f| FillStyle {
+            pattern: f
+                .pattern
+                .as_ref()
+                .map(|s| parse_pattern_type(s))
+                .unwrap_or(PatternType::None),
+            fg_color: f.fg_color.as_ref().and_then(|s| parse_style_color(s)),
+            bg_color: f.bg_color.as_ref().and_then(|s| parse_style_color(s)),
+        }),
+        border: js.border.as_ref().map(|b| {
+            let side = |s: &JsBorderSideStyle| BorderSideStyle {
+                style: s
+                    .style
+                    .as_ref()
+                    .map(|s| parse_border_line_style(s))
+                    .unwrap_or(BorderLineStyle::Thin),
+                color: s.color.as_ref().and_then(|s| parse_style_color(s)),
+            };
+            BorderStyle {
+                left: b.left.as_ref().map(&side),
+                right: b.right.as_ref().map(&side),
+                top: b.top.as_ref().map(&side),
+                bottom: b.bottom.as_ref().map(&side),
+                diagonal: b.diagonal.as_ref().map(&side),
+            }
+        }),
+        num_fmt: js
+            .custom_num_fmt
+            .as_ref()
+            .map(|s| NumFmtStyle::Custom(s.clone())),
+    }
+}
+
+fn js_cf_rule_to_core(js: &JsConditionalFormatRule) -> Result<ConditionalFormatRule> {
+    let rule_type = match js.rule_type.as_str() {
+        "cellIs" => {
+            let operator = js
+                .operator
+                .as_ref()
+                .and_then(|s| parse_cf_operator(s))
+                .unwrap_or(CfOperator::Equal);
+            ConditionalFormatType::CellIs {
+                operator,
+                formula: js.formula.clone().unwrap_or_default(),
+                formula2: js.formula2.clone(),
+            }
+        }
+        "expression" => ConditionalFormatType::Expression {
+            formula: js.formula.clone().unwrap_or_default(),
+        },
+        "colorScale" => ConditionalFormatType::ColorScale {
+            min_type: js
+                .min_type
+                .as_ref()
+                .map(|s| parse_cf_value_type(s))
+                .unwrap_or(CfValueType::Min),
+            min_value: js.min_value.clone(),
+            min_color: js.min_color.clone().unwrap_or_default(),
+            mid_type: js.mid_type.as_ref().map(|s| parse_cf_value_type(s)),
+            mid_value: js.mid_value.clone(),
+            mid_color: js.mid_color.clone(),
+            max_type: js
+                .max_type
+                .as_ref()
+                .map(|s| parse_cf_value_type(s))
+                .unwrap_or(CfValueType::Max),
+            max_value: js.max_value.clone(),
+            max_color: js.max_color.clone().unwrap_or_default(),
+        },
+        "dataBar" => ConditionalFormatType::DataBar {
+            min_type: js
+                .min_type
+                .as_ref()
+                .map(|s| parse_cf_value_type(s))
+                .unwrap_or(CfValueType::Min),
+            min_value: js.min_value.clone(),
+            max_type: js
+                .max_type
+                .as_ref()
+                .map(|s| parse_cf_value_type(s))
+                .unwrap_or(CfValueType::Max),
+            max_value: js.max_value.clone(),
+            color: js.bar_color.clone().unwrap_or_default(),
+            show_value: js.show_value.unwrap_or(true),
+        },
+        "duplicateValues" => ConditionalFormatType::DuplicateValues,
+        "uniqueValues" => ConditionalFormatType::UniqueValues,
+        "top10" => ConditionalFormatType::Top10 {
+            rank: js.rank.unwrap_or(10),
+            percent: js.percent.unwrap_or(false),
+        },
+        "bottom10" => ConditionalFormatType::Bottom10 {
+            rank: js.rank.unwrap_or(10),
+            percent: js.percent.unwrap_or(false),
+        },
+        "aboveAverage" => ConditionalFormatType::AboveAverage {
+            above: js.above.unwrap_or(true),
+            equal_average: js.equal_average.unwrap_or(false),
+        },
+        "containsBlanks" => ConditionalFormatType::ContainsBlanks,
+        "notContainsBlanks" => ConditionalFormatType::NotContainsBlanks,
+        "containsErrors" => ConditionalFormatType::ContainsErrors,
+        "notContainsErrors" => ConditionalFormatType::NotContainsErrors,
+        "containsText" => ConditionalFormatType::ContainsText {
+            text: js.text.clone().unwrap_or_default(),
+        },
+        "notContainsText" => ConditionalFormatType::NotContainsText {
+            text: js.text.clone().unwrap_or_default(),
+        },
+        "beginsWith" => ConditionalFormatType::BeginsWith {
+            text: js.text.clone().unwrap_or_default(),
+        },
+        "endsWith" => ConditionalFormatType::EndsWith {
+            text: js.text.clone().unwrap_or_default(),
+        },
+        other => {
+            return Err(Error::from_reason(format!(
+                "unknown conditional format rule type: {other}"
+            )));
+        }
+    };
+
+    let format = js.format.as_ref().map(js_conditional_style_to_core);
+
+    Ok(ConditionalFormatRule {
+        rule_type,
+        format,
+        priority: js.priority,
+        stop_if_true: js.stop_if_true.unwrap_or(false),
+    })
+}
+
+fn core_cf_rule_to_js(rule: &ConditionalFormatRule) -> JsConditionalFormatRule {
+    let (rule_type, operator, formula, formula2, text, rank, percent, above, equal_average) =
+        match &rule.rule_type {
+            ConditionalFormatType::CellIs {
+                operator,
+                formula,
+                formula2,
+            } => (
+                "cellIs".to_string(),
+                Some(cf_operator_to_string(operator)),
+                Some(formula.clone()),
+                formula2.clone(),
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
+            ConditionalFormatType::Expression { formula } => (
+                "expression".to_string(),
+                None,
+                Some(formula.clone()),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
+            ConditionalFormatType::ColorScale { .. } => (
+                "colorScale".to_string(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
+            ConditionalFormatType::DataBar { .. } => (
+                "dataBar".to_string(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
+            ConditionalFormatType::DuplicateValues => (
+                "duplicateValues".to_string(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
+            ConditionalFormatType::UniqueValues => (
+                "uniqueValues".to_string(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
+            ConditionalFormatType::Top10 { rank, percent } => (
+                "top10".to_string(),
+                None,
+                None,
+                None,
+                None,
+                Some(*rank),
+                Some(*percent),
+                None,
+                None,
+            ),
+            ConditionalFormatType::Bottom10 { rank, percent } => (
+                "bottom10".to_string(),
+                None,
+                None,
+                None,
+                None,
+                Some(*rank),
+                Some(*percent),
+                None,
+                None,
+            ),
+            ConditionalFormatType::AboveAverage {
+                above,
+                equal_average,
+            } => (
+                "aboveAverage".to_string(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(*above),
+                Some(*equal_average),
+            ),
+            ConditionalFormatType::ContainsBlanks => (
+                "containsBlanks".to_string(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
+            ConditionalFormatType::NotContainsBlanks => (
+                "notContainsBlanks".to_string(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
+            ConditionalFormatType::ContainsErrors => (
+                "containsErrors".to_string(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
+            ConditionalFormatType::NotContainsErrors => (
+                "notContainsErrors".to_string(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
+            ConditionalFormatType::ContainsText { text } => (
+                "containsText".to_string(),
+                None,
+                None,
+                None,
+                Some(text.clone()),
+                None,
+                None,
+                None,
+                None,
+            ),
+            ConditionalFormatType::NotContainsText { text } => (
+                "notContainsText".to_string(),
+                None,
+                None,
+                None,
+                Some(text.clone()),
+                None,
+                None,
+                None,
+                None,
+            ),
+            ConditionalFormatType::BeginsWith { text } => (
+                "beginsWith".to_string(),
+                None,
+                None,
+                None,
+                Some(text.clone()),
+                None,
+                None,
+                None,
+                None,
+            ),
+            ConditionalFormatType::EndsWith { text } => (
+                "endsWith".to_string(),
+                None,
+                None,
+                None,
+                Some(text.clone()),
+                None,
+                None,
+                None,
+                None,
+            ),
+        };
+
+    let (
+        min_type,
+        min_value,
+        min_color,
+        mid_type,
+        mid_value,
+        mid_color,
+        max_type,
+        max_value,
+        max_color,
+        bar_color,
+        show_value,
+    ) = match &rule.rule_type {
+        ConditionalFormatType::ColorScale {
+            min_type,
+            min_value,
+            min_color,
+            mid_type,
+            mid_value,
+            mid_color,
+            max_type,
+            max_value,
+            max_color,
+        } => (
+            Some(cf_value_type_to_string(min_type)),
+            min_value.clone(),
+            Some(min_color.clone()),
+            mid_type.as_ref().map(cf_value_type_to_string),
+            mid_value.clone(),
+            mid_color.clone(),
+            Some(cf_value_type_to_string(max_type)),
+            max_value.clone(),
+            Some(max_color.clone()),
+            None,
+            None,
+        ),
+        ConditionalFormatType::DataBar {
+            min_type,
+            min_value,
+            max_type,
+            max_value,
+            color,
+            show_value,
+        } => (
+            Some(cf_value_type_to_string(min_type)),
+            min_value.clone(),
+            None,
+            None,
+            None,
+            None,
+            Some(cf_value_type_to_string(max_type)),
+            max_value.clone(),
+            None,
+            Some(color.clone()),
+            Some(*show_value),
+        ),
+        _ => (
+            None, None, None, None, None, None, None, None, None, None, None,
+        ),
+    };
+
+    let format = rule.format.as_ref().map(|s| {
+        JsConditionalStyle {
+            font: s.font.as_ref().map(|f| JsFontStyle {
+                name: f.name.clone(),
+                size: f.size,
+                bold: if f.bold { Some(true) } else { None },
+                italic: if f.italic { Some(true) } else { None },
+                underline: if f.underline { Some(true) } else { None },
+                strikethrough: if f.strikethrough { Some(true) } else { None },
+                color: f.color.as_ref().map(|c| match c {
+                    StyleColor::Rgb(rgb) => rgb.clone(),
+                    StyleColor::Theme(t) => format!("theme:{t}"),
+                    StyleColor::Indexed(i) => format!("indexed:{i}"),
+                }),
+            }),
+            fill: s.fill.as_ref().map(|f| JsFillStyle {
+                pattern: Some(match f.pattern {
+                    PatternType::None => "none".to_string(),
+                    PatternType::Solid => "solid".to_string(),
+                    PatternType::Gray125 => "gray125".to_string(),
+                    PatternType::DarkGray => "darkGray".to_string(),
+                    PatternType::MediumGray => "mediumGray".to_string(),
+                    PatternType::LightGray => "lightGray".to_string(),
+                }),
+                fg_color: f.fg_color.as_ref().map(|c| match c {
+                    StyleColor::Rgb(rgb) => rgb.clone(),
+                    StyleColor::Theme(t) => format!("theme:{t}"),
+                    StyleColor::Indexed(i) => format!("indexed:{i}"),
+                }),
+                bg_color: f.bg_color.as_ref().map(|c| match c {
+                    StyleColor::Rgb(rgb) => rgb.clone(),
+                    StyleColor::Theme(t) => format!("theme:{t}"),
+                    StyleColor::Indexed(i) => format!("indexed:{i}"),
+                }),
+            }),
+            border: None, // Simplified: border conversion omitted for now
+            custom_num_fmt: s.num_fmt.as_ref().and_then(|nf| match nf {
+                NumFmtStyle::Custom(code) => Some(code.clone()),
+                _ => None,
+            }),
+        }
+    });
+
+    JsConditionalFormatRule {
+        rule_type,
+        operator,
+        formula,
+        formula2,
+        text,
+        rank,
+        percent,
+        above,
+        equal_average,
+        min_type,
+        min_value,
+        min_color,
+        mid_type,
+        mid_value,
+        mid_color,
+        max_type,
+        max_value,
+        max_color,
+        bar_color,
+        show_value,
+        format,
+        priority: rule.priority,
+        stop_if_true: if rule.stop_if_true { Some(true) } else { None },
+    }
+}
+
 /// Excel workbook for reading and writing .xlsx files.
 #[napi]
 pub struct Workbook {
@@ -940,6 +1636,38 @@ impl Workbook {
             .map_err(|e| Error::from_reason(e.to_string()))
     }
 
+    /// Apply a style ID to an entire row.
+    #[napi]
+    pub fn set_row_style(&mut self, sheet: String, row: u32, style_id: u32) -> Result<()> {
+        self.inner
+            .set_row_style(&sheet, row, style_id)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Get the style ID for a row. Returns 0 if not set.
+    #[napi]
+    pub fn get_row_style(&self, sheet: String, row: u32) -> Result<u32> {
+        self.inner
+            .get_row_style(&sheet, row)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Apply a style ID to an entire column.
+    #[napi]
+    pub fn set_col_style(&mut self, sheet: String, col: String, style_id: u32) -> Result<()> {
+        self.inner
+            .set_col_style(&sheet, &col, style_id)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Get the style ID for a column. Returns 0 if not set.
+    #[napi]
+    pub fn get_col_style(&self, sheet: String, col: String) -> Result<u32> {
+        self.inner
+            .get_col_style(&sheet, &col)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
     /// Add a chart to a sheet.
     #[napi]
     pub fn add_chart(
@@ -1060,6 +1788,47 @@ impl Workbook {
     pub fn remove_data_validation(&mut self, sheet: String, sqref: String) -> Result<()> {
         self.inner
             .remove_data_validation(&sheet, &sqref)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Set conditional formatting rules on a cell range.
+    #[napi]
+    pub fn set_conditional_format(
+        &mut self,
+        sheet: String,
+        sqref: String,
+        rules: Vec<JsConditionalFormatRule>,
+    ) -> Result<()> {
+        let core_rules: Vec<ConditionalFormatRule> = rules
+            .iter()
+            .map(js_cf_rule_to_core)
+            .collect::<Result<Vec<_>>>()?;
+        self.inner
+            .set_conditional_format(&sheet, &sqref, &core_rules)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Get all conditional formatting rules for a sheet.
+    #[napi]
+    pub fn get_conditional_formats(&self, sheet: String) -> Result<Vec<JsConditionalFormatEntry>> {
+        let formats = self
+            .inner
+            .get_conditional_formats(&sheet)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        Ok(formats
+            .iter()
+            .map(|(sqref, rules)| JsConditionalFormatEntry {
+                sqref: sqref.clone(),
+                rules: rules.iter().map(core_cf_rule_to_js).collect(),
+            })
+            .collect())
+    }
+
+    /// Delete conditional formatting for a specific cell range.
+    #[napi]
+    pub fn delete_conditional_format(&mut self, sheet: String, sqref: String) -> Result<()> {
+        self.inner
+            .delete_conditional_format(&sheet, &sqref)
             .map_err(|e| Error::from_reason(e.to_string()))
     }
 
@@ -1260,6 +2029,160 @@ impl Workbook {
     pub fn get_panes(&self, sheet: String) -> Result<Option<String>> {
         self.inner
             .get_panes(&sheet)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Set page margins on a sheet (values in inches).
+    #[napi]
+    pub fn set_page_margins(&mut self, sheet: String, margins: JsPageMargins) -> Result<()> {
+        let config = PageMarginsConfig {
+            left: margins.left,
+            right: margins.right,
+            top: margins.top,
+            bottom: margins.bottom,
+            header: margins.header,
+            footer: margins.footer,
+        };
+        self.inner
+            .set_page_margins(&sheet, &config)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Get page margins for a sheet. Returns defaults if not explicitly set.
+    #[napi]
+    pub fn get_page_margins(&self, sheet: String) -> Result<JsPageMargins> {
+        let m = self
+            .inner
+            .get_page_margins(&sheet)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        Ok(JsPageMargins {
+            left: m.left,
+            right: m.right,
+            top: m.top,
+            bottom: m.bottom,
+            header: m.header,
+            footer: m.footer,
+        })
+    }
+
+    /// Set page setup options (paper size, orientation, scale, fit-to-page).
+    #[napi]
+    pub fn set_page_setup(&mut self, sheet: String, setup: JsPageSetup) -> Result<()> {
+        let orientation = setup
+            .orientation
+            .as_ref()
+            .and_then(|s| parse_orientation(s));
+        let paper_size = setup.paper_size.as_ref().and_then(|s| parse_paper_size(s));
+        self.inner
+            .set_page_setup(
+                &sheet,
+                orientation,
+                paper_size,
+                setup.scale,
+                setup.fit_to_width,
+                setup.fit_to_height,
+            )
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Get the page setup for a sheet.
+    #[napi]
+    pub fn get_page_setup(&self, sheet: String) -> Result<JsPageSetup> {
+        let orientation = self
+            .inner
+            .get_orientation(&sheet)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        let paper_size = self
+            .inner
+            .get_paper_size(&sheet)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        let (scale, fit_to_width, fit_to_height) = self
+            .inner
+            .get_page_setup_details(&sheet)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        Ok(JsPageSetup {
+            paper_size: paper_size.as_ref().map(paper_size_to_string),
+            orientation: orientation.as_ref().map(orientation_to_string),
+            scale,
+            fit_to_width,
+            fit_to_height,
+        })
+    }
+
+    /// Set header and footer text for printing.
+    #[napi]
+    pub fn set_header_footer(
+        &mut self,
+        sheet: String,
+        header: Option<String>,
+        footer: Option<String>,
+    ) -> Result<()> {
+        self.inner
+            .set_header_footer(&sheet, header.as_deref(), footer.as_deref())
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Get the header and footer text for a sheet.
+    /// Returns an object with `header` and `footer` fields, each possibly null.
+    #[napi]
+    pub fn get_header_footer(&self, sheet: String) -> Result<JsHeaderFooter> {
+        let (header, footer) = self
+            .inner
+            .get_header_footer(&sheet)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        Ok(JsHeaderFooter { header, footer })
+    }
+
+    /// Set print options on a sheet.
+    #[napi]
+    pub fn set_print_options(&mut self, sheet: String, opts: JsPrintOptions) -> Result<()> {
+        self.inner
+            .set_print_options(
+                &sheet,
+                opts.grid_lines,
+                opts.headings,
+                opts.horizontal_centered,
+                opts.vertical_centered,
+            )
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Get print options for a sheet.
+    #[napi]
+    pub fn get_print_options(&self, sheet: String) -> Result<JsPrintOptions> {
+        let (gl, hd, hc, vc) = self
+            .inner
+            .get_print_options(&sheet)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        Ok(JsPrintOptions {
+            grid_lines: gl,
+            headings: hd,
+            horizontal_centered: hc,
+            vertical_centered: vc,
+        })
+    }
+
+    /// Insert a horizontal page break before the given 1-based row.
+    #[napi]
+    pub fn insert_page_break(&mut self, sheet: String, row: u32) -> Result<()> {
+        self.inner
+            .insert_page_break(&sheet, row)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Remove a horizontal page break at the given 1-based row.
+    #[napi]
+    pub fn remove_page_break(&mut self, sheet: String, row: u32) -> Result<()> {
+        self.inner
+            .remove_page_break(&sheet, row)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Get all row page break positions (1-based row numbers).
+    #[napi]
+    pub fn get_page_breaks(&self, sheet: String) -> Result<Vec<u32>> {
+        self.inner
+            .get_page_breaks(&sheet)
             .map_err(|e| Error::from_reason(e.to_string()))
     }
 

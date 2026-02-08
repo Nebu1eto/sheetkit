@@ -26,6 +26,7 @@ use zip::CompressionMethod;
 use crate::cell::CellValue;
 use crate::chart::ChartConfig;
 use crate::comment::CommentConfig;
+use crate::conditional::ConditionalFormatRule;
 use crate::error::{Error, Result};
 use crate::image::ImageConfig;
 use crate::protection::WorkbookProtectionConfig;
@@ -617,6 +618,23 @@ impl Workbook {
         Ok(crate::row::get_row_outline_level(ws, row))
     }
 
+    /// Set the style for an entire row.
+    ///
+    /// The `style_id` must be a valid index in cellXfs (returned by `add_style`).
+    pub fn set_row_style(&mut self, sheet: &str, row: u32, style_id: u32) -> Result<()> {
+        if style_id as usize >= self.stylesheet.cell_xfs.xfs.len() {
+            return Err(Error::StyleNotFound { id: style_id });
+        }
+        let ws = self.worksheet_mut(sheet)?;
+        crate::row::set_row_style(ws, row, style_id)
+    }
+
+    /// Get the style ID for a row. Returns 0 (default) if not set.
+    pub fn get_row_style(&self, sheet: &str, row: u32) -> Result<u32> {
+        let ws = self.worksheet_ref(sheet)?;
+        Ok(crate::row::get_row_style(ws, row))
+    }
+
     /// Get all rows with their data from a sheet.
     ///
     /// Returns a Vec of `(row_number, Vec<(column_name, CellValue)>)` tuples.
@@ -671,6 +689,23 @@ impl Workbook {
     pub fn get_col_outline_level(&self, sheet: &str, col: &str) -> Result<u8> {
         let ws = self.worksheet_ref(sheet)?;
         crate::col::get_col_outline_level(ws, col)
+    }
+
+    /// Set the style for an entire column.
+    ///
+    /// The `style_id` must be a valid index in cellXfs (returned by `add_style`).
+    pub fn set_col_style(&mut self, sheet: &str, col: &str, style_id: u32) -> Result<()> {
+        if style_id as usize >= self.stylesheet.cell_xfs.xfs.len() {
+            return Err(Error::StyleNotFound { id: style_id });
+        }
+        let ws = self.worksheet_mut(sheet)?;
+        crate::col::set_col_style(ws, col, style_id)
+    }
+
+    /// Get the style ID for a column. Returns 0 (default) if not set.
+    pub fn get_col_style(&self, sheet: &str, col: &str) -> Result<u32> {
+        let ws = self.worksheet_ref(sheet)?;
+        crate::col::get_col_style(ws, col)
     }
 
     /// Insert `count` columns starting at `col` in the named sheet.
@@ -835,6 +870,38 @@ impl Workbook {
         crate::validation::remove_validation(ws, sqref)
     }
 
+    /// Set conditional formatting rules on a cell range of a sheet.
+    pub fn set_conditional_format(
+        &mut self,
+        sheet: &str,
+        sqref: &str,
+        rules: &[ConditionalFormatRule],
+    ) -> Result<()> {
+        let idx = self.sheet_index(sheet)?;
+        let ws = &mut self.worksheets[idx].1;
+        crate::conditional::set_conditional_format(ws, &mut self.stylesheet, sqref, rules)
+    }
+
+    /// Get all conditional formatting rules for a sheet.
+    ///
+    /// Returns a list of `(sqref, rules)` pairs.
+    pub fn get_conditional_formats(
+        &self,
+        sheet: &str,
+    ) -> Result<Vec<(String, Vec<ConditionalFormatRule>)>> {
+        let ws = self.worksheet_ref(sheet)?;
+        Ok(crate::conditional::get_conditional_formats(
+            ws,
+            &self.stylesheet,
+        ))
+    }
+
+    /// Delete conditional formatting rules for a specific cell range on a sheet.
+    pub fn delete_conditional_format(&mut self, sheet: &str, sqref: &str) -> Result<()> {
+        let ws = self.worksheet_mut(sheet)?;
+        crate::conditional::delete_conditional_format(ws, sqref)
+    }
+
     /// Add a comment to a cell on the given sheet.
     pub fn add_comment(&mut self, sheet: &str, config: &CommentConfig) -> Result<()> {
         let idx = self.sheet_index(sheet)?;
@@ -892,6 +959,135 @@ impl Workbook {
     pub fn get_panes(&self, sheet: &str) -> Result<Option<String>> {
         let ws = self.worksheet_ref(sheet)?;
         Ok(crate::sheet::get_panes(ws))
+    }
+
+    // -- Page layout methods --
+
+    /// Set page margins on a sheet.
+    pub fn set_page_margins(
+        &mut self,
+        sheet: &str,
+        margins: &crate::page_layout::PageMarginsConfig,
+    ) -> Result<()> {
+        let ws = self.worksheet_mut(sheet)?;
+        crate::page_layout::set_page_margins(ws, margins)
+    }
+
+    /// Get page margins for a sheet, returning Excel defaults if not set.
+    pub fn get_page_margins(&self, sheet: &str) -> Result<crate::page_layout::PageMarginsConfig> {
+        let ws = self.worksheet_ref(sheet)?;
+        Ok(crate::page_layout::get_page_margins(ws))
+    }
+
+    /// Set page setup options (orientation, paper size, scale, fit-to-page).
+    ///
+    /// Only non-`None` parameters are applied; existing values for `None`
+    /// parameters are preserved.
+    pub fn set_page_setup(
+        &mut self,
+        sheet: &str,
+        orientation: Option<crate::page_layout::Orientation>,
+        paper_size: Option<crate::page_layout::PaperSize>,
+        scale: Option<u32>,
+        fit_to_width: Option<u32>,
+        fit_to_height: Option<u32>,
+    ) -> Result<()> {
+        let ws = self.worksheet_mut(sheet)?;
+        crate::page_layout::set_page_setup(
+            ws,
+            orientation,
+            paper_size,
+            scale,
+            fit_to_width,
+            fit_to_height,
+        )
+    }
+
+    /// Get the page orientation for a sheet.
+    pub fn get_orientation(&self, sheet: &str) -> Result<Option<crate::page_layout::Orientation>> {
+        let ws = self.worksheet_ref(sheet)?;
+        Ok(crate::page_layout::get_orientation(ws))
+    }
+
+    /// Get the paper size for a sheet.
+    pub fn get_paper_size(&self, sheet: &str) -> Result<Option<crate::page_layout::PaperSize>> {
+        let ws = self.worksheet_ref(sheet)?;
+        Ok(crate::page_layout::get_paper_size(ws))
+    }
+
+    /// Get scale, fit-to-width, and fit-to-height values for a sheet.
+    ///
+    /// Returns `(scale, fit_to_width, fit_to_height)`, each `None` if not set.
+    pub fn get_page_setup_details(
+        &self,
+        sheet: &str,
+    ) -> Result<(Option<u32>, Option<u32>, Option<u32>)> {
+        let ws = self.worksheet_ref(sheet)?;
+        Ok((
+            crate::page_layout::get_scale(ws),
+            crate::page_layout::get_fit_to_width(ws),
+            crate::page_layout::get_fit_to_height(ws),
+        ))
+    }
+
+    /// Set header and footer text for printing.
+    pub fn set_header_footer(
+        &mut self,
+        sheet: &str,
+        header: Option<&str>,
+        footer: Option<&str>,
+    ) -> Result<()> {
+        let ws = self.worksheet_mut(sheet)?;
+        crate::page_layout::set_header_footer(ws, header, footer)
+    }
+
+    /// Get the header and footer text for a sheet.
+    pub fn get_header_footer(&self, sheet: &str) -> Result<(Option<String>, Option<String>)> {
+        let ws = self.worksheet_ref(sheet)?;
+        Ok(crate::page_layout::get_header_footer(ws))
+    }
+
+    /// Set print options on a sheet.
+    pub fn set_print_options(
+        &mut self,
+        sheet: &str,
+        grid_lines: Option<bool>,
+        headings: Option<bool>,
+        h_centered: Option<bool>,
+        v_centered: Option<bool>,
+    ) -> Result<()> {
+        let ws = self.worksheet_mut(sheet)?;
+        crate::page_layout::set_print_options(ws, grid_lines, headings, h_centered, v_centered)
+    }
+
+    /// Get print options for a sheet.
+    ///
+    /// Returns `(grid_lines, headings, horizontal_centered, vertical_centered)`.
+    #[allow(clippy::type_complexity)]
+    pub fn get_print_options(
+        &self,
+        sheet: &str,
+    ) -> Result<(Option<bool>, Option<bool>, Option<bool>, Option<bool>)> {
+        let ws = self.worksheet_ref(sheet)?;
+        Ok(crate::page_layout::get_print_options(ws))
+    }
+
+    /// Insert a horizontal page break before the given 1-based row.
+    pub fn insert_page_break(&mut self, sheet: &str, row: u32) -> Result<()> {
+        let ws = self.worksheet_mut(sheet)?;
+        crate::page_layout::insert_page_break(ws, row)
+    }
+
+    /// Remove a horizontal page break at the given 1-based row.
+    pub fn remove_page_break(&mut self, sheet: &str, row: u32) -> Result<()> {
+        let ws = self.worksheet_mut(sheet)?;
+        crate::page_layout::remove_page_break(ws, row)
+    }
+
+    /// Get all row page break positions (1-based row numbers).
+    pub fn get_page_breaks(&self, sheet: &str) -> Result<Vec<u32>> {
+        let ws = self.worksheet_ref(sheet)?;
+        Ok(crate::page_layout::get_page_breaks(ws))
     }
 
     /// Set a hyperlink on a cell.

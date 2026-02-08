@@ -309,6 +309,9 @@ pub struct Dxf {
     #[serde(rename = "font", skip_serializing_if = "Option::is_none")]
     pub font: Option<Font>,
 
+    #[serde(rename = "numFmt", skip_serializing_if = "Option::is_none")]
+    pub num_fmt: Option<NumFmt>,
+
     #[serde(rename = "fill", skip_serializing_if = "Option::is_none")]
     pub fill: Option<Fill>,
 
