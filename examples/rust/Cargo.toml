@@ -1,0 +1,7 @@
+[package]
+name = "sheetkit-example"
+edition = "2021"
+publish = false
+
+[dependencies]
+sheetkit = { path = "../../crates/sheetkit" }

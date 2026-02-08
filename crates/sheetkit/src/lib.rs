@@ -16,6 +16,18 @@ pub use sheetkit_core::protection::WorkbookProtectionConfig;
 pub use sheetkit_core::stream::StreamWriter;
 pub use sheetkit_core::workbook::Workbook;
 
+pub use sheetkit_core::cell::CellValue;
+pub use sheetkit_core::chart::{ChartConfig, ChartSeries, ChartType};
+pub use sheetkit_core::comment::CommentConfig;
+pub use sheetkit_core::image::{ImageConfig, ImageFormat};
+pub use sheetkit_core::style::{
+    AlignmentStyle, BorderLineStyle, BorderSideStyle, BorderStyle, FillStyle, FontStyle,
+    HorizontalAlign, NumFmtStyle, PatternType, ProtectionStyle, Style, StyleColor, VerticalAlign,
+};
+pub use sheetkit_core::validation::{
+    DataValidationConfig, ErrorStyle, ValidationOperator, ValidationType,
+};
+
 /// Utility functions for cell reference conversion.
 pub mod utils {
     pub use sheetkit_core::utils::cell_ref::{
