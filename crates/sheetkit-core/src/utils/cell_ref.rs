@@ -22,9 +22,7 @@ use crate::utils::constants::{MAX_COLUMNS, MAX_ROWS};
 /// ```
 pub fn column_name_to_number(name: &str) -> Result<u32> {
     if name.is_empty() {
-        return Err(Error::InvalidCellReference(
-            "empty column name".to_string(),
-        ));
+        return Err(Error::InvalidCellReference("empty column name".to_string()));
     }
 
     let mut result: u32 = 0;
@@ -132,9 +130,9 @@ pub fn cell_name_to_coordinates(cell: &str) -> Result<(u32, u32)> {
 
     let col = column_name_to_number(col_str)?;
 
-    let row: u32 = row_str.parse().map_err(|_| {
-        Error::InvalidCellReference(format!("invalid row number in '{cell}'"))
-    })?;
+    let row: u32 = row_str
+        .parse()
+        .map_err(|_| Error::InvalidCellReference(format!("invalid row number in '{cell}'")))?;
 
     if !(1..=MAX_ROWS).contains(&row) {
         return Err(Error::InvalidRowNumber(row));

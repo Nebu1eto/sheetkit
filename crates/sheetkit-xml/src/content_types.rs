@@ -105,21 +105,18 @@ pub mod mime_types {
     pub const THEME: &str = "application/vnd.openxmlformats-officedocument.theme+xml";
 
     // Charts and drawings
-    pub const CHART: &str =
-        "application/vnd.openxmlformats-officedocument.drawingml.chart+xml";
+    pub const CHART: &str = "application/vnd.openxmlformats-officedocument.drawingml.chart+xml";
     pub const DRAWING: &str = "application/vnd.openxmlformats-officedocument.drawing+xml";
 
     // Table
-    pub const TABLE: &str =
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml";
+    pub const TABLE: &str = "application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml";
 
     // Comments
     pub const COMMENTS: &str =
         "application/vnd.openxmlformats-officedocument.spreadsheetml.comments+xml";
 
     // Document properties
-    pub const CORE_PROPERTIES: &str =
-        "application/vnd.openxmlformats-package.core-properties+xml";
+    pub const CORE_PROPERTIES: &str = "application/vnd.openxmlformats-package.core-properties+xml";
     pub const EXTENDED_PROPERTIES: &str =
         "application/vnd.openxmlformats-officedocument.extended-properties+xml";
 }

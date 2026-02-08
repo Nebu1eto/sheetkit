@@ -257,7 +257,11 @@ pub struct Hyperlink {
     #[serde(rename = "@ref")]
     pub reference: String,
 
-    #[serde(rename = "@r:id", alias = "@id", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "@r:id",
+        alias = "@id",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub r_id: Option<String>,
 
     #[serde(rename = "@location", skip_serializing_if = "Option::is_none")]
@@ -298,7 +302,11 @@ pub struct PageSetup {
     #[serde(rename = "@orientation", skip_serializing_if = "Option::is_none")]
     pub orientation: Option<String>,
 
-    #[serde(rename = "@r:id", alias = "@id", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "@r:id",
+        alias = "@id",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub r_id: Option<String>,
 }
 
@@ -414,19 +422,10 @@ mod tests {
         assert_eq!(parsed.sheet_data.rows[0].r, 1);
         assert_eq!(parsed.sheet_data.rows[0].cells.len(), 2);
         assert_eq!(parsed.sheet_data.rows[0].cells[0].r, "A1");
-        assert_eq!(
-            parsed.sheet_data.rows[0].cells[0].t,
-            Some("s".to_string())
-        );
-        assert_eq!(
-            parsed.sheet_data.rows[0].cells[0].v,
-            Some("0".to_string())
-        );
+        assert_eq!(parsed.sheet_data.rows[0].cells[0].t, Some("s".to_string()));
+        assert_eq!(parsed.sheet_data.rows[0].cells[0].v, Some("0".to_string()));
         assert_eq!(parsed.sheet_data.rows[0].cells[1].r, "B1");
-        assert_eq!(
-            parsed.sheet_data.rows[0].cells[1].v,
-            Some("42".to_string())
-        );
+        assert_eq!(parsed.sheet_data.rows[0].cells[1].v, Some("42".to_string()));
     }
 
     #[test]
@@ -493,14 +492,8 @@ mod tests {
         assert_eq!(parsed.sheet_data.rows.len(), 2);
         assert_eq!(parsed.sheet_data.rows[0].cells.len(), 2);
         assert_eq!(parsed.sheet_data.rows[0].cells[0].r, "A1");
-        assert_eq!(
-            parsed.sheet_data.rows[0].cells[0].t,
-            Some("s".to_string())
-        );
-        assert_eq!(
-            parsed.sheet_data.rows[0].cells[0].v,
-            Some("0".to_string())
-        );
+        assert_eq!(parsed.sheet_data.rows[0].cells[0].t, Some("s".to_string()));
+        assert_eq!(parsed.sheet_data.rows[0].cells[0].v, Some("0".to_string()));
         assert_eq!(parsed.sheet_data.rows[1].cells[0].r, "A2");
         assert_eq!(
             parsed.sheet_data.rows[1].cells[0].v,

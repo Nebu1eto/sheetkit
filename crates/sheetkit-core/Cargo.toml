@@ -10,6 +10,8 @@ zip = { workspace = true }
 thiserror = { workspace = true }
 dashmap = { workspace = true }
 chrono = { workspace = true }
+quick-xml = { workspace = true }
+serde = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

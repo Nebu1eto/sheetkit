@@ -60,7 +60,10 @@ pub struct WorkbookPr {
     #[serde(rename = "@filterPrivacy", skip_serializing_if = "Option::is_none")]
     pub filter_privacy: Option<bool>,
 
-    #[serde(rename = "@defaultThemeVersion", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "@defaultThemeVersion",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub default_theme_version: Option<u32>,
 }
 
@@ -333,10 +336,7 @@ mod tests {
         let xml = quick_xml::se::to_string(&wb).unwrap();
         let parsed: WorkbookXml = quick_xml::de::from_str(&xml).unwrap();
         assert_eq!(parsed.sheets.sheets.len(), 3);
-        assert_eq!(
-            parsed.sheets.sheets[2].state,
-            Some("hidden".to_string())
-        );
+        assert_eq!(parsed.sheets.sheets[2].state, Some("hidden".to_string()));
     }
 
     #[test]

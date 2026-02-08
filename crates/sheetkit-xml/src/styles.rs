@@ -672,10 +672,7 @@ mod tests {
         let parsed: StyleSheet = quick_xml::de::from_str(xml).unwrap();
         assert_eq!(parsed.fonts.fonts.len(), 1);
         assert_eq!(parsed.fonts.fonts[0].sz.as_ref().unwrap().val, 11.0);
-        assert_eq!(
-            parsed.fonts.fonts[0].name.as_ref().unwrap().val,
-            "Calibri"
-        );
+        assert_eq!(parsed.fonts.fonts[0].name.as_ref().unwrap().val, "Calibri");
         assert_eq!(parsed.fills.fills.len(), 2);
         assert_eq!(parsed.borders.borders.len(), 1);
         assert_eq!(parsed.cell_xfs.xfs.len(), 1);
@@ -763,7 +760,10 @@ mod tests {
             parsed.left.as_ref().unwrap().style,
             Some("thin".to_string())
         );
-        assert_eq!(parsed.left.as_ref().unwrap().color.as_ref().unwrap().auto, Some(true));
+        assert_eq!(
+            parsed.left.as_ref().unwrap().color.as_ref().unwrap().auto,
+            Some(true)
+        );
     }
 
     #[test]
