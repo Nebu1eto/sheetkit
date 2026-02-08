@@ -128,6 +128,10 @@ pub enum Error {
     #[error("invalid source range: {0}")]
     InvalidSourceRange(String),
 
+    /// The image format is not supported.
+    #[error("unsupported image format: {format}")]
+    UnsupportedImageFormat { format: String },
+
     /// An internal or otherwise unclassified error.
     #[error("internal error: {0}")]
     Internal(String),

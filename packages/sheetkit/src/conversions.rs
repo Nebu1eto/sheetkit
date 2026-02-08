@@ -343,12 +343,7 @@ pub(crate) fn parse_chart_type(s: &str) -> Result<ChartType> {
 }
 
 pub(crate) fn parse_image_format(s: &str) -> Result<ImageFormat> {
-    match s.to_lowercase().as_str() {
-        "png" => Ok(ImageFormat::Png),
-        "jpeg" | "jpg" => Ok(ImageFormat::Jpeg),
-        "gif" => Ok(ImageFormat::Gif),
-        _ => Err(Error::from_reason(format!("unknown image format: {s}"))),
-    }
+    ImageFormat::from_extension(s).map_err(|e| Error::from_reason(e.to_string()))
 }
 
 pub(crate) fn parse_validation_type(s: &str) -> Result<ValidationType> {
