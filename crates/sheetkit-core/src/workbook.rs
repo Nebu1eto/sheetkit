@@ -2641,6 +2641,97 @@ impl Workbook {
             });
         }
     }
+
+    /// Add or update a defined name in the workbook.
+    ///
+    /// If `scope` is `None`, the name is workbook-scoped (visible from all sheets).
+    /// If `scope` is `Some(sheet_name)`, it is sheet-scoped using the sheet's 0-based index.
+    /// If a name with the same name and scope already exists, its value and comment are updated.
+    pub fn set_defined_name(
+        &mut self,
+        name: &str,
+        value: &str,
+        scope: Option<&str>,
+        comment: Option<&str>,
+    ) -> Result<()> {
+        let dn_scope = self.resolve_defined_name_scope(scope)?;
+        crate::defined_names::set_defined_name(
+            &mut self.workbook_xml,
+            name,
+            value,
+            dn_scope,
+            comment,
+        )
+    }
+
+    /// Get a defined name by name and scope.
+    ///
+    /// If `scope` is `None`, looks for a workbook-scoped name.
+    /// If `scope` is `Some(sheet_name)`, looks for a sheet-scoped name.
+    /// Returns `None` if no matching defined name is found.
+    pub fn get_defined_name(
+        &self,
+        name: &str,
+        scope: Option<&str>,
+    ) -> Result<Option<crate::defined_names::DefinedNameInfo>> {
+        let dn_scope = self.resolve_defined_name_scope(scope)?;
+        Ok(crate::defined_names::get_defined_name(
+            &self.workbook_xml,
+            name,
+            dn_scope,
+        ))
+    }
+
+    /// List all defined names in the workbook.
+    pub fn get_all_defined_names(&self) -> Vec<crate::defined_names::DefinedNameInfo> {
+        crate::defined_names::get_all_defined_names(&self.workbook_xml)
+    }
+
+    /// Delete a defined name by name and scope.
+    ///
+    /// Returns an error if the name does not exist for the given scope.
+    pub fn delete_defined_name(&mut self, name: &str, scope: Option<&str>) -> Result<()> {
+        let dn_scope = self.resolve_defined_name_scope(scope)?;
+        crate::defined_names::delete_defined_name(&mut self.workbook_xml, name, dn_scope)
+    }
+
+    /// Protect a sheet with optional password and permission settings.
+    ///
+    /// Delegates to [`crate::sheet::protect_sheet`] after looking up the sheet.
+    pub fn protect_sheet(
+        &mut self,
+        sheet: &str,
+        config: &crate::sheet::SheetProtectionConfig,
+    ) -> Result<()> {
+        let ws = self.worksheet_mut(sheet)?;
+        crate::sheet::protect_sheet(ws, config)
+    }
+
+    /// Remove sheet protection.
+    pub fn unprotect_sheet(&mut self, sheet: &str) -> Result<()> {
+        let ws = self.worksheet_mut(sheet)?;
+        crate::sheet::unprotect_sheet(ws)
+    }
+
+    /// Check if a sheet is protected.
+    pub fn is_sheet_protected(&self, sheet: &str) -> Result<bool> {
+        let ws = self.worksheet_ref(sheet)?;
+        Ok(crate::sheet::is_sheet_protected(ws))
+    }
+
+    /// Resolve an optional sheet name to a [`DefinedNameScope`](crate::defined_names::DefinedNameScope).
+    fn resolve_defined_name_scope(
+        &self,
+        scope: Option<&str>,
+    ) -> Result<crate::defined_names::DefinedNameScope> {
+        match scope {
+            None => Ok(crate::defined_names::DefinedNameScope::Workbook),
+            Some(sheet_name) => {
+                let idx = self.sheet_index(sheet_name)?;
+                Ok(crate::defined_names::DefinedNameScope::Sheet(idx as u32))
+            }
+        }
+    }
 }
 
 impl Default for Workbook {
@@ -4296,6 +4387,172 @@ mod tests {
     }
 
     #[test]
+    fn test_save_with_new_image_formats() {
+        use crate::image::{ImageConfig, ImageFormat};
+
+        let formats = [
+            (ImageFormat::Bmp, "bmp"),
+            (ImageFormat::Ico, "ico"),
+            (ImageFormat::Tiff, "tiff"),
+            (ImageFormat::Svg, "svg"),
+            (ImageFormat::Emf, "emf"),
+            (ImageFormat::Emz, "emz"),
+            (ImageFormat::Wmf, "wmf"),
+            (ImageFormat::Wmz, "wmz"),
+        ];
+
+        for (format, ext) in &formats {
+            let dir = TempDir::new().unwrap();
+            let path = dir.path().join(format!("with_{ext}.xlsx"));
+
+            let mut wb = Workbook::new();
+            let config = ImageConfig {
+                data: vec![0x00, 0x01, 0x02, 0x03],
+                format: format.clone(),
+                from_cell: "A1".to_string(),
+                width_px: 100,
+                height_px: 100,
+            };
+            wb.add_image("Sheet1", &config).unwrap();
+            wb.save(&path).unwrap();
+
+            let file = std::fs::File::open(&path).unwrap();
+            let mut archive = zip::ZipArchive::new(file).unwrap();
+            let media_path = format!("xl/media/image1.{ext}");
+            assert!(
+                archive.by_name(&media_path).is_ok(),
+                "expected {media_path} in archive for format {ext}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_add_image_new_format_content_type_default() {
+        use crate::image::{ImageConfig, ImageFormat};
+        let mut wb = Workbook::new();
+        let config = ImageConfig {
+            data: vec![0x42, 0x4D],
+            format: ImageFormat::Bmp,
+            from_cell: "A1".to_string(),
+            width_px: 100,
+            height_px: 100,
+        };
+        wb.add_image("Sheet1", &config).unwrap();
+
+        let has_bmp_default = wb
+            .content_types
+            .defaults
+            .iter()
+            .any(|d| d.extension == "bmp" && d.content_type == "image/bmp");
+        assert!(has_bmp_default, "content types should have bmp default");
+    }
+
+    #[test]
+    fn test_add_image_svg_content_type_default() {
+        use crate::image::{ImageConfig, ImageFormat};
+        let mut wb = Workbook::new();
+        let config = ImageConfig {
+            data: vec![0x3C, 0x73, 0x76, 0x67],
+            format: ImageFormat::Svg,
+            from_cell: "B3".to_string(),
+            width_px: 200,
+            height_px: 200,
+        };
+        wb.add_image("Sheet1", &config).unwrap();
+
+        let has_svg_default = wb
+            .content_types
+            .defaults
+            .iter()
+            .any(|d| d.extension == "svg" && d.content_type == "image/svg+xml");
+        assert!(has_svg_default, "content types should have svg default");
+    }
+
+    #[test]
+    fn test_add_image_emf_content_type_and_path() {
+        use crate::image::{ImageConfig, ImageFormat};
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("with_emf.xlsx");
+
+        let mut wb = Workbook::new();
+        let config = ImageConfig {
+            data: vec![0x01, 0x00, 0x00, 0x00],
+            format: ImageFormat::Emf,
+            from_cell: "A1".to_string(),
+            width_px: 150,
+            height_px: 150,
+        };
+        wb.add_image("Sheet1", &config).unwrap();
+
+        let has_emf_default = wb
+            .content_types
+            .defaults
+            .iter()
+            .any(|d| d.extension == "emf" && d.content_type == "image/x-emf");
+        assert!(has_emf_default);
+
+        wb.save(&path).unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        assert!(archive.by_name("xl/media/image1.emf").is_ok());
+    }
+
+    #[test]
+    fn test_add_multiple_new_format_images() {
+        use crate::image::{ImageConfig, ImageFormat};
+        let mut wb = Workbook::new();
+
+        wb.add_image(
+            "Sheet1",
+            &ImageConfig {
+                data: vec![0x42, 0x4D],
+                format: ImageFormat::Bmp,
+                from_cell: "A1".to_string(),
+                width_px: 100,
+                height_px: 100,
+            },
+        )
+        .unwrap();
+
+        wb.add_image(
+            "Sheet1",
+            &ImageConfig {
+                data: vec![0x3C, 0x73],
+                format: ImageFormat::Svg,
+                from_cell: "C1".to_string(),
+                width_px: 100,
+                height_px: 100,
+            },
+        )
+        .unwrap();
+
+        wb.add_image(
+            "Sheet1",
+            &ImageConfig {
+                data: vec![0x01, 0x00],
+                format: ImageFormat::Wmf,
+                from_cell: "E1".to_string(),
+                width_px: 100,
+                height_px: 100,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(wb.images.len(), 3);
+        assert_eq!(wb.drawings[0].1.one_cell_anchors.len(), 3);
+
+        let ext_defaults: Vec<&str> = wb
+            .content_types
+            .defaults
+            .iter()
+            .map(|d| d.extension.as_str())
+            .collect();
+        assert!(ext_defaults.contains(&"bmp"));
+        assert!(ext_defaults.contains(&"svg"));
+        assert!(ext_defaults.contains(&"wmf"));
+    }
+
+    #[test]
     fn test_add_chart_and_image_same_sheet() {
         use crate::chart::{ChartConfig, ChartSeries, ChartType};
         use crate::image::{ImageConfig, ImageFormat};
@@ -5704,5 +5961,192 @@ mod tests {
         assert_eq!(got_runs[1].text, "World");
         assert!(got_runs[1].italic);
         assert!(!got_runs[1].bold);
+    }
+
+    // Defined names workbook API tests
+
+    #[test]
+    fn test_set_defined_name_workbook_scope() {
+        let mut wb = Workbook::new();
+        wb.set_defined_name("SalesData", "Sheet1!$A$1:$D$10", None, None)
+            .unwrap();
+
+        let info = wb.get_defined_name("SalesData", None).unwrap().unwrap();
+        assert_eq!(info.name, "SalesData");
+        assert_eq!(info.value, "Sheet1!$A$1:$D$10");
+        assert_eq!(info.scope, crate::defined_names::DefinedNameScope::Workbook);
+        assert!(info.comment.is_none());
+    }
+
+    #[test]
+    fn test_set_defined_name_sheet_scope() {
+        let mut wb = Workbook::new();
+        wb.set_defined_name("LocalRange", "Sheet1!$B$2:$C$5", Some("Sheet1"), None)
+            .unwrap();
+
+        let info = wb
+            .get_defined_name("LocalRange", Some("Sheet1"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(info.name, "LocalRange");
+        assert_eq!(info.value, "Sheet1!$B$2:$C$5");
+        assert_eq!(info.scope, crate::defined_names::DefinedNameScope::Sheet(0));
+    }
+
+    #[test]
+    fn test_update_existing_defined_name() {
+        let mut wb = Workbook::new();
+        wb.set_defined_name("DataRange", "Sheet1!$A$1:$A$10", None, None)
+            .unwrap();
+
+        wb.set_defined_name("DataRange", "Sheet1!$A$1:$A$50", None, Some("Updated"))
+            .unwrap();
+
+        let all = wb.get_all_defined_names();
+        assert_eq!(all.len(), 1, "should not duplicate the entry");
+        assert_eq!(all[0].value, "Sheet1!$A$1:$A$50");
+        assert_eq!(all[0].comment, Some("Updated".to_string()));
+    }
+
+    #[test]
+    fn test_get_all_defined_names() {
+        let mut wb = Workbook::new();
+        wb.new_sheet("Sheet2").unwrap();
+
+        wb.set_defined_name("Alpha", "Sheet1!$A$1", None, None)
+            .unwrap();
+        wb.set_defined_name("Beta", "Sheet1!$B$1", Some("Sheet1"), None)
+            .unwrap();
+        wb.set_defined_name("Gamma", "Sheet2!$C$1", Some("Sheet2"), None)
+            .unwrap();
+
+        let all = wb.get_all_defined_names();
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[0].name, "Alpha");
+        assert_eq!(all[1].name, "Beta");
+        assert_eq!(all[2].name, "Gamma");
+    }
+
+    #[test]
+    fn test_delete_defined_name() {
+        let mut wb = Workbook::new();
+        wb.set_defined_name("ToDelete", "Sheet1!$A$1", None, None)
+            .unwrap();
+        assert!(wb.get_defined_name("ToDelete", None).unwrap().is_some());
+
+        wb.delete_defined_name("ToDelete", None).unwrap();
+        assert!(wb.get_defined_name("ToDelete", None).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_delete_nonexistent_defined_name_returns_error() {
+        let mut wb = Workbook::new();
+        let result = wb.delete_defined_name("Ghost", None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Ghost"));
+    }
+
+    #[test]
+    fn test_defined_name_sheet_scope_requires_existing_sheet() {
+        let mut wb = Workbook::new();
+        let result = wb.set_defined_name("TestName", "Sheet1!$A$1", Some("NonExistent"), None);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::SheetNotFound { .. }));
+    }
+
+    #[test]
+    fn test_defined_name_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("defined_names.xlsx");
+
+        let mut wb = Workbook::new();
+        wb.set_defined_name("Revenue", "Sheet1!$E$1:$E$100", None, Some("Total revenue"))
+            .unwrap();
+        wb.set_defined_name("LocalName", "Sheet1!$A$1", Some("Sheet1"), None)
+            .unwrap();
+        wb.save(&path).unwrap();
+
+        let wb2 = Workbook::open(&path).unwrap();
+        let all = wb2.get_all_defined_names();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].name, "Revenue");
+        assert_eq!(all[0].value, "Sheet1!$E$1:$E$100");
+        assert_eq!(all[0].comment, Some("Total revenue".to_string()));
+        assert_eq!(all[1].name, "LocalName");
+        assert_eq!(all[1].value, "Sheet1!$A$1");
+        assert_eq!(
+            all[1].scope,
+            crate::defined_names::DefinedNameScope::Sheet(0)
+        );
+    }
+
+    // Sheet protection workbook API tests
+
+    #[test]
+    fn test_protect_sheet_via_workbook() {
+        let mut wb = Workbook::new();
+        let config = crate::sheet::SheetProtectionConfig::default();
+        wb.protect_sheet("Sheet1", &config).unwrap();
+
+        assert!(wb.is_sheet_protected("Sheet1").unwrap());
+    }
+
+    #[test]
+    fn test_unprotect_sheet_via_workbook() {
+        let mut wb = Workbook::new();
+        let config = crate::sheet::SheetProtectionConfig::default();
+        wb.protect_sheet("Sheet1", &config).unwrap();
+        assert!(wb.is_sheet_protected("Sheet1").unwrap());
+
+        wb.unprotect_sheet("Sheet1").unwrap();
+        assert!(!wb.is_sheet_protected("Sheet1").unwrap());
+    }
+
+    #[test]
+    fn test_protect_sheet_nonexistent_returns_error() {
+        let mut wb = Workbook::new();
+        let config = crate::sheet::SheetProtectionConfig::default();
+        let result = wb.protect_sheet("NoSuchSheet", &config);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::SheetNotFound { .. }));
+    }
+
+    #[test]
+    fn test_is_sheet_protected_nonexistent_returns_error() {
+        let wb = Workbook::new();
+        let result = wb.is_sheet_protected("NoSuchSheet");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_protect_sheet_with_password_and_permissions() {
+        let mut wb = Workbook::new();
+        let config = crate::sheet::SheetProtectionConfig {
+            password: Some("secret".to_string()),
+            format_cells: true,
+            insert_rows: true,
+            sort: true,
+            ..crate::sheet::SheetProtectionConfig::default()
+        };
+        wb.protect_sheet("Sheet1", &config).unwrap();
+        assert!(wb.is_sheet_protected("Sheet1").unwrap());
+    }
+
+    #[test]
+    fn test_sheet_protection_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("sheet_protection.xlsx");
+
+        let mut wb = Workbook::new();
+        let config = crate::sheet::SheetProtectionConfig {
+            password: Some("pass".to_string()),
+            format_cells: true,
+            ..crate::sheet::SheetProtectionConfig::default()
+        };
+        wb.protect_sheet("Sheet1", &config).unwrap();
+        wb.save(&path).unwrap();
+
+        let wb2 = Workbook::open(&path).unwrap();
+        assert!(wb2.is_sheet_protected("Sheet1").unwrap());
     }
 }

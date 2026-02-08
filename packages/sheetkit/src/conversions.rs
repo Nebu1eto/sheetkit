@@ -1041,6 +1041,27 @@ pub(crate) fn parse_aggregate_function(s: &str) -> Result<AggregateFunction> {
     Ok(func)
 }
 
+pub(crate) fn js_sheet_protection_to_core(
+    js: &crate::types::JsSheetProtectionConfig,
+) -> sheetkit_core::sheet::SheetProtectionConfig {
+    sheetkit_core::sheet::SheetProtectionConfig {
+        password: js.password.clone(),
+        select_locked_cells: js.select_locked_cells.unwrap_or(false),
+        select_unlocked_cells: js.select_unlocked_cells.unwrap_or(false),
+        format_cells: js.format_cells.unwrap_or(false),
+        format_columns: js.format_columns.unwrap_or(false),
+        format_rows: js.format_rows.unwrap_or(false),
+        insert_columns: js.insert_columns.unwrap_or(false),
+        insert_rows: js.insert_rows.unwrap_or(false),
+        insert_hyperlinks: js.insert_hyperlinks.unwrap_or(false),
+        delete_columns: js.delete_columns.unwrap_or(false),
+        delete_rows: js.delete_rows.unwrap_or(false),
+        sort: js.sort.unwrap_or(false),
+        auto_filter: js.auto_filter.unwrap_or(false),
+        pivot_tables: js.pivot_tables.unwrap_or(false),
+    }
+}
+
 #[allow(dead_code)]
 pub(crate) fn js_sparkline_to_core(
     js: &crate::types::JsSparklineConfig,
