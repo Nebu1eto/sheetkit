@@ -8,6 +8,9 @@ license.workspace = true
 sheetkit-core = { path = "../sheetkit-core" }
 sheetkit-xml = { path = "../sheetkit-xml" }
 
+[features]
+encryption = ["sheetkit-core/encryption"]
+
 [dev-dependencies]
 tempfile = { workspace = true }
 pretty_assertions = { workspace = true }

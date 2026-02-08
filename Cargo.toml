@@ -26,6 +26,17 @@ nom = "7.1"
 tempfile = "3.10"
 pretty_assertions = "1.4"
 
+# Encryption
+aes = "0.8"
+cbc = "0.1"
+ecb = "0.1"
+sha1 = "0.10"
+sha2 = "0.10"
+hmac = "0.12"
+rand = "0.8"
+cfb = "0.10"
+base64 = "0.22"
+
 [profile.release]
 opt-level = 3
 lto = "fat"

@@ -6,6 +6,8 @@ pub mod chart;
 pub mod col;
 pub mod comment;
 pub mod conditional;
+#[cfg(feature = "encryption")]
+pub mod crypt;
 pub mod defined_names;
 pub mod doc_props;
 pub mod error;
