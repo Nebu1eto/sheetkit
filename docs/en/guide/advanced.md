@@ -595,6 +595,63 @@ wb.unprotectWorkbook();
 
 ---
 
+### File Encryption
+
+SheetKit supports file-level encryption for .xlsx files using the ECMA-376 standard. Encrypted files are stored in OLE/CFB compound containers rather than plain ZIP archives.
+
+- **Reading**: Supports both Standard Encryption (Office 2007, AES-128-ECB) and Agile Encryption (Office 2010+, AES-256-CBC).
+- **Writing**: Uses Agile Encryption (AES-256-CBC + SHA-512 with 100,000 iterations).
+
+> Note: File encryption is different from workbook/sheet protection. Encryption prevents the file from being opened at all without the correct password, while protection only restricts editing operations.
+
+#### Rust
+
+```rust
+use sheetkit::Workbook;
+
+let mut wb = Workbook::new();
+wb.set_cell_value("Sheet1", "A1", CellValue::from("Confidential"))?;
+
+// Save with password (Agile Encryption)
+wb.save_with_password("encrypted.xlsx", "mypassword")?;
+
+// Open encrypted file
+let wb2 = Workbook::open_with_password("encrypted.xlsx", "mypassword")?;
+let val = wb2.get_cell_value("Sheet1", "A1")?;
+
+// Opening without password returns FileEncrypted error
+match Workbook::open("encrypted.xlsx") {
+    Err(sheetkit::Error::FileEncrypted) => {
+        println!("Password required");
+    }
+    _ => {}
+}
+```
+
+#### TypeScript
+
+```typescript
+import { Workbook } from 'sheetkit';
+
+const wb = new Workbook();
+wb.setCellValue('Sheet1', 'A1', 'Confidential');
+
+// Save with password (Agile Encryption)
+wb.saveWithPassword('encrypted.xlsx', 'mypassword');
+
+// Open encrypted file (sync)
+const wb2 = Workbook.openWithPasswordSync('encrypted.xlsx', 'mypassword');
+const val = wb2.getCellValue('Sheet1', 'A1');
+
+// Async variants
+const wb3 = await Workbook.openWithPassword('encrypted.xlsx', 'mypassword');
+await wb3.saveWithPassword('encrypted_copy.xlsx', 'newpassword');
+```
+
+> Note: The `encryption` feature must be enabled in Rust (`sheetkit = { features = ["encryption"] }`). Node.js bindings always include encryption support.
+
+---
+
 ## Examples
 
 Complete example projects demonstrating all features are available in the repository:
@@ -602,7 +659,7 @@ Complete example projects demonstrating all features are available in the reposi
 - **Rust**: `examples/rust/` -- a standalone Cargo project (`cargo run` from within the directory)
 - **Node.js**: `examples/node/` -- a TypeScript project (build the native module first, then run with `npx tsx index.ts`)
 
-Each example walks through every feature: creating a workbook, setting cell values, managing sheets, applying styles, adding charts and images, data validation, comments, auto-filter, streaming large datasets, document properties, and workbook protection.
+Each example walks through every feature: creating a workbook, setting cell values, managing sheets, applying styles, adding charts and images, data validation, comments, auto-filter, streaming large datasets, document properties, workbook protection, and file encryption.
 
 ---
 

@@ -656,6 +656,63 @@ wb.deletePivotTable('SalesPivot');
 
 ---
 
+### 파일 암호화
+
+SheetKit은 ECMA-376 표준에 따른 .xlsx 파일의 파일 수준 암호화를 지원합니다. 암호화된 파일은 일반 ZIP 아카이브가 아닌 OLE/CFB 복합 컨테이너에 저장됩니다.
+
+- **읽기**: Standard Encryption (Office 2007, AES-128-ECB)과 Agile Encryption (Office 2010+, AES-256-CBC) 모두 지원
+- **쓰기**: Agile Encryption (AES-256-CBC + SHA-512, 100,000회 반복) 사용
+
+> 파일 암호화는 워크북/시트 보호와 다릅니다. 암호화는 올바른 비밀번호 없이는 파일 자체를 열 수 없게 하지만, 보호는 편집 작업만 제한합니다.
+
+#### Rust
+
+```rust
+use sheetkit::Workbook;
+
+let mut wb = Workbook::new();
+wb.set_cell_value("Sheet1", "A1", CellValue::from("Confidential"))?;
+
+// 비밀번호로 저장 (Agile Encryption)
+wb.save_with_password("encrypted.xlsx", "mypassword")?;
+
+// 암호화된 파일 열기
+let wb2 = Workbook::open_with_password("encrypted.xlsx", "mypassword")?;
+let val = wb2.get_cell_value("Sheet1", "A1")?;
+
+// 비밀번호 없이 열면 FileEncrypted 에러 반환
+match Workbook::open("encrypted.xlsx") {
+    Err(sheetkit::Error::FileEncrypted) => {
+        println!("Password required");
+    }
+    _ => {}
+}
+```
+
+#### TypeScript
+
+```typescript
+import { Workbook } from 'sheetkit';
+
+const wb = new Workbook();
+wb.setCellValue('Sheet1', 'A1', 'Confidential');
+
+// 비밀번호로 저장 (Agile Encryption)
+wb.saveWithPassword('encrypted.xlsx', 'mypassword');
+
+// 암호화된 파일 열기 (동기)
+const wb2 = Workbook.openWithPasswordSync('encrypted.xlsx', 'mypassword');
+const val = wb2.getCellValue('Sheet1', 'A1');
+
+// 비동기 방식
+const wb3 = await Workbook.openWithPassword('encrypted.xlsx', 'mypassword');
+await wb3.saveWithPassword('encrypted_copy.xlsx', 'newpassword');
+```
+
+> Rust에서는 `encryption` feature를 활성화해야 합니다 (`sheetkit = { features = ["encryption"] }`). Node.js 바인딩에는 항상 암호화 지원이 포함됩니다.
+
+---
+
 ## 예제 프로젝트
 
 모든 기능을 보여주는 완전한 예제 프로젝트가 저장소에 포함되어 있습니다:
@@ -663,7 +720,7 @@ wb.deletePivotTable('SalesPivot');
 - **Rust**: `examples/rust/` -- 독립된 Cargo 프로젝트 (해당 디렉토리에서 `cargo run` 실행)
 - **Node.js**: `examples/node/` -- TypeScript 프로젝트 (네이티브 모듈을 먼저 빌드한 후 `npx tsx index.ts`로 실행)
 
-각 예제는 워크북 생성, 셀 값 설정, 시트 관리, 스타일 적용, 차트와 이미지 추가, 데이터 유효성 검사, 코멘트, 자동 필터, 대용량 데이터 스트리밍, 문서 속성, 워크북 보호, 셀 병합, 하이퍼링크, 조건부 서식, 틀 고정, 페이지 레이아웃, 수식 계산, 피벗 테이블 등 모든 기능을 순서대로 시연합니다.
+각 예제는 워크북 생성, 셀 값 설정, 시트 관리, 스타일 적용, 차트와 이미지 추가, 데이터 유효성 검사, 코멘트, 자동 필터, 대용량 데이터 스트리밍, 문서 속성, 워크북 보호, 셀 병합, 하이퍼링크, 조건부 서식, 틀 고정, 페이지 레이아웃, 수식 계산, 피벗 테이블, 파일 암호화 등 모든 기능을 순서대로 시연합니다.
 
 ---
 
