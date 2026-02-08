@@ -1581,3 +1581,101 @@ use sheetkit::rich_text_to_plain;
 
 let plain = rich_text_to_plain(&runs);
 ```
+
+---
+
+## 29. 파일 암호화
+
+파일 수준 암호화는 전체 .xlsx 파일을 비밀번호로 보호한다. 암호화된 파일은 일반 ZIP 아카이브가 아닌 OLE/CFB 복합 컨테이너를 사용한다. SheetKit은 다음을 지원한다:
+
+- **복호화**: Standard Encryption (Office 2007, AES-128-ECB + SHA-1) 및 Agile Encryption (Office 2010+, AES-256-CBC + SHA-512)
+- **암호화**: Agile Encryption (AES-256-CBC + SHA-512, 100,000회 반복)
+
+> Rust에서는 `encryption` feature가 필요하다: `sheetkit = { features = ["encryption"] }`. Node.js 바인딩에는 항상 암호화 지원이 포함된다.
+
+### `open_with_password(path, password)` / `openWithPasswordSync(path, password)`
+
+주어진 비밀번호로 암호화된 .xlsx 파일을 연다. 비밀번호가 틀리거나 지원하지 않는 암호화 방식이면 에러를 반환한다.
+
+**Rust:**
+
+```rust
+let wb = Workbook::open_with_password("encrypted.xlsx", "secret")?;
+```
+
+**TypeScript:**
+
+```typescript
+// 동기
+const wb = Workbook.openWithPasswordSync("encrypted.xlsx", "secret");
+
+// 비동기
+const wb2 = await Workbook.openWithPassword("encrypted.xlsx", "secret");
+```
+
+### `save_with_password(path, password)` / `saveWithPassword(path, password)`
+
+Agile Encryption을 사용하여 워크북을 암호화된 .xlsx 파일로 저장한다.
+
+**Rust:**
+
+```rust
+wb.save_with_password("encrypted.xlsx", "secret")?;
+```
+
+**TypeScript:**
+
+```typescript
+// 동기
+wb.saveWithPassword("encrypted.xlsx", "secret");
+
+// 비동기
+await wb.saveWithPassword("encrypted.xlsx", "secret");
+```
+
+### 에러 타입
+
+| 에러 | Rust | TypeScript | 설명 |
+|------|------|-----------|------|
+| 파일 암호화됨 | `Error::FileEncrypted` | 에러 메시지: `"file is encrypted, password required"` | `open()`으로 암호화된 파일을 열 때 반환 |
+| 잘못된 비밀번호 | `Error::IncorrectPassword` | 에러 메시지: `"incorrect password"` | `open_with_password()`에 잘못된 비밀번호 전달 시 반환 |
+| 미지원 방식 | `Error::UnsupportedEncryption(String)` | 에러 메시지: `"unsupported encryption method: ..."` | 지원하지 않는 암호화 버전 |
+
+### 암호화된 파일 감지
+
+`open()`이 암호화된 파일을 만나면 파싱을 시도하지 않고 `Error::FileEncrypted`를 반환한다. 이런 파일을 열려면 `open_with_password()`를 사용한다.
+
+**Rust:**
+
+```rust
+match Workbook::open("file.xlsx") {
+    Ok(wb) => { /* 암호화되지 않은 파일 */ }
+    Err(sheetkit::Error::FileEncrypted) => {
+        let wb = Workbook::open_with_password("file.xlsx", "password")?;
+    }
+    Err(e) => return Err(e),
+}
+```
+
+**TypeScript:**
+
+```typescript
+try {
+  const wb = Workbook.openSync("file.xlsx");
+} catch (e) {
+  if (e instanceof Error && e.message.includes("encrypted")) {
+    const wb = Workbook.openWithPasswordSync("file.xlsx", "password");
+  }
+}
+```
+
+### 암호화 상세 사양
+
+| 항목 | 값 |
+|------|------|
+| 알고리즘 | AES-256-CBC |
+| 해시 | SHA-512 |
+| 키 유도 반복 횟수 | 100,000 |
+| 세그먼트 크기 | 4,096 bytes |
+| 데이터 무결성 | HMAC-SHA512 |
+| 컨테이너 형식 | OLE/CFB (Compound File Binary) |

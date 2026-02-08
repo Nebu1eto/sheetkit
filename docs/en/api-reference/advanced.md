@@ -1552,3 +1552,101 @@ use sheetkit::rich_text_to_plain;
 
 let plain = rich_text_to_plain(&runs);
 ```
+
+---
+
+## 29. File Encryption
+
+File-level encryption protects the entire .xlsx file with a password. Encrypted files use an OLE/CFB compound container instead of a plain ZIP archive. SheetKit supports:
+
+- **Decryption**: Standard Encryption (Office 2007, AES-128-ECB + SHA-1) and Agile Encryption (Office 2010+, AES-256-CBC + SHA-512)
+- **Encryption**: Agile Encryption (AES-256-CBC + SHA-512, 100,000 iterations)
+
+> Requires the `encryption` feature in Rust: `sheetkit = { features = ["encryption"] }`. Node.js bindings always include encryption support.
+
+### `open_with_password(path, password)` / `openWithPasswordSync(path, password)`
+
+Open an encrypted .xlsx file with the given password. Returns an error if the password is incorrect or the file uses an unsupported encryption method.
+
+**Rust:**
+
+```rust
+let wb = Workbook::open_with_password("encrypted.xlsx", "secret")?;
+```
+
+**TypeScript:**
+
+```typescript
+// Sync
+const wb = Workbook.openWithPasswordSync("encrypted.xlsx", "secret");
+
+// Async
+const wb2 = await Workbook.openWithPassword("encrypted.xlsx", "secret");
+```
+
+### `save_with_password(path, password)` / `saveWithPassword(path, password)`
+
+Save the workbook as an encrypted .xlsx file using Agile Encryption.
+
+**Rust:**
+
+```rust
+wb.save_with_password("encrypted.xlsx", "secret")?;
+```
+
+**TypeScript:**
+
+```typescript
+// Sync
+wb.saveWithPassword("encrypted.xlsx", "secret");
+
+// Async
+await wb.saveWithPassword("encrypted.xlsx", "secret");
+```
+
+### Error Types
+
+| Error | Rust | TypeScript | Description |
+|---|---|---|---|
+| File is encrypted | `Error::FileEncrypted` | Error message: `"file is encrypted, password required"` | Returned by `open()` when the file is encrypted |
+| Wrong password | `Error::IncorrectPassword` | Error message: `"incorrect password"` | Returned by `open_with_password()` with wrong password |
+| Unsupported method | `Error::UnsupportedEncryption(String)` | Error message: `"unsupported encryption method: ..."` | The encryption version is not supported |
+
+### Detecting Encrypted Files
+
+When `open()` encounters an encrypted file, it returns `Error::FileEncrypted` instead of attempting to parse it. Use `open_with_password()` to open these files.
+
+**Rust:**
+
+```rust
+match Workbook::open("file.xlsx") {
+    Ok(wb) => { /* unencrypted file */ }
+    Err(sheetkit::Error::FileEncrypted) => {
+        let wb = Workbook::open_with_password("file.xlsx", "password")?;
+    }
+    Err(e) => return Err(e),
+}
+```
+
+**TypeScript:**
+
+```typescript
+try {
+  const wb = Workbook.openSync("file.xlsx");
+} catch (e) {
+  if (e instanceof Error && e.message.includes("encrypted")) {
+    const wb = Workbook.openWithPasswordSync("file.xlsx", "password");
+  }
+}
+```
+
+### Encryption Details
+
+| Property | Value |
+|---|---|
+| Algorithm | AES-256-CBC |
+| Hash | SHA-512 |
+| Key derivation iterations | 100,000 |
+| Segment size | 4,096 bytes |
+| Data integrity | HMAC-SHA512 |
+| Container format | OLE/CFB (Compound File Binary) |

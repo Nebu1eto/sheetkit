@@ -367,6 +367,36 @@ wb.applyStreamWriter(sw);
 await wb.save("large.xlsx");
 ```
 
+## 암호화된 파일 다루기
+
+SheetKit은 비밀번호로 보호된 .xlsx 파일의 읽기/쓰기를 지원합니다. Rust에서는 `encryption` feature를 활성화해야 하며, Node.js 바인딩에는 항상 암호화 지원이 포함됩니다.
+
+**Rust**
+
+```rust
+use sheetkit::Workbook;
+
+// 비밀번호로 저장
+let wb = Workbook::new();
+wb.save_with_password("encrypted.xlsx", "secret")?;
+
+// 비밀번호로 열기
+let wb2 = Workbook::open_with_password("encrypted.xlsx", "secret")?;
+```
+
+**TypeScript**
+
+```typescript
+import { Workbook } from "sheetkit";
+
+// 비밀번호로 저장
+const wb = new Workbook();
+wb.saveWithPassword("encrypted.xlsx", "secret");
+
+// 비밀번호로 열기
+const wb2 = Workbook.openWithPasswordSync("encrypted.xlsx", "secret");
+```
+
 ## 다음 단계
 
 - [API 레퍼런스](api-reference.md) -- 모든 메서드와 타입에 대한 전체 문서.
