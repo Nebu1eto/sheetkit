@@ -132,7 +132,7 @@ const SECONDS_PER_DAY: f64 = 86_400.0;
 /// Serial number 1 = January 1, 1900. Accounts for the Excel 1900 leap year
 /// bug (serial 60 = the non-existent February 29, 1900).
 pub fn date_to_serial(date: NaiveDate) -> f64 {
-    let epoch = NaiveDate::from_ymd_opt(1899, 12, 31).unwrap();
+    let epoch = NaiveDate::from_ymd_opt(1899, 12, 31).expect("valid epoch date 1899-12-31");
     let days = (date - epoch).num_days() as f64;
     // Excel incorrectly considers 1900 a leap year. All dates from
     // March 1, 1900 onward have serial numbers one higher than the
@@ -164,7 +164,7 @@ pub fn serial_to_date(serial: f64) -> Option<NaiveDate> {
     if serial_int < 1 {
         return None;
     }
-    let epoch = NaiveDate::from_ymd_opt(1899, 12, 31).unwrap();
+    let epoch = NaiveDate::from_ymd_opt(1899, 12, 31).expect("valid epoch date 1899-12-31");
     // Serial 60 = February 29, 1900 (Excel bug -- this date does not exist).
     // Map it to February 28, 1900 for practical purposes.
     if serial_int == 60 {

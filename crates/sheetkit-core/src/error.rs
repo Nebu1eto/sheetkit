@@ -144,6 +144,14 @@ pub enum Error {
     #[error("unsupported encryption method: {0}")]
     UnsupportedEncryption(String),
 
+    /// The outline level exceeds the allowed maximum (7).
+    #[error("outline level {level} exceeds maximum {max}")]
+    OutlineLevelExceeded { level: u8, max: u8 },
+
+    /// A merge cell reference format is invalid.
+    #[error("invalid merge cell reference: {0}")]
+    InvalidMergeCellReference(String),
+
     /// An internal or otherwise unclassified error.
     #[error("internal error: {0}")]
     Internal(String),
@@ -234,6 +242,18 @@ mod tests {
             err.to_string(),
             "cell value too long: 40000 characters (max 32767)"
         );
+    }
+
+    #[test]
+    fn test_error_display_outline_level_exceeded() {
+        let err = Error::OutlineLevelExceeded { level: 8, max: 7 };
+        assert_eq!(err.to_string(), "outline level 8 exceeds maximum 7");
+    }
+
+    #[test]
+    fn test_error_display_invalid_merge_cell_reference() {
+        let err = Error::InvalidMergeCellReference("bad ref".to_string());
+        assert_eq!(err.to_string(), "invalid merge cell reference: bad ref");
     }
 
     #[test]

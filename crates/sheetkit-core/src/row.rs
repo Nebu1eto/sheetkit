@@ -275,9 +275,7 @@ pub fn set_row_outline_level(ws: &mut WorksheetXml, row: u32, level: u8) -> Resu
         return Err(Error::InvalidRowNumber(row));
     }
     if level > 7 {
-        return Err(Error::Internal(format!(
-            "outline level {level} exceeds maximum 7"
-        )));
+        return Err(Error::OutlineLevelExceeded { level, max: 7 });
     }
 
     let r = find_or_create_row(ws, row);
