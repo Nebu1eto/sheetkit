@@ -4,6 +4,7 @@ members = [
     "crates/sheetkit-xml",
     "crates/sheetkit-core",
     "crates/sheetkit",
+    "packages/sheetkit",
 ]
 
 [workspace.package]
