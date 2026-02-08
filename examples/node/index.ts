@@ -40,20 +40,20 @@ console.log('[Phase 3] Row/column sizing and row insertion complete');
 // ── Phase 4: Styles ──
 // Title style
 const titleStyleId = wb.addStyle({
-  font: { name: 'Arial', size: 16, bold: true, color: '#FFFFFF' },
-  fill: { pattern: 'solid', fgColor: '#4472C4' },
-  alignment: { horizontal: 'center', vertical: 'center' },
+	font: { name: 'Arial', size: 16, bold: true, color: '#FFFFFF' },
+	fill: { pattern: 'solid', fgColor: '#4472C4' },
+	alignment: { horizontal: 'center', vertical: 'center' },
 });
 wb.setCellStyle('Sheet1', 'A1', titleStyleId);
 
 // Header style
 const headerStyleId = wb.addStyle({
-  font: { bold: true, size: 11, color: '#FFFFFF' },
-  fill: { pattern: 'solid', fgColor: '#5B9BD5' },
-  border: {
-    bottom: { style: 'thin', color: '#000000' },
-  },
-  alignment: { horizontal: 'center' },
+	font: { bold: true, size: 11, color: '#FFFFFF' },
+	fill: { pattern: 'solid', fgColor: '#5B9BD5' },
+	border: {
+		bottom: { style: 'thin', color: '#000000' },
+	},
+	alignment: { horizontal: 'center' },
 });
 wb.setCellStyle('Sheet1', 'A2', headerStyleId);
 wb.setCellStyle('Sheet1', 'B2', headerStyleId);
@@ -74,58 +74,57 @@ wb.setCellValue('Sales', 'A5', 'Q4');
 wb.setCellValue('Sales', 'B5', 2700);
 
 wb.addChart('Sales', 'D1', 'K15', {
-  chartType: 'col',
-  title: 'Quarterly Revenue',
-  series: [
-    {
-      name: 'Revenue',
-      categories: 'Sales!$A$2:$A$5',
-      values: 'Sales!$B$2:$B$5',
-    },
-  ],
-  showLegend: true,
+	chartType: 'col',
+	title: 'Quarterly Revenue',
+	series: [
+		{
+			name: 'Revenue',
+			categories: 'Sales!$A$2:$A$5',
+			values: 'Sales!$B$2:$B$5',
+		},
+	],
+	showLegend: true,
 });
 console.log('[Phase 7] Chart added (Sales sheet)');
 
 // ── Phase 7: Image (1x1 PNG placeholder) ──
 const pngData = Buffer.from([
-  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
-  0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
-  0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4, 0x89, 0x00, 0x00, 0x00,
-  0x0a, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00,
-  0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49,
-  0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+	0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+	0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+	0x89, 0x00, 0x00, 0x00, 0x0a, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00,
+	0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae,
+	0x42, 0x60, 0x82,
 ]);
 wb.addImage('Sheet1', {
-  data: pngData,
-  format: 'png',
-  fromCell: 'E1',
-  widthPx: 64,
-  heightPx: 64,
+	data: pngData,
+	format: 'png',
+	fromCell: 'E1',
+	widthPx: 64,
+	heightPx: 64,
 });
 console.log('[Phase 7] Image added');
 
 // ── Phase 8: Data validation ──
 wb.addDataValidation('Sales', {
-  sqref: 'C2:C5',
-  validationType: 'list',
-  formula1: '"Achieved,Not Achieved,In Progress"',
-  allowBlank: true,
-  showInputMessage: true,
-  promptTitle: 'Select Status',
-  promptMessage: 'Select a status from the dropdown',
-  showErrorMessage: true,
-  errorStyle: 'stop',
-  errorTitle: 'Error',
-  errorMessage: 'Please select from the list',
+	sqref: 'C2:C5',
+	validationType: 'list',
+	formula1: '"Achieved,Not Achieved,In Progress"',
+	allowBlank: true,
+	showInputMessage: true,
+	promptTitle: 'Select Status',
+	promptMessage: 'Select a status from the dropdown',
+	showErrorMessage: true,
+	errorStyle: 'stop',
+	errorTitle: 'Error',
+	errorMessage: 'Please select from the list',
 });
 console.log('[Phase 8] Data validation added');
 
 // ── Phase 8: Comment ──
 wb.addComment('Sheet1', {
-  cell: 'A1',
-  author: 'Admin',
-  text: 'This sheet contains the employee list.',
+	cell: 'A1',
+	author: 'Admin',
+	text: 'This sheet contains the employee list.',
 });
 console.log('[Phase 8] Comment added');
 
@@ -139,7 +138,7 @@ sw.setColWidth(1, 15);
 sw.setColWidth(2, 10);
 sw.writeRow(1, ['Item', 'Value']);
 for (let i = 2; i <= 100; i++) {
-  sw.writeRow(i, [`Item_${i - 1}`, i * 10]);
+	sw.writeRow(i, [`Item_${i - 1}`, i * 10]);
 }
 sw.addMergeCell('A1:B1');
 wb.applyStreamWriter(sw);
@@ -147,13 +146,13 @@ console.log('[Phase 9] StreamWriter wrote 100 rows');
 
 // ── Phase 10: Document properties ──
 wb.setDocProps({
-  title: 'SheetKit Example Document',
-  creator: 'SheetKit Node.js Example',
-  description: 'An example file demonstrating all SheetKit features',
+	title: 'SheetKit Example Document',
+	creator: 'SheetKit Node.js Example',
+	description: 'An example file demonstrating all SheetKit features',
 });
 wb.setAppProps({
-  application: 'SheetKit',
-  company: 'SheetKit Project',
+	application: 'SheetKit',
+	company: 'SheetKit Project',
 });
 wb.setCustomProperty('Project', 'SheetKit');
 wb.setCustomProperty('Version', 1);
@@ -162,10 +161,10 @@ console.log('[Phase 10] Document properties set');
 
 // ── Phase 10: Workbook protection ──
 wb.protectWorkbook({
-  password: 'demo',
-  lockStructure: true,
-  lockWindows: false,
-  lockRevision: false,
+	password: 'demo',
+	lockStructure: true,
+	lockWindows: false,
+	lockRevision: false,
 });
 console.log('[Phase 10] Workbook protection set');
 
