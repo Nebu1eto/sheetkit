@@ -6,7 +6,7 @@
   },
   "overrides": [
     {
-      "includes": ["packages/sheetkit/binding.cjs"],
+      "includes": ["packages/sheetkit/index.js", "packages/sheetkit/index.d.ts"],
       "linter": { "enabled": false },
       "formatter": { "enabled": false }
     }
