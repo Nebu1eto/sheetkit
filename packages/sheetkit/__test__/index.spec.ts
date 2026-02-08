@@ -377,6 +377,9 @@ describe('Phase 8 - Comments', () => {
 });
 
 describe('Phase 8 - Data Validation', () => {
+  const out = tmpFile('test-validation.xlsx');
+  afterEach(async () => cleanup(out));
+
   it('should add and get list validation', () => {
     const wb = new Workbook();
     wb.addDataValidation('Sheet1', {
@@ -397,6 +400,214 @@ describe('Phase 8 - Data Validation', () => {
       formula1: '"A,B,C"',
     });
     wb.removeDataValidation('Sheet1', 'A1:A10');
+    expect(wb.getDataValidations('Sheet1').length).toBe(0);
+  });
+
+  it('should return all properties for list validation', () => {
+    const wb = new Workbook();
+    wb.addDataValidation('Sheet1', {
+      sqref: 'B2:B100',
+      validationType: 'list',
+      formula1: '"Red,Green,Blue"',
+      allowBlank: true,
+      errorStyle: 'stop',
+      errorTitle: 'Invalid color',
+      errorMessage: 'Please select from the list.',
+      promptTitle: 'Color',
+      promptMessage: 'Choose a color.',
+      showInputMessage: true,
+      showErrorMessage: true,
+    });
+    const v = wb.getDataValidations('Sheet1');
+    expect(v.length).toBe(1);
+    expect(v[0].validationType).toBe('list');
+    expect(v[0].formula1).toBe('"Red,Green,Blue"');
+    expect(v[0].allowBlank).toBe(true);
+    expect(v[0].errorStyle).toBe('stop');
+    expect(v[0].errorTitle).toBe('Invalid color');
+    expect(v[0].errorMessage).toBe('Please select from the list.');
+    expect(v[0].promptTitle).toBe('Color');
+    expect(v[0].promptMessage).toBe('Choose a color.');
+    expect(v[0].showInputMessage).toBe(true);
+    expect(v[0].showErrorMessage).toBe(true);
+  });
+
+  it('should add whole number between validation', () => {
+    const wb = new Workbook();
+    wb.addDataValidation('Sheet1', {
+      sqref: 'C1:C50',
+      validationType: 'whole',
+      operator: 'between',
+      formula1: '1',
+      formula2: '100',
+      errorMessage: 'Enter a number between 1 and 100',
+      showErrorMessage: true,
+    });
+    const v = wb.getDataValidations('Sheet1');
+    expect(v.length).toBe(1);
+    expect(v[0].validationType).toBe('whole');
+    expect(v[0].operator).toBe('between');
+    expect(v[0].formula1).toBe('1');
+    expect(v[0].formula2).toBe('100');
+  });
+
+  it('should add decimal greaterThan validation', () => {
+    const wb = new Workbook();
+    wb.addDataValidation('Sheet1', {
+      sqref: 'D1:D50',
+      validationType: 'decimal',
+      operator: 'greaterthan',
+      formula1: '0.5',
+    });
+    const v = wb.getDataValidations('Sheet1');
+    expect(v.length).toBe(1);
+    expect(v[0].validationType).toBe('decimal');
+    expect(v[0].operator).toBe('greaterthan');
+    expect(v[0].formula1).toBe('0.5');
+  });
+
+  it('should add textLength validation', () => {
+    const wb = new Workbook();
+    wb.addDataValidation('Sheet1', {
+      sqref: 'E1:E50',
+      validationType: 'textLength',
+      operator: 'lessthanorequal',
+      formula1: '255',
+    });
+    const v = wb.getDataValidations('Sheet1');
+    expect(v.length).toBe(1);
+    expect(v[0].validationType).toBe('textlength');
+    expect(v[0].operator).toBe('lessthanorequal');
+    expect(v[0].formula1).toBe('255');
+  });
+
+  it('should add custom formula validation', () => {
+    const wb = new Workbook();
+    wb.addDataValidation('Sheet1', {
+      sqref: 'F1:F50',
+      validationType: 'custom',
+      formula1: 'AND(LEN(F1)>0,LEN(F1)<100)',
+    });
+    const v = wb.getDataValidations('Sheet1');
+    expect(v.length).toBe(1);
+    expect(v[0].validationType).toBe('custom');
+    expect(v[0].formula1).toBe('AND(LEN(F1)>0,LEN(F1)<100)');
+  });
+
+  it('should support warning and information error styles', () => {
+    const wb = new Workbook();
+    wb.addDataValidation('Sheet1', {
+      sqref: 'A1:A10',
+      validationType: 'whole',
+      operator: 'greaterthan',
+      formula1: '0',
+      errorStyle: 'warning',
+    });
+    wb.addDataValidation('Sheet1', {
+      sqref: 'B1:B10',
+      validationType: 'whole',
+      operator: 'greaterthan',
+      formula1: '0',
+      errorStyle: 'information',
+    });
+    const v = wb.getDataValidations('Sheet1');
+    expect(v.length).toBe(2);
+    const styles = v.map((x: { errorStyle: string }) => x.errorStyle).sort();
+    expect(styles).toEqual(['information', 'warning']);
+  });
+
+  it('should handle multiple validations on one sheet', () => {
+    const wb = new Workbook();
+    wb.addDataValidation('Sheet1', {
+      sqref: 'A1:A10',
+      validationType: 'list',
+      formula1: '"X,Y,Z"',
+    });
+    wb.addDataValidation('Sheet1', {
+      sqref: 'B1:B10',
+      validationType: 'whole',
+      operator: 'between',
+      formula1: '1',
+      formula2: '999',
+    });
+    wb.addDataValidation('Sheet1', {
+      sqref: 'C1:C10',
+      validationType: 'decimal',
+      operator: 'greaterthanorequal',
+      formula1: '0',
+    });
+    const v = wb.getDataValidations('Sheet1');
+    expect(v.length).toBe(3);
+  });
+
+  it('should remove one validation and keep others', () => {
+    const wb = new Workbook();
+    wb.addDataValidation('Sheet1', {
+      sqref: 'A1:A10',
+      validationType: 'list',
+      formula1: '"A,B"',
+    });
+    wb.addDataValidation('Sheet1', {
+      sqref: 'B1:B10',
+      validationType: 'whole',
+      operator: 'between',
+      formula1: '1',
+      formula2: '10',
+    });
+    wb.removeDataValidation('Sheet1', 'A1:A10');
+    const v = wb.getDataValidations('Sheet1');
+    expect(v.length).toBe(1);
+    expect(v[0].sqref).toBe('B1:B10');
+  });
+
+  it('should persist validations through save/open cycle', async () => {
+    const wb = new Workbook();
+    wb.addDataValidation('Sheet1', {
+      sqref: 'A1:A10',
+      validationType: 'list',
+      formula1: '"Red,Green,Blue"',
+      allowBlank: true,
+      errorStyle: 'stop',
+      errorTitle: 'Invalid',
+      errorMessage: 'Pick from list',
+      promptTitle: 'Color',
+      promptMessage: 'Choose color',
+      showInputMessage: true,
+      showErrorMessage: true,
+    });
+    wb.addDataValidation('Sheet1', {
+      sqref: 'B1:B10',
+      validationType: 'whole',
+      operator: 'between',
+      formula1: '0',
+      formula2: '100',
+    });
+    await wb.save(out);
+
+    const wb2 = await Workbook.open(out);
+    const v = wb2.getDataValidations('Sheet1');
+    expect(v.length).toBe(2);
+    const listV = v.find((x: { sqref: string }) => x.sqref === 'A1:A10');
+    expect(listV).toBeDefined();
+    expect(listV?.validationType).toBe('list');
+    expect(listV?.formula1).toBe('"Red,Green,Blue"');
+    expect(listV?.errorTitle).toBe('Invalid');
+    expect(listV?.promptTitle).toBe('Color');
+    const wholeV = v.find((x: { sqref: string }) => x.sqref === 'B1:B10');
+    expect(wholeV).toBeDefined();
+    expect(wholeV?.validationType).toBe('whole');
+    expect(wholeV?.operator).toBe('between');
+  });
+
+  it('should return empty array when no validations exist', () => {
+    const wb = new Workbook();
+    const v = wb.getDataValidations('Sheet1');
+    expect(v).toEqual([]);
+  });
+
+  it('should handle removing nonexistent validation gracefully', () => {
+    const wb = new Workbook();
+    wb.removeDataValidation('Sheet1', 'Z1:Z99');
     expect(wb.getDataValidations('Sheet1').length).toBe(0);
   });
 });
