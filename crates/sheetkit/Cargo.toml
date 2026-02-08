@@ -5,8 +5,8 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-sheetkit-core = { path = "../sheetkit-core" }
-sheetkit-xml = { path = "../sheetkit-xml" }
+sheetkit-core = { workspace = true }
+sheetkit-xml = { workspace = true }
 
 [features]
 encryption = ["sheetkit-core/encryption"]
