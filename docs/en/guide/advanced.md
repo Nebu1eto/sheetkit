@@ -652,6 +652,214 @@ await wb3.saveWithPassword('encrypted_copy.xlsx', 'newpassword');
 
 ---
 
+### Sparklines
+
+Sparklines are mini-charts rendered inside individual cells. Three types are supported: line, column, and win/loss. Style presets (0-35) correspond to the built-in Excel sparkline styles.
+
+#### Rust
+
+```rust
+use sheetkit::{SparklineConfig, SparklineType, Workbook};
+
+let mut wb = Workbook::new();
+
+// Populate data
+for i in 1..=10 {
+    wb.set_cell_value("Sheet1", &format!("A{i}"), CellValue::from(i as f64 * 1.5))?;
+}
+
+// Add a column sparkline in cell B1
+let mut config = SparklineConfig::new("Sheet1!A1:A10", "B1");
+config.sparkline_type = SparklineType::Column;
+config.high_point = true;
+config.low_point = true;
+config.style = Some(5);
+
+wb.add_sparkline("Sheet1", &config)?;
+
+// Read sparklines
+let sparklines = wb.get_sparklines("Sheet1")?;
+
+// Remove a sparkline by location
+wb.remove_sparkline("Sheet1", "B1")?;
+```
+
+#### TypeScript
+
+```typescript
+const wb = new Workbook();
+
+// Populate data
+for (let i = 1; i <= 10; i++) {
+    wb.setCellValue('Sheet1', `A${i}`, i * 1.5);
+}
+
+// Add a column sparkline in cell B1
+wb.addSparkline('Sheet1', {
+    dataRange: 'Sheet1!A1:A10',
+    location: 'B1',
+    sparklineType: 'column',
+    highPoint: true,
+    lowPoint: true,
+    style: 5,
+});
+
+// Read sparklines
+const sparklines = wb.getSparklines('Sheet1');
+
+// Remove a sparkline by location
+wb.removeSparkline('Sheet1', 'B1');
+```
+
+#### SparklineConfig Fields
+
+| Field | Rust Type | TS Type | Description |
+|-------|-----------|---------|-------------|
+| `data_range` / `dataRange` | `String` | `string` | Data source range (e.g., `"Sheet1!A1:A10"`) |
+| `location` | `String` | `string` | Cell where sparkline is rendered |
+| `sparkline_type` / `sparklineType` | `SparklineType` | `string?` | `"line"`, `"column"`, or `"stacked"` (win/loss) |
+| `markers` | `bool` | `boolean?` | Show data markers |
+| `high_point` / `highPoint` | `bool` | `boolean?` | Highlight highest point |
+| `low_point` / `lowPoint` | `bool` | `boolean?` | Highlight lowest point |
+| `first_point` / `firstPoint` | `bool` | `boolean?` | Highlight first point |
+| `last_point` / `lastPoint` | `bool` | `boolean?` | Highlight last point |
+| `negative_points` / `negativePoints` | `bool` | `boolean?` | Highlight negative values |
+| `show_axis` / `showAxis` | `bool` | `boolean?` | Show horizontal axis |
+| `line_weight` / `lineWeight` | `Option<f64>` | `number?` | Line weight in points |
+| `style` | `Option<u32>` | `number?` | Style preset index (0-35) |
+
+---
+
+### Defined Names
+
+Defined names assign a human-readable name to a cell range or formula. They can be workbook-scoped (visible everywhere) or sheet-scoped (visible only on the named sheet).
+
+#### Rust
+
+```rust
+use sheetkit::Workbook;
+
+let mut wb = Workbook::new();
+
+// Workbook-scoped name
+wb.set_defined_name("SalesTotal", "Sheet1!$B$10", None, None)?;
+
+// Sheet-scoped name with comment
+wb.set_defined_name(
+    "LocalRange", "Sheet1!$A$1:$D$10",
+    Some("Sheet1"), Some("Local data range"),
+)?;
+
+// Read a defined name
+if let Some(info) = wb.get_defined_name("SalesTotal", None)? {
+    println!("Value: {}", info.value);
+}
+
+// List all defined names
+let names = wb.get_all_defined_names();
+
+// Delete a defined name
+wb.delete_defined_name("SalesTotal", None)?;
+```
+
+#### TypeScript
+
+```typescript
+const wb = new Workbook();
+
+// Workbook-scoped name
+wb.setDefinedName({
+    name: 'SalesTotal',
+    value: 'Sheet1!$B$10',
+});
+
+// Sheet-scoped name with comment
+wb.setDefinedName({
+    name: 'LocalRange',
+    value: 'Sheet1!$A$1:$D$10',
+    scope: 'Sheet1',
+    comment: 'Local data range',
+});
+
+// Read a defined name (null = workbook scope)
+const info = wb.getDefinedName('SalesTotal', null);
+
+// List all defined names
+const names = wb.getDefinedNames();
+
+// Delete a defined name
+wb.deleteDefinedName('SalesTotal', null);
+```
+
+---
+
+### Sheet Protection
+
+Sheet protection restricts editing operations on individual worksheets. Unlike workbook protection (which prevents structural changes), sheet protection controls cell-level actions such as formatting, inserting, deleting, sorting, and filtering. An optional password can be set.
+
+#### Rust
+
+```rust
+use sheetkit::Workbook;
+use sheetkit::sheet::SheetProtectionConfig;
+
+let mut wb = Workbook::new();
+
+// Protect a sheet with a password and allow sorting
+wb.protect_sheet("Sheet1", SheetProtectionConfig {
+    password: Some("secret".into()),
+    sort: true,
+    auto_filter: true,
+    ..Default::default()
+})?;
+
+// Check if a sheet is protected
+let is_protected: bool = wb.is_sheet_protected("Sheet1")?;
+
+// Remove protection
+wb.unprotect_sheet("Sheet1")?;
+```
+
+#### TypeScript
+
+```typescript
+const wb = new Workbook();
+
+// Protect a sheet with a password and allow sorting
+wb.protectSheet('Sheet1', {
+    password: 'secret',
+    sort: true,
+    autoFilter: true,
+});
+
+// Check if a sheet is protected
+const isProtected: boolean = wb.isSheetProtected('Sheet1');
+
+// Remove protection
+wb.unprotectSheet('Sheet1');
+```
+
+#### SheetProtectionConfig Fields
+
+| Field | Rust Type | TS Type | Description |
+|-------|-----------|---------|-------------|
+| `password` | `Option<String>` | `string?` | Optional password (legacy Excel hash) |
+| `select_locked_cells` / `selectLockedCells` | `bool` | `boolean?` | Allow selecting locked cells |
+| `select_unlocked_cells` / `selectUnlockedCells` | `bool` | `boolean?` | Allow selecting unlocked cells |
+| `format_cells` / `formatCells` | `bool` | `boolean?` | Allow formatting cells |
+| `format_columns` / `formatColumns` | `bool` | `boolean?` | Allow formatting columns |
+| `format_rows` / `formatRows` | `bool` | `boolean?` | Allow formatting rows |
+| `insert_columns` / `insertColumns` | `bool` | `boolean?` | Allow inserting columns |
+| `insert_rows` / `insertRows` | `bool` | `boolean?` | Allow inserting rows |
+| `insert_hyperlinks` / `insertHyperlinks` | `bool` | `boolean?` | Allow inserting hyperlinks |
+| `delete_columns` / `deleteColumns` | `bool` | `boolean?` | Allow deleting columns |
+| `delete_rows` / `deleteRows` | `bool` | `boolean?` | Allow deleting rows |
+| `sort` | `bool` | `boolean?` | Allow sorting |
+| `auto_filter` / `autoFilter` | `bool` | `boolean?` | Allow using auto-filter |
+| `pivot_tables` / `pivotTables` | `bool` | `boolean?` | Allow using pivot tables |
+
+---
+
 ## Examples
 
 Complete example projects demonstrating all features are available in the repository:
@@ -659,7 +867,7 @@ Complete example projects demonstrating all features are available in the reposi
 - **Rust**: `examples/rust/` -- a standalone Cargo project (`cargo run` from within the directory)
 - **Node.js**: `examples/node/` -- a TypeScript project (build the native module first, then run with `npx tsx index.ts`)
 
-Each example walks through every feature: creating a workbook, setting cell values, managing sheets, applying styles, adding charts and images, data validation, comments, auto-filter, streaming large datasets, document properties, workbook protection, and file encryption.
+Each example walks through every feature: creating a workbook, setting cell values, managing sheets, applying styles, adding charts and images, data validation, comments, auto-filter, streaming large datasets, document properties, workbook protection, file encryption, sparklines, defined names, and sheet protection.
 
 ---
 

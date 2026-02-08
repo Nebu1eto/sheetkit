@@ -34,6 +34,9 @@ SheetKit은 Excel (.xlsx) 파일을 읽고 쓰는 Rust 라이브러리이며, na
   - StreamWriter
   - 문서 속성
   - 워크북 보호
+  - 스파크라인
+  - 정의된 이름
+  - 시트 보호
   - 예제 프로젝트
   - 유틸리티 함수
 
