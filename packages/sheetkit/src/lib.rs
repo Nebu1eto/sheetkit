@@ -1,7 +1,6 @@
 #![deny(clippy::all)]
 
 use napi::bindgen_prelude::*;
-use napi::{Env, JsUnknown, ValueType};
 use napi_derive::napi;
 
 use sheetkit_core::cell::CellValue;
@@ -72,6 +71,14 @@ pub struct JsAlignmentStyle {
 pub struct JsProtectionStyle {
     pub locked: Option<bool>,
     pub hidden: Option<bool>,
+}
+
+#[napi(object)]
+pub struct DateValue {
+    #[napi(js_name = "type")]
+    pub kind: String,
+    pub serial: f64,
+    pub iso: Option<String>,
 }
 
 #[napi(object)]
@@ -488,69 +495,26 @@ fn hyperlink_info_to_js(info: &HyperlinkInfo) -> JsHyperlinkInfo {
     }
 }
 
-fn js_to_cell_value(value: JsUnknown) -> Result<CellValue> {
-    match value.get_type()? {
-        ValueType::Null | ValueType::Undefined => Ok(CellValue::Empty),
-        ValueType::Boolean => {
-            let b = value.coerce_to_bool()?.get_value()?;
-            Ok(CellValue::Bool(b))
-        }
-        ValueType::Number => {
-            let n = value.coerce_to_number()?.get_double()?;
-            Ok(CellValue::Number(n))
-        }
-        ValueType::String => {
-            let s = value.coerce_to_string()?.into_utf8()?.as_str()?.to_string();
-            Ok(CellValue::String(s))
-        }
-        ValueType::Object => {
-            // Accept { type: "date", serial: number } objects for date values.
-            let obj = value.coerce_to_object()?;
-            let type_prop: JsUnknown = obj.get_named_property("type")?;
-            if type_prop.get_type()? == ValueType::String {
-                let type_str = type_prop
-                    .coerce_to_string()?
-                    .into_utf8()?
-                    .as_str()?
-                    .to_string();
-                if type_str == "date" {
-                    let serial_prop: JsUnknown = obj.get_named_property("serial")?;
-                    let serial = serial_prop.coerce_to_number()?.get_double()?;
-                    return Ok(CellValue::Date(serial));
-                }
-            }
-            Err(Error::from_reason("unsupported cell value type"))
-        }
-        _ => Err(Error::from_reason("unsupported cell value type")),
-    }
-}
-
-fn cell_value_to_js(env: Env, value: CellValue) -> Result<JsUnknown> {
-    match value {
-        CellValue::Empty => env.get_null().map(|v| v.into_unknown()),
-        CellValue::Bool(b) => env.get_boolean(b).map(|v| v.into_unknown()),
-        CellValue::Number(n) => env.create_double(n).map(|v| v.into_unknown()),
-        CellValue::Date(serial) => {
-            // Return dates as an object with type and serial number so JS
-            // callers can distinguish dates from plain numbers.
-            let mut obj = env.create_object()?;
-            obj.set("type", env.create_string("date")?)?;
-            obj.set("serial", env.create_double(serial)?)?;
-            // Also provide an ISO string when possible.
-            if let Some(dt) = sheetkit_core::cell::serial_to_datetime(serial) {
-                let iso = if serial.fract() == 0.0 {
+fn cell_value_to_either(value: CellValue) -> Result<Either5<Null, bool, f64, String, DateValue>> {
+    Ok(match value {
+        CellValue::Empty => Either5::A(Null),
+        CellValue::Bool(b) => Either5::B(b),
+        CellValue::Number(n) => Either5::C(n),
+        CellValue::String(s) => Either5::D(s),
+        CellValue::Date(serial) => Either5::E(DateValue {
+            kind: "date".to_string(),
+            serial,
+            iso: sheetkit_core::cell::serial_to_datetime(serial).map(|dt| {
+                if serial.fract() == 0.0 {
                     dt.format("%Y-%m-%d").to_string()
                 } else {
                     dt.format("%Y-%m-%dT%H:%M:%S").to_string()
-                };
-                obj.set("iso", env.create_string(&iso)?)?;
-            }
-            Ok(obj.into_unknown())
-        }
-        CellValue::String(s) => env.create_string(&s).map(|v| v.into_unknown()),
-        CellValue::Formula { expr, .. } => env.create_string(&expr).map(|v| v.into_unknown()),
-        CellValue::Error(e) => env.create_string(&e).map(|v| v.into_unknown()),
-    }
+                }
+            }),
+        }),
+        CellValue::Formula { expr, .. } => Either5::D(expr),
+        CellValue::Error(e) => Either5::D(e),
+    })
 }
 
 fn parse_style_color(s: &str) -> Option<StyleColor> {
@@ -1499,21 +1463,34 @@ impl Workbook {
     }
 
     /// Get the value of a cell. Returns string, number, boolean, DateValue, or null.
-    #[napi(ts_return_type = "string | number | boolean | DateValue | null")]
-    pub fn get_cell_value(&self, env: Env, sheet: String, cell: String) -> Result<JsUnknown> {
+    #[napi]
+    pub fn get_cell_value(
+        &self,
+        sheet: String,
+        cell: String,
+    ) -> Result<Either5<Null, bool, f64, String, DateValue>> {
         let value = self
             .inner
             .get_cell_value(&sheet, &cell)
             .map_err(|e| Error::from_reason(e.to_string()))?;
-        cell_value_to_js(env, value)
+        cell_value_to_either(value)
     }
 
     /// Set the value of a cell. Pass string, number, boolean, DateValue, or null to clear.
-    #[napi(
-        ts_args_type = "sheet: string, cell: string, value: string | number | boolean | { type: 'date', serial: number } | null"
-    )]
-    pub fn set_cell_value(&mut self, sheet: String, cell: String, value: JsUnknown) -> Result<()> {
-        let cell_value = js_to_cell_value(value)?;
+    #[napi]
+    pub fn set_cell_value(
+        &mut self,
+        sheet: String,
+        cell: String,
+        value: Either5<String, f64, bool, DateValue, Null>,
+    ) -> Result<()> {
+        let cell_value = match value {
+            Either5::A(s) => CellValue::String(s),
+            Either5::B(n) => CellValue::Number(n),
+            Either5::C(b) => CellValue::Bool(b),
+            Either5::D(d) => CellValue::Date(d.serial),
+            Either5::E(_) => CellValue::Empty,
+        };
         self.inner
             .set_cell_value(&sheet, &cell, cell_value)
             .map_err(|e| Error::from_reason(e.to_string()))
@@ -2044,43 +2021,37 @@ impl Workbook {
     }
 
     /// Set a custom property. Value can be string, number, or boolean.
-    #[napi(ts_args_type = "name: string, value: string | number | boolean")]
-    pub fn set_custom_property(&mut self, name: String, value: JsUnknown) -> Result<()> {
-        let prop_value = match value.get_type()? {
-            ValueType::Boolean => {
-                let b = value.coerce_to_bool()?.get_value()?;
-                CustomPropertyValue::Bool(b)
-            }
-            ValueType::Number => {
-                let n = value.coerce_to_number()?.get_double()?;
+    #[napi]
+    pub fn set_custom_property(
+        &mut self,
+        name: String,
+        value: Either3<String, f64, bool>,
+    ) -> Result<()> {
+        let prop_value = match value {
+            Either3::A(s) => CustomPropertyValue::String(s),
+            Either3::B(n) => {
                 if n.fract() == 0.0 && n >= i32::MIN as f64 && n <= i32::MAX as f64 {
                     CustomPropertyValue::Int(n as i32)
                 } else {
                     CustomPropertyValue::Float(n)
                 }
             }
-            ValueType::String => {
-                let s = value.coerce_to_string()?.into_utf8()?.as_str()?.to_string();
-                CustomPropertyValue::String(s)
-            }
-            _ => return Err(Error::from_reason("unsupported custom property value type")),
+            Either3::C(b) => CustomPropertyValue::Bool(b),
         };
         self.inner.set_custom_property(&name, prop_value);
         Ok(())
     }
 
     /// Get a custom property value, or null if not found.
-    #[napi(ts_return_type = "string | number | boolean | null")]
-    pub fn get_custom_property(&self, env: Env, name: String) -> Result<JsUnknown> {
+    #[napi]
+    pub fn get_custom_property(&self, name: String) -> Option<Either3<String, f64, bool>> {
         match self.inner.get_custom_property(&name) {
-            Some(CustomPropertyValue::String(s)) => env.create_string(&s).map(|v| v.into_unknown()),
-            Some(CustomPropertyValue::Int(i)) => env.create_int32(i).map(|v| v.into_unknown()),
-            Some(CustomPropertyValue::Float(f)) => env.create_double(f).map(|v| v.into_unknown()),
-            Some(CustomPropertyValue::Bool(b)) => env.get_boolean(b).map(|v| v.into_unknown()),
-            Some(CustomPropertyValue::DateTime(s)) => {
-                env.create_string(&s).map(|v| v.into_unknown())
-            }
-            None => env.get_null().map(|v| v.into_unknown()),
+            Some(CustomPropertyValue::String(s)) => Some(Either3::A(s)),
+            Some(CustomPropertyValue::Int(i)) => Some(Either3::B(i as f64)),
+            Some(CustomPropertyValue::Float(f)) => Some(Either3::B(f)),
+            Some(CustomPropertyValue::Bool(b)) => Some(Either3::C(b)),
+            Some(CustomPropertyValue::DateTime(s)) => Some(Either3::A(s)),
+            None => None,
         }
     }
 
@@ -2379,12 +2350,16 @@ impl Workbook {
 
     /// Evaluate a formula string against the current workbook data.
     #[napi]
-    pub fn evaluate_formula(&self, env: Env, sheet: String, formula: String) -> Result<JsUnknown> {
+    pub fn evaluate_formula(
+        &self,
+        sheet: String,
+        formula: String,
+    ) -> Result<Either5<Null, bool, f64, String, DateValue>> {
         let result = self
             .inner
             .evaluate_formula(&sheet, &formula)
             .map_err(|e| Error::from_reason(e.to_string()))?;
-        cell_value_to_js(env, result)
+        cell_value_to_either(result)
     }
 
     /// Recalculate all formula cells in the workbook.
@@ -2502,16 +2477,25 @@ impl JsStreamWriter {
     }
 
     /// Write a row of values. Rows must be written in ascending order.
-    #[napi(ts_args_type = "row: number, values: Array<string | number | boolean | null>")]
-    pub fn write_row(&mut self, row: u32, values: Vec<JsUnknown>) -> Result<()> {
+    #[napi]
+    pub fn write_row(
+        &mut self,
+        row: u32,
+        values: Vec<Either4<String, f64, bool, Null>>,
+    ) -> Result<()> {
         let writer = self
             .inner
             .as_mut()
             .ok_or_else(|| Error::from_reason("StreamWriter already consumed"))?;
         let cell_values: Vec<CellValue> = values
             .into_iter()
-            .map(js_to_cell_value)
-            .collect::<Result<Vec<_>>>()?;
+            .map(|v| match v {
+                Either4::A(s) => CellValue::String(s),
+                Either4::B(n) => CellValue::Number(n),
+                Either4::C(b) => CellValue::Bool(b),
+                Either4::D(_) => CellValue::Empty,
+            })
+            .collect();
         writer
             .write_row(row, &cell_values)
             .map_err(|e| Error::from_reason(e.to_string()))

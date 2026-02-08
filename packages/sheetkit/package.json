@@ -5,11 +5,8 @@
   "main": "./index.js",
   "types": "./index.d.ts",
   "napi": {
-    "name": "sheetkit",
-    "triples": {
-      "defaults": true,
-      "additional": []
-    }
+    "binaryName": "sheetkit",
+    "targets": []
   },
   "files": [
     "binding.cjs",
@@ -24,6 +21,6 @@
     "test:watch": "vitest"
   },
   "devDependencies": {
-    "@napi-rs/cli": "^2.18.0"
+    "@napi-rs/cli": "^3.5.1"
   }
 }

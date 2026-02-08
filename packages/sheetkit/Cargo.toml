@@ -8,8 +8,8 @@ license = "MIT OR Apache-2.0"
 crate-type = ["cdylib"]
 
 [dependencies]
-napi = { version = "2", features = ["napi8"] }
-napi-derive = "2"
+napi = { version = "3", features = ["napi8"] }
+napi-derive = "3"
 sheetkit-core = { path = "../../crates/sheetkit-core" }
 sheetkit-xml = { path = "../../crates/sheetkit-xml" }
 
