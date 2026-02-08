@@ -274,6 +274,53 @@ describe('Phase 4 - Style', () => {
     });
 });
 
+describe('Row/Col Style', () => {
+    it('should set and get row style', () => {
+        const wb = new Workbook();
+        const styleId = wb.addStyle({ font: { bold: true } });
+        wb.setRowStyle('Sheet1', 1, styleId);
+        expect(wb.getRowStyle('Sheet1', 1)).toBe(styleId);
+    });
+
+    it('should return 0 for default row style', () => {
+        const wb = new Workbook();
+        expect(wb.getRowStyle('Sheet1', 1)).toBe(0);
+    });
+
+    it('should apply row style to existing cells', () => {
+        const wb = new Workbook();
+        wb.setCellValue('Sheet1', 'A1', 'hello');
+        wb.setCellValue('Sheet1', 'B1', 42);
+        const styleId = wb.addStyle({ font: { bold: true } });
+        wb.setRowStyle('Sheet1', 1, styleId);
+        // Cells in the row should now have this style
+        expect(wb.getCellStyle('Sheet1', 'A1')).toBe(styleId);
+        expect(wb.getCellStyle('Sheet1', 'B1')).toBe(styleId);
+    });
+
+    it('should reject invalid row style ID', () => {
+        const wb = new Workbook();
+        expect(() => wb.setRowStyle('Sheet1', 1, 999)).toThrow();
+    });
+
+    it('should set and get col style', () => {
+        const wb = new Workbook();
+        const styleId = wb.addStyle({ font: { italic: true } });
+        wb.setColStyle('Sheet1', 'A', styleId);
+        expect(wb.getColStyle('Sheet1', 'A')).toBe(styleId);
+    });
+
+    it('should return 0 for default col style', () => {
+        const wb = new Workbook();
+        expect(wb.getColStyle('Sheet1', 'A')).toBe(0);
+    });
+
+    it('should reject invalid col style ID', () => {
+        const wb = new Workbook();
+        expect(() => wb.setColStyle('Sheet1', 'A', 999)).toThrow();
+    });
+});
+
 describe('Phase 7 - Charts & Images', () => {
     const out = tmpFile('test-chart.xlsx');
     afterEach(() => cleanup(out));
@@ -916,5 +963,176 @@ describe('Row/Col Iterators', () => {
         expect(cols[1].column).toBe('C');
         expect(cols[1].cells.length).toBe(1);
         expect(cols[1].cells[0].row).toBe(3);
+    });
+});
+
+describe('Page Layout', () => {
+    const out = tmpFile('test-page-layout.xlsx');
+    afterEach(() => cleanup(out));
+
+    it('should set and get page margins', () => {
+        const wb = new Workbook();
+        wb.setPageMargins('Sheet1', {
+            left: 1.0,
+            right: 1.0,
+            top: 1.5,
+            bottom: 1.5,
+            header: 0.5,
+            footer: 0.5,
+        });
+        const m = wb.getPageMargins('Sheet1');
+        expect(m.left).toBe(1.0);
+        expect(m.right).toBe(1.0);
+        expect(m.top).toBe(1.5);
+        expect(m.bottom).toBe(1.5);
+        expect(m.header).toBe(0.5);
+        expect(m.footer).toBe(0.5);
+    });
+
+    it('should return default margins when not set', () => {
+        const wb = new Workbook();
+        const m = wb.getPageMargins('Sheet1');
+        expect(m.left).toBe(0.7);
+        expect(m.right).toBe(0.7);
+        expect(m.top).toBe(0.75);
+        expect(m.bottom).toBe(0.75);
+        expect(m.header).toBe(0.3);
+        expect(m.footer).toBe(0.3);
+    });
+
+    it('should set and get page setup', () => {
+        const wb = new Workbook();
+        wb.setPageSetup('Sheet1', {
+            orientation: 'landscape',
+            paperSize: 'a4',
+            scale: 75,
+        });
+        const setup = wb.getPageSetup('Sheet1');
+        expect(setup.orientation).toBe('landscape');
+        expect(setup.paperSize).toBe('a4');
+        expect(setup.scale).toBe(75);
+    });
+
+    it('should return undefined for unset page setup', () => {
+        const wb = new Workbook();
+        const setup = wb.getPageSetup('Sheet1');
+        expect(setup.orientation).toBeUndefined();
+        expect(setup.paperSize).toBeUndefined();
+        expect(setup.scale).toBeUndefined();
+        expect(setup.fitToWidth).toBeUndefined();
+        expect(setup.fitToHeight).toBeUndefined();
+    });
+
+    it('should set fit-to-page options', () => {
+        const wb = new Workbook();
+        wb.setPageSetup('Sheet1', {
+            fitToWidth: 1,
+            fitToHeight: 2,
+        });
+        const setup = wb.getPageSetup('Sheet1');
+        expect(setup.fitToWidth).toBe(1);
+        expect(setup.fitToHeight).toBe(2);
+    });
+
+    it('should set and get header and footer', () => {
+        const wb = new Workbook();
+        wb.setHeaderFooter('Sheet1', '&CPage &P', '&LFooter');
+        const hf = wb.getHeaderFooter('Sheet1');
+        expect(hf.header).toBe('&CPage &P');
+        expect(hf.footer).toBe('&LFooter');
+    });
+
+    it('should return undefined for unset header/footer', () => {
+        const wb = new Workbook();
+        const hf = wb.getHeaderFooter('Sheet1');
+        expect(hf.header).toBeUndefined();
+        expect(hf.footer).toBeUndefined();
+    });
+
+    it('should set and get print options', () => {
+        const wb = new Workbook();
+        wb.setPrintOptions('Sheet1', {
+            gridLines: true,
+            headings: true,
+            horizontalCentered: true,
+            verticalCentered: false,
+        });
+        const opts = wb.getPrintOptions('Sheet1');
+        expect(opts.gridLines).toBe(true);
+        expect(opts.headings).toBe(true);
+        expect(opts.horizontalCentered).toBe(true);
+        expect(opts.verticalCentered).toBe(false);
+    });
+
+    it('should return undefined for unset print options', () => {
+        const wb = new Workbook();
+        const opts = wb.getPrintOptions('Sheet1');
+        expect(opts.gridLines).toBeUndefined();
+        expect(opts.headings).toBeUndefined();
+        expect(opts.horizontalCentered).toBeUndefined();
+        expect(opts.verticalCentered).toBeUndefined();
+    });
+
+    it('should insert and get page breaks', () => {
+        const wb = new Workbook();
+        wb.insertPageBreak('Sheet1', 10);
+        wb.insertPageBreak('Sheet1', 20);
+        const breaks = wb.getPageBreaks('Sheet1');
+        expect(breaks).toEqual([10, 20]);
+    });
+
+    it('should remove page breaks', () => {
+        const wb = new Workbook();
+        wb.insertPageBreak('Sheet1', 10);
+        wb.insertPageBreak('Sheet1', 20);
+        wb.removePageBreak('Sheet1', 10);
+        const breaks = wb.getPageBreaks('Sheet1');
+        expect(breaks).toEqual([20]);
+    });
+
+    it('should return empty array when no page breaks', () => {
+        const wb = new Workbook();
+        expect(wb.getPageBreaks('Sheet1')).toEqual([]);
+    });
+
+    it('should roundtrip page layout through save/open', () => {
+        const wb = new Workbook();
+        wb.setPageMargins('Sheet1', {
+            left: 1.0,
+            right: 1.0,
+            top: 1.5,
+            bottom: 1.5,
+            header: 0.5,
+            footer: 0.5,
+        });
+        wb.setPageSetup('Sheet1', {
+            orientation: 'landscape',
+            paperSize: 'letter',
+            scale: 80,
+        });
+        wb.setHeaderFooter('Sheet1', '&CTitle', '&RPage &P');
+        wb.setPrintOptions('Sheet1', { gridLines: true });
+        wb.insertPageBreak('Sheet1', 15);
+        wb.save(out);
+
+        const wb2 = Workbook.open(out);
+        const m = wb2.getPageMargins('Sheet1');
+        expect(m.left).toBe(1.0);
+        expect(m.top).toBe(1.5);
+
+        const setup = wb2.getPageSetup('Sheet1');
+        expect(setup.orientation).toBe('landscape');
+        expect(setup.paperSize).toBe('letter');
+        expect(setup.scale).toBe(80);
+
+        const hf = wb2.getHeaderFooter('Sheet1');
+        expect(hf.header).toBe('&CTitle');
+        expect(hf.footer).toBe('&RPage &P');
+
+        const opts = wb2.getPrintOptions('Sheet1');
+        expect(opts.gridLines).toBe(true);
+
+        const breaks = wb2.getPageBreaks('Sheet1');
+        expect(breaks).toEqual([15]);
     });
 });

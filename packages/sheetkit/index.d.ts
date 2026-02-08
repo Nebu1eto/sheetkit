@@ -114,6 +114,52 @@ export interface JsWorkbookProtectionConfig {
   lockWindows?: boolean
   lockRevision?: boolean
 }
+/** Page margins configuration in inches. */
+export interface JsPageMargins {
+  /** Left margin in inches (default 0.7). */
+  left: number
+  /** Right margin in inches (default 0.7). */
+  right: number
+  /** Top margin in inches (default 0.75). */
+  top: number
+  /** Bottom margin in inches (default 0.75). */
+  bottom: number
+  /** Header margin in inches (default 0.3). */
+  header: number
+  /** Footer margin in inches (default 0.3). */
+  footer: number
+}
+/** Page setup configuration. */
+export interface JsPageSetup {
+  /** Paper size: "letter", "tabloid", "legal", "a3", "a4", "a5", "b4", "b5". */
+  paperSize?: string
+  /** Orientation: "portrait" or "landscape". */
+  orientation?: string
+  /** Print scale percentage (10-400). */
+  scale?: number
+  /** Fit to this many pages wide. */
+  fitToWidth?: number
+  /** Fit to this many pages tall. */
+  fitToHeight?: number
+}
+/** Print options configuration. */
+export interface JsPrintOptions {
+  /** Print gridlines. */
+  gridLines?: boolean
+  /** Print row/column headings. */
+  headings?: boolean
+  /** Center horizontally on page. */
+  horizontalCentered?: boolean
+  /** Center vertically on page. */
+  verticalCentered?: boolean
+}
+/** Header and footer text. */
+export interface JsHeaderFooter {
+  /** Header text (may use Excel formatting codes like &L, &C, &R). */
+  header?: string
+  /** Footer text (may use Excel formatting codes like &L, &C, &R). */
+  footer?: string
+}
 export interface JsHyperlinkOptions {
   /** Type of hyperlink: "external", "internal", or "email". */
   linkType: string
@@ -133,6 +179,75 @@ export interface JsHyperlinkInfo {
   display?: string
   /** Optional tooltip text. */
   tooltip?: string
+}
+/** Conditional formatting style (differential format). */
+export interface JsConditionalStyle {
+  font?: JsFontStyle
+  fill?: JsFillStyle
+  border?: JsBorderStyle
+  customNumFmt?: string
+}
+/** Conditional formatting rule configuration. */
+export interface JsConditionalFormatRule {
+  /**
+   * Rule type: "cellIs", "expression", "colorScale", "dataBar",
+   * "duplicateValues", "uniqueValues", "top10", "bottom10",
+   * "aboveAverage", "containsBlanks", "notContainsBlanks",
+   * "containsErrors", "notContainsErrors", "containsText",
+   * "notContainsText", "beginsWith", "endsWith".
+   */
+  ruleType: string
+  /** Comparison operator for cellIs rules. */
+  operator?: string
+  /** First formula/value. */
+  formula?: string
+  /** Second formula/value (for between/notBetween). */
+  formula2?: string
+  /** Text for text-based rules. */
+  text?: string
+  /** Rank for top10/bottom10 rules. */
+  rank?: number
+  /** Whether rank is a percentage. */
+  percent?: boolean
+  /** Whether rule is above average (for aboveAverage rules). */
+  above?: boolean
+  /** Whether equal values count as matching (for aboveAverage rules). */
+  equalAverage?: boolean
+  /** Color scale minimum value type. */
+  minType?: string
+  /** Color scale minimum value. */
+  minValue?: string
+  /** Color scale minimum color (ARGB hex). */
+  minColor?: string
+  /** Color scale middle value type. */
+  midType?: string
+  /** Color scale middle value. */
+  midValue?: string
+  /** Color scale middle color (ARGB hex). */
+  midColor?: string
+  /** Color scale maximum value type. */
+  maxType?: string
+  /** Color scale maximum value. */
+  maxValue?: string
+  /** Color scale maximum color (ARGB hex). */
+  maxColor?: string
+  /** Data bar color (ARGB hex). */
+  barColor?: string
+  /** Whether to show the cell value alongside the data bar. */
+  showValue?: boolean
+  /** Differential style to apply. */
+  format?: JsConditionalStyle
+  /** Rule priority (lower = higher precedence). */
+  priority?: number
+  /** If true, no lower-priority rules apply when this matches. */
+  stopIfTrue?: boolean
+}
+/** Result of getting conditional formats from a sheet. */
+export interface JsConditionalFormatEntry {
+  /** Cell range (e.g., "A1:A100"). */
+  sqref: string
+  /** Rules applied to this range. */
+  rules: Array<JsConditionalFormatRule>
 }
 /** A single cell entry with its column name and value. */
 export interface JsRowCell {
@@ -242,6 +357,14 @@ export declare class Workbook {
   getCellStyle(sheet: string, cell: string): number | null
   /** Apply a style ID to a cell. */
   setCellStyle(sheet: string, cell: string, styleId: number): void
+  /** Apply a style ID to an entire row. */
+  setRowStyle(sheet: string, row: number, styleId: number): void
+  /** Get the style ID for a row. Returns 0 if not set. */
+  getRowStyle(sheet: string, row: number): number
+  /** Apply a style ID to an entire column. */
+  setColStyle(sheet: string, col: string, styleId: number): void
+  /** Get the style ID for a column. Returns 0 if not set. */
+  getColStyle(sheet: string, col: string): number
   /** Add a chart to a sheet. */
   addChart(sheet: string, fromCell: string, toCell: string, config: JsChartConfig): void
   /** Add an image to a sheet. */
@@ -258,6 +381,12 @@ export declare class Workbook {
   getDataValidations(sheet: string): Array<JsDataValidationConfig>
   /** Remove a data validation by sqref. */
   removeDataValidation(sheet: string, sqref: string): void
+  /** Set conditional formatting rules on a cell range. */
+  setConditionalFormat(sheet: string, sqref: string, rules: Array<JsConditionalFormatRule>): void
+  /** Get all conditional formatting rules for a sheet. */
+  getConditionalFormats(sheet: string): Array<JsConditionalFormatEntry>
+  /** Delete conditional formatting for a specific cell range. */
+  deleteConditionalFormat(sheet: string, sqref: string): void
   /** Add a comment to a cell. */
   addComment(sheet: string, config: JsCommentConfig): void
   /** Get all comments on a sheet. */
@@ -302,6 +431,31 @@ export declare class Workbook {
   unsetPanes(sheet: string): void
   /** Get the current freeze pane cell reference for a sheet, or null if none. */
   getPanes(sheet: string): string | null
+  /** Set page margins on a sheet (values in inches). */
+  setPageMargins(sheet: string, margins: JsPageMargins): void
+  /** Get page margins for a sheet. Returns defaults if not explicitly set. */
+  getPageMargins(sheet: string): JsPageMargins
+  /** Set page setup options (paper size, orientation, scale, fit-to-page). */
+  setPageSetup(sheet: string, setup: JsPageSetup): void
+  /** Get the page setup for a sheet. */
+  getPageSetup(sheet: string): JsPageSetup
+  /** Set header and footer text for printing. */
+  setHeaderFooter(sheet: string, header?: string | undefined | null, footer?: string | undefined | null): void
+  /**
+   * Get the header and footer text for a sheet.
+   * Returns an object with `header` and `footer` fields, each possibly null.
+   */
+  getHeaderFooter(sheet: string): JsHeaderFooter
+  /** Set print options on a sheet. */
+  setPrintOptions(sheet: string, opts: JsPrintOptions): void
+  /** Get print options for a sheet. */
+  getPrintOptions(sheet: string): JsPrintOptions
+  /** Insert a horizontal page break before the given 1-based row. */
+  insertPageBreak(sheet: string, row: number): void
+  /** Remove a horizontal page break at the given 1-based row. */
+  removePageBreak(sheet: string, row: number): void
+  /** Get all row page break positions (1-based row numbers). */
+  getPageBreaks(sheet: string): Array<number>
   /** Set a hyperlink on a cell. */
   setCellHyperlink(sheet: string, cell: string, opts: JsHyperlinkOptions): void
   /** Get hyperlink information for a cell, or null if no hyperlink exists. */

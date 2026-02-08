@@ -21,8 +21,12 @@ pub use sheetkit_core::cell::{
 };
 pub use sheetkit_core::chart::{ChartConfig, ChartSeries, ChartType};
 pub use sheetkit_core::comment::CommentConfig;
+pub use sheetkit_core::conditional::{
+    CfOperator, CfValueType, ConditionalFormatRule, ConditionalFormatType, ConditionalStyle,
+};
 pub use sheetkit_core::hyperlink::{HyperlinkInfo, HyperlinkType};
 pub use sheetkit_core::image::{ImageConfig, ImageFormat};
+pub use sheetkit_core::page_layout::{Orientation, PageMarginsConfig, PaperSize};
 pub use sheetkit_core::style::{
     AlignmentStyle, BorderLineStyle, BorderSideStyle, BorderStyle, FillStyle, FontStyle,
     HorizontalAlign, NumFmtStyle, PatternType, ProtectionStyle, Style, StyleColor, VerticalAlign,

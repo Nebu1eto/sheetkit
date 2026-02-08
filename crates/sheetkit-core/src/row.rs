@@ -285,6 +285,37 @@ pub fn set_row_outline_level(ws: &mut WorksheetXml, row: u32, level: u8) -> Resu
     Ok(())
 }
 
+/// Set the style for an entire row. The `style_id` is the ID returned by
+/// `add_style()`. Setting a row style applies the `s` attribute on the row
+/// element and marks `customFormat` so Excel honours it.  Existing cells in
+/// the row also have their individual style updated.
+pub fn set_row_style(ws: &mut WorksheetXml, row: u32, style_id: u32) -> Result<()> {
+    if row == 0 || row > MAX_ROWS {
+        return Err(Error::InvalidRowNumber(row));
+    }
+
+    let r = find_or_create_row(ws, row);
+    r.s = Some(style_id);
+    r.custom_format = if style_id == 0 { None } else { Some(true) };
+
+    // Apply to all existing cells in the row.
+    for cell in r.cells.iter_mut() {
+        cell.s = Some(style_id);
+    }
+    Ok(())
+}
+
+/// Get the style ID for a row. Returns 0 (default) if the row does not
+/// exist or has no explicit style.
+pub fn get_row_style(ws: &WorksheetXml, row: u32) -> u32 {
+    ws.sheet_data
+        .rows
+        .iter()
+        .find(|r| r.r == row)
+        .and_then(|r| r.s)
+        .unwrap_or(0)
+}
+
 /// Update all cell references in a row to point to `new_row_num`.
 fn shift_row_cells(row: &mut Row, new_row_num: u32) -> Result<()> {
     for cell in row.cells.iter_mut() {
@@ -1030,5 +1061,75 @@ mod tests {
         let rows = get_rows(&ws, &sst).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].1[0].1, CellValue::String("inline text".to_string()));
+    }
+
+    // -- set_row_style / get_row_style tests --
+
+    #[test]
+    fn test_get_row_style_default_is_zero() {
+        let ws = WorksheetXml::default();
+        assert_eq!(get_row_style(&ws, 1), 0);
+    }
+
+    #[test]
+    fn test_get_row_style_nonexistent_row_is_zero() {
+        let ws = sample_ws();
+        assert_eq!(get_row_style(&ws, 99), 0);
+    }
+
+    #[test]
+    fn test_set_row_style_applies_style() {
+        let mut ws = sample_ws();
+        set_row_style(&mut ws, 1, 5).unwrap();
+
+        let row = ws.sheet_data.rows.iter().find(|r| r.r == 1).unwrap();
+        assert_eq!(row.s, Some(5));
+        assert_eq!(row.custom_format, Some(true));
+    }
+
+    #[test]
+    fn test_set_row_style_applies_to_existing_cells() {
+        let mut ws = sample_ws();
+        set_row_style(&mut ws, 1, 3).unwrap();
+
+        let row = ws.sheet_data.rows.iter().find(|r| r.r == 1).unwrap();
+        for cell in &row.cells {
+            assert_eq!(cell.s, Some(3));
+        }
+    }
+
+    #[test]
+    fn test_get_row_style_after_set() {
+        let mut ws = sample_ws();
+        set_row_style(&mut ws, 2, 7).unwrap();
+        assert_eq!(get_row_style(&ws, 2), 7);
+    }
+
+    #[test]
+    fn test_set_row_style_creates_row_if_missing() {
+        let mut ws = WorksheetXml::default();
+        set_row_style(&mut ws, 5, 2).unwrap();
+
+        assert_eq!(ws.sheet_data.rows.len(), 1);
+        assert_eq!(ws.sheet_data.rows[0].r, 5);
+        assert_eq!(ws.sheet_data.rows[0].s, Some(2));
+    }
+
+    #[test]
+    fn test_set_row_style_zero_clears_custom_format() {
+        let mut ws = sample_ws();
+        set_row_style(&mut ws, 1, 5).unwrap();
+        set_row_style(&mut ws, 1, 0).unwrap();
+
+        let row = ws.sheet_data.rows.iter().find(|r| r.r == 1).unwrap();
+        assert_eq!(row.s, Some(0));
+        assert_eq!(row.custom_format, None);
+    }
+
+    #[test]
+    fn test_set_row_style_row_zero_returns_error() {
+        let mut ws = WorksheetXml::default();
+        let result = set_row_style(&mut ws, 0, 1);
+        assert!(result.is_err());
     }
 }
