@@ -6,10 +6,14 @@
 use sheetkit_xml::content_types::{mime_types, ContentTypeOverride, ContentTypes};
 use sheetkit_xml::relationships::{rel_types, Relationship, Relationships};
 use sheetkit_xml::workbook::{SheetEntry, WorkbookXml};
-use sheetkit_xml::worksheet::{SheetFormatPr, SheetPr, SheetProtection, TabColor, WorksheetXml};
+use sheetkit_xml::worksheet::{
+    Pane, Selection, SheetFormatPr, SheetPr, SheetProtection, SheetView, SheetViews, TabColor,
+    WorksheetXml,
+};
 
 use crate::error::{Error, Result};
 use crate::protection::legacy_password_hash;
+use crate::utils::cell_ref::cell_name_to_coordinates;
 use crate::utils::constants::{
     DEFAULT_ROW_HEIGHT, MAX_COLUMN_WIDTH, MAX_ROW_HEIGHT, MAX_SHEET_NAME_LENGTH,
     SHEET_NAME_INVALID_CHARS,
@@ -405,6 +409,88 @@ pub fn get_default_col_width(ws: &WorksheetXml) -> Option<f64> {
     ws.sheet_format_pr
         .as_ref()
         .and_then(|f| f.default_col_width)
+}
+
+/// Set freeze panes on a worksheet.
+///
+/// The cell reference indicates the top-left cell of the scrollable (unfrozen) area.
+/// For example, `"A2"` freezes row 1, `"B1"` freezes column A, and `"B2"` freezes
+/// both row 1 and column A.
+///
+/// Returns an error if the cell reference is invalid or is `"A1"` (which would
+/// freeze nothing).
+pub fn set_panes(ws: &mut WorksheetXml, cell: &str) -> Result<()> {
+    let (col, row) = cell_name_to_coordinates(cell)?;
+
+    if col == 1 && row == 1 {
+        return Err(Error::InvalidCellReference(
+            "freeze pane at A1 has no effect".to_string(),
+        ));
+    }
+
+    let x_split = col - 1;
+    let y_split = row - 1;
+
+    let active_pane = match (x_split > 0, y_split > 0) {
+        (true, true) => "bottomRight",
+        (true, false) => "topRight",
+        (false, true) => "bottomLeft",
+        (false, false) => unreachable!(),
+    };
+
+    let pane = Pane {
+        x_split: if x_split > 0 { Some(x_split) } else { None },
+        y_split: if y_split > 0 { Some(y_split) } else { None },
+        top_left_cell: Some(cell.to_string()),
+        active_pane: Some(active_pane.to_string()),
+        state: Some("frozen".to_string()),
+    };
+
+    let selection = Selection {
+        pane: Some(active_pane.to_string()),
+        active_cell: Some(cell.to_string()),
+        sqref: Some(cell.to_string()),
+    };
+
+    let sheet_views = ws.sheet_views.get_or_insert_with(|| SheetViews {
+        sheet_views: vec![SheetView {
+            tab_selected: None,
+            zoom_scale: None,
+            workbook_view_id: 0,
+            pane: None,
+            selection: vec![],
+        }],
+    });
+
+    if let Some(view) = sheet_views.sheet_views.first_mut() {
+        view.pane = Some(pane);
+        view.selection = vec![selection];
+    }
+
+    Ok(())
+}
+
+/// Remove any freeze or split panes from a worksheet.
+pub fn unset_panes(ws: &mut WorksheetXml) {
+    if let Some(ref mut sheet_views) = ws.sheet_views {
+        for view in &mut sheet_views.sheet_views {
+            view.pane = None;
+            // Reset selection to default (no pane attribute).
+            view.selection = vec![];
+        }
+    }
+}
+
+/// Get the current freeze pane cell reference, if any.
+///
+/// Returns the top-left cell of the unfrozen area (e.g., `"A2"` if row 1 is
+/// frozen), or `None` if no panes are configured.
+pub fn get_panes(ws: &WorksheetXml) -> Option<String> {
+    ws.sheet_views
+        .as_ref()
+        .and_then(|sv| sv.sheet_views.first())
+        .and_then(|view| view.pane.as_ref())
+        .and_then(|pane| pane.top_left_cell.clone())
 }
 
 /// Rebuild content type overrides for worksheets so they match the current
@@ -1058,5 +1144,167 @@ mod tests {
             .filter(|o| o.content_type == mime_types::WORKSHEET)
             .collect();
         assert_eq!(ws_overrides.len(), 3);
+    }
+
+    // -- Freeze pane tests --
+
+    #[test]
+    fn test_set_panes_freeze_row() {
+        let mut ws = WorksheetXml::default();
+        set_panes(&mut ws, "A2").unwrap();
+
+        let pane = ws.sheet_views.as_ref().unwrap().sheet_views[0]
+            .pane
+            .as_ref()
+            .unwrap();
+        assert_eq!(pane.y_split, Some(1));
+        assert!(pane.x_split.is_none());
+        assert_eq!(pane.top_left_cell, Some("A2".to_string()));
+        assert_eq!(pane.active_pane, Some("bottomLeft".to_string()));
+        assert_eq!(pane.state, Some("frozen".to_string()));
+    }
+
+    #[test]
+    fn test_set_panes_freeze_col() {
+        let mut ws = WorksheetXml::default();
+        set_panes(&mut ws, "B1").unwrap();
+
+        let pane = ws.sheet_views.as_ref().unwrap().sheet_views[0]
+            .pane
+            .as_ref()
+            .unwrap();
+        assert_eq!(pane.x_split, Some(1));
+        assert!(pane.y_split.is_none());
+        assert_eq!(pane.top_left_cell, Some("B1".to_string()));
+        assert_eq!(pane.active_pane, Some("topRight".to_string()));
+        assert_eq!(pane.state, Some("frozen".to_string()));
+    }
+
+    #[test]
+    fn test_set_panes_freeze_both() {
+        let mut ws = WorksheetXml::default();
+        set_panes(&mut ws, "B2").unwrap();
+
+        let pane = ws.sheet_views.as_ref().unwrap().sheet_views[0]
+            .pane
+            .as_ref()
+            .unwrap();
+        assert_eq!(pane.x_split, Some(1));
+        assert_eq!(pane.y_split, Some(1));
+        assert_eq!(pane.top_left_cell, Some("B2".to_string()));
+        assert_eq!(pane.active_pane, Some("bottomRight".to_string()));
+        assert_eq!(pane.state, Some("frozen".to_string()));
+    }
+
+    #[test]
+    fn test_set_panes_freeze_multiple_rows() {
+        let mut ws = WorksheetXml::default();
+        set_panes(&mut ws, "A4").unwrap();
+
+        let pane = ws.sheet_views.as_ref().unwrap().sheet_views[0]
+            .pane
+            .as_ref()
+            .unwrap();
+        assert_eq!(pane.y_split, Some(3));
+        assert!(pane.x_split.is_none());
+        assert_eq!(pane.top_left_cell, Some("A4".to_string()));
+        assert_eq!(pane.active_pane, Some("bottomLeft".to_string()));
+    }
+
+    #[test]
+    fn test_set_panes_freeze_multiple_cols() {
+        let mut ws = WorksheetXml::default();
+        set_panes(&mut ws, "D1").unwrap();
+
+        let pane = ws.sheet_views.as_ref().unwrap().sheet_views[0]
+            .pane
+            .as_ref()
+            .unwrap();
+        assert_eq!(pane.x_split, Some(3));
+        assert!(pane.y_split.is_none());
+        assert_eq!(pane.top_left_cell, Some("D1".to_string()));
+        assert_eq!(pane.active_pane, Some("topRight".to_string()));
+    }
+
+    #[test]
+    fn test_set_panes_a1_error() {
+        let mut ws = WorksheetXml::default();
+        let result = set_panes(&mut ws, "A1");
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::InvalidCellReference(_)
+        ));
+    }
+
+    #[test]
+    fn test_set_panes_invalid_cell_error() {
+        let mut ws = WorksheetXml::default();
+        let result = set_panes(&mut ws, "ZZZZ1");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_unset_panes() {
+        let mut ws = WorksheetXml::default();
+        set_panes(&mut ws, "B2").unwrap();
+        assert!(get_panes(&ws).is_some());
+
+        unset_panes(&mut ws);
+        assert!(get_panes(&ws).is_none());
+        // SheetViews should still exist but without pane.
+        let view = &ws.sheet_views.as_ref().unwrap().sheet_views[0];
+        assert!(view.pane.is_none());
+        assert!(view.selection.is_empty());
+    }
+
+    #[test]
+    fn test_get_panes_none_when_not_set() {
+        let ws = WorksheetXml::default();
+        assert!(get_panes(&ws).is_none());
+    }
+
+    #[test]
+    fn test_get_panes_returns_value_after_set() {
+        let mut ws = WorksheetXml::default();
+        set_panes(&mut ws, "C5").unwrap();
+        assert_eq!(get_panes(&ws), Some("C5".to_string()));
+    }
+
+    #[test]
+    fn test_set_panes_selection_has_pane_attribute() {
+        let mut ws = WorksheetXml::default();
+        set_panes(&mut ws, "B2").unwrap();
+
+        let selection = &ws.sheet_views.as_ref().unwrap().sheet_views[0].selection[0];
+        assert_eq!(selection.pane, Some("bottomRight".to_string()));
+        assert_eq!(selection.active_cell, Some("B2".to_string()));
+        assert_eq!(selection.sqref, Some("B2".to_string()));
+    }
+
+    #[test]
+    fn test_set_panes_overwrites_previous() {
+        let mut ws = WorksheetXml::default();
+        set_panes(&mut ws, "A2").unwrap();
+        assert_eq!(get_panes(&ws), Some("A2".to_string()));
+
+        set_panes(&mut ws, "C3").unwrap();
+        assert_eq!(get_panes(&ws), Some("C3".to_string()));
+
+        let pane = ws.sheet_views.as_ref().unwrap().sheet_views[0]
+            .pane
+            .as_ref()
+            .unwrap();
+        assert_eq!(pane.x_split, Some(2));
+        assert_eq!(pane.y_split, Some(2));
+        assert_eq!(pane.active_pane, Some("bottomRight".to_string()));
+    }
+
+    #[test]
+    fn test_unset_panes_noop_when_no_views() {
+        let mut ws = WorksheetXml::default();
+        // Should not panic when there are no sheet views.
+        unset_panes(&mut ws);
+        assert!(get_panes(&ws).is_none());
     }
 }

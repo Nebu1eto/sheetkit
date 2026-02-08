@@ -671,3 +671,250 @@ describe('Hyperlinks', () => {
         expect(c1!.target).toBe('mailto:hello@example.com');
     });
 });
+
+describe('Freeze Panes', () => {
+    const out = tmpFile('test-panes.xlsx');
+    afterEach(() => cleanup(out));
+
+    it('should return null when no panes are set', () => {
+        const wb = new Workbook();
+        expect(wb.getPanes('Sheet1')).toBeNull();
+    });
+
+    it('should freeze row 1', () => {
+        const wb = new Workbook();
+        wb.setPanes('Sheet1', 'A2');
+        expect(wb.getPanes('Sheet1')).toBe('A2');
+    });
+
+    it('should freeze column A', () => {
+        const wb = new Workbook();
+        wb.setPanes('Sheet1', 'B1');
+        expect(wb.getPanes('Sheet1')).toBe('B1');
+    });
+
+    it('should freeze row 1 and column A', () => {
+        const wb = new Workbook();
+        wb.setPanes('Sheet1', 'B2');
+        expect(wb.getPanes('Sheet1')).toBe('B2');
+    });
+
+    it('should freeze multiple rows', () => {
+        const wb = new Workbook();
+        wb.setPanes('Sheet1', 'A4');
+        expect(wb.getPanes('Sheet1')).toBe('A4');
+    });
+
+    it('should unset panes', () => {
+        const wb = new Workbook();
+        wb.setPanes('Sheet1', 'B2');
+        expect(wb.getPanes('Sheet1')).toBe('B2');
+        wb.unsetPanes('Sheet1');
+        expect(wb.getPanes('Sheet1')).toBeNull();
+    });
+
+    it('should throw for A1 cell reference', () => {
+        const wb = new Workbook();
+        expect(() => wb.setPanes('Sheet1', 'A1')).toThrow();
+    });
+
+    it('should throw for nonexistent sheet', () => {
+        const wb = new Workbook();
+        expect(() => wb.setPanes('NoSheet', 'A2')).toThrow();
+    });
+
+    it('should overwrite previous panes', () => {
+        const wb = new Workbook();
+        wb.setPanes('Sheet1', 'A2');
+        wb.setPanes('Sheet1', 'C3');
+        expect(wb.getPanes('Sheet1')).toBe('C3');
+    });
+
+    it('should roundtrip panes through save/open', () => {
+        const wb = new Workbook();
+        wb.setPanes('Sheet1', 'B3');
+        wb.save(out);
+
+        const wb2 = Workbook.open(out);
+        expect(wb2.getPanes('Sheet1')).toBe('B3');
+    });
+});
+
+describe('Date CellValue', () => {
+    const out = tmpFile('test-date.xlsx');
+    afterEach(() => cleanup(out));
+
+    it('should set a date value object and read it back as date', () => {
+        const wb = new Workbook();
+        // Create a date style (numFmtId 14 = m/d/yyyy)
+        const styleId = wb.addStyle({ numFmtId: 14 });
+        // Set a date value using the object format (Jan 1, 2024 = serial 45292)
+        wb.setCellValue('Sheet1', 'A1', { type: 'date', serial: 45292 });
+        wb.setCellStyle('Sheet1', 'A1', styleId);
+
+        // Read it back - should be a date object
+        const val = wb.getCellValue('Sheet1', 'A1') as { type: string; serial: number; iso?: string };
+        expect(val).not.toBeNull();
+        expect(val.type).toBe('date');
+        expect(val.serial).toBe(45292);
+        expect(val.iso).toBe('2024-01-01');
+    });
+
+    it('should return number for date without date style', () => {
+        const wb = new Workbook();
+        // Set a date serial as a plain number
+        wb.setCellValue('Sheet1', 'A1', 45292);
+        // Without a date style, it should come back as a number
+        const val = wb.getCellValue('Sheet1', 'A1');
+        expect(typeof val).toBe('number');
+        expect(val).toBe(45292);
+    });
+
+    it('should roundtrip date values through save/open', () => {
+        const wb = new Workbook();
+        // Create a datetime style (numFmtId 22 = m/d/yyyy h:mm)
+        const styleId = wb.addStyle({ numFmtId: 22 });
+        wb.setCellValue('Sheet1', 'A1', { type: 'date', serial: 45292.5 });
+        wb.setCellStyle('Sheet1', 'A1', styleId);
+        wb.save(out);
+
+        const wb2 = Workbook.open(out);
+        const val = wb2.getCellValue('Sheet1', 'A1') as { type: string; serial: number; iso?: string };
+        expect(val.type).toBe('date');
+        expect(val.serial).toBe(45292.5);
+        expect(val.iso).toBe('2024-01-01T12:00:00');
+    });
+
+    it('should handle date with custom date format', () => {
+        const wb = new Workbook();
+        const styleId = wb.addStyle({ customNumFmt: 'yyyy-mm-dd' });
+        wb.setCellValue('Sheet1', 'A1', { type: 'date', serial: 45292 });
+        wb.setCellStyle('Sheet1', 'A1', styleId);
+
+        const val = wb.getCellValue('Sheet1', 'A1') as { type: string; serial: number; iso?: string };
+        expect(val.type).toBe('date');
+        expect(val.serial).toBe(45292);
+    });
+});
+
+describe('Row/Col Iterators', () => {
+    const out = tmpFile('test-iterators.xlsx');
+    afterEach(() => cleanup(out));
+
+    it('should return empty array for empty sheet', () => {
+        const wb = new Workbook();
+        const rows = wb.getRows('Sheet1');
+        expect(rows).toEqual([]);
+    });
+
+    it('should return row data with correct structure', () => {
+        const wb = new Workbook();
+        wb.setCellValue('Sheet1', 'A1', 'Name');
+        wb.setCellValue('Sheet1', 'B1', 100);
+        wb.setCellValue('Sheet1', 'A2', 'Alice');
+        wb.setCellValue('Sheet1', 'B2', true);
+
+        const rows = wb.getRows('Sheet1');
+        expect(rows.length).toBe(2);
+
+        // Row 1
+        expect(rows[0].row).toBe(1);
+        expect(rows[0].cells.length).toBe(2);
+        expect(rows[0].cells[0].column).toBe('A');
+        expect(rows[0].cells[0].valueType).toBe('string');
+        expect(rows[0].cells[0].value).toBe('Name');
+        expect(rows[0].cells[1].column).toBe('B');
+        expect(rows[0].cells[1].valueType).toBe('number');
+        expect(rows[0].cells[1].numberValue).toBe(100);
+
+        // Row 2
+        expect(rows[1].row).toBe(2);
+        expect(rows[1].cells[0].column).toBe('A');
+        expect(rows[1].cells[0].valueType).toBe('string');
+        expect(rows[1].cells[0].value).toBe('Alice');
+        expect(rows[1].cells[1].column).toBe('B');
+        expect(rows[1].cells[1].valueType).toBe('boolean');
+        expect(rows[1].cells[1].boolValue).toBe(true);
+    });
+
+    it('should return empty cols array for empty sheet', () => {
+        const wb = new Workbook();
+        const cols = wb.getCols('Sheet1');
+        expect(cols).toEqual([]);
+    });
+
+    it('should return column data transposed from row data', () => {
+        const wb = new Workbook();
+        wb.setCellValue('Sheet1', 'A1', 'Name');
+        wb.setCellValue('Sheet1', 'B1', 'Age');
+        wb.setCellValue('Sheet1', 'A2', 'Alice');
+        wb.setCellValue('Sheet1', 'B2', 30);
+
+        const cols = wb.getCols('Sheet1');
+        expect(cols.length).toBe(2);
+
+        // Column A
+        expect(cols[0].column).toBe('A');
+        expect(cols[0].cells.length).toBe(2);
+        expect(cols[0].cells[0].row).toBe(1);
+        expect(cols[0].cells[0].valueType).toBe('string');
+        expect(cols[0].cells[0].value).toBe('Name');
+        expect(cols[0].cells[1].row).toBe(2);
+        expect(cols[0].cells[1].value).toBe('Alice');
+
+        // Column B
+        expect(cols[1].column).toBe('B');
+        expect(cols[1].cells.length).toBe(2);
+        expect(cols[1].cells[0].row).toBe(1);
+        expect(cols[1].cells[0].valueType).toBe('string');
+        expect(cols[1].cells[0].value).toBe('Age');
+        expect(cols[1].cells[1].row).toBe(2);
+        expect(cols[1].cells[1].valueType).toBe('number');
+        expect(cols[1].cells[1].numberValue).toBe(30);
+    });
+
+    it('should throw for non-existent sheet', () => {
+        const wb = new Workbook();
+        expect(() => wb.getRows('NoSheet')).toThrow();
+        expect(() => wb.getCols('NoSheet')).toThrow();
+    });
+
+    it('should roundtrip rows through save/open', () => {
+        const wb = new Workbook();
+        wb.setCellValue('Sheet1', 'A1', 'hello');
+        wb.setCellValue('Sheet1', 'B1', 99);
+        wb.setCellValue('Sheet1', 'A2', true);
+        wb.save(out);
+
+        const wb2 = Workbook.open(out);
+        const rows = wb2.getRows('Sheet1');
+        expect(rows.length).toBe(2);
+        expect(rows[0].cells[0].value).toBe('hello');
+        expect(rows[0].cells[1].numberValue).toBe(99);
+        expect(rows[1].cells[0].boolValue).toBe(true);
+    });
+
+    it('should handle sparse data correctly', () => {
+        const wb = new Workbook();
+        wb.setCellValue('Sheet1', 'A1', 'first');
+        wb.setCellValue('Sheet1', 'C3', 'sparse');
+
+        const rows = wb.getRows('Sheet1');
+        expect(rows.length).toBe(2);
+        expect(rows[0].row).toBe(1);
+        expect(rows[0].cells.length).toBe(1);
+        expect(rows[0].cells[0].column).toBe('A');
+        expect(rows[1].row).toBe(3);
+        expect(rows[1].cells.length).toBe(1);
+        expect(rows[1].cells[0].column).toBe('C');
+
+        const cols = wb.getCols('Sheet1');
+        expect(cols.length).toBe(2);
+        expect(cols[0].column).toBe('A');
+        expect(cols[0].cells.length).toBe(1);
+        expect(cols[0].cells[0].row).toBe(1);
+        expect(cols[1].column).toBe('C');
+        expect(cols[1].cells.length).toBe(1);
+        expect(cols[1].cells[0].row).toBe(3);
+    });
+});

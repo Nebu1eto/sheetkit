@@ -134,6 +134,46 @@ export interface JsHyperlinkInfo {
   /** Optional tooltip text. */
   tooltip?: string
 }
+/** A single cell entry with its column name and value. */
+export interface JsRowCell {
+  /** Column name (e.g., "A", "B", "AA"). */
+  column: string
+  /** Cell value type: "string", "number", "boolean", "date", "empty", "error", "formula". */
+  valueType: string
+  /** String representation of the cell value. */
+  value?: string
+  /** Numeric value (only set when value_type is "number"). */
+  numberValue?: number
+  /** Boolean value (only set when value_type is "boolean"). */
+  boolValue?: boolean
+}
+/** A row with its 1-based row number and cell data. */
+export interface JsRowData {
+  /** 1-based row number. */
+  row: number
+  /** Cells with data in this row. */
+  cells: Array<JsRowCell>
+}
+/** A single cell entry with its row number and value. */
+export interface JsColCell {
+  /** 1-based row number. */
+  row: number
+  /** Cell value type: "string", "number", "boolean", "date", "empty", "error", "formula". */
+  valueType: string
+  /** String representation of the cell value. */
+  value?: string
+  /** Numeric value (only set when value_type is "number"). */
+  numberValue?: number
+  /** Boolean value (only set when value_type is "boolean"). */
+  boolValue?: boolean
+}
+/** A column with its name and cell data. */
+export interface JsColData {
+  /** Column name (e.g., "A", "B", "AA"). */
+  column: string
+  /** Cells with data in this column. */
+  cells: Array<JsColCell>
+}
 /** Excel workbook for reading and writing .xlsx files. */
 export declare class Workbook {
   /** Create a new empty workbook with a single sheet named "Sheet1". */
@@ -144,10 +184,10 @@ export declare class Workbook {
   save(path: string): void
   /** Get the names of all sheets in workbook order. */
   get sheetNames(): Array<string>
-  /** Get the value of a cell. Returns string, number, boolean, or null. */
-  getCellValue(sheet: string, cell: string): string | number | boolean | null
-  /** Set the value of a cell. Pass string, number, boolean, or null to clear. */
-  setCellValue(sheet: string, cell: string, value: string | number | boolean | null): void
+  /** Get the value of a cell. Returns string, number, boolean, DateValue, or null. */
+  getCellValue(sheet: string, cell: string): string | number | boolean | DateValue | null
+  /** Set the value of a cell. Pass string, number, boolean, DateValue, or null to clear. */
+  setCellValue(sheet: string, cell: string, value: string | number | boolean | { type: 'date', serial: number } | null): void
   /** Create a new empty sheet. Returns the 0-based sheet index. */
   newSheet(name: string): number
   /** Delete a sheet by name. */
@@ -252,12 +292,32 @@ export declare class Workbook {
   unprotectWorkbook(): void
   /** Check if the workbook is protected. */
   isWorkbookProtected(): boolean
+  /**
+   * Set freeze panes on a sheet.
+   * The cell reference indicates the top-left cell of the scrollable area.
+   * For example, "A2" freezes row 1, "B1" freezes column A.
+   */
+  setPanes(sheet: string, cell: string): void
+  /** Remove any freeze or split panes from a sheet. */
+  unsetPanes(sheet: string): void
+  /** Get the current freeze pane cell reference for a sheet, or null if none. */
+  getPanes(sheet: string): string | null
   /** Set a hyperlink on a cell. */
   setCellHyperlink(sheet: string, cell: string, opts: JsHyperlinkOptions): void
   /** Get hyperlink information for a cell, or null if no hyperlink exists. */
   getCellHyperlink(sheet: string, cell: string): JsHyperlinkInfo | null
   /** Delete a hyperlink from a cell. */
   deleteCellHyperlink(sheet: string, cell: string): void
+  /**
+   * Get all rows with their data from a sheet.
+   * Only rows that contain at least one cell are included.
+   */
+  getRows(sheet: string): Array<JsRowData>
+  /**
+   * Get all columns with their data from a sheet.
+   * Only columns that have data are included.
+   */
+  getCols(sheet: string): Array<JsColData>
 }
 /** Forward-only streaming writer for large sheets. */
 export declare class JsStreamWriter {

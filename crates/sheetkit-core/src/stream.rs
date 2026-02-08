@@ -494,6 +494,15 @@ impl StreamWriter {
                 }
                 write!(self.buffer, "><v>{}</v></c>", n).unwrap();
             }
+            CellValue::Date(serial) => {
+                self.buffer.push_str("<c r=\"");
+                self.buffer.push_str(cell_ref);
+                self.buffer.push('"');
+                if let Some(sid) = style_id {
+                    write!(self.buffer, " s=\"{}\"", sid).unwrap();
+                }
+                write!(self.buffer, "><v>{}</v></c>", serial).unwrap();
+            }
             CellValue::Bool(b) => {
                 let val = if *b { "1" } else { "0" };
                 self.buffer.push_str("<c r=\"");

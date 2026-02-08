@@ -617,6 +617,26 @@ impl Workbook {
         Ok(crate::row::get_row_outline_level(ws, row))
     }
 
+    /// Get all rows with their data from a sheet.
+    ///
+    /// Returns a Vec of `(row_number, Vec<(column_name, CellValue)>)` tuples.
+    /// Only rows that contain at least one cell are included (sparse).
+    #[allow(clippy::type_complexity)]
+    pub fn get_rows(&self, sheet: &str) -> Result<Vec<(u32, Vec<(String, CellValue)>)>> {
+        let ws = self.worksheet_ref(sheet)?;
+        crate::row::get_rows(ws, &self.sst_runtime)
+    }
+
+    /// Get all columns with their data from a sheet.
+    ///
+    /// Returns a Vec of `(column_name, Vec<(row_number, CellValue)>)` tuples.
+    /// Only columns that have data are included (sparse).
+    #[allow(clippy::type_complexity)]
+    pub fn get_cols(&self, sheet: &str) -> Result<Vec<(String, Vec<(u32, CellValue)>)>> {
+        let ws = self.worksheet_ref(sheet)?;
+        crate::col::get_cols(ws, &self.sst_runtime)
+    }
+
     /// Set the width of a column.
     pub fn set_col_width(&mut self, sheet: &str, col: &str, width: f64) -> Result<()> {
         let ws = self.worksheet_mut(sheet)?;
@@ -846,6 +866,32 @@ impl Workbook {
         let ws = self.worksheet_mut(sheet)?;
         crate::table::remove_auto_filter(ws);
         Ok(())
+    }
+
+    /// Set freeze panes on a sheet.
+    ///
+    /// The cell reference indicates the top-left cell of the scrollable area.
+    /// For example, `"A2"` freezes row 1, `"B1"` freezes column A, and `"B2"`
+    /// freezes both row 1 and column A.
+    pub fn set_panes(&mut self, sheet: &str, cell: &str) -> Result<()> {
+        let ws = self.worksheet_mut(sheet)?;
+        crate::sheet::set_panes(ws, cell)
+    }
+
+    /// Remove any freeze or split panes from a sheet.
+    pub fn unset_panes(&mut self, sheet: &str) -> Result<()> {
+        let ws = self.worksheet_mut(sheet)?;
+        crate::sheet::unset_panes(ws);
+        Ok(())
+    }
+
+    /// Get the current freeze pane cell reference for a sheet, if any.
+    ///
+    /// Returns the top-left cell of the unfrozen area (e.g., `"A2"` if row 1
+    /// is frozen), or `None` if no panes are configured.
+    pub fn get_panes(&self, sheet: &str) -> Result<Option<String>> {
+        let ws = self.worksheet_ref(sheet)?;
+        Ok(crate::sheet::get_panes(ws))
     }
 
     /// Set a hyperlink on a cell.
@@ -1226,16 +1272,50 @@ impl Workbook {
             }
             // Formula string (cached string result)
             (Some("str"), Some(v)) => Ok(CellValue::String(v.to_string())),
-            // Number (explicit or default type)
+            // Number (explicit or default type) -- may be a date if styled.
             (None | Some("n"), Some(v)) => {
                 let n: f64 = v
                     .parse()
                     .map_err(|_| Error::Internal(format!("invalid number: {v}")))?;
+                // Check whether this cell has a date number format.
+                if self.is_date_styled_cell(xml_cell) {
+                    return Ok(CellValue::Date(n));
+                }
                 Ok(CellValue::Number(n))
             }
             // No value
             _ => Ok(CellValue::Empty),
         }
+    }
+
+    /// Check whether a cell's style indicates a date/time number format.
+    fn is_date_styled_cell(&self, xml_cell: &Cell) -> bool {
+        let style_idx = match xml_cell.s {
+            Some(idx) => idx as usize,
+            None => return false,
+        };
+        let xf = match self.stylesheet.cell_xfs.xfs.get(style_idx) {
+            Some(xf) => xf,
+            None => return false,
+        };
+        let num_fmt_id = xf.num_fmt_id.unwrap_or(0);
+        // Check built-in date format IDs.
+        if crate::cell::is_date_num_fmt(num_fmt_id) {
+            return true;
+        }
+        // Check custom number formats for date patterns.
+        if num_fmt_id >= 164 {
+            if let Some(ref num_fmts) = self.stylesheet.num_fmts {
+                if let Some(nf) = num_fmts
+                    .num_fmts
+                    .iter()
+                    .find(|nf| nf.num_fmt_id == num_fmt_id)
+                {
+                    return crate::cell::is_date_format_code(&nf.format_code);
+                }
+            }
+        }
+        false
     }
 
     /// Set the core document properties (title, author, etc.).
@@ -1416,6 +1496,11 @@ fn value_to_xml_cell(sst: &mut SharedStringTable, xml_cell: &mut Cell, value: Ce
         }
         CellValue::Number(n) => {
             xml_cell.v = Some(n.to_string());
+        }
+        CellValue::Date(serial) => {
+            // Dates are stored as numbers in Excel. The style must apply a
+            // date number format for correct display.
+            xml_cell.v = Some(serial.to_string());
         }
         CellValue::Bool(b) => {
             xml_cell.t = Some("b".to_string());
@@ -1707,6 +1792,88 @@ mod tests {
             .unwrap();
         let val = wb.get_cell_value("Sheet1", "A1").unwrap();
         assert_eq!(val, CellValue::Error("#DIV/0!".to_string()));
+    }
+
+    #[test]
+    fn test_set_and_get_date_value() {
+        use crate::style::{builtin_num_fmts, NumFmtStyle, Style};
+
+        let mut wb = Workbook::new();
+        // Create a date style.
+        let style_id = wb
+            .add_style(&Style {
+                num_fmt: Some(NumFmtStyle::Builtin(builtin_num_fmts::DATE_MDY)),
+                ..Style::default()
+            })
+            .unwrap();
+
+        // Set a date value.
+        let date_serial =
+            crate::cell::date_to_serial(chrono::NaiveDate::from_ymd_opt(2024, 6, 15).unwrap());
+        wb.set_cell_value("Sheet1", "A1", CellValue::Date(date_serial))
+            .unwrap();
+        wb.set_cell_style("Sheet1", "A1", style_id).unwrap();
+
+        // Get the value back -- it should be Date because the cell has a date style.
+        let val = wb.get_cell_value("Sheet1", "A1").unwrap();
+        assert_eq!(val, CellValue::Date(date_serial));
+    }
+
+    #[test]
+    fn test_date_value_without_style_returns_number() {
+        let mut wb = Workbook::new();
+        // Set a date value without a date style.
+        let date_serial =
+            crate::cell::date_to_serial(chrono::NaiveDate::from_ymd_opt(2024, 6, 15).unwrap());
+        wb.set_cell_value("Sheet1", "A1", CellValue::Date(date_serial))
+            .unwrap();
+
+        // Without a date style, the value is read back as Number.
+        let val = wb.get_cell_value("Sheet1", "A1").unwrap();
+        assert_eq!(val, CellValue::Number(date_serial));
+    }
+
+    #[test]
+    fn test_date_value_roundtrip_through_save() {
+        use crate::style::{builtin_num_fmts, NumFmtStyle, Style};
+
+        let mut wb = Workbook::new();
+        let style_id = wb
+            .add_style(&Style {
+                num_fmt: Some(NumFmtStyle::Builtin(builtin_num_fmts::DATETIME)),
+                ..Style::default()
+            })
+            .unwrap();
+
+        let dt = chrono::NaiveDate::from_ymd_opt(2024, 3, 15)
+            .unwrap()
+            .and_hms_opt(14, 30, 0)
+            .unwrap();
+        let serial = crate::cell::datetime_to_serial(dt);
+        wb.set_cell_value("Sheet1", "A1", CellValue::Date(serial))
+            .unwrap();
+        wb.set_cell_style("Sheet1", "A1", style_id).unwrap();
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        let path = tmp.path().to_str().unwrap();
+        wb.save(path).unwrap();
+
+        let wb2 = Workbook::open(path).unwrap();
+        let val = wb2.get_cell_value("Sheet1", "A1").unwrap();
+        assert_eq!(val, CellValue::Date(serial));
+    }
+
+    #[test]
+    fn test_date_from_naive_date_conversion() {
+        let date = chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
+        let cv: CellValue = date.into();
+        match cv {
+            CellValue::Date(s) => {
+                let roundtripped = crate::cell::serial_to_date(s).unwrap();
+                assert_eq!(roundtripped, date);
+            }
+            _ => panic!("expected Date variant"),
+        }
     }
 
     #[test]
@@ -3331,5 +3498,91 @@ mod tests {
             None,
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_workbook_get_rows_empty_sheet() {
+        let wb = Workbook::new();
+        let rows = wb.get_rows("Sheet1").unwrap();
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn test_workbook_get_rows_with_data() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", "Name").unwrap();
+        wb.set_cell_value("Sheet1", "B1", 42.0).unwrap();
+        wb.set_cell_value("Sheet1", "A2", "Alice").unwrap();
+        wb.set_cell_value("Sheet1", "B2", true).unwrap();
+
+        let rows = wb.get_rows("Sheet1").unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].0, 1);
+        assert_eq!(rows[0].1.len(), 2);
+        assert_eq!(rows[0].1[0].0, "A");
+        assert_eq!(rows[0].1[0].1, CellValue::String("Name".to_string()));
+        assert_eq!(rows[0].1[1].0, "B");
+        assert_eq!(rows[0].1[1].1, CellValue::Number(42.0));
+        assert_eq!(rows[1].0, 2);
+        assert_eq!(rows[1].1[0].1, CellValue::String("Alice".to_string()));
+        assert_eq!(rows[1].1[1].1, CellValue::Bool(true));
+    }
+
+    #[test]
+    fn test_workbook_get_rows_sheet_not_found() {
+        let wb = Workbook::new();
+        assert!(wb.get_rows("NoSheet").is_err());
+    }
+
+    #[test]
+    fn test_workbook_get_cols_empty_sheet() {
+        let wb = Workbook::new();
+        let cols = wb.get_cols("Sheet1").unwrap();
+        assert!(cols.is_empty());
+    }
+
+    #[test]
+    fn test_workbook_get_cols_with_data() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", "Name").unwrap();
+        wb.set_cell_value("Sheet1", "B1", 42.0).unwrap();
+        wb.set_cell_value("Sheet1", "A2", "Alice").unwrap();
+        wb.set_cell_value("Sheet1", "B2", 30.0).unwrap();
+
+        let cols = wb.get_cols("Sheet1").unwrap();
+        assert_eq!(cols.len(), 2);
+        assert_eq!(cols[0].0, "A");
+        assert_eq!(cols[0].1.len(), 2);
+        assert_eq!(cols[0].1[0], (1, CellValue::String("Name".to_string())));
+        assert_eq!(cols[0].1[1], (2, CellValue::String("Alice".to_string())));
+        assert_eq!(cols[1].0, "B");
+        assert_eq!(cols[1].1[0], (1, CellValue::Number(42.0)));
+        assert_eq!(cols[1].1[1], (2, CellValue::Number(30.0)));
+    }
+
+    #[test]
+    fn test_workbook_get_cols_sheet_not_found() {
+        let wb = Workbook::new();
+        assert!(wb.get_cols("NoSheet").is_err());
+    }
+
+    #[test]
+    fn test_workbook_get_rows_roundtrip_save_open() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", "hello").unwrap();
+        wb.set_cell_value("Sheet1", "B1", 99.0).unwrap();
+        wb.set_cell_value("Sheet1", "A2", true).unwrap();
+
+        let tmp = std::env::temp_dir().join("test_get_rows_roundtrip.xlsx");
+        wb.save(&tmp).unwrap();
+
+        let wb2 = Workbook::open(&tmp).unwrap();
+        let rows = wb2.get_rows("Sheet1").unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].1[0].1, CellValue::String("hello".to_string()));
+        assert_eq!(rows[0].1[1].1, CellValue::Number(99.0));
+        assert_eq!(rows[1].1[0].1, CellValue::Bool(true));
+
+        let _ = std::fs::remove_file(&tmp);
     }
 }
