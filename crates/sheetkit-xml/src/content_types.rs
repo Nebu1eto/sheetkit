@@ -83,6 +83,15 @@ pub mod mime_types {
     pub const XML: &str = "application/xml";
     pub const PNG: &str = "image/png";
     pub const JPEG: &str = "image/jpeg";
+    pub const GIF: &str = "image/gif";
+    pub const BMP: &str = "image/bmp";
+    pub const ICO: &str = "image/x-icon";
+    pub const TIFF: &str = "image/tiff";
+    pub const SVG: &str = "image/svg+xml";
+    pub const EMF: &str = "image/x-emf";
+    pub const EMZ: &str = "image/x-emz";
+    pub const WMF: &str = "image/x-wmf";
+    pub const WMZ: &str = "image/x-wmz";
 
     // Workbook
     pub const WORKBOOK: &str =
