@@ -1,7 +1,497 @@
 #![deny(clippy::all)]
 
 use napi::bindgen_prelude::*;
+use napi::{Env, JsUnknown, ValueType};
 use napi_derive::napi;
+
+use sheetkit_core::cell::CellValue;
+use sheetkit_core::chart::{ChartConfig, ChartSeries, ChartType};
+use sheetkit_core::comment::CommentConfig;
+use sheetkit_core::doc_props::{AppProperties, CustomPropertyValue, DocProperties};
+use sheetkit_core::image::{ImageConfig, ImageFormat};
+use sheetkit_core::protection::WorkbookProtectionConfig;
+use sheetkit_core::stream::StreamWriter;
+use sheetkit_core::style::{
+    AlignmentStyle, BorderLineStyle, BorderSideStyle, BorderStyle, FillStyle, FontStyle,
+    HorizontalAlign, NumFmtStyle, PatternType, ProtectionStyle, Style, StyleColor, VerticalAlign,
+};
+use sheetkit_core::validation::{
+    DataValidationConfig, ErrorStyle, ValidationOperator, ValidationType,
+};
+
+// ─── JS type structs ────────────────────────────────────────────────
+
+#[napi(object)]
+pub struct JsFontStyle {
+    pub name: Option<String>,
+    pub size: Option<f64>,
+    pub bold: Option<bool>,
+    pub italic: Option<bool>,
+    pub underline: Option<bool>,
+    pub strikethrough: Option<bool>,
+    pub color: Option<String>,
+}
+
+#[napi(object)]
+pub struct JsFillStyle {
+    pub pattern: Option<String>,
+    pub fg_color: Option<String>,
+    pub bg_color: Option<String>,
+}
+
+#[napi(object)]
+pub struct JsBorderSideStyle {
+    pub style: Option<String>,
+    pub color: Option<String>,
+}
+
+#[napi(object)]
+pub struct JsBorderStyle {
+    pub left: Option<JsBorderSideStyle>,
+    pub right: Option<JsBorderSideStyle>,
+    pub top: Option<JsBorderSideStyle>,
+    pub bottom: Option<JsBorderSideStyle>,
+    pub diagonal: Option<JsBorderSideStyle>,
+}
+
+#[napi(object)]
+pub struct JsAlignmentStyle {
+    pub horizontal: Option<String>,
+    pub vertical: Option<String>,
+    pub wrap_text: Option<bool>,
+    pub text_rotation: Option<u32>,
+    pub indent: Option<u32>,
+    pub shrink_to_fit: Option<bool>,
+}
+
+#[napi(object)]
+pub struct JsProtectionStyle {
+    pub locked: Option<bool>,
+    pub hidden: Option<bool>,
+}
+
+#[napi(object)]
+pub struct JsStyle {
+    pub font: Option<JsFontStyle>,
+    pub fill: Option<JsFillStyle>,
+    pub border: Option<JsBorderStyle>,
+    pub alignment: Option<JsAlignmentStyle>,
+    pub num_fmt_id: Option<u32>,
+    pub custom_num_fmt: Option<String>,
+    pub protection: Option<JsProtectionStyle>,
+}
+
+#[napi(object)]
+pub struct JsChartSeries {
+    pub name: String,
+    pub categories: String,
+    pub values: String,
+}
+
+#[napi(object)]
+pub struct JsChartConfig {
+    pub chart_type: String,
+    pub title: Option<String>,
+    pub series: Vec<JsChartSeries>,
+    pub show_legend: Option<bool>,
+}
+
+#[napi(object)]
+pub struct JsImageConfig {
+    pub data: Buffer,
+    pub format: String,
+    pub from_cell: String,
+    pub width_px: u32,
+    pub height_px: u32,
+}
+
+#[napi(object)]
+pub struct JsCommentConfig {
+    pub cell: String,
+    pub author: String,
+    pub text: String,
+}
+
+#[napi(object)]
+pub struct JsDataValidationConfig {
+    pub sqref: String,
+    pub validation_type: String,
+    pub operator: Option<String>,
+    pub formula1: Option<String>,
+    pub formula2: Option<String>,
+    pub allow_blank: Option<bool>,
+    pub error_style: Option<String>,
+    pub error_title: Option<String>,
+    pub error_message: Option<String>,
+    pub prompt_title: Option<String>,
+    pub prompt_message: Option<String>,
+    pub show_input_message: Option<bool>,
+    pub show_error_message: Option<bool>,
+}
+
+#[napi(object)]
+pub struct JsDocProperties {
+    pub title: Option<String>,
+    pub subject: Option<String>,
+    pub creator: Option<String>,
+    pub keywords: Option<String>,
+    pub description: Option<String>,
+    pub last_modified_by: Option<String>,
+    pub revision: Option<String>,
+    pub created: Option<String>,
+    pub modified: Option<String>,
+    pub category: Option<String>,
+    pub content_status: Option<String>,
+}
+
+#[napi(object)]
+pub struct JsAppProperties {
+    pub application: Option<String>,
+    pub doc_security: Option<u32>,
+    pub company: Option<String>,
+    pub app_version: Option<String>,
+    pub manager: Option<String>,
+    pub template: Option<String>,
+}
+
+#[napi(object)]
+pub struct JsWorkbookProtectionConfig {
+    pub password: Option<String>,
+    pub lock_structure: Option<bool>,
+    pub lock_windows: Option<bool>,
+    pub lock_revision: Option<bool>,
+}
+
+// ─── Helper functions ───────────────────────────────────────────────
+
+fn js_to_cell_value(value: JsUnknown) -> Result<CellValue> {
+    match value.get_type()? {
+        ValueType::Null | ValueType::Undefined => Ok(CellValue::Empty),
+        ValueType::Boolean => {
+            let b = value.coerce_to_bool()?.get_value()?;
+            Ok(CellValue::Bool(b))
+        }
+        ValueType::Number => {
+            let n = value.coerce_to_number()?.get_double()?;
+            Ok(CellValue::Number(n))
+        }
+        ValueType::String => {
+            let s = value.coerce_to_string()?.into_utf8()?.as_str()?.to_string();
+            Ok(CellValue::String(s))
+        }
+        _ => Err(Error::from_reason("unsupported cell value type")),
+    }
+}
+
+fn cell_value_to_js(env: Env, value: CellValue) -> Result<JsUnknown> {
+    match value {
+        CellValue::Empty => env.get_null().map(|v| v.into_unknown()),
+        CellValue::Bool(b) => env.get_boolean(b).map(|v| v.into_unknown()),
+        CellValue::Number(n) => env.create_double(n).map(|v| v.into_unknown()),
+        CellValue::String(s) => env.create_string(&s).map(|v| v.into_unknown()),
+        CellValue::Formula { expr, .. } => env.create_string(&expr).map(|v| v.into_unknown()),
+        CellValue::Error(e) => env.create_string(&e).map(|v| v.into_unknown()),
+    }
+}
+
+// Style helpers
+
+fn parse_style_color(s: &str) -> Option<StyleColor> {
+    if s.starts_with('#') && s.len() == 7 {
+        Some(StyleColor::Rgb(s.to_string()))
+    } else if let Some(theme_str) = s.strip_prefix("theme:") {
+        theme_str.parse::<u32>().ok().map(StyleColor::Theme)
+    } else if let Some(indexed_str) = s.strip_prefix("indexed:") {
+        indexed_str.parse::<u32>().ok().map(StyleColor::Indexed)
+    } else {
+        None
+    }
+}
+
+fn parse_pattern_type(s: &str) -> PatternType {
+    match s.to_lowercase().as_str() {
+        "none" => PatternType::None,
+        "solid" => PatternType::Solid,
+        "gray125" => PatternType::Gray125,
+        "darkgray" => PatternType::DarkGray,
+        "mediumgray" => PatternType::MediumGray,
+        "lightgray" => PatternType::LightGray,
+        _ => PatternType::None,
+    }
+}
+
+fn parse_border_line_style(s: &str) -> BorderLineStyle {
+    match s.to_lowercase().as_str() {
+        "thin" => BorderLineStyle::Thin,
+        "medium" => BorderLineStyle::Medium,
+        "thick" => BorderLineStyle::Thick,
+        "dashed" => BorderLineStyle::Dashed,
+        "dotted" => BorderLineStyle::Dotted,
+        "double" => BorderLineStyle::Double,
+        "hair" => BorderLineStyle::Hair,
+        "mediumdashed" => BorderLineStyle::MediumDashed,
+        "dashdot" => BorderLineStyle::DashDot,
+        "mediumdashdot" => BorderLineStyle::MediumDashDot,
+        "dashdotdot" => BorderLineStyle::DashDotDot,
+        "mediumdashdotdot" => BorderLineStyle::MediumDashDotDot,
+        "slantdashdot" => BorderLineStyle::SlantDashDot,
+        _ => BorderLineStyle::Thin,
+    }
+}
+
+fn parse_horizontal_align(s: &str) -> HorizontalAlign {
+    match s.to_lowercase().as_str() {
+        "general" => HorizontalAlign::General,
+        "left" => HorizontalAlign::Left,
+        "center" => HorizontalAlign::Center,
+        "right" => HorizontalAlign::Right,
+        "fill" => HorizontalAlign::Fill,
+        "justify" => HorizontalAlign::Justify,
+        "centercontinuous" => HorizontalAlign::CenterContinuous,
+        "distributed" => HorizontalAlign::Distributed,
+        _ => HorizontalAlign::General,
+    }
+}
+
+fn parse_vertical_align(s: &str) -> VerticalAlign {
+    match s.to_lowercase().as_str() {
+        "top" => VerticalAlign::Top,
+        "center" => VerticalAlign::Center,
+        "bottom" => VerticalAlign::Bottom,
+        "justify" => VerticalAlign::Justify,
+        "distributed" => VerticalAlign::Distributed,
+        _ => VerticalAlign::Bottom,
+    }
+}
+
+fn js_style_to_core(js: &JsStyle) -> Style {
+    Style {
+        font: js.font.as_ref().map(|f| FontStyle {
+            name: f.name.clone(),
+            size: f.size,
+            bold: f.bold.unwrap_or(false),
+            italic: f.italic.unwrap_or(false),
+            underline: f.underline.unwrap_or(false),
+            strikethrough: f.strikethrough.unwrap_or(false),
+            color: f.color.as_ref().and_then(|s| parse_style_color(s)),
+        }),
+        fill: js.fill.as_ref().map(|f| FillStyle {
+            pattern: f
+                .pattern
+                .as_ref()
+                .map(|s| parse_pattern_type(s))
+                .unwrap_or(PatternType::None),
+            fg_color: f.fg_color.as_ref().and_then(|s| parse_style_color(s)),
+            bg_color: f.bg_color.as_ref().and_then(|s| parse_style_color(s)),
+        }),
+        border: js.border.as_ref().map(|b| {
+            let side = |s: &JsBorderSideStyle| BorderSideStyle {
+                style: s
+                    .style
+                    .as_ref()
+                    .map(|s| parse_border_line_style(s))
+                    .unwrap_or(BorderLineStyle::Thin),
+                color: s.color.as_ref().and_then(|s| parse_style_color(s)),
+            };
+            BorderStyle {
+                left: b.left.as_ref().map(&side),
+                right: b.right.as_ref().map(&side),
+                top: b.top.as_ref().map(&side),
+                bottom: b.bottom.as_ref().map(&side),
+                diagonal: b.diagonal.as_ref().map(&side),
+            }
+        }),
+        alignment: js.alignment.as_ref().map(|a| AlignmentStyle {
+            horizontal: a.horizontal.as_ref().map(|s| parse_horizontal_align(s)),
+            vertical: a.vertical.as_ref().map(|s| parse_vertical_align(s)),
+            wrap_text: a.wrap_text.unwrap_or(false),
+            text_rotation: a.text_rotation,
+            indent: a.indent,
+            shrink_to_fit: a.shrink_to_fit.unwrap_or(false),
+        }),
+        num_fmt: if let Some(custom) = &js.custom_num_fmt {
+            Some(NumFmtStyle::Custom(custom.clone()))
+        } else {
+            js.num_fmt_id.map(NumFmtStyle::Builtin)
+        },
+        protection: js.protection.as_ref().map(|p| ProtectionStyle {
+            locked: p.locked.unwrap_or(true),
+            hidden: p.hidden.unwrap_or(false),
+        }),
+    }
+}
+
+// Chart/image helpers
+
+fn parse_chart_type(s: &str) -> ChartType {
+    match s.to_lowercase().as_str() {
+        "col" => ChartType::Col,
+        "colstacked" => ChartType::ColStacked,
+        "colpercentstacked" => ChartType::ColPercentStacked,
+        "bar" => ChartType::Bar,
+        "barstacked" => ChartType::BarStacked,
+        "barpercentstacked" => ChartType::BarPercentStacked,
+        "line" => ChartType::Line,
+        "pie" => ChartType::Pie,
+        _ => ChartType::Col,
+    }
+}
+
+fn parse_image_format(s: &str) -> Result<ImageFormat> {
+    match s.to_lowercase().as_str() {
+        "png" => Ok(ImageFormat::Png),
+        "jpeg" | "jpg" => Ok(ImageFormat::Jpeg),
+        "gif" => Ok(ImageFormat::Gif),
+        _ => Err(Error::from_reason(format!("unknown image format: {s}"))),
+    }
+}
+
+// Validation helpers
+
+fn parse_validation_type(s: &str) -> ValidationType {
+    match s.to_lowercase().as_str() {
+        "whole" => ValidationType::Whole,
+        "decimal" => ValidationType::Decimal,
+        "list" => ValidationType::List,
+        "date" => ValidationType::Date,
+        "time" => ValidationType::Time,
+        "textlength" => ValidationType::TextLength,
+        "custom" => ValidationType::Custom,
+        _ => ValidationType::List,
+    }
+}
+
+fn parse_validation_operator(s: &str) -> Option<ValidationOperator> {
+    match s.to_lowercase().as_str() {
+        "between" => Some(ValidationOperator::Between),
+        "notbetween" => Some(ValidationOperator::NotBetween),
+        "equal" => Some(ValidationOperator::Equal),
+        "notequal" => Some(ValidationOperator::NotEqual),
+        "lessthan" => Some(ValidationOperator::LessThan),
+        "lessthanorequal" => Some(ValidationOperator::LessThanOrEqual),
+        "greaterthan" => Some(ValidationOperator::GreaterThan),
+        "greaterthanorequal" => Some(ValidationOperator::GreaterThanOrEqual),
+        _ => None,
+    }
+}
+
+fn parse_error_style(s: &str) -> Option<ErrorStyle> {
+    match s.to_lowercase().as_str() {
+        "stop" => Some(ErrorStyle::Stop),
+        "warning" => Some(ErrorStyle::Warning),
+        "information" => Some(ErrorStyle::Information),
+        _ => None,
+    }
+}
+
+fn validation_type_to_string(vt: &ValidationType) -> String {
+    match vt {
+        ValidationType::Whole => "whole".to_string(),
+        ValidationType::Decimal => "decimal".to_string(),
+        ValidationType::List => "list".to_string(),
+        ValidationType::Date => "date".to_string(),
+        ValidationType::Time => "time".to_string(),
+        ValidationType::TextLength => "textlength".to_string(),
+        ValidationType::Custom => "custom".to_string(),
+    }
+}
+
+fn validation_operator_to_string(vo: &ValidationOperator) -> String {
+    match vo {
+        ValidationOperator::Between => "between".to_string(),
+        ValidationOperator::NotBetween => "notbetween".to_string(),
+        ValidationOperator::Equal => "equal".to_string(),
+        ValidationOperator::NotEqual => "notequal".to_string(),
+        ValidationOperator::LessThan => "lessthan".to_string(),
+        ValidationOperator::LessThanOrEqual => "lessthanorequal".to_string(),
+        ValidationOperator::GreaterThan => "greaterthan".to_string(),
+        ValidationOperator::GreaterThanOrEqual => "greaterthanorequal".to_string(),
+    }
+}
+
+fn error_style_to_string(es: &ErrorStyle) -> String {
+    match es {
+        ErrorStyle::Stop => "stop".to_string(),
+        ErrorStyle::Warning => "warning".to_string(),
+        ErrorStyle::Information => "information".to_string(),
+    }
+}
+
+fn core_validation_to_js(v: &DataValidationConfig) -> JsDataValidationConfig {
+    JsDataValidationConfig {
+        sqref: v.sqref.clone(),
+        validation_type: validation_type_to_string(&v.validation_type),
+        operator: v.operator.as_ref().map(validation_operator_to_string),
+        formula1: v.formula1.clone(),
+        formula2: v.formula2.clone(),
+        allow_blank: Some(v.allow_blank),
+        error_style: v.error_style.as_ref().map(error_style_to_string),
+        error_title: v.error_title.clone(),
+        error_message: v.error_message.clone(),
+        prompt_title: v.prompt_title.clone(),
+        prompt_message: v.prompt_message.clone(),
+        show_input_message: Some(v.show_input_message),
+        show_error_message: Some(v.show_error_message),
+    }
+}
+
+// Doc props helpers
+
+fn js_doc_props_to_core(js: &JsDocProperties) -> DocProperties {
+    DocProperties {
+        title: js.title.clone(),
+        subject: js.subject.clone(),
+        creator: js.creator.clone(),
+        keywords: js.keywords.clone(),
+        description: js.description.clone(),
+        last_modified_by: js.last_modified_by.clone(),
+        revision: js.revision.clone(),
+        created: js.created.clone(),
+        modified: js.modified.clone(),
+        category: js.category.clone(),
+        content_status: js.content_status.clone(),
+    }
+}
+
+fn core_doc_props_to_js(props: &DocProperties) -> JsDocProperties {
+    JsDocProperties {
+        title: props.title.clone(),
+        subject: props.subject.clone(),
+        creator: props.creator.clone(),
+        keywords: props.keywords.clone(),
+        description: props.description.clone(),
+        last_modified_by: props.last_modified_by.clone(),
+        revision: props.revision.clone(),
+        created: props.created.clone(),
+        modified: props.modified.clone(),
+        category: props.category.clone(),
+        content_status: props.content_status.clone(),
+    }
+}
+
+fn js_app_props_to_core(js: &JsAppProperties) -> AppProperties {
+    AppProperties {
+        application: js.application.clone(),
+        doc_security: js.doc_security,
+        company: js.company.clone(),
+        app_version: js.app_version.clone(),
+        manager: js.manager.clone(),
+        template: js.template.clone(),
+    }
+}
+
+fn core_app_props_to_js(props: &AppProperties) -> JsAppProperties {
+    JsAppProperties {
+        application: props.application.clone(),
+        doc_security: props.doc_security,
+        company: props.company.clone(),
+        app_version: props.app_version.clone(),
+        manager: props.manager.clone(),
+        template: props.template.clone(),
+    }
+}
+
+// ─── Workbook ───────────────────────────────────────────────────────
 
 /// Excel workbook for reading and writing .xlsx files.
 #[napi]
@@ -17,6 +507,8 @@ impl Default for Workbook {
 
 #[napi]
 impl Workbook {
+    // ── Phase 1: Basic I/O ──────────────────────────────────────────
+
     /// Create a new empty workbook with a single sheet named "Sheet1".
     #[napi(constructor)]
     pub fn new() -> Self {
@@ -49,5 +541,559 @@ impl Workbook {
             .into_iter()
             .map(|s| s.to_string())
             .collect()
+    }
+
+    // ── Phase 2: Cell Operations ────────────────────────────────────
+
+    /// Get the value of a cell. Returns string, number, boolean, or null.
+    #[napi(ts_return_type = "string | number | boolean | null")]
+    pub fn get_cell_value(&self, env: Env, sheet: String, cell: String) -> Result<JsUnknown> {
+        let value = self
+            .inner
+            .get_cell_value(&sheet, &cell)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        cell_value_to_js(env, value)
+    }
+
+    /// Set the value of a cell. Pass string, number, boolean, or null to clear.
+    #[napi(ts_args_type = "sheet: string, cell: string, value: string | number | boolean | null")]
+    pub fn set_cell_value(&mut self, sheet: String, cell: String, value: JsUnknown) -> Result<()> {
+        let cell_value = js_to_cell_value(value)?;
+        self.inner
+            .set_cell_value(&sheet, &cell, cell_value)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    // ── Phase 5: Sheet Management ───────────────────────────────────
+
+    /// Create a new empty sheet. Returns the 0-based sheet index.
+    #[napi]
+    pub fn new_sheet(&mut self, name: String) -> Result<u32> {
+        self.inner
+            .new_sheet(&name)
+            .map(|i| i as u32)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Delete a sheet by name.
+    #[napi]
+    pub fn delete_sheet(&mut self, name: String) -> Result<()> {
+        self.inner
+            .delete_sheet(&name)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Rename a sheet.
+    #[napi]
+    pub fn set_sheet_name(&mut self, old_name: String, new_name: String) -> Result<()> {
+        self.inner
+            .set_sheet_name(&old_name, &new_name)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Copy a sheet. Returns the new sheet's 0-based index.
+    #[napi]
+    pub fn copy_sheet(&mut self, source: String, target: String) -> Result<u32> {
+        self.inner
+            .copy_sheet(&source, &target)
+            .map(|i| i as u32)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Get the 0-based index of a sheet, or null if not found.
+    #[napi]
+    pub fn get_sheet_index(&self, name: String) -> Option<u32> {
+        self.inner.get_sheet_index(&name).map(|i| i as u32)
+    }
+
+    /// Get the name of the active sheet.
+    #[napi]
+    pub fn get_active_sheet(&self) -> String {
+        self.inner.get_active_sheet().to_string()
+    }
+
+    /// Set the active sheet by name.
+    #[napi]
+    pub fn set_active_sheet(&mut self, name: String) -> Result<()> {
+        self.inner
+            .set_active_sheet(&name)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    // ── Phase 3: Row Operations ─────────────────────────────────────
+
+    /// Insert empty rows starting at the given 1-based row number.
+    #[napi]
+    pub fn insert_rows(&mut self, sheet: String, start_row: u32, count: u32) -> Result<()> {
+        self.inner
+            .insert_rows(&sheet, start_row, count)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Remove a row (1-based).
+    #[napi]
+    pub fn remove_row(&mut self, sheet: String, row: u32) -> Result<()> {
+        self.inner
+            .remove_row(&sheet, row)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Duplicate a row (1-based).
+    #[napi]
+    pub fn duplicate_row(&mut self, sheet: String, row: u32) -> Result<()> {
+        self.inner
+            .duplicate_row(&sheet, row)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Set the height of a row (1-based).
+    #[napi]
+    pub fn set_row_height(&mut self, sheet: String, row: u32, height: f64) -> Result<()> {
+        self.inner
+            .set_row_height(&sheet, row, height)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Get the height of a row, or null if not explicitly set.
+    #[napi]
+    pub fn get_row_height(&self, sheet: String, row: u32) -> Result<Option<f64>> {
+        self.inner
+            .get_row_height(&sheet, row)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Set whether a row is visible.
+    #[napi]
+    pub fn set_row_visible(&mut self, sheet: String, row: u32, visible: bool) -> Result<()> {
+        self.inner
+            .set_row_visible(&sheet, row, visible)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    // ── Phase 3: Column Operations ──────────────────────────────────
+
+    /// Set the width of a column (e.g., "A", "B", "AA").
+    #[napi]
+    pub fn set_col_width(&mut self, sheet: String, col: String, width: f64) -> Result<()> {
+        self.inner
+            .set_col_width(&sheet, &col, width)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Get the width of a column, or null if not explicitly set.
+    #[napi]
+    pub fn get_col_width(&self, sheet: String, col: String) -> Result<Option<f64>> {
+        self.inner
+            .get_col_width(&sheet, &col)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Set whether a column is visible.
+    #[napi]
+    pub fn set_col_visible(&mut self, sheet: String, col: String, visible: bool) -> Result<()> {
+        self.inner
+            .set_col_visible(&sheet, &col, visible)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Insert empty columns starting at the given column letter.
+    #[napi]
+    pub fn insert_cols(&mut self, sheet: String, col: String, count: u32) -> Result<()> {
+        self.inner
+            .insert_cols(&sheet, &col, count)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Remove a column by letter.
+    #[napi]
+    pub fn remove_col(&mut self, sheet: String, col: String) -> Result<()> {
+        self.inner
+            .remove_col(&sheet, &col)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    // ── Phase 4: Style ──────────────────────────────────────────────
+
+    /// Add a style definition. Returns the style ID for use with setCellStyle.
+    #[napi]
+    pub fn add_style(&mut self, style: JsStyle) -> Result<u32> {
+        let core_style = js_style_to_core(&style);
+        self.inner
+            .add_style(&core_style)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Get the style ID applied to a cell, or null if default.
+    #[napi]
+    pub fn get_cell_style(&self, sheet: String, cell: String) -> Result<Option<u32>> {
+        self.inner
+            .get_cell_style(&sheet, &cell)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Apply a style ID to a cell.
+    #[napi]
+    pub fn set_cell_style(&mut self, sheet: String, cell: String, style_id: u32) -> Result<()> {
+        self.inner
+            .set_cell_style(&sheet, &cell, style_id)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    // ── Phase 7: Charts ─────────────────────────────────────────────
+
+    /// Add a chart to a sheet.
+    #[napi]
+    pub fn add_chart(
+        &mut self,
+        sheet: String,
+        from_cell: String,
+        to_cell: String,
+        config: JsChartConfig,
+    ) -> Result<()> {
+        let core_config = ChartConfig {
+            chart_type: parse_chart_type(&config.chart_type),
+            title: config.title,
+            series: config
+                .series
+                .iter()
+                .map(|s| ChartSeries {
+                    name: s.name.clone(),
+                    categories: s.categories.clone(),
+                    values: s.values.clone(),
+                })
+                .collect(),
+            show_legend: config.show_legend.unwrap_or(true),
+        };
+        self.inner
+            .add_chart(&sheet, &from_cell, &to_cell, &core_config)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    // ── Phase 7: Images ─────────────────────────────────────────────
+
+    /// Add an image to a sheet.
+    #[napi]
+    pub fn add_image(&mut self, sheet: String, config: JsImageConfig) -> Result<()> {
+        let core_config = ImageConfig {
+            data: config.data.to_vec(),
+            format: parse_image_format(&config.format)?,
+            from_cell: config.from_cell,
+            width_px: config.width_px,
+            height_px: config.height_px,
+        };
+        self.inner
+            .add_image(&sheet, &core_config)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    // ── Phase 8: Data Validation ────────────────────────────────────
+
+    /// Add a data validation rule to a sheet.
+    #[napi]
+    pub fn add_data_validation(
+        &mut self,
+        sheet: String,
+        config: JsDataValidationConfig,
+    ) -> Result<()> {
+        let core_config = DataValidationConfig {
+            sqref: config.sqref,
+            validation_type: parse_validation_type(&config.validation_type),
+            operator: config
+                .operator
+                .as_ref()
+                .and_then(|s| parse_validation_operator(s)),
+            formula1: config.formula1,
+            formula2: config.formula2,
+            allow_blank: config.allow_blank.unwrap_or(true),
+            error_style: config
+                .error_style
+                .as_ref()
+                .and_then(|s| parse_error_style(s)),
+            error_title: config.error_title,
+            error_message: config.error_message,
+            prompt_title: config.prompt_title,
+            prompt_message: config.prompt_message,
+            show_input_message: config.show_input_message.unwrap_or(false),
+            show_error_message: config.show_error_message.unwrap_or(false),
+        };
+        self.inner
+            .add_data_validation(&sheet, &core_config)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Get all data validations on a sheet.
+    #[napi]
+    pub fn get_data_validations(&self, sheet: String) -> Result<Vec<JsDataValidationConfig>> {
+        let validations = self
+            .inner
+            .get_data_validations(&sheet)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        Ok(validations.iter().map(core_validation_to_js).collect())
+    }
+
+    /// Remove a data validation by sqref.
+    #[napi]
+    pub fn remove_data_validation(&mut self, sheet: String, sqref: String) -> Result<()> {
+        self.inner
+            .remove_data_validation(&sheet, &sqref)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    // ── Phase 8: Comments ───────────────────────────────────────────
+
+    /// Add a comment to a cell.
+    #[napi]
+    pub fn add_comment(&mut self, sheet: String, config: JsCommentConfig) -> Result<()> {
+        let core_config = CommentConfig {
+            cell: config.cell,
+            author: config.author,
+            text: config.text,
+        };
+        self.inner
+            .add_comment(&sheet, &core_config)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Get all comments on a sheet.
+    #[napi]
+    pub fn get_comments(&self, sheet: String) -> Result<Vec<JsCommentConfig>> {
+        let comments = self
+            .inner
+            .get_comments(&sheet)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        Ok(comments
+            .iter()
+            .map(|c| JsCommentConfig {
+                cell: c.cell.clone(),
+                author: c.author.clone(),
+                text: c.text.clone(),
+            })
+            .collect())
+    }
+
+    /// Remove a comment from a cell.
+    #[napi]
+    pub fn remove_comment(&mut self, sheet: String, cell: String) -> Result<()> {
+        self.inner
+            .remove_comment(&sheet, &cell)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    // ── Phase 8: Auto-filter ────────────────────────────────────────
+
+    /// Set an auto-filter on a sheet.
+    #[napi]
+    pub fn set_auto_filter(&mut self, sheet: String, range: String) -> Result<()> {
+        self.inner
+            .set_auto_filter(&sheet, &range)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Remove the auto-filter from a sheet.
+    #[napi]
+    pub fn remove_auto_filter(&mut self, sheet: String) -> Result<()> {
+        self.inner
+            .remove_auto_filter(&sheet)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    // ── Phase 9: StreamWriter ───────────────────────────────────────
+
+    /// Create a new stream writer for a new sheet.
+    #[napi]
+    pub fn new_stream_writer(&self, sheet_name: String) -> Result<JsStreamWriter> {
+        let writer = self
+            .inner
+            .new_stream_writer(&sheet_name)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        Ok(JsStreamWriter {
+            inner: Some(writer),
+        })
+    }
+
+    /// Apply a stream writer's output to the workbook. Returns the sheet index.
+    #[napi]
+    pub fn apply_stream_writer(&mut self, writer: &mut JsStreamWriter) -> Result<u32> {
+        let inner_writer = writer
+            .inner
+            .take()
+            .ok_or_else(|| Error::from_reason("StreamWriter already consumed"))?;
+        let index = self
+            .inner
+            .apply_stream_writer(inner_writer)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        Ok(index as u32)
+    }
+
+    // ── Phase 10: Document Properties ───────────────────────────────
+
+    /// Set core document properties (title, creator, etc.).
+    #[napi]
+    pub fn set_doc_props(&mut self, props: JsDocProperties) {
+        self.inner.set_doc_props(js_doc_props_to_core(&props));
+    }
+
+    /// Get core document properties.
+    #[napi]
+    pub fn get_doc_props(&self) -> JsDocProperties {
+        core_doc_props_to_js(&self.inner.get_doc_props())
+    }
+
+    /// Set application properties (company, app version, etc.).
+    #[napi]
+    pub fn set_app_props(&mut self, props: JsAppProperties) {
+        self.inner.set_app_props(js_app_props_to_core(&props));
+    }
+
+    /// Get application properties.
+    #[napi]
+    pub fn get_app_props(&self) -> JsAppProperties {
+        core_app_props_to_js(&self.inner.get_app_props())
+    }
+
+    /// Set a custom property. Value can be string, number, or boolean.
+    #[napi(ts_args_type = "name: string, value: string | number | boolean")]
+    pub fn set_custom_property(&mut self, name: String, value: JsUnknown) -> Result<()> {
+        let prop_value = match value.get_type()? {
+            ValueType::Boolean => {
+                let b = value.coerce_to_bool()?.get_value()?;
+                CustomPropertyValue::Bool(b)
+            }
+            ValueType::Number => {
+                let n = value.coerce_to_number()?.get_double()?;
+                if n.fract() == 0.0 && n >= i32::MIN as f64 && n <= i32::MAX as f64 {
+                    CustomPropertyValue::Int(n as i32)
+                } else {
+                    CustomPropertyValue::Float(n)
+                }
+            }
+            ValueType::String => {
+                let s = value.coerce_to_string()?.into_utf8()?.as_str()?.to_string();
+                CustomPropertyValue::String(s)
+            }
+            _ => return Err(Error::from_reason("unsupported custom property value type")),
+        };
+        self.inner.set_custom_property(&name, prop_value);
+        Ok(())
+    }
+
+    /// Get a custom property value, or null if not found.
+    #[napi(ts_return_type = "string | number | boolean | null")]
+    pub fn get_custom_property(&self, env: Env, name: String) -> Result<JsUnknown> {
+        match self.inner.get_custom_property(&name) {
+            Some(CustomPropertyValue::String(s)) => env.create_string(&s).map(|v| v.into_unknown()),
+            Some(CustomPropertyValue::Int(i)) => env.create_int32(i).map(|v| v.into_unknown()),
+            Some(CustomPropertyValue::Float(f)) => env.create_double(f).map(|v| v.into_unknown()),
+            Some(CustomPropertyValue::Bool(b)) => env.get_boolean(b).map(|v| v.into_unknown()),
+            Some(CustomPropertyValue::DateTime(s)) => {
+                env.create_string(&s).map(|v| v.into_unknown())
+            }
+            None => env.get_null().map(|v| v.into_unknown()),
+        }
+    }
+
+    /// Delete a custom property. Returns true if it existed.
+    #[napi]
+    pub fn delete_custom_property(&mut self, name: String) -> bool {
+        self.inner.delete_custom_property(&name)
+    }
+
+    // ── Phase 10: Workbook Protection ───────────────────────────────
+
+    /// Protect the workbook structure/windows with optional password.
+    #[napi]
+    pub fn protect_workbook(&mut self, config: JsWorkbookProtectionConfig) {
+        self.inner.protect_workbook(WorkbookProtectionConfig {
+            password: config.password,
+            lock_structure: config.lock_structure.unwrap_or(false),
+            lock_windows: config.lock_windows.unwrap_or(false),
+            lock_revision: config.lock_revision.unwrap_or(false),
+        });
+    }
+
+    /// Remove workbook protection.
+    #[napi]
+    pub fn unprotect_workbook(&mut self) {
+        self.inner.unprotect_workbook();
+    }
+
+    /// Check if the workbook is protected.
+    #[napi]
+    pub fn is_workbook_protected(&self) -> bool {
+        self.inner.is_workbook_protected()
+    }
+}
+
+// ─── StreamWriter ───────────────────────────────────────────────────
+
+/// Forward-only streaming writer for large sheets.
+#[derive(Default)]
+#[napi]
+pub struct JsStreamWriter {
+    inner: Option<StreamWriter>,
+}
+
+#[napi]
+impl JsStreamWriter {
+    /// Get the sheet name.
+    #[napi(getter)]
+    pub fn sheet_name(&self) -> Result<String> {
+        let writer = self
+            .inner
+            .as_ref()
+            .ok_or_else(|| Error::from_reason("StreamWriter already consumed"))?;
+        Ok(writer.sheet_name().to_string())
+    }
+
+    /// Set column width (1-based column number).
+    #[napi]
+    pub fn set_col_width(&mut self, col: u32, width: f64) -> Result<()> {
+        let writer = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| Error::from_reason("StreamWriter already consumed"))?;
+        writer
+            .set_col_width(col, width)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Set column width for a range of columns.
+    #[napi]
+    pub fn set_col_width_range(&mut self, min_col: u32, max_col: u32, width: f64) -> Result<()> {
+        let writer = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| Error::from_reason("StreamWriter already consumed"))?;
+        writer
+            .set_col_width_range(min_col, max_col, width)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Write a row of values. Rows must be written in ascending order.
+    #[napi(ts_args_type = "row: number, values: Array<string | number | boolean | null>")]
+    pub fn write_row(&mut self, row: u32, values: Vec<JsUnknown>) -> Result<()> {
+        let writer = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| Error::from_reason("StreamWriter already consumed"))?;
+        let cell_values: Vec<CellValue> = values
+            .into_iter()
+            .map(js_to_cell_value)
+            .collect::<Result<Vec<_>>>()?;
+        writer
+            .write_row(row, &cell_values)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Add a merge cell reference (e.g., "A1:C3").
+    #[napi]
+    pub fn add_merge_cell(&mut self, reference: String) -> Result<()> {
+        let writer = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| Error::from_reason("StreamWriter already consumed"))?;
+        writer
+            .add_merge_cell(&reference)
+            .map_err(|e| Error::from_reason(e.to_string()))
     }
 }

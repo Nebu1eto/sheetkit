@@ -310,6 +310,7 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { Workbook } = nativeBinding
+const { Workbook, JsStreamWriter } = nativeBinding
 
 module.exports.Workbook = Workbook
+module.exports.JsStreamWriter = JsStreamWriter
