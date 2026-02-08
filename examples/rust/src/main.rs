@@ -249,5 +249,34 @@ fn main() -> sheetkit::Result<()> {
     println!("\noutput.xlsx has been created!");
     println!("Sheet list: {:?}", wb.sheet_names());
 
+    // ── Phase 11: Encryption ──
+    // Save with password (Agile Encryption: AES-256-CBC + SHA-512)
+    wb.save_with_password("output_encrypted.xlsx", "secret123")?;
+    println!("\n[Phase 11] Encrypted file saved: output_encrypted.xlsx");
+
+    // Open encrypted file with correct password
+    let wb_enc = Workbook::open_with_password("output_encrypted.xlsx", "secret123")?;
+    println!(
+        "[Phase 11] Encrypted file opened. Sheets: {:?}",
+        wb_enc.sheet_names()
+    );
+
+    // Verify data survived the encrypt/decrypt roundtrip
+    let val = wb_enc.get_cell_value("Sheet1", "A1")?;
+    println!("[Phase 11] A1 value from encrypted file: {:?}", val);
+
+    // Attempting to open without password returns FileEncrypted error
+    match Workbook::open("output_encrypted.xlsx") {
+        Err(sheetkit::Error::FileEncrypted) => {
+            println!("[Phase 11] Correctly detected encrypted file without password");
+        }
+        Ok(_) => {
+            println!("[Phase 11] Unexpected: file opened without password");
+        }
+        Err(e) => {
+            println!("[Phase 11] Unexpected error: {}", e);
+        }
+    }
+
     Ok(())
 }

@@ -172,3 +172,25 @@ console.log('[Phase 10] Workbook protection set');
 wb.save('output.xlsx');
 console.log('\noutput.xlsx has been created!');
 console.log('Sheet list:', wb.sheetNames);
+
+// ── Phase 11: Encryption ──
+// Save with password (Agile Encryption: AES-256-CBC + SHA-512)
+wb.saveWithPassword('output_encrypted.xlsx', 'secret123');
+console.log('\n[Phase 11] Encrypted file saved: output_encrypted.xlsx');
+
+// Open encrypted file with correct password
+const wbEnc = Workbook.openWithPasswordSync('output_encrypted.xlsx', 'secret123');
+console.log('[Phase 11] Encrypted file opened. Sheets:', wbEnc.sheetNames);
+
+// Verify data survived the encrypt/decrypt roundtrip
+const encVal = wbEnc.getCellValue('Sheet1', 'A1');
+console.log('[Phase 11] A1 value from encrypted file:', encVal);
+
+// Attempting to open without password throws an error
+try {
+  Workbook.openSync('output_encrypted.xlsx');
+  console.log('[Phase 11] Should have thrown!');
+} catch (e: unknown) {
+  const msg = e instanceof Error ? e.message : String(e);
+  console.log('[Phase 11] Correctly detected encrypted file:', msg);
+}

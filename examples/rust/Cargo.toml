@@ -4,4 +4,4 @@ edition = "2021"
 publish = false
 
 [dependencies]
-sheetkit = { path = "../../crates/sheetkit" }
+sheetkit = { path = "../../crates/sheetkit", features = ["encryption"] }
