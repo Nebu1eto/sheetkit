@@ -31,6 +31,9 @@ SheetKit은 Excel (.xlsx) 파일을 읽고 쓰기 위한 Rust 라이브러리이
 23. [피벗 테이블 (Pivot Tables)](#23-피벗-테이블)
 24. [스트림 라이터 (StreamWriter)](#24-스트림-라이터)
 25. [유틸리티 함수 (Utility Functions)](#25-유틸리티-함수)
+26. [스파크라인 (Sparklines)](#26-스파크라인)
+27. [Theme Colors](#27-theme-colors)
+28. [서식 있는 텍스트 (Rich Text)](#28-서식-있는-텍스트)
 
 ---
 
@@ -131,6 +134,7 @@ const names: string[] = wb.sheetNames;
 | 날짜 | `CellValue::Date(f64)` | `DateValue` | Excel 시리얼 번호로 저장 |
 | 수식 | `CellValue::Formula { expr, result }` | `string` (수식 문자열) | 수식 및 캐시된 결과 |
 | 오류 | `CellValue::Error(String)` | `string` (오류 문자열) | #DIV/0!, #N/A 등 |
+| 서식 있는 텍스트 | `CellValue::RichString(Vec<RichTextRun>)` | `string` (연결된 텍스트) | 여러 서식 run으로 구성된 텍스트 |
 
 ### DateValue (TypeScript)
 
@@ -2784,3 +2788,330 @@ assert!(!is_date_format_code("0%"));
 | 최대 스타일 XF 수 | 65,430 |
 | 수식 최대 재귀 깊이 | 256 |
 | 지원 수식 함수 수 | 110 / 456 |
+
+---
+
+## 26. 스파크라인
+
+스파크라인은 워크시트 셀에 삽입되는 미니 차트이다. SheetKit은 Line, Column, Win/Loss 세 가지 스파크라인 유형을 지원한다. Excel은 36가지 스타일 프리셋(인덱스 0-35)을 정의한다.
+
+> **참고:** 스파크라인 타입, 설정, XML 변환이 구현되어 있다. 워크북 통합(`addSparkline` / `getSparklines`)은 향후 릴리스에서 추가될 예정이다.
+
+### 타입
+
+#### `SparklineType` (Rust) / `sparklineType` (TypeScript)
+
+| 값 | Rust | TypeScript | OOXML |
+|------|------|------------|-------|
+| Line | `SparklineType::Line` | `"line"` | (default, omitted) |
+| Column | `SparklineType::Column` | `"column"` | `"column"` |
+| Win/Loss | `SparklineType::WinLoss` | `"winloss"` or `"stacked"` | `"stacked"` |
+
+#### `SparklineConfig` (Rust)
+
+```rust
+use sheetkit::SparklineConfig;
+
+let config = SparklineConfig::new("Sheet1!A1:A10", "B1");
+```
+
+필드:
+
+| 필드 | 타입 | 기본값 | 설명 |
+|------|------|--------|------|
+| `data_range` | `String` | (필수) | 데이터 소스 범위 (예: `"Sheet1!A1:A10"`) |
+| `location` | `String` | (필수) | 스파크라인이 렌더링되는 셀 (예: `"B1"`) |
+| `sparkline_type` | `SparklineType` | `Line` | 스파크라인 차트 유형 |
+| `markers` | `bool` | `false` | 데이터 마커 표시 |
+| `high_point` | `bool` | `false` | 최고점 강조 |
+| `low_point` | `bool` | `false` | 최저점 강조 |
+| `first_point` | `bool` | `false` | 첫 번째 점 강조 |
+| `last_point` | `bool` | `false` | 마지막 점 강조 |
+| `negative_points` | `bool` | `false` | 음수 값 강조 |
+| `show_axis` | `bool` | `false` | 가로축 표시 |
+| `line_weight` | `Option<f64>` | `None` | 선 두께 (포인트) |
+| `style` | `Option<u32>` | `None` | 스타일 프리셋 인덱스 (0-35) |
+
+#### `JsSparklineConfig` (TypeScript)
+
+```typescript
+const config = {
+  dataRange: 'Sheet1!A1:A10',
+  location: 'B1',
+  sparklineType: 'line',    // "line" | "column" | "winloss" | "stacked"
+  markers: true,
+  highPoint: false,
+  lowPoint: false,
+  firstPoint: false,
+  lastPoint: false,
+  negativePoints: false,
+  showAxis: false,
+  lineWeight: 0.75,
+  style: 1,
+};
+```
+
+### 유효성 검사
+
+`validate_sparkline_config` 함수(Rust)는 다음을 확인한다:
+- `data_range`가 비어 있지 않음
+- `location`이 비어 있지 않음
+- `line_weight`(설정된 경우) 양수 여부
+- `style`(설정된 경우) 0-35 범위 내 여부
+
+```rust
+use sheetkit_core::sparkline::{SparklineConfig, validate_sparkline_config};
+
+let config = SparklineConfig::new("Sheet1!A1:A10", "B1");
+validate_sparkline_config(&config).unwrap(); // Ok
+```
+
+## 27. Theme Colors
+
+Theme color slot (dk1, lt1, dk2, lt2, accent1-6, hlink, folHlink) resolve with optional tint.
+
+### Workbook.getThemeColor (Node.js) / Workbook::get_theme_color (Rust)
+
+| Parameter | Type              | Description                                      |
+| --------- | ----------------- | ------------------------------------------------ |
+| index     | `u32` / `number`  | Theme color index (0-11)                         |
+| tint      | `Option<f64>` / `number \| null` | Tint value: positive lightens, negative darkens |
+
+**Returns:** ARGB hex string (e.g. `"FF4472C4"`) or `None`/`null` if out of range.
+
+**Theme Color Indices:**
+
+| Index | Slot Name | Default Color |
+| ----- | --------- | ------------- |
+| 0     | dk1       | FF000000      |
+| 1     | lt1       | FFFFFFFF      |
+| 2     | dk2       | FF44546A      |
+| 3     | lt2       | FFE7E6E6      |
+| 4     | accent1   | FF4472C4      |
+| 5     | accent2   | FFED7D31      |
+| 6     | accent3   | FFA5A5A5      |
+| 7     | accent4   | FFFFC000      |
+| 8     | accent5   | FF5B9BD5      |
+| 9     | accent6   | FF70AD47      |
+| 10    | hlink     | FF0563C1      |
+| 11    | folHlink  | FF954F72      |
+
+#### Node.js
+
+```javascript
+const wb = new Workbook();
+
+// Get accent1 color (no tint)
+const color = wb.getThemeColor(4, null); // "FF4472C4"
+
+// Lighten black by 50%
+const lightened = wb.getThemeColor(0, 0.5); // "FF7F7F7F"
+
+// Darken white by 50%
+const darkened = wb.getThemeColor(1, -0.5); // "FF7F7F7F"
+
+// Out of range returns null
+const invalid = wb.getThemeColor(99, null); // null
+```
+
+#### Rust
+
+```rust
+let wb = Workbook::new();
+
+// Get accent1 color (no tint)
+let color = wb.get_theme_color(4, None); // Some("FF4472C4")
+
+// Apply tint
+let tinted = wb.get_theme_color(0, Some(0.5)); // Some("FF7F7F7F")
+```
+
+### Gradient Fill
+
+`FillStyle` type supports gradient fills via the `gradient` field.
+
+#### Types
+
+```rust
+pub struct GradientFillStyle {
+    pub gradient_type: GradientType, // Linear or Path
+    pub degree: Option<f64>,         // Rotation angle for linear gradients
+    pub left: Option<f64>,           // Path gradient coordinates (0.0-1.0)
+    pub right: Option<f64>,
+    pub top: Option<f64>,
+    pub bottom: Option<f64>,
+    pub stops: Vec<GradientStop>,    // Color stops
+}
+
+pub struct GradientStop {
+    pub position: f64,     // Position (0.0-1.0)
+    pub color: StyleColor, // Color at this stop
+}
+
+pub enum GradientType {
+    Linear,
+    Path,
+}
+```
+
+#### Rust Example
+
+```rust
+use sheetkit::*;
+
+let mut wb = Workbook::new();
+let style_id = wb.add_style(&Style {
+    fill: Some(FillStyle {
+        pattern: PatternType::None,
+        fg_color: None,
+        bg_color: None,
+        gradient: Some(GradientFillStyle {
+            gradient_type: GradientType::Linear,
+            degree: Some(90.0),
+            left: None,
+            right: None,
+            top: None,
+            bottom: None,
+            stops: vec![
+                GradientStop {
+                    position: 0.0,
+                    color: StyleColor::Rgb("FFFFFFFF".to_string()),
+                },
+                GradientStop {
+                    position: 1.0,
+                    color: StyleColor::Rgb("FF4472C4".to_string()),
+                },
+            ],
+        }),
+    }),
+    ..Style::default()
+})?;
+```
+
+---
+
+## 28. 서식 있는 텍스트
+
+서식 있는 텍스트(Rich Text)를 사용하면 하나의 셀에 글꼴, 크기, 굵게, 기울임, 색상 등 서로 다른 서식을 가진 여러 텍스트 조각(run)을 넣을 수 있다.
+
+### `RichTextRun` 타입
+
+각 run은 `RichTextRun`으로 기술된다.
+
+**Rust:**
+
+```rust
+pub struct RichTextRun {
+    pub text: String,
+    pub font: Option<String>,
+    pub size: Option<f64>,
+    pub bold: bool,
+    pub italic: bool,
+    pub color: Option<String>,
+}
+```
+
+**TypeScript:**
+
+```typescript
+interface RichTextRun {
+  text: string;
+  font?: string;
+  size?: number;
+  bold?: boolean;
+  italic?: boolean;
+  color?: string;  // RGB hex string, e.g. "#FF0000"
+}
+```
+
+### `set_cell_rich_text` / `setCellRichText`
+
+셀에 여러 서식 run으로 구성된 서식 있는 텍스트를 설정한다.
+
+**Rust:**
+
+```rust
+use sheetkit::{Workbook, RichTextRun};
+
+let mut wb = Workbook::new();
+let runs = vec![
+    RichTextRun {
+        text: "Bold text".to_string(),
+        font: Some("Arial".to_string()),
+        size: Some(14.0),
+        bold: true,
+        italic: false,
+        color: Some("#FF0000".to_string()),
+    },
+    RichTextRun {
+        text: " normal text".to_string(),
+        font: None,
+        size: None,
+        bold: false,
+        italic: false,
+        color: None,
+    },
+];
+wb.set_cell_rich_text("Sheet1", "A1", runs)?;
+```
+
+**TypeScript:**
+
+```typescript
+const wb = new Workbook();
+wb.setCellRichText("Sheet1", "A1", [
+  { text: "Bold text", font: "Arial", size: 14, bold: true, color: "#FF0000" },
+  { text: " normal text" },
+]);
+```
+
+### `get_cell_rich_text` / `getCellRichText`
+
+셀의 서식 있는 텍스트 run을 가져온다. 서식 있는 텍스트가 아닌 셀은 `None`/`null`을 반환한다.
+
+**Rust:**
+
+```rust
+let runs = wb.get_cell_rich_text("Sheet1", "A1")?;
+if let Some(runs) = runs {
+    for run in &runs {
+        println!("Text: {:?}, Bold: {}", run.text, run.bold);
+    }
+}
+```
+
+**TypeScript:**
+
+```typescript
+const runs = wb.getCellRichText("Sheet1", "A1");
+if (runs) {
+  for (const run of runs) {
+    console.log(`Text: ${run.text}, Bold: ${run.bold ?? false}`);
+  }
+}
+```
+
+### `CellValue::RichString` (Rust 전용)
+
+서식 있는 텍스트 셀은 `CellValue::RichString(Vec<RichTextRun>)` variant를 사용한다. `get_cell_value`로 읽으면 모든 run의 텍스트가 연결된 문자열로 표시된다.
+
+```rust
+match wb.get_cell_value("Sheet1", "A1")? {
+    CellValue::RichString(runs) => {
+        println!("Rich text with {} runs", runs.len());
+    }
+    _ => {}
+}
+```
+
+### `rich_text_to_plain`
+
+서식 있는 텍스트 run 슬라이스에서 연결된 일반 텍스트를 추출하는 유틸리티 함수이다.
+
+**Rust:**
+
+```rust
+use sheetkit::rich_text_to_plain;
+
+let plain = rich_text_to_plain(&runs);
+```

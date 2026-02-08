@@ -57,7 +57,7 @@ pub fn fn_type(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     let v = ctx.eval_expr(&args[0])?;
     let code = match v {
         CellValue::Number(_) | CellValue::Date(_) | CellValue::Empty => 1.0,
-        CellValue::String(_) => 2.0,
+        CellValue::String(_) | CellValue::RichString(_) => 2.0,
         CellValue::Bool(_) => 4.0,
         CellValue::Error(_) => 16.0,
         CellValue::Formula { .. } => 1.0,

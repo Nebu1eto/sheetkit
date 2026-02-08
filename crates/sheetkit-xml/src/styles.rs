@@ -118,6 +118,9 @@ pub struct Fills {
 pub struct Fill {
     #[serde(rename = "patternFill", skip_serializing_if = "Option::is_none")]
     pub pattern_fill: Option<PatternFill>,
+
+    #[serde(rename = "gradientFill", skip_serializing_if = "Option::is_none")]
+    pub gradient_fill: Option<GradientFill>,
 }
 
 /// Pattern fill definition.
@@ -131,6 +134,49 @@ pub struct PatternFill {
 
     #[serde(rename = "bgColor", skip_serializing_if = "Option::is_none")]
     pub bg_color: Option<Color>,
+}
+
+/// Gradient fill definition.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GradientFill {
+    /// Gradient type: "linear" or "path".
+    #[serde(rename = "@type", skip_serializing_if = "Option::is_none")]
+    pub gradient_type: Option<String>,
+
+    /// Rotation angle in degrees for linear gradients.
+    #[serde(rename = "@degree", skip_serializing_if = "Option::is_none")]
+    pub degree: Option<f64>,
+
+    /// Left coordinate for path gradients (0.0-1.0).
+    #[serde(rename = "@left", skip_serializing_if = "Option::is_none")]
+    pub left: Option<f64>,
+
+    /// Right coordinate for path gradients (0.0-1.0).
+    #[serde(rename = "@right", skip_serializing_if = "Option::is_none")]
+    pub right: Option<f64>,
+
+    /// Top coordinate for path gradients (0.0-1.0).
+    #[serde(rename = "@top", skip_serializing_if = "Option::is_none")]
+    pub top: Option<f64>,
+
+    /// Bottom coordinate for path gradients (0.0-1.0).
+    #[serde(rename = "@bottom", skip_serializing_if = "Option::is_none")]
+    pub bottom: Option<f64>,
+
+    /// Gradient stops.
+    #[serde(rename = "stop", default)]
+    pub stops: Vec<GradientStop>,
+}
+
+/// A single gradient stop with position and color.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GradientStop {
+    /// Position of this stop (0.0-1.0).
+    #[serde(rename = "@position")]
+    pub position: f64,
+
+    /// Color at this stop.
+    pub color: Color,
 }
 
 /// Borders container.
@@ -440,6 +486,7 @@ impl Default for StyleSheet {
                             fg_color: None,
                             bg_color: None,
                         }),
+                        gradient_fill: None,
                     },
                     Fill {
                         pattern_fill: Some(PatternFill {
@@ -447,6 +494,7 @@ impl Default for StyleSheet {
                             fg_color: None,
                             bg_color: None,
                         }),
+                        gradient_fill: None,
                     },
                 ],
             },

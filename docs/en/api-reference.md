@@ -31,6 +31,9 @@ SheetKit is a Rust library for reading and writing Excel (.xlsx) files, with Nod
 - [23. Pivot Tables](#23-pivot-tables)
 - [24. StreamWriter](#24-streamwriter)
 - [25. Utility Functions](#25-utility-functions)
+- [26. Sparklines](#26-sparklines)
+- [27. Theme Colors](#27-theme-colors)
+- [28. Rich Text](#28-rich-text)
 
 ---
 
@@ -131,6 +134,7 @@ match value {
     CellValue::Date(serial) => println!("Date serial: {serial}"),
     CellValue::Formula { expr, result } => println!("Formula: ={expr}"),
     CellValue::Error(e) => println!("Error: {e}"),
+    CellValue::RichString(runs) => println!("Rich text with {} runs", runs.len()),
     CellValue::Empty => println!("Empty"),
 }
 ```
@@ -182,6 +186,7 @@ wb.setCellValue("Sheet1", "A5", { type: "date", serial: 45672 });
 | `CellValue::Date(f64)` | `DateValue` | Date as Excel serial number |
 | `CellValue::Formula { expr, result }` | `string` | Formula expression (returned as string in TS) |
 | `CellValue::Error(String)` | `string` | Error value (e.g., "#DIV/0!") |
+| `CellValue::RichString(Vec<RichTextRun>)` | `string` | Rich text (returned as concatenated plain text in TS) |
 | `CellValue::Empty` | `null` | Empty cell |
 
 ### DateValue (TypeScript)
@@ -2695,4 +2700,331 @@ assert!(is_date_format_code("yyyy-mm-dd"));
 assert!(is_date_format_code("h:mm:ss AM/PM"));
 assert!(!is_date_format_code("#,##0.00"));
 assert!(!is_date_format_code("0%"));
+```
+
+---
+
+## 26. Sparklines
+
+Sparklines are mini-charts embedded in worksheet cells. SheetKit supports three sparkline types: Line, Column, and Win/Loss. Excel defines 36 style presets (indices 0-35).
+
+> **Note:** Sparkline types, configuration, and XML conversion are available. Workbook integration (`addSparkline` / `getSparklines`) will be added in a future release.
+
+### Types
+
+#### `SparklineType` (Rust) / `sparklineType` (TypeScript)
+
+| Value | Rust | TypeScript | OOXML |
+|-------|------|------------|-------|
+| Line | `SparklineType::Line` | `"line"` | (default, omitted) |
+| Column | `SparklineType::Column` | `"column"` | `"column"` |
+| Win/Loss | `SparklineType::WinLoss` | `"winloss"` or `"stacked"` | `"stacked"` |
+
+#### `SparklineConfig` (Rust)
+
+```rust
+use sheetkit::SparklineConfig;
+
+let config = SparklineConfig::new("Sheet1!A1:A10", "B1");
+```
+
+Fields:
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `data_range` | `String` | (required) | Data source range (e.g., `"Sheet1!A1:A10"`) |
+| `location` | `String` | (required) | Cell where sparkline is rendered (e.g., `"B1"`) |
+| `sparkline_type` | `SparklineType` | `Line` | Sparkline chart type |
+| `markers` | `bool` | `false` | Show data markers |
+| `high_point` | `bool` | `false` | Highlight highest point |
+| `low_point` | `bool` | `false` | Highlight lowest point |
+| `first_point` | `bool` | `false` | Highlight first point |
+| `last_point` | `bool` | `false` | Highlight last point |
+| `negative_points` | `bool` | `false` | Highlight negative values |
+| `show_axis` | `bool` | `false` | Show horizontal axis |
+| `line_weight` | `Option<f64>` | `None` | Line weight in points |
+| `style` | `Option<u32>` | `None` | Style preset index (0-35) |
+
+#### `JsSparklineConfig` (TypeScript)
+
+```typescript
+const config = {
+  dataRange: 'Sheet1!A1:A10',
+  location: 'B1',
+  sparklineType: 'line',    // "line" | "column" | "winloss" | "stacked"
+  markers: true,
+  highPoint: false,
+  lowPoint: false,
+  firstPoint: false,
+  lastPoint: false,
+  negativePoints: false,
+  showAxis: false,
+  lineWeight: 0.75,
+  style: 1,
+};
+```
+
+### Validation
+
+The `validate_sparkline_config` function (Rust) checks that:
+- `data_range` is not empty
+- `location` is not empty
+- `line_weight` (if set) is positive
+- `style` (if set) is in range 0-35
+
+```rust
+use sheetkit_core::sparkline::{SparklineConfig, validate_sparkline_config};
+
+let config = SparklineConfig::new("Sheet1!A1:A10", "B1");
+validate_sparkline_config(&config).unwrap(); // Ok
+```
+
+## 27. Theme Colors
+
+Resolve theme color slots (dk1, lt1, dk2, lt2, accent1-6, hlink, folHlink) with optional tint.
+
+### Workbook.getThemeColor (Node.js) / Workbook::get_theme_color (Rust)
+
+| Parameter | Type              | Description                                      |
+| --------- | ----------------- | ------------------------------------------------ |
+| index     | `u32` / `number`  | Theme color index (0-11)                         |
+| tint      | `Option<f64>` / `number \| null` | Tint value: positive lightens, negative darkens |
+
+**Returns:** ARGB hex string (e.g. `"FF4472C4"`) or `None`/`null` if out of range.
+
+**Theme Color Indices:**
+
+| Index | Slot Name | Default Color |
+| ----- | --------- | ------------- |
+| 0     | dk1       | FF000000      |
+| 1     | lt1       | FFFFFFFF      |
+| 2     | dk2       | FF44546A      |
+| 3     | lt2       | FFE7E6E6      |
+| 4     | accent1   | FF4472C4      |
+| 5     | accent2   | FFED7D31      |
+| 6     | accent3   | FFA5A5A5      |
+| 7     | accent4   | FFFFC000      |
+| 8     | accent5   | FF5B9BD5      |
+| 9     | accent6   | FF70AD47      |
+| 10    | hlink     | FF0563C1      |
+| 11    | folHlink  | FF954F72      |
+
+#### Node.js
+
+```javascript
+const wb = new Workbook();
+
+// Get accent1 color (no tint)
+const color = wb.getThemeColor(4, null); // "FF4472C4"
+
+// Lighten black by 50%
+const lightened = wb.getThemeColor(0, 0.5); // "FF7F7F7F"
+
+// Darken white by 50%
+const darkened = wb.getThemeColor(1, -0.5); // "FF7F7F7F"
+
+// Out of range returns null
+const invalid = wb.getThemeColor(99, null); // null
+```
+
+#### Rust
+
+```rust
+let wb = Workbook::new();
+
+// Get accent1 color (no tint)
+let color = wb.get_theme_color(4, None); // Some("FF4472C4")
+
+// Apply tint
+let tinted = wb.get_theme_color(0, Some(0.5)); // Some("FF7F7F7F")
+```
+
+### Gradient Fill
+
+The `FillStyle` type supports gradient fills via the `gradient` field.
+
+#### Types
+
+```rust
+pub struct GradientFillStyle {
+    pub gradient_type: GradientType, // Linear or Path
+    pub degree: Option<f64>,         // Rotation angle for linear gradients
+    pub left: Option<f64>,           // Path gradient coordinates (0.0-1.0)
+    pub right: Option<f64>,
+    pub top: Option<f64>,
+    pub bottom: Option<f64>,
+    pub stops: Vec<GradientStop>,    // Color stops
+}
+
+pub struct GradientStop {
+    pub position: f64,     // Position (0.0-1.0)
+    pub color: StyleColor, // Color at this stop
+}
+
+pub enum GradientType {
+    Linear,
+    Path,
+}
+```
+
+#### Rust Example
+
+```rust
+use sheetkit::*;
+
+let mut wb = Workbook::new();
+let style_id = wb.add_style(&Style {
+    fill: Some(FillStyle {
+        pattern: PatternType::None,
+        fg_color: None,
+        bg_color: None,
+        gradient: Some(GradientFillStyle {
+            gradient_type: GradientType::Linear,
+            degree: Some(90.0),
+            left: None,
+            right: None,
+            top: None,
+            bottom: None,
+            stops: vec![
+                GradientStop {
+                    position: 0.0,
+                    color: StyleColor::Rgb("FFFFFFFF".to_string()),
+                },
+                GradientStop {
+                    position: 1.0,
+                    color: StyleColor::Rgb("FF4472C4".to_string()),
+                },
+            ],
+        }),
+    }),
+    ..Style::default()
+})?;
+```
+
+---
+
+## 28. Rich Text
+
+Rich text allows a single cell to contain multiple text segments (runs), each with independent formatting such as font, size, bold, italic, and color.
+
+### `RichTextRun` Type
+
+Each run in a rich text cell is described by a `RichTextRun`.
+
+**Rust:**
+
+```rust
+pub struct RichTextRun {
+    pub text: String,
+    pub font: Option<String>,
+    pub size: Option<f64>,
+    pub bold: bool,
+    pub italic: bool,
+    pub color: Option<String>,
+}
+```
+
+**TypeScript:**
+
+```typescript
+interface RichTextRun {
+  text: string;
+  font?: string;
+  size?: number;
+  bold?: boolean;
+  italic?: boolean;
+  color?: string;  // RGB hex string, e.g. "#FF0000"
+}
+```
+
+### `set_cell_rich_text` / `setCellRichText`
+
+Set a cell value to rich text with multiple formatted runs.
+
+**Rust:**
+
+```rust
+use sheetkit::{Workbook, RichTextRun};
+
+let mut wb = Workbook::new();
+let runs = vec![
+    RichTextRun {
+        text: "Bold text".to_string(),
+        font: Some("Arial".to_string()),
+        size: Some(14.0),
+        bold: true,
+        italic: false,
+        color: Some("#FF0000".to_string()),
+    },
+    RichTextRun {
+        text: " normal text".to_string(),
+        font: None,
+        size: None,
+        bold: false,
+        italic: false,
+        color: None,
+    },
+];
+wb.set_cell_rich_text("Sheet1", "A1", runs)?;
+```
+
+**TypeScript:**
+
+```typescript
+const wb = new Workbook();
+wb.setCellRichText("Sheet1", "A1", [
+  { text: "Bold text", font: "Arial", size: 14, bold: true, color: "#FF0000" },
+  { text: " normal text" },
+]);
+```
+
+### `get_cell_rich_text` / `getCellRichText`
+
+Retrieve the rich text runs for a cell. Returns `None`/`null` for non-rich-text cells.
+
+**Rust:**
+
+```rust
+let runs = wb.get_cell_rich_text("Sheet1", "A1")?;
+if let Some(runs) = runs {
+    for run in &runs {
+        println!("Text: {:?}, Bold: {}", run.text, run.bold);
+    }
+}
+```
+
+**TypeScript:**
+
+```typescript
+const runs = wb.getCellRichText("Sheet1", "A1");
+if (runs) {
+  for (const run of runs) {
+    console.log(`Text: ${run.text}, Bold: ${run.bold ?? false}`);
+  }
+}
+```
+
+### `CellValue::RichString` (Rust only)
+
+Rich text cells use the `CellValue::RichString(Vec<RichTextRun>)` variant. When read through `get_cell_value`, the display value is the concatenation of all run texts.
+
+```rust
+match wb.get_cell_value("Sheet1", "A1")? {
+    CellValue::RichString(runs) => {
+        println!("Rich text with {} runs", runs.len());
+    }
+    _ => {}
+}
+```
+
+### `rich_text_to_plain`
+
+Utility function to extract the concatenated plain text from a slice of rich text runs.
+
+**Rust:**
+
+```rust
+use sheetkit::rich_text_to_plain;
+
+let plain = rich_text_to_plain(&runs);
 ```

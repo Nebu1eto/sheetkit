@@ -239,6 +239,7 @@ fn conditional_style_to_dxf(style: &ConditionalStyle) -> Dxf {
             fg_color: f.fg_color.as_ref().map(style_color_to_xml_color),
             bg_color: f.bg_color.as_ref().map(style_color_to_xml_color),
         }),
+        gradient_fill: None,
     });
 
     let border = style.border.as_ref().map(|b| {
@@ -349,6 +350,7 @@ fn dxf_to_conditional_style(dxf: &Dxf) -> ConditionalStyle {
                 .unwrap_or(PatternType::None),
             fg_color: pf.fg_color.as_ref().and_then(xml_color_to_style_color),
             bg_color: pf.bg_color.as_ref().and_then(xml_color_to_style_color),
+            gradient: None,
         })
     });
 
@@ -1144,6 +1146,7 @@ mod tests {
                     pattern: PatternType::Solid,
                     fg_color: Some(StyleColor::Rgb("FF00FF00".to_string())),
                     bg_color: None,
+                    gradient: None,
                 }),
                 ..ConditionalStyle::default()
             }),
@@ -1214,6 +1217,7 @@ mod tests {
                     pattern: PatternType::Solid,
                     fg_color: Some(StyleColor::Rgb("FFEEEEEE".to_string())),
                     bg_color: None,
+                    gradient: None,
                 }),
                 ..ConditionalStyle::default()
             }),
@@ -1370,6 +1374,7 @@ mod tests {
                     pattern: PatternType::Solid,
                     fg_color: Some(StyleColor::Rgb("FFFF0000".to_string())),
                     bg_color: None,
+                    gradient: None,
                 }),
                 ..ConditionalStyle::default()
             }),
@@ -1726,6 +1731,7 @@ mod tests {
                         pattern: PatternType::Solid,
                         fg_color: Some(StyleColor::Rgb("FF00FF00".to_string())),
                         bg_color: None,
+                        gradient: None,
                     }),
                     ..ConditionalStyle::default()
                 }),
@@ -1743,6 +1749,7 @@ mod tests {
                         pattern: PatternType::Solid,
                         fg_color: Some(StyleColor::Rgb("FFFF0000".to_string())),
                         bg_color: None,
+                        gradient: None,
                     }),
                     ..ConditionalStyle::default()
                 }),
@@ -2108,6 +2115,7 @@ mod tests {
                 pattern: PatternType::Solid,
                 fg_color: Some(StyleColor::Rgb("FFFFFF00".to_string())),
                 bg_color: None,
+                gradient: None,
             }),
             ..ConditionalStyle::default()
         };
