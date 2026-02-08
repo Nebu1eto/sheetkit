@@ -31,8 +31,14 @@ pub struct WorksheetXml {
     #[serde(rename = "sheetData")]
     pub sheet_data: SheetData,
 
+    #[serde(rename = "autoFilter", skip_serializing_if = "Option::is_none")]
+    pub auto_filter: Option<AutoFilter>,
+
     #[serde(rename = "mergeCells", skip_serializing_if = "Option::is_none")]
     pub merge_cells: Option<MergeCells>,
+
+    #[serde(rename = "dataValidations", skip_serializing_if = "Option::is_none")]
+    pub data_validations: Option<DataValidations>,
 
     #[serde(rename = "hyperlinks", skip_serializing_if = "Option::is_none")]
     pub hyperlinks: Option<Hyperlinks>,
@@ -233,6 +239,66 @@ pub struct InlineString {
     pub t: Option<String>,
 }
 
+/// Auto filter.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AutoFilter {
+    #[serde(rename = "@ref")]
+    pub reference: String,
+}
+
+/// Data validations container.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DataValidations {
+    #[serde(rename = "@count", skip_serializing_if = "Option::is_none")]
+    pub count: Option<u32>,
+
+    #[serde(rename = "dataValidation", default)]
+    pub data_validations: Vec<DataValidation>,
+}
+
+/// Individual data validation rule.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DataValidation {
+    #[serde(rename = "@type", skip_serializing_if = "Option::is_none")]
+    pub validation_type: Option<String>,
+
+    #[serde(rename = "@operator", skip_serializing_if = "Option::is_none")]
+    pub operator: Option<String>,
+
+    #[serde(rename = "@allowBlank", skip_serializing_if = "Option::is_none")]
+    pub allow_blank: Option<bool>,
+
+    #[serde(rename = "@showInputMessage", skip_serializing_if = "Option::is_none")]
+    pub show_input_message: Option<bool>,
+
+    #[serde(rename = "@showErrorMessage", skip_serializing_if = "Option::is_none")]
+    pub show_error_message: Option<bool>,
+
+    #[serde(rename = "@errorStyle", skip_serializing_if = "Option::is_none")]
+    pub error_style: Option<String>,
+
+    #[serde(rename = "@errorTitle", skip_serializing_if = "Option::is_none")]
+    pub error_title: Option<String>,
+
+    #[serde(rename = "@error", skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+
+    #[serde(rename = "@promptTitle", skip_serializing_if = "Option::is_none")]
+    pub prompt_title: Option<String>,
+
+    #[serde(rename = "@prompt", skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+
+    #[serde(rename = "@sqref")]
+    pub sqref: String,
+
+    #[serde(rename = "formula1", skip_serializing_if = "Option::is_none")]
+    pub formula1: Option<String>,
+
+    #[serde(rename = "formula2", skip_serializing_if = "Option::is_none")]
+    pub formula2: Option<String>,
+}
+
 /// Merge cells container.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MergeCells {
@@ -350,7 +416,9 @@ impl Default for WorksheetXml {
             sheet_format_pr: None,
             cols: None,
             sheet_data: SheetData { rows: vec![] },
+            auto_filter: None,
             merge_cells: None,
+            data_validations: None,
             hyperlinks: None,
             page_margins: None,
             page_setup: None,

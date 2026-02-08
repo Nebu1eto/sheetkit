@@ -10,6 +10,7 @@ use std::path::Path;
 
 use serde::Serialize;
 use sheetkit_xml::chart::ChartSpace;
+use sheetkit_xml::comments::Comments;
 use sheetkit_xml::content_types::{
     mime_types, ContentTypeDefault, ContentTypeOverride, ContentTypes,
 };
@@ -24,11 +25,13 @@ use zip::CompressionMethod;
 
 use crate::cell::CellValue;
 use crate::chart::ChartConfig;
+use crate::comment::CommentConfig;
 use crate::error::{Error, Result};
 use crate::image::ImageConfig;
 use crate::sst::SharedStringTable;
 use crate::utils::cell_ref::cell_name_to_coordinates;
 use crate::utils::constants::MAX_CELL_CHARS;
+use crate::validation::DataValidationConfig;
 
 /// XML declaration prepended to every XML part in the package.
 const XML_DECLARATION: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#;
@@ -44,6 +47,8 @@ pub struct Workbook {
     #[allow(dead_code)]
     shared_strings: Sst,
     sst_runtime: SharedStringTable,
+    /// Per-sheet comments, parallel to the `worksheets` vector.
+    sheet_comments: Vec<Option<Comments>>,
     /// Chart parts: (zip path like "xl/charts/chart1.xml", ChartSpace data).
     charts: Vec<(String, ChartSpace)>,
     /// Drawing parts: (zip path like "xl/drawings/drawing1.xml", WsDr data).
@@ -73,6 +78,7 @@ impl Workbook {
             stylesheet: StyleSheet::default(),
             shared_strings,
             sst_runtime,
+            sheet_comments: vec![None],
             charts: vec![],
             drawings: vec![],
             images: vec![],
@@ -125,6 +131,9 @@ impl Workbook {
 
         let sst_runtime = SharedStringTable::from_sst(&shared_strings);
 
+        // Initialize per-sheet comments (one entry per worksheet).
+        let sheet_comments: Vec<Option<Comments>> = vec![None; worksheets.len()];
+
         Ok(Self {
             content_types,
             package_rels,
@@ -134,6 +143,7 @@ impl Workbook {
             stylesheet,
             shared_strings,
             sst_runtime,
+            sheet_comments,
             charts: vec![],
             drawings: vec![],
             images: vec![],
@@ -183,6 +193,14 @@ impl Workbook {
         // xl/sharedStrings.xml -- write from the runtime SST
         let sst_xml = self.sst_runtime.to_sst();
         write_xml_part(&mut zip, "xl/sharedStrings.xml", &sst_xml, options)?;
+
+        // xl/comments{N}.xml -- write per-sheet comments
+        for (i, comments) in self.sheet_comments.iter().enumerate() {
+            if let Some(ref c) = comments {
+                let entry_name = format!("xl/comments{}.xml", i + 1);
+                write_xml_part(&mut zip, &entry_name, c, options)?;
+            }
+        }
 
         // xl/drawings/drawing{N}.xml -- write drawing parts
         for (path, drawing) in &self.drawings {
@@ -611,6 +629,71 @@ impl Workbook {
     }
 
     // -----------------------------------------------------------------------
+    // Data validation operations
+    // -----------------------------------------------------------------------
+
+    /// Add a data validation rule to a sheet.
+    pub fn add_data_validation(
+        &mut self,
+        sheet: &str,
+        config: &DataValidationConfig,
+    ) -> Result<()> {
+        let ws = self.worksheet_mut(sheet)?;
+        crate::validation::add_validation(ws, config)
+    }
+
+    /// Get all data validation rules for a sheet.
+    pub fn get_data_validations(&self, sheet: &str) -> Result<Vec<DataValidationConfig>> {
+        let ws = self.worksheet_ref(sheet)?;
+        Ok(crate::validation::get_validations(ws))
+    }
+
+    /// Remove a data validation rule matching the given cell range from a sheet.
+    pub fn remove_data_validation(&mut self, sheet: &str, sqref: &str) -> Result<()> {
+        let ws = self.worksheet_mut(sheet)?;
+        crate::validation::remove_validation(ws, sqref)
+    }
+
+    // -----------------------------------------------------------------------
+    // Comment operations
+    // -----------------------------------------------------------------------
+
+    /// Add a comment to a cell on the given sheet.
+    pub fn add_comment(&mut self, sheet: &str, config: &CommentConfig) -> Result<()> {
+        let idx = self.sheet_index(sheet)?;
+        crate::comment::add_comment(&mut self.sheet_comments[idx], config);
+        Ok(())
+    }
+
+    /// Get all comments for a sheet.
+    pub fn get_comments(&self, sheet: &str) -> Result<Vec<CommentConfig>> {
+        let idx = self.sheet_index(sheet)?;
+        Ok(crate::comment::get_all_comments(&self.sheet_comments[idx]))
+    }
+
+    /// Remove a comment from a cell on the given sheet.
+    pub fn remove_comment(&mut self, sheet: &str, cell: &str) -> Result<()> {
+        let idx = self.sheet_index(sheet)?;
+        crate::comment::remove_comment(&mut self.sheet_comments[idx], cell);
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Auto-filter operations
+    // -----------------------------------------------------------------------
+
+    /// Set an auto-filter on a sheet for the given cell range.
+    pub fn set_auto_filter(&mut self, sheet: &str, range: &str) -> Result<()> {
+        let ws = self.worksheet_mut(sheet)?;
+        crate::table::set_auto_filter(ws, range)
+    }
+
+    /// Remove the auto-filter from a sheet.
+    pub fn remove_auto_filter(&mut self, sheet: &str) -> Result<()> {
+        let ws = self.worksheet_mut(sheet)?;
+        crate::table::remove_auto_filter(ws);
+        Ok(())
+    }
 
     // -----------------------------------------------------------------------
     // Chart operations
@@ -827,6 +910,16 @@ impl Workbook {
             .map(|r| r.relationships.as_slice())
             .unwrap_or(&[]);
         crate::sheet::next_rid(existing)
+    }
+
+    /// Get the 0-based index of a sheet by name.
+    fn sheet_index(&self, sheet: &str) -> Result<usize> {
+        self.worksheets
+            .iter()
+            .position(|(name, _)| name == sheet)
+            .ok_or_else(|| Error::SheetNotFound {
+                name: sheet.to_string(),
+            })
     }
 
     /// Get a mutable reference to the worksheet XML for the named sheet.
@@ -1829,6 +1922,212 @@ mod tests {
         let mut wb = Workbook::new();
         let result = wb.remove_col("NoSheet", "A");
         assert!(matches!(result.unwrap_err(), Error::SheetNotFound { .. }));
+    }
+
+    // -----------------------------------------------------------------------
+    // Data validation tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_workbook_add_data_validation() {
+        let mut wb = Workbook::new();
+        let config =
+            crate::validation::DataValidationConfig::dropdown("A1:A100", &["Yes", "No", "Maybe"]);
+        wb.add_data_validation("Sheet1", &config).unwrap();
+
+        let validations = wb.get_data_validations("Sheet1").unwrap();
+        assert_eq!(validations.len(), 1);
+        assert_eq!(validations[0].sqref, "A1:A100");
+    }
+
+    #[test]
+    fn test_workbook_remove_data_validation() {
+        let mut wb = Workbook::new();
+        let config1 = crate::validation::DataValidationConfig::dropdown("A1:A100", &["Yes", "No"]);
+        let config2 = crate::validation::DataValidationConfig::whole_number("B1:B100", 1, 100);
+        wb.add_data_validation("Sheet1", &config1).unwrap();
+        wb.add_data_validation("Sheet1", &config2).unwrap();
+
+        wb.remove_data_validation("Sheet1", "A1:A100").unwrap();
+
+        let validations = wb.get_data_validations("Sheet1").unwrap();
+        assert_eq!(validations.len(), 1);
+        assert_eq!(validations[0].sqref, "B1:B100");
+    }
+
+    #[test]
+    fn test_workbook_data_validation_sheet_not_found() {
+        let mut wb = Workbook::new();
+        let config = crate::validation::DataValidationConfig::dropdown("A1:A100", &["Yes", "No"]);
+        let result = wb.add_data_validation("NoSheet", &config);
+        assert!(matches!(result.unwrap_err(), Error::SheetNotFound { .. }));
+    }
+
+    #[test]
+    fn test_workbook_data_validation_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("validation_roundtrip.xlsx");
+
+        let mut wb = Workbook::new();
+        let config =
+            crate::validation::DataValidationConfig::dropdown("A1:A50", &["Red", "Blue", "Green"]);
+        wb.add_data_validation("Sheet1", &config).unwrap();
+        wb.save(&path).unwrap();
+
+        let wb2 = Workbook::open(&path).unwrap();
+        let validations = wb2.get_data_validations("Sheet1").unwrap();
+        assert_eq!(validations.len(), 1);
+        assert_eq!(validations[0].sqref, "A1:A50");
+        assert_eq!(
+            validations[0].validation_type,
+            crate::validation::ValidationType::List
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Comment tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_workbook_add_comment() {
+        let mut wb = Workbook::new();
+        let config = crate::comment::CommentConfig {
+            cell: "A1".to_string(),
+            author: "Alice".to_string(),
+            text: "Test comment".to_string(),
+        };
+        wb.add_comment("Sheet1", &config).unwrap();
+
+        let comments = wb.get_comments("Sheet1").unwrap();
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments[0].cell, "A1");
+        assert_eq!(comments[0].author, "Alice");
+        assert_eq!(comments[0].text, "Test comment");
+    }
+
+    #[test]
+    fn test_workbook_remove_comment() {
+        let mut wb = Workbook::new();
+        let config = crate::comment::CommentConfig {
+            cell: "A1".to_string(),
+            author: "Alice".to_string(),
+            text: "Test comment".to_string(),
+        };
+        wb.add_comment("Sheet1", &config).unwrap();
+        wb.remove_comment("Sheet1", "A1").unwrap();
+
+        let comments = wb.get_comments("Sheet1").unwrap();
+        assert!(comments.is_empty());
+    }
+
+    #[test]
+    fn test_workbook_multiple_comments() {
+        let mut wb = Workbook::new();
+        wb.add_comment(
+            "Sheet1",
+            &crate::comment::CommentConfig {
+                cell: "A1".to_string(),
+                author: "Alice".to_string(),
+                text: "First".to_string(),
+            },
+        )
+        .unwrap();
+        wb.add_comment(
+            "Sheet1",
+            &crate::comment::CommentConfig {
+                cell: "B2".to_string(),
+                author: "Bob".to_string(),
+                text: "Second".to_string(),
+            },
+        )
+        .unwrap();
+
+        let comments = wb.get_comments("Sheet1").unwrap();
+        assert_eq!(comments.len(), 2);
+    }
+
+    #[test]
+    fn test_workbook_comment_sheet_not_found() {
+        let mut wb = Workbook::new();
+        let config = crate::comment::CommentConfig {
+            cell: "A1".to_string(),
+            author: "Alice".to_string(),
+            text: "Test".to_string(),
+        };
+        let result = wb.add_comment("NoSheet", &config);
+        assert!(matches!(result.unwrap_err(), Error::SheetNotFound { .. }));
+    }
+
+    #[test]
+    fn test_workbook_comment_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("comment_roundtrip.xlsx");
+
+        let mut wb = Workbook::new();
+        wb.add_comment(
+            "Sheet1",
+            &crate::comment::CommentConfig {
+                cell: "A1".to_string(),
+                author: "Author".to_string(),
+                text: "A saved comment".to_string(),
+            },
+        )
+        .unwrap();
+        wb.save(&path).unwrap();
+
+        // Verify the comments XML was written to the ZIP.
+        let file = std::fs::File::open(&path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        assert!(
+            archive.by_name("xl/comments1.xml").is_ok(),
+            "comments1.xml should be present in the ZIP"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Auto-filter tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_workbook_set_auto_filter() {
+        let mut wb = Workbook::new();
+        wb.set_auto_filter("Sheet1", "A1:D10").unwrap();
+
+        let ws = wb.worksheet_ref("Sheet1").unwrap();
+        assert!(ws.auto_filter.is_some());
+        assert_eq!(ws.auto_filter.as_ref().unwrap().reference, "A1:D10");
+    }
+
+    #[test]
+    fn test_workbook_remove_auto_filter() {
+        let mut wb = Workbook::new();
+        wb.set_auto_filter("Sheet1", "A1:D10").unwrap();
+        wb.remove_auto_filter("Sheet1").unwrap();
+
+        let ws = wb.worksheet_ref("Sheet1").unwrap();
+        assert!(ws.auto_filter.is_none());
+    }
+
+    #[test]
+    fn test_workbook_auto_filter_sheet_not_found() {
+        let mut wb = Workbook::new();
+        let result = wb.set_auto_filter("NoSheet", "A1:D10");
+        assert!(matches!(result.unwrap_err(), Error::SheetNotFound { .. }));
+    }
+
+    #[test]
+    fn test_workbook_auto_filter_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("autofilter_roundtrip.xlsx");
+
+        let mut wb = Workbook::new();
+        wb.set_auto_filter("Sheet1", "A1:C50").unwrap();
+        wb.save(&path).unwrap();
+
+        let wb2 = Workbook::open(&path).unwrap();
+        let ws = wb2.worksheet_ref("Sheet1").unwrap();
+        assert!(ws.auto_filter.is_some());
+        assert_eq!(ws.auto_filter.as_ref().unwrap().reference, "A1:C50");
     }
 
     // -----------------------------------------------------------------------
