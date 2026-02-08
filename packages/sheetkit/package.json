@@ -12,13 +12,14 @@
 		}
 	},
 	"files": [
+		"binding.cjs",
 		"index.js",
 		"index.d.ts"
 	],
 	"scripts": {
 		"artifacts": "napi artifacts",
-		"build": "napi build --platform --release",
-		"build:debug": "napi build --platform",
+		"build": "napi build --platform --release && mv index.js binding.cjs",
+		"build:debug": "napi build --platform && mv index.js binding.cjs",
 		"test": "vitest run",
 		"test:watch": "vitest"
 	},
