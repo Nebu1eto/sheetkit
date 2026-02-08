@@ -156,6 +156,30 @@ pub fn set_row_visible(ws: &mut WorksheetXml, row: u32, visible: bool) -> Result
     Ok(())
 }
 
+/// Get the visibility of a row. Returns true if visible (not hidden).
+///
+/// Rows are visible by default, so this returns true if the row does not
+/// exist or has no explicit `hidden` attribute.
+pub fn get_row_visible(ws: &WorksheetXml, row: u32) -> bool {
+    ws.sheet_data
+        .rows
+        .iter()
+        .find(|r| r.r == row)
+        .and_then(|r| r.hidden)
+        .map(|h| !h)
+        .unwrap_or(true)
+}
+
+/// Get the outline (grouping) level of a row. Returns 0 if not set.
+pub fn get_row_outline_level(ws: &WorksheetXml, row: u32) -> u8 {
+    ws.sheet_data
+        .rows
+        .iter()
+        .find(|r| r.r == row)
+        .and_then(|r| r.outline_level)
+        .unwrap_or(0)
+}
+
 /// Set the outline (grouping) level of a row.
 ///
 /// Valid range: `0..=7` (Excel supports up to 7 outline levels).
@@ -584,5 +608,59 @@ mod tests {
         let mut ws = WorksheetXml::default();
         let result = set_row_outline_level(&mut ws, 0, 1);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_get_row_visible_default_is_true() {
+        let ws = sample_ws();
+        assert!(get_row_visible(&ws, 1));
+    }
+
+    #[test]
+    fn test_get_row_visible_nonexistent_row_is_true() {
+        let ws = WorksheetXml::default();
+        assert!(get_row_visible(&ws, 99));
+    }
+
+    #[test]
+    fn test_get_row_visible_after_hide() {
+        let mut ws = sample_ws();
+        set_row_visible(&mut ws, 1, false).unwrap();
+        assert!(!get_row_visible(&ws, 1));
+    }
+
+    #[test]
+    fn test_get_row_visible_after_hide_then_show() {
+        let mut ws = sample_ws();
+        set_row_visible(&mut ws, 1, false).unwrap();
+        set_row_visible(&mut ws, 1, true).unwrap();
+        assert!(get_row_visible(&ws, 1));
+    }
+
+    #[test]
+    fn test_get_row_outline_level_default_is_zero() {
+        let ws = sample_ws();
+        assert_eq!(get_row_outline_level(&ws, 1), 0);
+    }
+
+    #[test]
+    fn test_get_row_outline_level_nonexistent_row() {
+        let ws = WorksheetXml::default();
+        assert_eq!(get_row_outline_level(&ws, 99), 0);
+    }
+
+    #[test]
+    fn test_get_row_outline_level_after_set() {
+        let mut ws = sample_ws();
+        set_row_outline_level(&mut ws, 1, 5).unwrap();
+        assert_eq!(get_row_outline_level(&ws, 1), 5);
+    }
+
+    #[test]
+    fn test_get_row_outline_level_after_clear() {
+        let mut ws = sample_ws();
+        set_row_outline_level(&mut ws, 1, 3).unwrap();
+        set_row_outline_level(&mut ws, 1, 0).unwrap();
+        assert_eq!(get_row_outline_level(&ws, 1), 0);
     }
 }

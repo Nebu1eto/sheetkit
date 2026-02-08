@@ -16,6 +16,9 @@ pub struct WorksheetXml {
     #[serde(rename = "@xmlns:r")]
     pub xmlns_r: String,
 
+    #[serde(rename = "sheetPr", skip_serializing_if = "Option::is_none")]
+    pub sheet_pr: Option<SheetPr>,
+
     #[serde(rename = "dimension", skip_serializing_if = "Option::is_none")]
     pub dimension: Option<Dimension>,
 
@@ -30,6 +33,9 @@ pub struct WorksheetXml {
 
     #[serde(rename = "sheetData")]
     pub sheet_data: SheetData,
+
+    #[serde(rename = "sheetProtection", skip_serializing_if = "Option::is_none")]
+    pub sheet_protection: Option<SheetProtection>,
 
     #[serde(rename = "autoFilter", skip_serializing_if = "Option::is_none")]
     pub auto_filter: Option<AutoFilter>,
@@ -96,6 +102,45 @@ pub struct Selection {
     pub sqref: Option<String>,
 }
 
+/// Sheet properties.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct SheetPr {
+    #[serde(rename = "@codeName", skip_serializing_if = "Option::is_none")]
+    pub code_name: Option<String>,
+
+    #[serde(rename = "@filterMode", skip_serializing_if = "Option::is_none")]
+    pub filter_mode: Option<bool>,
+
+    #[serde(rename = "tabColor", skip_serializing_if = "Option::is_none")]
+    pub tab_color: Option<TabColor>,
+
+    #[serde(rename = "outlinePr", skip_serializing_if = "Option::is_none")]
+    pub outline_pr: Option<OutlinePr>,
+}
+
+/// Tab color specification.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TabColor {
+    #[serde(rename = "@rgb", skip_serializing_if = "Option::is_none")]
+    pub rgb: Option<String>,
+
+    #[serde(rename = "@theme", skip_serializing_if = "Option::is_none")]
+    pub theme: Option<u32>,
+
+    #[serde(rename = "@indexed", skip_serializing_if = "Option::is_none")]
+    pub indexed: Option<u32>,
+}
+
+/// Outline properties for grouping.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct OutlinePr {
+    #[serde(rename = "@summaryBelow", skip_serializing_if = "Option::is_none")]
+    pub summary_below: Option<bool>,
+
+    #[serde(rename = "@summaryRight", skip_serializing_if = "Option::is_none")]
+    pub summary_right: Option<bool>,
+}
+
 /// Sheet format properties.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SheetFormatPr {
@@ -104,6 +149,73 @@ pub struct SheetFormatPr {
 
     #[serde(rename = "@defaultColWidth", skip_serializing_if = "Option::is_none")]
     pub default_col_width: Option<f64>,
+
+    #[serde(rename = "@customHeight", skip_serializing_if = "Option::is_none")]
+    pub custom_height: Option<bool>,
+
+    #[serde(rename = "@outlineLevelRow", skip_serializing_if = "Option::is_none")]
+    pub outline_level_row: Option<u8>,
+
+    #[serde(rename = "@outlineLevelCol", skip_serializing_if = "Option::is_none")]
+    pub outline_level_col: Option<u8>,
+}
+
+/// Sheet protection settings.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct SheetProtection {
+    #[serde(rename = "@password", skip_serializing_if = "Option::is_none")]
+    pub password: Option<String>,
+
+    #[serde(rename = "@sheet", skip_serializing_if = "Option::is_none")]
+    pub sheet: Option<bool>,
+
+    #[serde(rename = "@objects", skip_serializing_if = "Option::is_none")]
+    pub objects: Option<bool>,
+
+    #[serde(rename = "@scenarios", skip_serializing_if = "Option::is_none")]
+    pub scenarios: Option<bool>,
+
+    #[serde(rename = "@selectLockedCells", skip_serializing_if = "Option::is_none")]
+    pub select_locked_cells: Option<bool>,
+
+    #[serde(
+        rename = "@selectUnlockedCells",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub select_unlocked_cells: Option<bool>,
+
+    #[serde(rename = "@formatCells", skip_serializing_if = "Option::is_none")]
+    pub format_cells: Option<bool>,
+
+    #[serde(rename = "@formatColumns", skip_serializing_if = "Option::is_none")]
+    pub format_columns: Option<bool>,
+
+    #[serde(rename = "@formatRows", skip_serializing_if = "Option::is_none")]
+    pub format_rows: Option<bool>,
+
+    #[serde(rename = "@insertColumns", skip_serializing_if = "Option::is_none")]
+    pub insert_columns: Option<bool>,
+
+    #[serde(rename = "@insertRows", skip_serializing_if = "Option::is_none")]
+    pub insert_rows: Option<bool>,
+
+    #[serde(rename = "@insertHyperlinks", skip_serializing_if = "Option::is_none")]
+    pub insert_hyperlinks: Option<bool>,
+
+    #[serde(rename = "@deleteColumns", skip_serializing_if = "Option::is_none")]
+    pub delete_columns: Option<bool>,
+
+    #[serde(rename = "@deleteRows", skip_serializing_if = "Option::is_none")]
+    pub delete_rows: Option<bool>,
+
+    #[serde(rename = "@sort", skip_serializing_if = "Option::is_none")]
+    pub sort: Option<bool>,
+
+    #[serde(rename = "@autoFilter", skip_serializing_if = "Option::is_none")]
+    pub auto_filter: Option<bool>,
+
+    #[serde(rename = "@pivotTables", skip_serializing_if = "Option::is_none")]
+    pub pivot_tables: Option<bool>,
 }
 
 /// Columns container.
@@ -341,6 +453,9 @@ pub struct Hyperlink {
 
     #[serde(rename = "@display", skip_serializing_if = "Option::is_none")]
     pub display: Option<String>,
+
+    #[serde(rename = "@tooltip", skip_serializing_if = "Option::is_none")]
+    pub tooltip: Option<String>,
 }
 
 /// Page margins.
@@ -411,11 +526,13 @@ impl Default for WorksheetXml {
         Self {
             xmlns: namespaces::SPREADSHEET_ML.to_string(),
             xmlns_r: namespaces::RELATIONSHIPS.to_string(),
+            sheet_pr: None,
             dimension: None,
             sheet_views: None,
             sheet_format_pr: None,
             cols: None,
             sheet_data: SheetData { rows: vec![] },
+            sheet_protection: None,
             auto_filter: None,
             merge_cells: None,
             data_validations: None,
@@ -443,6 +560,8 @@ mod tests {
         assert!(ws.cols.is_none());
         assert!(ws.merge_cells.is_none());
         assert!(ws.page_margins.is_none());
+        assert!(ws.sheet_pr.is_none());
+        assert!(ws.sheet_protection.is_none());
     }
 
     #[test]
@@ -658,5 +777,61 @@ mod tests {
         assert_eq!(cols.cols[0].min, 1);
         assert_eq!(cols.cols[0].width, Some(15.0));
         assert_eq!(cols.cols[0].custom_width, Some(true));
+    }
+
+    #[test]
+    fn test_sheet_protection_roundtrip() {
+        let prot = SheetProtection {
+            password: Some("ABCD".to_string()),
+            sheet: Some(true),
+            objects: Some(true),
+            scenarios: Some(true),
+            format_cells: Some(false),
+            ..SheetProtection::default()
+        };
+        let xml = quick_xml::se::to_string(&prot).unwrap();
+        let parsed: SheetProtection = quick_xml::de::from_str(&xml).unwrap();
+        assert_eq!(parsed.password, Some("ABCD".to_string()));
+        assert_eq!(parsed.sheet, Some(true));
+        assert_eq!(parsed.objects, Some(true));
+        assert_eq!(parsed.scenarios, Some(true));
+        assert_eq!(parsed.format_cells, Some(false));
+        assert!(parsed.sort.is_none());
+    }
+
+    #[test]
+    fn test_sheet_pr_roundtrip() {
+        let pr = SheetPr {
+            code_name: Some("Sheet1".to_string()),
+            tab_color: Some(TabColor {
+                rgb: Some("FF0000".to_string()),
+                theme: None,
+                indexed: None,
+            }),
+            ..SheetPr::default()
+        };
+        let xml = quick_xml::se::to_string(&pr).unwrap();
+        let parsed: SheetPr = quick_xml::de::from_str(&xml).unwrap();
+        assert_eq!(parsed.code_name, Some("Sheet1".to_string()));
+        assert!(parsed.tab_color.is_some());
+        assert_eq!(parsed.tab_color.unwrap().rgb, Some("FF0000".to_string()));
+    }
+
+    #[test]
+    fn test_sheet_format_pr_extended_fields() {
+        let fmt = SheetFormatPr {
+            default_row_height: 15.0,
+            default_col_width: Some(10.0),
+            custom_height: Some(true),
+            outline_level_row: Some(2),
+            outline_level_col: Some(1),
+        };
+        let xml = quick_xml::se::to_string(&fmt).unwrap();
+        let parsed: SheetFormatPr = quick_xml::de::from_str(&xml).unwrap();
+        assert_eq!(parsed.default_row_height, 15.0);
+        assert_eq!(parsed.default_col_width, Some(10.0));
+        assert_eq!(parsed.custom_height, Some(true));
+        assert_eq!(parsed.outline_level_row, Some(2));
+        assert_eq!(parsed.outline_level_col, Some(1));
     }
 }

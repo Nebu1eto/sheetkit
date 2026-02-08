@@ -18,6 +18,7 @@ pub use sheetkit_core::workbook::Workbook;
 pub use sheetkit_core::cell::CellValue;
 pub use sheetkit_core::chart::{ChartConfig, ChartSeries, ChartType};
 pub use sheetkit_core::comment::CommentConfig;
+pub use sheetkit_core::hyperlink::{HyperlinkInfo, HyperlinkType};
 pub use sheetkit_core::image::{ImageConfig, ImageFormat};
 pub use sheetkit_core::style::{
     AlignmentStyle, BorderLineStyle, BorderSideStyle, BorderStyle, FillStyle, FontStyle,
