@@ -19,8 +19,6 @@ use sheetkit_core::validation::{
     DataValidationConfig, ErrorStyle, ValidationOperator, ValidationType,
 };
 
-// ─── JS type structs ────────────────────────────────────────────────
-
 #[napi(object)]
 pub struct JsFontStyle {
     pub name: Option<String>,
@@ -162,8 +160,6 @@ pub struct JsWorkbookProtectionConfig {
     pub lock_revision: Option<bool>,
 }
 
-// ─── Helper functions ───────────────────────────────────────────────
-
 fn js_to_cell_value(value: JsUnknown) -> Result<CellValue> {
     match value.get_type()? {
         ValueType::Null | ValueType::Undefined => Ok(CellValue::Empty),
@@ -193,8 +189,6 @@ fn cell_value_to_js(env: Env, value: CellValue) -> Result<JsUnknown> {
         CellValue::Error(e) => env.create_string(&e).map(|v| v.into_unknown()),
     }
 }
-
-// Style helpers
 
 fn parse_style_color(s: &str) -> Option<StyleColor> {
     if s.starts_with('#') && s.len() == 7 {
@@ -321,8 +315,6 @@ fn js_style_to_core(js: &JsStyle) -> Style {
     }
 }
 
-// Chart/image helpers
-
 fn parse_chart_type(s: &str) -> ChartType {
     match s.to_lowercase().as_str() {
         "col" => ChartType::Col,
@@ -345,8 +337,6 @@ fn parse_image_format(s: &str) -> Result<ImageFormat> {
         _ => Err(Error::from_reason(format!("unknown image format: {s}"))),
     }
 }
-
-// Validation helpers
 
 fn parse_validation_type(s: &str) -> ValidationType {
     match s.to_lowercase().as_str() {
@@ -435,8 +425,6 @@ fn core_validation_to_js(v: &DataValidationConfig) -> JsDataValidationConfig {
     }
 }
 
-// Doc props helpers
-
 fn js_doc_props_to_core(js: &JsDocProperties) -> DocProperties {
     DocProperties {
         title: js.title.clone(),
@@ -491,8 +479,6 @@ fn core_app_props_to_js(props: &AppProperties) -> JsAppProperties {
     }
 }
 
-// ─── Workbook ───────────────────────────────────────────────────────
-
 /// Excel workbook for reading and writing .xlsx files.
 #[napi]
 pub struct Workbook {
@@ -507,8 +493,6 @@ impl Default for Workbook {
 
 #[napi]
 impl Workbook {
-    // ── Phase 1: Basic I/O ──────────────────────────────────────────
-
     /// Create a new empty workbook with a single sheet named "Sheet1".
     #[napi(constructor)]
     pub fn new() -> Self {
@@ -543,8 +527,6 @@ impl Workbook {
             .collect()
     }
 
-    // ── Phase 2: Cell Operations ────────────────────────────────────
-
     /// Get the value of a cell. Returns string, number, boolean, or null.
     #[napi(ts_return_type = "string | number | boolean | null")]
     pub fn get_cell_value(&self, env: Env, sheet: String, cell: String) -> Result<JsUnknown> {
@@ -563,8 +545,6 @@ impl Workbook {
             .set_cell_value(&sheet, &cell, cell_value)
             .map_err(|e| Error::from_reason(e.to_string()))
     }
-
-    // ── Phase 5: Sheet Management ───────────────────────────────────
 
     /// Create a new empty sheet. Returns the 0-based sheet index.
     #[napi]
@@ -620,8 +600,6 @@ impl Workbook {
             .map_err(|e| Error::from_reason(e.to_string()))
     }
 
-    // ── Phase 3: Row Operations ─────────────────────────────────────
-
     /// Insert empty rows starting at the given 1-based row number.
     #[napi]
     pub fn insert_rows(&mut self, sheet: String, start_row: u32, count: u32) -> Result<()> {
@@ -670,8 +648,6 @@ impl Workbook {
             .map_err(|e| Error::from_reason(e.to_string()))
     }
 
-    // ── Phase 3: Column Operations ──────────────────────────────────
-
     /// Set the width of a column (e.g., "A", "B", "AA").
     #[napi]
     pub fn set_col_width(&mut self, sheet: String, col: String, width: f64) -> Result<()> {
@@ -712,8 +688,6 @@ impl Workbook {
             .map_err(|e| Error::from_reason(e.to_string()))
     }
 
-    // ── Phase 4: Style ──────────────────────────────────────────────
-
     /// Add a style definition. Returns the style ID for use with setCellStyle.
     #[napi]
     pub fn add_style(&mut self, style: JsStyle) -> Result<u32> {
@@ -738,8 +712,6 @@ impl Workbook {
             .set_cell_style(&sheet, &cell, style_id)
             .map_err(|e| Error::from_reason(e.to_string()))
     }
-
-    // ── Phase 7: Charts ─────────────────────────────────────────────
 
     /// Add a chart to a sheet.
     #[napi]
@@ -769,8 +741,6 @@ impl Workbook {
             .map_err(|e| Error::from_reason(e.to_string()))
     }
 
-    // ── Phase 7: Images ─────────────────────────────────────────────
-
     /// Add an image to a sheet.
     #[napi]
     pub fn add_image(&mut self, sheet: String, config: JsImageConfig) -> Result<()> {
@@ -785,8 +755,6 @@ impl Workbook {
             .add_image(&sheet, &core_config)
             .map_err(|e| Error::from_reason(e.to_string()))
     }
-
-    // ── Phase 8: Data Validation ────────────────────────────────────
 
     /// Add a data validation rule to a sheet.
     #[napi]
@@ -839,8 +807,6 @@ impl Workbook {
             .map_err(|e| Error::from_reason(e.to_string()))
     }
 
-    // ── Phase 8: Comments ───────────────────────────────────────────
-
     /// Add a comment to a cell.
     #[napi]
     pub fn add_comment(&mut self, sheet: String, config: JsCommentConfig) -> Result<()> {
@@ -879,8 +845,6 @@ impl Workbook {
             .map_err(|e| Error::from_reason(e.to_string()))
     }
 
-    // ── Phase 8: Auto-filter ────────────────────────────────────────
-
     /// Set an auto-filter on a sheet.
     #[napi]
     pub fn set_auto_filter(&mut self, sheet: String, range: String) -> Result<()> {
@@ -896,8 +860,6 @@ impl Workbook {
             .remove_auto_filter(&sheet)
             .map_err(|e| Error::from_reason(e.to_string()))
     }
-
-    // ── Phase 9: StreamWriter ───────────────────────────────────────
 
     /// Create a new stream writer for a new sheet.
     #[napi]
@@ -924,8 +886,6 @@ impl Workbook {
             .map_err(|e| Error::from_reason(e.to_string()))?;
         Ok(index as u32)
     }
-
-    // ── Phase 10: Document Properties ───────────────────────────────
 
     /// Set core document properties (title, creator, etc.).
     #[napi]
@@ -998,8 +958,6 @@ impl Workbook {
         self.inner.delete_custom_property(&name)
     }
 
-    // ── Phase 10: Workbook Protection ───────────────────────────────
-
     /// Protect the workbook structure/windows with optional password.
     #[napi]
     pub fn protect_workbook(&mut self, config: JsWorkbookProtectionConfig) {
@@ -1023,8 +981,6 @@ impl Workbook {
         self.inner.is_workbook_protected()
     }
 }
-
-// ─── StreamWriter ───────────────────────────────────────────────────
 
 /// Forward-only streaming writer for large sheets.
 #[derive(Default)]

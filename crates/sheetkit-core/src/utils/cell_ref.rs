@@ -163,15 +163,9 @@ pub fn coordinates_to_cell_name(col: u32, row: u32) -> Result<String> {
     Ok(format!("{col_name}{row}"))
 }
 
-// =========================================================================
-// Tests
-// =========================================================================
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ----- column_name_to_number -----------------------------------------
 
     #[test]
     fn test_column_name_a() {
@@ -224,8 +218,6 @@ mod tests {
         assert!(column_name_to_number("A1").is_err());
     }
 
-    // ----- column_number_to_name -----------------------------------------
-
     #[test]
     fn test_column_number_1() {
         assert_eq!(column_number_to_name(1).unwrap(), "A");
@@ -266,8 +258,6 @@ mod tests {
         assert!(column_number_to_name(16385).is_err());
     }
 
-    // ----- roundtrip column name <-> number ------------------------------
-
     #[test]
     fn test_column_roundtrip_all() {
         for n in 1..=MAX_COLUMNS {
@@ -276,8 +266,6 @@ mod tests {
             assert_eq!(n, back, "roundtrip failed for column {n} (name={name})");
         }
     }
-
-    // ----- cell_name_to_coordinates --------------------------------------
 
     #[test]
     fn test_cell_a1() {
@@ -348,8 +336,6 @@ mod tests {
         assert!(cell_name_to_coordinates("XFE1").is_err());
     }
 
-    // ----- coordinates_to_cell_name --------------------------------------
-
     #[test]
     fn test_coords_1_1() {
         assert_eq!(coordinates_to_cell_name(1, 1).unwrap(), "A1");
@@ -387,8 +373,6 @@ mod tests {
     fn test_coords_row_too_large_err() {
         assert!(coordinates_to_cell_name(1, 1_048_577).is_err());
     }
-
-    // ----- roundtrip cell name <-> coordinates ---------------------------
 
     #[test]
     fn test_cell_roundtrip() {

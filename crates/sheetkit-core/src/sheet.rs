@@ -11,10 +11,6 @@ use sheetkit_xml::worksheet::WorksheetXml;
 use crate::error::{Error, Result};
 use crate::utils::constants::{MAX_SHEET_NAME_LENGTH, SHEET_NAME_INVALID_CHARS};
 
-// ---------------------------------------------------------------------------
-// Validation
-// ---------------------------------------------------------------------------
-
 /// Validate a sheet name according to Excel rules.
 ///
 /// A valid sheet name must:
@@ -49,10 +45,6 @@ pub fn validate_sheet_name(name: &str) -> Result<()> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// ID generation helpers
-// ---------------------------------------------------------------------------
-
 /// Generate the next available rId for workbook relationships.
 ///
 /// Scans existing relationship IDs of the form `rIdN` and returns `rId{max+1}`.
@@ -78,10 +70,6 @@ pub fn next_sheet_id(existing_sheets: &[SheetEntry]) -> u32 {
         + 1
 }
 
-// ---------------------------------------------------------------------------
-// Sheet operations (operate on workbook internals)
-// ---------------------------------------------------------------------------
-
 /// Find the index (0-based) of a sheet by name.
 pub fn find_sheet_index(worksheets: &[(String, WorksheetXml)], name: &str) -> Option<usize> {
     worksheets.iter().position(|(n, _)| n == name)
@@ -101,7 +89,6 @@ pub fn add_sheet(
 ) -> Result<usize> {
     validate_sheet_name(name)?;
 
-    // Check for duplicate name
     if worksheets.iter().any(|(n, _)| n == name) {
         return Err(Error::SheetAlreadyExists {
             name: name.to_string(),
@@ -113,7 +100,6 @@ pub fn add_sheet(
     let sheet_number = worksheets.len() + 1;
     let target = format!("worksheets/sheet{}.xml", sheet_number);
 
-    // Add SheetEntry to workbook XML
     workbook_xml.sheets.sheets.push(SheetEntry {
         name: name.to_string(),
         sheet_id,
@@ -121,7 +107,6 @@ pub fn add_sheet(
         r_id: rid.clone(),
     });
 
-    // Add Relationship
     workbook_rels.relationships.push(Relationship {
         id: rid,
         rel_type: rel_types::WORKSHEET.to_string(),
@@ -129,13 +114,11 @@ pub fn add_sheet(
         target_mode: None,
     });
 
-    // Add ContentType override
     content_types.overrides.push(ContentTypeOverride {
         part_name: format!("/xl/{}", target),
         content_type: mime_types::WORKSHEET.to_string(),
     });
 
-    // Add to worksheets vec
     worksheets.push((name.to_string(), worksheet_data));
 
     Ok(worksheets.len() - 1)
@@ -161,22 +144,13 @@ pub fn delete_sheet(
         ));
     }
 
-    // Get the rId before removing
     let r_id = workbook_xml.sheets.sheets[idx].r_id.clone();
 
-    // Remove from worksheets vec
     worksheets.remove(idx);
-
-    // Remove from workbook XML sheets
     workbook_xml.sheets.sheets.remove(idx);
-
-    // Remove matching relationship
     workbook_rels.relationships.retain(|r| r.id != r_id);
 
-    // Rebuild content type overrides for worksheets to match new indices
     rebuild_content_type_overrides(content_types, worksheets.len());
-
-    // Rebuild relationship targets to match new worksheet indices
     rebuild_worksheet_relationships(workbook_xml, workbook_rels);
 
     Ok(())
@@ -195,17 +169,13 @@ pub fn rename_sheet(
         name: old_name.to_string(),
     })?;
 
-    // Check new name doesn't conflict
     if worksheets.iter().any(|(n, _)| n == new_name) {
         return Err(Error::SheetAlreadyExists {
             name: new_name.to_string(),
         });
     }
 
-    // Update in worksheets vec
     worksheets[idx].0 = new_name.to_string();
-
-    // Update in workbook XML
     workbook_xml.sheets.sheets[idx].name = new_name.to_string();
 
     Ok(())
@@ -237,10 +207,6 @@ pub fn copy_sheet(
     )
 }
 
-// ---------------------------------------------------------------------------
-// Active sheet helpers
-// ---------------------------------------------------------------------------
-
 /// Get the active sheet index (0-based) from bookViews, defaulting to 0.
 pub fn active_sheet_index(workbook_xml: &WorkbookXml) -> usize {
     workbook_xml
@@ -270,19 +236,13 @@ pub fn set_active_sheet_index(workbook_xml: &mut WorkbookXml, index: u32) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
-
 /// Rebuild content type overrides for worksheets so they match the current
 /// worksheet indices (sheet1.xml, sheet2.xml, ...).
 fn rebuild_content_type_overrides(content_types: &mut ContentTypes, sheet_count: usize) {
-    // Remove all existing worksheet overrides
     content_types
         .overrides
         .retain(|o| o.content_type != mime_types::WORKSHEET);
 
-    // Re-add them with correct indices
     for i in 1..=sheet_count {
         content_types.overrides.push(ContentTypeOverride {
             part_name: format!("/xl/worksheets/sheet{}.xml", i),
@@ -296,7 +256,6 @@ fn rebuild_worksheet_relationships(
     workbook_xml: &mut WorkbookXml,
     workbook_rels: &mut Relationships,
 ) {
-    // Collect the rIds from the sheet entries (which are already in correct order)
     let sheet_rids: Vec<String> = workbook_xml
         .sheets
         .sheets
@@ -304,7 +263,6 @@ fn rebuild_worksheet_relationships(
         .map(|s| s.r_id.clone())
         .collect();
 
-    // Update relationship targets for each sheet
     for (i, rid) in sheet_rids.iter().enumerate() {
         if let Some(rel) = workbook_rels
             .relationships
@@ -316,10 +274,6 @@ fn rebuild_worksheet_relationships(
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -327,8 +281,6 @@ mod tests {
     use sheetkit_xml::relationships;
     use sheetkit_xml::workbook::WorkbookXml;
     use sheetkit_xml::worksheet::WorksheetXml;
-
-    // === Validation tests ===
 
     #[test]
     fn test_validate_empty_name() {
@@ -385,8 +337,6 @@ mod tests {
         assert!(validate_sheet_name("Sheet (2)").is_ok());
     }
 
-    // === ID generation tests ===
-
     #[test]
     fn test_next_rid() {
         let rels = vec![
@@ -435,8 +385,6 @@ mod tests {
         assert_eq!(next_sheet_id(&[]), 1);
     }
 
-    // === Sheet operation tests ===
-
     /// Helper to create default test workbook internals.
     fn test_workbook_parts() -> (
         WorkbookXml,
@@ -471,7 +419,6 @@ mod tests {
         assert_eq!(wb_xml.sheets.sheets.len(), 2);
         assert_eq!(wb_xml.sheets.sheets[1].name, "Sheet2");
 
-        // Verify a new relationship was added
         let ws_rels: Vec<_> = wb_rels
             .relationships
             .iter()
@@ -479,7 +426,6 @@ mod tests {
             .collect();
         assert_eq!(ws_rels.len(), 2);
 
-        // Verify content type override was added
         let ws_overrides: Vec<_> = ct
             .overrides
             .iter()
@@ -528,7 +474,6 @@ mod tests {
     fn test_delete_sheet_basic() {
         let (mut wb_xml, mut wb_rels, mut ct, mut ws) = test_workbook_parts();
 
-        // Add a second sheet first
         add_sheet(
             &mut wb_xml,
             &mut wb_rels,
@@ -541,7 +486,6 @@ mod tests {
 
         assert_eq!(ws.len(), 2);
 
-        // Delete the first sheet
         delete_sheet(&mut wb_xml, &mut wb_rels, &mut ct, &mut ws, "Sheet1").unwrap();
 
         assert_eq!(ws.len(), 1);
@@ -549,7 +493,6 @@ mod tests {
         assert_eq!(wb_xml.sheets.sheets.len(), 1);
         assert_eq!(wb_xml.sheets.sheets[0].name, "Sheet2");
 
-        // Verify worksheet relationships were rebuilt
         let ws_rels: Vec<_> = wb_rels
             .relationships
             .iter()
@@ -557,7 +500,6 @@ mod tests {
             .collect();
         assert_eq!(ws_rels.len(), 1);
 
-        // Verify content type overrides were rebuilt
         let ws_overrides: Vec<_> = ct
             .overrides
             .iter()
@@ -706,7 +648,6 @@ mod tests {
     fn test_multiple_add_delete_consistency() {
         let (mut wb_xml, mut wb_rels, mut ct, mut ws) = test_workbook_parts();
 
-        // Add 3 more sheets
         add_sheet(
             &mut wb_xml,
             &mut wb_rels,
@@ -737,14 +678,12 @@ mod tests {
 
         assert_eq!(ws.len(), 4);
 
-        // Delete "B" (middle sheet)
         delete_sheet(&mut wb_xml, &mut wb_rels, &mut ct, &mut ws, "B").unwrap();
 
         assert_eq!(ws.len(), 3);
         let names: Vec<&str> = ws.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(names, vec!["Sheet1", "A", "C"]);
 
-        // Verify internal consistency
         assert_eq!(wb_xml.sheets.sheets.len(), 3);
         let ws_rels: Vec<_> = wb_rels
             .relationships

@@ -295,10 +295,6 @@ impl Workbook {
             .collect()
     }
 
-    // -----------------------------------------------------------------------
-    // Cell operations
-    // -----------------------------------------------------------------------
-
     /// Get the value of a cell.
     ///
     /// Returns [`CellValue::Empty`] for cells that have no value or do not
@@ -425,10 +421,6 @@ impl Workbook {
         Ok(())
     }
 
-    // -----------------------------------------------------------------------
-    // Sheet management
-    // -----------------------------------------------------------------------
-
     /// Create a new empty sheet with the given name. Returns the 0-based sheet index.
     pub fn new_sheet(&mut self, name: &str) -> Result<usize> {
         crate::sheet::add_sheet(
@@ -499,10 +491,6 @@ impl Workbook {
         Ok(())
     }
 
-    // -----------------------------------------------------------------------
-    // Streaming
-    // -----------------------------------------------------------------------
-
     /// Create a [`StreamWriter`](crate::stream::StreamWriter) for a new sheet.
     ///
     /// The sheet will be added to the workbook when the StreamWriter is applied
@@ -566,10 +554,6 @@ impl Workbook {
         )
     }
 
-    // -----------------------------------------------------------------------
-    // Row operations
-    // -----------------------------------------------------------------------
-
     /// Insert `count` empty rows starting at `start_row` in the named sheet.
     pub fn insert_rows(&mut self, sheet: &str, start_row: u32, count: u32) -> Result<()> {
         let ws = self.worksheet_mut(sheet)?;
@@ -606,10 +590,6 @@ impl Workbook {
         crate::row::set_row_visible(ws, row, visible)
     }
 
-    // -----------------------------------------------------------------------
-    // Column operations
-    // -----------------------------------------------------------------------
-
     /// Set the width of a column.
     pub fn set_col_width(&mut self, sheet: &str, col: &str, width: f64) -> Result<()> {
         let ws = self.worksheet_mut(sheet)?;
@@ -639,10 +619,6 @@ impl Workbook {
         let ws = self.worksheet_mut(sheet)?;
         crate::col::remove_col(ws, col)
     }
-
-    // -----------------------------------------------------------------------
-    // Style operations
-    // -----------------------------------------------------------------------
 
     /// Register a new style and return its ID.
     ///
@@ -747,10 +723,6 @@ impl Workbook {
         Ok(())
     }
 
-    // -----------------------------------------------------------------------
-    // Data validation operations
-    // -----------------------------------------------------------------------
-
     /// Add a data validation rule to a sheet.
     pub fn add_data_validation(
         &mut self,
@@ -773,10 +745,6 @@ impl Workbook {
         crate::validation::remove_validation(ws, sqref)
     }
 
-    // -----------------------------------------------------------------------
-    // Comment operations
-    // -----------------------------------------------------------------------
-
     /// Add a comment to a cell on the given sheet.
     pub fn add_comment(&mut self, sheet: &str, config: &CommentConfig) -> Result<()> {
         let idx = self.sheet_index(sheet)?;
@@ -797,10 +765,6 @@ impl Workbook {
         Ok(())
     }
 
-    // -----------------------------------------------------------------------
-    // Auto-filter operations
-    // -----------------------------------------------------------------------
-
     /// Set an auto-filter on a sheet for the given cell range.
     pub fn set_auto_filter(&mut self, sheet: &str, range: &str) -> Result<()> {
         let ws = self.worksheet_mut(sheet)?;
@@ -813,10 +777,6 @@ impl Workbook {
         crate::table::remove_auto_filter(ws);
         Ok(())
     }
-
-    // -----------------------------------------------------------------------
-    // Chart operations
-    // -----------------------------------------------------------------------
 
     /// Add a chart to a sheet, anchored between two cells.
     ///
@@ -895,10 +855,6 @@ impl Workbook {
         Ok(())
     }
 
-    // -----------------------------------------------------------------------
-    // Image operations
-    // -----------------------------------------------------------------------
-
     /// Add an image to a sheet from bytes.
     ///
     /// The image is anchored to the cell specified in `config.from_cell`.
@@ -964,10 +920,6 @@ impl Workbook {
         Ok(())
     }
 
-    // -----------------------------------------------------------------------
-    // Workbook Protection
-    // -----------------------------------------------------------------------
-
     /// Protect the workbook structure and/or windows.
     pub fn protect_workbook(&mut self, config: WorkbookProtectionConfig) {
         let password_hash = config.password.as_ref().map(|p| {
@@ -1004,10 +956,6 @@ impl Workbook {
     pub fn is_workbook_protected(&self) -> bool {
         self.workbook_xml.workbook_protection.is_some()
     }
-
-    // -----------------------------------------------------------------------
-    // Private helpers
-    // -----------------------------------------------------------------------
 
     /// Ensure a drawing exists for the given sheet index, creating one if needed.
     /// Returns the drawing index.
@@ -1104,10 +1052,6 @@ impl Workbook {
             })
     }
 
-    // -----------------------------------------------------------------------
-    // Private helpers for cell conversion
-    // -----------------------------------------------------------------------
-
     /// Convert an XML Cell to a CellValue.
     fn xml_cell_to_value(&self, xml_cell: &Cell) -> Result<CellValue> {
         // Check for formula first.
@@ -1164,14 +1108,9 @@ impl Workbook {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Document properties
-    // -----------------------------------------------------------------------
-
     /// Set the core document properties (title, author, etc.).
     pub fn set_doc_props(&mut self, props: crate::doc_props::DocProperties) {
         self.core_properties = Some(props.to_core_properties());
-        // Ensure content types includes core properties
         self.ensure_doc_props_content_types();
     }
 
@@ -1186,7 +1125,6 @@ impl Workbook {
     /// Set the application properties (company, app version, etc.).
     pub fn set_app_props(&mut self, props: crate::doc_props::AppProperties) {
         self.app_properties = Some(props.to_extended_properties());
-        // Ensure content types includes extended properties
         self.ensure_doc_props_content_types();
     }
 
@@ -1261,7 +1199,6 @@ impl Workbook {
 
     /// Ensure content types and package rels contain entries for custom properties.
     fn ensure_custom_props_content_types(&mut self) {
-        // Ensure doc props content types exist first
         self.ensure_doc_props_content_types();
 
         let custom_part = "/docProps/custom.xml";
@@ -1277,7 +1214,6 @@ impl Workbook {
             });
         }
 
-        // Ensure package rels contains custom properties relationship
         let has_custom_rel = self
             .package_rels
             .relationships
@@ -1300,10 +1236,6 @@ impl Default for Workbook {
         Self::new()
     }
 }
-
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
 
 /// Serialize a value to XML with the standard XML declaration prepended.
 fn serialize_xml<T: Serialize>(value: &T) -> Result<String> {
@@ -1502,10 +1434,6 @@ mod tests {
         assert!(xml.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"));
         assert!(xml.contains("<Types"));
     }
-
-    // -----------------------------------------------------------------------
-    // Cell operation tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_set_and_get_string_value() {
@@ -1730,10 +1658,6 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
-    // Sheet management tests
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_new_sheet_basic() {
         let mut wb = Workbook::new();
@@ -1856,10 +1780,6 @@ mod tests {
         let wb2 = Workbook::open(&path).unwrap();
         assert_eq!(wb2.sheet_names(), vec!["Overview", "Data", "Summary"]);
     }
-
-    // -----------------------------------------------------------------------
-    // Style operation tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_add_style_returns_id() {
@@ -2047,10 +1967,6 @@ mod tests {
         assert!(align.wrap_text);
     }
 
-    // -----------------------------------------------------------------------
-    // Row operation wrapper tests
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_workbook_insert_rows() {
         let mut wb = Workbook::new();
@@ -2145,10 +2061,6 @@ mod tests {
         assert!(matches!(result.unwrap_err(), Error::SheetNotFound { .. }));
     }
 
-    // -----------------------------------------------------------------------
-    // Column operation wrapper tests
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_workbook_set_and_get_col_width() {
         let mut wb = Workbook::new();
@@ -2225,10 +2137,6 @@ mod tests {
         let result = wb.remove_col("NoSheet", "A");
         assert!(matches!(result.unwrap_err(), Error::SheetNotFound { .. }));
     }
-
-    // -----------------------------------------------------------------------
-    // StreamWriter integration tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_new_stream_writer_validates_name() {
@@ -2319,10 +2227,6 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
-    // Data validation tests
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_workbook_add_data_validation() {
         let mut wb = Workbook::new();
@@ -2378,10 +2282,6 @@ mod tests {
             crate::validation::ValidationType::List
         );
     }
-
-    // -----------------------------------------------------------------------
-    // Comment tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_workbook_add_comment() {
@@ -2479,10 +2379,6 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
-    // Auto-filter tests
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_workbook_set_auto_filter() {
         let mut wb = Workbook::new();
@@ -2524,10 +2420,6 @@ mod tests {
         assert!(ws.auto_filter.is_some());
         assert_eq!(ws.auto_filter.as_ref().unwrap().reference, "A1:C50");
     }
-
-    // -----------------------------------------------------------------------
-    // Chart tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_add_chart_basic() {
@@ -2657,10 +2549,6 @@ mod tests {
             .by_name("xl/drawings/_rels/drawing1.xml.rels")
             .is_ok());
     }
-
-    // -----------------------------------------------------------------------
-    // Image tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_add_image_basic() {
@@ -2930,10 +2818,6 @@ mod tests {
         wb.unprotect_workbook();
         assert!(!wb.is_workbook_protected());
     }
-
-    // -----------------------------------------------------------------------
-    // Document properties tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_set_get_doc_props() {

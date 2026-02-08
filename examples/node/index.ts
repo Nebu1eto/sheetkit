@@ -1,44 +1,44 @@
 import { Workbook } from 'sheetkit';
 
-console.log('=== SheetKit Node.js 예제 ===\n');
+console.log('=== SheetKit Node.js Example ===\n');
 
-// ── Phase 1: 워크북 생성 ──
+// ── Phase 1: Create workbook ──
 const wb = new Workbook();
-console.log('[Phase 1] 새 워크북 생성 완료. 시트:', wb.sheetNames);
+console.log('[Phase 1] New workbook created. Sheets:', wb.sheetNames);
 
-// ── Phase 2: 셀 값 읽기/쓰기 ──
-wb.setCellValue('Sheet1', 'A1', '이름');
-wb.setCellValue('Sheet1', 'B1', '나이');
-wb.setCellValue('Sheet1', 'C1', '활성');
-wb.setCellValue('Sheet1', 'A2', '홍길동');
+// ── Phase 2: Read/write cell values ──
+wb.setCellValue('Sheet1', 'A1', 'Name');
+wb.setCellValue('Sheet1', 'B1', 'Age');
+wb.setCellValue('Sheet1', 'C1', 'Active');
+wb.setCellValue('Sheet1', 'A2', 'John Doe');
 wb.setCellValue('Sheet1', 'B2', 30);
 wb.setCellValue('Sheet1', 'C2', true);
-wb.setCellValue('Sheet1', 'A3', '김철수');
+wb.setCellValue('Sheet1', 'A3', 'Jane Smith');
 wb.setCellValue('Sheet1', 'B3', 25);
 wb.setCellValue('Sheet1', 'C3', false);
 
 const val = wb.getCellValue('Sheet1', 'A1');
-console.log('[Phase 2] A1 셀 값:', val);
+console.log('[Phase 2] A1 cell value:', val);
 
-// ── Phase 5: 시트 관리 ──
-const idx = wb.newSheet('매출데이터');
-console.log(`[Phase 5] '매출데이터' 시트 추가 (인덱스: ${idx})`);
-wb.setSheetName('매출데이터', 'Sales');
-wb.copySheet('Sheet1', 'Sheet1_복사');
+// ── Phase 5: Sheet management ──
+const idx = wb.newSheet('SalesData');
+console.log(`[Phase 5] 'SalesData' sheet added (index: ${idx})`);
+wb.setSheetName('SalesData', 'Sales');
+wb.copySheet('Sheet1', 'Sheet1_Copy');
 wb.setActiveSheet('Sheet1');
-console.log('[Phase 5] 시트 목록:', wb.sheetNames);
+console.log('[Phase 5] Sheet list:', wb.sheetNames);
 
-// ── Phase 3: 행/열 조작 ──
+// ── Phase 3: Row/column operations ──
 wb.setRowHeight('Sheet1', 1, 25);
 wb.setColWidth('Sheet1', 'A', 20);
 wb.setColWidth('Sheet1', 'B', 15);
 wb.setColWidth('Sheet1', 'C', 12);
-wb.insertRows('Sheet1', 1, 1); // 헤더 위에 제목 행 삽입
-wb.setCellValue('Sheet1', 'A1', '직원 목록');
-console.log('[Phase 3] 행/열 크기 조정 및 행 삽입 완료');
+wb.insertRows('Sheet1', 1, 1); // Insert title row above header
+wb.setCellValue('Sheet1', 'A1', 'Employee List');
+console.log('[Phase 3] Row/column sizing and row insertion complete');
 
-// ── Phase 4: 스타일 ──
-// 제목 스타일
+// ── Phase 4: Styles ──
+// Title style
 const titleStyleId = wb.addStyle({
   font: { name: 'Arial', size: 16, bold: true, color: '#FFFFFF' },
   fill: { pattern: 'solid', fgColor: '#4472C4' },
@@ -46,7 +46,7 @@ const titleStyleId = wb.addStyle({
 });
 wb.setCellStyle('Sheet1', 'A1', titleStyleId);
 
-// 헤더 스타일
+// Header style
 const headerStyleId = wb.addStyle({
   font: { bold: true, size: 11, color: '#FFFFFF' },
   fill: { pattern: 'solid', fgColor: '#5B9BD5' },
@@ -58,12 +58,12 @@ const headerStyleId = wb.addStyle({
 wb.setCellStyle('Sheet1', 'A2', headerStyleId);
 wb.setCellStyle('Sheet1', 'B2', headerStyleId);
 wb.setCellStyle('Sheet1', 'C2', headerStyleId);
-console.log('[Phase 4] 스타일 적용 완료 (제목 + 헤더)');
+console.log('[Phase 4] Styles applied (title + header)');
 
-// ── Phase 7: 차트 ──
-// Sales 시트에 차트 데이터
-wb.setCellValue('Sales', 'A1', '분기');
-wb.setCellValue('Sales', 'B1', '매출');
+// ── Phase 7: Chart ──
+// Chart data on Sales sheet
+wb.setCellValue('Sales', 'A1', 'Quarter');
+wb.setCellValue('Sales', 'B1', 'Revenue');
 wb.setCellValue('Sales', 'A2', 'Q1');
 wb.setCellValue('Sales', 'B2', 1500);
 wb.setCellValue('Sales', 'A3', 'Q2');
@@ -75,19 +75,19 @@ wb.setCellValue('Sales', 'B5', 2700);
 
 wb.addChart('Sales', 'D1', 'K15', {
   chartType: 'col',
-  title: '분기별 매출',
+  title: 'Quarterly Revenue',
   series: [
     {
-      name: '매출',
+      name: 'Revenue',
       categories: 'Sales!$A$2:$A$5',
       values: 'Sales!$B$2:$B$5',
     },
   ],
   showLegend: true,
 });
-console.log('[Phase 7] 차트 추가 완료 (Sales 시트)');
+console.log('[Phase 7] Chart added (Sales sheet)');
 
-// ── Phase 7: 이미지 (1x1 PNG placeholder) ──
+// ── Phase 7: Image (1x1 PNG placeholder) ──
 const pngData = Buffer.from([
   0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
   0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
@@ -103,73 +103,73 @@ wb.addImage('Sheet1', {
   widthPx: 64,
   heightPx: 64,
 });
-console.log('[Phase 7] 이미지 추가 완료');
+console.log('[Phase 7] Image added');
 
-// ── Phase 8: 데이터 유효성 검사 ──
+// ── Phase 8: Data validation ──
 wb.addDataValidation('Sales', {
   sqref: 'C2:C5',
   validationType: 'list',
-  formula1: '"달성,미달성,진행중"',
+  formula1: '"Achieved,Not Achieved,In Progress"',
   allowBlank: true,
   showInputMessage: true,
-  promptTitle: '상태 선택',
-  promptMessage: '드롭다운에서 상태를 선택하세요',
+  promptTitle: 'Select Status',
+  promptMessage: 'Select a status from the dropdown',
   showErrorMessage: true,
   errorStyle: 'stop',
-  errorTitle: '오류',
-  errorMessage: '목록에서 선택해주세요',
+  errorTitle: 'Error',
+  errorMessage: 'Please select from the list',
 });
-console.log('[Phase 8] 데이터 유효성 검사 추가 완료');
+console.log('[Phase 8] Data validation added');
 
-// ── Phase 8: 코멘트 ──
+// ── Phase 8: Comment ──
 wb.addComment('Sheet1', {
   cell: 'A1',
-  author: '관리자',
-  text: '이 시트는 직원 목록을 포함합니다.',
+  author: 'Admin',
+  text: 'This sheet contains the employee list.',
 });
-console.log('[Phase 8] 코멘트 추가 완료');
+console.log('[Phase 8] Comment added');
 
-// ── Phase 8: 자동 필터 ──
+// ── Phase 8: Auto filter ──
 wb.setAutoFilter('Sheet1', 'A2:C4');
-console.log('[Phase 8] 자동 필터 설정 완료');
+console.log('[Phase 8] Auto filter set');
 
 // ── Phase 9: StreamWriter ──
-const sw = wb.newStreamWriter('대용량시트');
+const sw = wb.newStreamWriter('LargeSheet');
 sw.setColWidth(1, 15);
 sw.setColWidth(2, 10);
-sw.writeRow(1, ['항목', '값']);
+sw.writeRow(1, ['Item', 'Value']);
 for (let i = 2; i <= 100; i++) {
-  sw.writeRow(i, [`항목_${i - 1}`, i * 10]);
+  sw.writeRow(i, [`Item_${i - 1}`, i * 10]);
 }
 sw.addMergeCell('A1:B1');
 wb.applyStreamWriter(sw);
-console.log('[Phase 9] StreamWriter로 100행 작성 완료');
+console.log('[Phase 9] StreamWriter wrote 100 rows');
 
-// ── Phase 10: 문서 속성 ──
+// ── Phase 10: Document properties ──
 wb.setDocProps({
-  title: 'SheetKit 예제 문서',
+  title: 'SheetKit Example Document',
   creator: 'SheetKit Node.js Example',
-  description: 'SheetKit의 모든 기능을 보여주는 예제 파일',
+  description: 'An example file demonstrating all SheetKit features',
 });
 wb.setAppProps({
   application: 'SheetKit',
   company: 'SheetKit Project',
 });
-wb.setCustomProperty('프로젝트', 'SheetKit');
-wb.setCustomProperty('버전', 1);
-wb.setCustomProperty('릴리즈', false);
-console.log('[Phase 10] 문서 속성 설정 완료');
+wb.setCustomProperty('Project', 'SheetKit');
+wb.setCustomProperty('Version', 1);
+wb.setCustomProperty('Release', false);
+console.log('[Phase 10] Document properties set');
 
-// ── Phase 10: 워크북 보호 ──
+// ── Phase 10: Workbook protection ──
 wb.protectWorkbook({
   password: 'demo',
   lockStructure: true,
   lockWindows: false,
   lockRevision: false,
 });
-console.log('[Phase 10] 워크북 보호 설정 완료');
+console.log('[Phase 10] Workbook protection set');
 
-// ── 저장 ──
+// ── Save ──
 wb.save('output.xlsx');
-console.log('\n✅ output.xlsx 파일이 생성되었습니다!');
-console.log('시트 목록:', wb.sheetNames);
+console.log('\noutput.xlsx has been created!');
+console.log('Sheet list:', wb.sheetNames);

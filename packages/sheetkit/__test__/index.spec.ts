@@ -15,8 +15,6 @@ function cleanup(...files: string[]) {
     }
 }
 
-// ── Phase 1: Basic I/O ─────────────────────────────────────────────
-
 describe('Phase 1 - Basic I/O', () => {
     const out = tmpFile('test-basic.xlsx');
     afterEach(() => cleanup(out));
@@ -38,8 +36,6 @@ describe('Phase 1 - Basic I/O', () => {
         expect(() => Workbook.open('/nonexistent/path.xlsx')).toThrow();
     });
 });
-
-// ── Phase 2: Cell Operations ────────────────────────────────────────
 
 describe('Phase 2 - Cell Operations', () => {
     const out = tmpFile('test-cell.xlsx');
@@ -89,8 +85,6 @@ describe('Phase 2 - Cell Operations', () => {
     });
 });
 
-// ── Phase 5: Sheet Management ───────────────────────────────────────
-
 describe('Phase 5 - Sheet Management', () => {
     it('should create a new sheet', () => {
         const wb = new Workbook();
@@ -135,8 +129,6 @@ describe('Phase 5 - Sheet Management', () => {
     });
 });
 
-// ── Phase 3: Row/Column Operations ──────────────────────────────────
-
 describe('Phase 3 - Row/Column Operations', () => {
     it('should set and get row height', () => {
         const wb = new Workbook();
@@ -171,8 +163,6 @@ describe('Phase 3 - Row/Column Operations', () => {
         expect(wb.getCellValue('Sheet1', 'A2')).toBe('hello');
     });
 });
-
-// ── Phase 4: Style ──────────────────────────────────────────────────
 
 describe('Phase 4 - Style', () => {
     it('should add a style with font and apply to cell', () => {
@@ -221,8 +211,6 @@ describe('Phase 4 - Style', () => {
     });
 });
 
-// ── Phase 7: Charts & Images ────────────────────────────────────────
-
 describe('Phase 7 - Charts & Images', () => {
     const out = tmpFile('test-chart.xlsx');
     afterEach(() => cleanup(out));
@@ -263,8 +251,6 @@ describe('Phase 7 - Charts & Images', () => {
         expect(existsSync(out)).toBe(true);
     });
 });
-
-// ── Phase 8: Comments, Validation, Auto-filter ──────────────────────
 
 describe('Phase 8 - Comments', () => {
     it('should add and get comments', () => {
@@ -329,8 +315,6 @@ describe('Phase 8 - Auto-filter', () => {
     });
 });
 
-// ── Phase 9: StreamWriter ───────────────────────────────────────────
-
 describe('Phase 9 - StreamWriter', () => {
     const out = tmpFile('test-stream.xlsx');
     afterEach(() => cleanup(out));
@@ -361,8 +345,6 @@ describe('Phase 9 - StreamWriter', () => {
         expect(wb2.getCellValue('Data', 'B2')).toBe(100);
     });
 });
-
-// ── Phase 10: Document Properties ───────────────────────────────────
 
 describe('Phase 10 - Document Properties', () => {
     const out = tmpFile('test-docprops.xlsx');
@@ -408,8 +390,6 @@ describe('Phase 10 - Document Properties', () => {
         expect(wb.deleteCustomProperty('myString')).toBe(false);
     });
 });
-
-// ── Phase 10: Workbook Protection ───────────────────────────────────
 
 describe('Phase 10 - Workbook Protection', () => {
     const out = tmpFile('test-protection.xlsx');
