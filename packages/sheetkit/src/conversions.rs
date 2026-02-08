@@ -944,47 +944,75 @@ pub(crate) fn core_cf_rule_to_js(rule: &ConditionalFormatRule) -> JsConditionalF
         ),
     };
 
-    let format = rule.format.as_ref().map(|s| {
-        JsConditionalStyle {
-            font: s.font.as_ref().map(|f| JsFontStyle {
-                name: f.name.clone(),
-                size: f.size,
-                bold: if f.bold { Some(true) } else { None },
-                italic: if f.italic { Some(true) } else { None },
-                underline: if f.underline { Some(true) } else { None },
-                strikethrough: if f.strikethrough { Some(true) } else { None },
-                color: f.color.as_ref().map(|c| match c {
+    let format = rule.format.as_ref().map(|s| JsConditionalStyle {
+        font: s.font.as_ref().map(|f| JsFontStyle {
+            name: f.name.clone(),
+            size: f.size,
+            bold: if f.bold { Some(true) } else { None },
+            italic: if f.italic { Some(true) } else { None },
+            underline: if f.underline { Some(true) } else { None },
+            strikethrough: if f.strikethrough { Some(true) } else { None },
+            color: f.color.as_ref().map(|c| match c {
+                StyleColor::Rgb(rgb) => rgb.clone(),
+                StyleColor::Theme(t) => format!("theme:{t}"),
+                StyleColor::Indexed(i) => format!("indexed:{i}"),
+            }),
+        }),
+        fill: s.fill.as_ref().map(|f| JsFillStyle {
+            pattern: Some(match f.pattern {
+                PatternType::None => "none".to_string(),
+                PatternType::Solid => "solid".to_string(),
+                PatternType::Gray125 => "gray125".to_string(),
+                PatternType::DarkGray => "darkGray".to_string(),
+                PatternType::MediumGray => "mediumGray".to_string(),
+                PatternType::LightGray => "lightGray".to_string(),
+            }),
+            fg_color: f.fg_color.as_ref().map(|c| match c {
+                StyleColor::Rgb(rgb) => rgb.clone(),
+                StyleColor::Theme(t) => format!("theme:{t}"),
+                StyleColor::Indexed(i) => format!("indexed:{i}"),
+            }),
+            bg_color: f.bg_color.as_ref().map(|c| match c {
+                StyleColor::Rgb(rgb) => rgb.clone(),
+                StyleColor::Theme(t) => format!("theme:{t}"),
+                StyleColor::Indexed(i) => format!("indexed:{i}"),
+            }),
+        }),
+        border: s.border.as_ref().map(|b| {
+            let side_to_js = |side: &BorderSideStyle| JsBorderSideStyle {
+                style: Some(match side.style {
+                    BorderLineStyle::Thin => "thin".to_string(),
+                    BorderLineStyle::Medium => "medium".to_string(),
+                    BorderLineStyle::Thick => "thick".to_string(),
+                    BorderLineStyle::Dashed => "dashed".to_string(),
+                    BorderLineStyle::Dotted => "dotted".to_string(),
+                    BorderLineStyle::Double => "double".to_string(),
+                    BorderLineStyle::Hair => "hair".to_string(),
+                    BorderLineStyle::MediumDashed => "mediumDashed".to_string(),
+                    BorderLineStyle::DashDot => "dashDot".to_string(),
+                    BorderLineStyle::MediumDashDot => "mediumDashDot".to_string(),
+                    BorderLineStyle::DashDotDot => "dashDotDot".to_string(),
+                    BorderLineStyle::MediumDashDotDot => "mediumDashDotDot".to_string(),
+                    BorderLineStyle::SlantDashDot => "slantDashDot".to_string(),
+                }),
+                color: side.color.as_ref().map(|c| match c {
                     StyleColor::Rgb(rgb) => rgb.clone(),
                     StyleColor::Theme(t) => format!("theme:{t}"),
                     StyleColor::Indexed(i) => format!("indexed:{i}"),
                 }),
-            }),
-            fill: s.fill.as_ref().map(|f| JsFillStyle {
-                pattern: Some(match f.pattern {
-                    PatternType::None => "none".to_string(),
-                    PatternType::Solid => "solid".to_string(),
-                    PatternType::Gray125 => "gray125".to_string(),
-                    PatternType::DarkGray => "darkGray".to_string(),
-                    PatternType::MediumGray => "mediumGray".to_string(),
-                    PatternType::LightGray => "lightGray".to_string(),
-                }),
-                fg_color: f.fg_color.as_ref().map(|c| match c {
-                    StyleColor::Rgb(rgb) => rgb.clone(),
-                    StyleColor::Theme(t) => format!("theme:{t}"),
-                    StyleColor::Indexed(i) => format!("indexed:{i}"),
-                }),
-                bg_color: f.bg_color.as_ref().map(|c| match c {
-                    StyleColor::Rgb(rgb) => rgb.clone(),
-                    StyleColor::Theme(t) => format!("theme:{t}"),
-                    StyleColor::Indexed(i) => format!("indexed:{i}"),
-                }),
-            }),
-            border: None, // Simplified: border conversion omitted for now
-            custom_num_fmt: s.num_fmt.as_ref().and_then(|nf| match nf {
-                NumFmtStyle::Custom(code) => Some(code.clone()),
-                _ => None,
-            }),
-        }
+            };
+            JsBorderStyle {
+                left: b.left.as_ref().map(&side_to_js),
+                right: b.right.as_ref().map(&side_to_js),
+                top: b.top.as_ref().map(&side_to_js),
+                bottom: b.bottom.as_ref().map(&side_to_js),
+                diagonal: b.diagonal.as_ref().map(&side_to_js),
+            }
+        }),
+        custom_num_fmt: s.num_fmt.as_ref().and_then(|nf| match nf {
+            NumFmtStyle::Custom(code) => Some(code.clone()),
+            _ => None,
+        }),
     });
 
     JsConditionalFormatRule {

@@ -150,10 +150,10 @@ impl StreamWriter {
     pub fn set_col_outline_level(&mut self, col: u32, level: u8) -> Result<()> {
         self.ensure_col_configurable(col)?;
         if level > MAX_OUTLINE_LEVEL {
-            return Err(Error::Internal(format!(
-                "outline level {} exceeds maximum {}",
-                level, MAX_OUTLINE_LEVEL
-            )));
+            return Err(Error::OutlineLevelExceeded {
+                level,
+                max: MAX_OUTLINE_LEVEL,
+            });
         }
         self.get_or_create_col_options(col).outline_level = Some(level);
         Ok(())
@@ -208,11 +208,21 @@ impl StreamWriter {
     }
 
     /// Add a merge cell reference (e.g., "A1:B2").
-    /// Must be called before finish().
+    /// Must be called before finish(). The reference must be a valid range
+    /// in the form "A1:B2".
     pub fn add_merge_cell(&mut self, reference: &str) -> Result<()> {
         if self.finished {
             return Err(Error::StreamAlreadyFinished);
         }
+        // Validate the range format.
+        let parts: Vec<&str> = reference.split(':').collect();
+        if parts.len() != 2 {
+            return Err(Error::InvalidMergeCellReference(reference.to_string()));
+        }
+        cell_name_to_coordinates(parts[0])
+            .map_err(|_| Error::InvalidMergeCellReference(reference.to_string()))?;
+        cell_name_to_coordinates(parts[1])
+            .map_err(|_| Error::InvalidMergeCellReference(reference.to_string()))?;
         self.merge_cells.push(reference.to_string());
         Ok(())
     }
@@ -420,10 +430,10 @@ impl StreamWriter {
             }
             if let Some(level) = opts.outline_level {
                 if level > MAX_OUTLINE_LEVEL {
-                    return Err(Error::Internal(format!(
-                        "outline level {} exceeds maximum {}",
-                        level, MAX_OUTLINE_LEVEL
-                    )));
+                    return Err(Error::OutlineLevelExceeded {
+                        level,
+                        max: MAX_OUTLINE_LEVEL,
+                    });
                 }
             }
         }
@@ -967,6 +977,41 @@ mod tests {
         // The quotes and > should be escaped
         assert!(xml.contains("&gt;"));
         assert!(xml.contains("&quot;"));
+    }
+
+    #[test]
+    fn test_add_merge_cell_invalid_reference() {
+        let mut sw = StreamWriter::new("Sheet1");
+        // Missing colon separator.
+        let result = sw.add_merge_cell("A1B2");
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::InvalidMergeCellReference(_)
+        ));
+    }
+
+    #[test]
+    fn test_add_merge_cell_invalid_cell_name() {
+        let mut sw = StreamWriter::new("Sheet1");
+        // Invalid cell name before colon.
+        let result = sw.add_merge_cell("ZZZ:B2");
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::InvalidMergeCellReference(_)
+        ));
+    }
+
+    #[test]
+    fn test_add_merge_cell_empty_reference() {
+        let mut sw = StreamWriter::new("Sheet1");
+        let result = sw.add_merge_cell("");
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::InvalidMergeCellReference(_)
+        ));
     }
 
     #[test]

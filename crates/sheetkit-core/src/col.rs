@@ -114,9 +114,7 @@ pub fn get_col_visible(ws: &WorksheetXml, col: &str) -> Result<bool> {
 pub fn set_col_outline_level(ws: &mut WorksheetXml, col: &str, level: u8) -> Result<()> {
     let col_num = column_name_to_number(col)?;
     if level > 7 {
-        return Err(Error::Internal(format!(
-            "outline level {level} exceeds maximum 7"
-        )));
+        return Err(Error::OutlineLevelExceeded { level, max: 7 });
     }
 
     let col_entry = find_or_create_col(ws, col_num);
@@ -224,10 +222,7 @@ pub fn remove_col(ws: &mut WorksheetXml, col: &str) -> Result<()> {
                 c.min -= 1;
             }
             if c.max >= col_num {
-                // Only shrink max if it's above the removed column.
-                if c.max > col_num {
-                    c.max -= 1;
-                }
+                c.max -= 1;
             }
         }
 
@@ -558,6 +553,31 @@ mod tests {
 
         // The Col entry for B should be removed.
         assert!(ws.cols.is_none());
+    }
+
+    #[test]
+    fn test_remove_col_shrinks_range_ending_at_removed_column() {
+        // Range B:C (min=2, max=3); removing column C should shrink to B:B (min=2, max=2).
+        let mut ws = WorksheetXml::default();
+        set_col_width(&mut ws, "B", 15.0).unwrap();
+        // Manually extend the col entry to span B:C.
+        ws.cols.as_mut().unwrap().cols[0].max = 3;
+        remove_col(&mut ws, "C").unwrap();
+        let col = &ws.cols.as_ref().unwrap().cols[0];
+        assert_eq!(col.min, 2);
+        assert_eq!(col.max, 2);
+    }
+
+    #[test]
+    fn test_remove_col_shrinks_range_spanning_removed_column() {
+        // Range B:E (min=2, max=5); removing column C should shrink to B:D (min=2, max=4).
+        let mut ws = WorksheetXml::default();
+        set_col_width(&mut ws, "B", 15.0).unwrap();
+        ws.cols.as_mut().unwrap().cols[0].max = 5;
+        remove_col(&mut ws, "C").unwrap();
+        let col = &ws.cols.as_ref().unwrap().cols[0];
+        assert_eq!(col.min, 2);
+        assert_eq!(col.max, 4);
     }
 
     #[test]
