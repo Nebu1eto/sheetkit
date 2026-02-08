@@ -42,10 +42,7 @@ pub(crate) fn resolve_relationship_target(source_part: &str, target: &str) -> St
 /// Get the `.rels` part path for a package part.
 pub(crate) fn relationship_part_path(part_path: &str) -> String {
     let normalized = part_path.trim_start_matches('/');
-    let (dir, file) = normalized
-        .rsplit_once('/')
-        .map(|(d, f)| (d, f))
-        .unwrap_or(("", normalized));
+    let (dir, file) = normalized.rsplit_once('/').unwrap_or(("", normalized));
     if dir.is_empty() {
         format!("_rels/{file}.rels")
     } else {

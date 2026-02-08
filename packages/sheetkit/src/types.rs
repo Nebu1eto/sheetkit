@@ -394,6 +394,7 @@ pub struct JsPivotTableInfo {
 }
 
 #[napi(object)]
+#[allow(dead_code)]
 pub struct JsSparklineConfig {
     pub data_range: String,
     pub location: String,

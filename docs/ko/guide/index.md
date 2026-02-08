@@ -90,7 +90,7 @@ import { Workbook } from 'sheetkit';
 
 const wb = new Workbook();
 wb.setCellValue('Sheet1', 'A1', 'Hello');
-wb.save('output.xlsx');
+await wb.save('output.xlsx');
 ```
 
 ---

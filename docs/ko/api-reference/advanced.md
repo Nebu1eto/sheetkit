@@ -768,6 +768,8 @@ wb.addPivotTable({
 });
 ```
 
+> Node.js에서 `data[].function`은 지원되는 집계 함수(`sum`, `count`, `average`, `max`, `min`, `product`, `countNums`, `stdDev`, `stdDevP`, `var`, `varP`)만 허용되며, 지원되지 않는 값은 오류를 반환한다.
+
 ### `get_pivot_tables()` / `getPivotTables()`
 
 워크북의 모든 피벗 테이블 정보를 반환한다.
@@ -916,7 +918,7 @@ for (let i = 2; i <= 10000; i++) {
 
 // Apply to workbook
 const sheetIndex: number = wb.applyStreamWriter(sw);
-wb.save("large_data.xlsx");
+await wb.save("large_data.xlsx");
 ```
 
 ### StreamWriter API

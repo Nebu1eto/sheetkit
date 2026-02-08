@@ -733,6 +733,8 @@ wb.addPivotTable({
 });
 ```
 
+> Note (Node.js): each `data[].function` must be a supported aggregate (`sum`, `count`, `average`, `max`, `min`, `product`, `countNums`, `stdDev`, `stdDevP`, `var`, `varP`). Unknown values return an error.
+
 ### `get_pivot_tables` / `getPivotTables`
 
 Get all pivot tables in the workbook.
@@ -867,7 +869,7 @@ for (let i = 2; i <= 1000; i++) {
 
 // Apply to workbook
 const sheetIndex = wb.applyStreamWriter(sw);
-wb.save("large_output.xlsx");
+await wb.save("large_output.xlsx");
 ```
 
 ### StreamWriter API

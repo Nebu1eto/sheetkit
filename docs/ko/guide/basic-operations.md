@@ -70,10 +70,10 @@ const val = wb.getCellValue('Sheet1', 'A1');
 console.log('A1 =', val);
 
 // 파일로 저장
-wb.save('output.xlsx');
+await wb.save('output.xlsx');
 
 // 기존 파일 열기
-const wb2 = Workbook.open('output.xlsx');
+const wb2 = await Workbook.open('output.xlsx');
 console.log('Sheets:', wb2.sheetNames);
 ```
 
@@ -112,10 +112,10 @@ import { Workbook } from 'sheetkit';
 const wb = new Workbook();
 
 // 기존 .xlsx 파일 열기
-const wb2 = Workbook.open('input.xlsx');
+const wb2 = await Workbook.open('input.xlsx');
 
 // .xlsx 파일로 저장
-wb.save('output.xlsx');
+await wb.save('output.xlsx');
 
 // 모든 시트 이름 조회
 const names: string[] = wb.sheetNames;

@@ -70,10 +70,10 @@ const val = wb.getCellValue('Sheet1', 'A1');
 console.log('A1 =', val);
 
 // Save to file
-wb.save('output.xlsx');
+await wb.save('output.xlsx');
 
 // Open an existing file
-const wb2 = Workbook.open('output.xlsx');
+const wb2 = await Workbook.open('output.xlsx');
 console.log('Sheets:', wb2.sheetNames);
 ```
 
@@ -112,10 +112,10 @@ import { Workbook } from 'sheetkit';
 const wb = new Workbook();
 
 // Open an existing .xlsx file
-const wb2 = Workbook.open('input.xlsx');
+const wb2 = await Workbook.open('input.xlsx');
 
 // Save the workbook to a .xlsx file
-wb.save('output.xlsx');
+await wb.save('output.xlsx');
 
 // Get the names of all sheets
 const names: string[] = wb.sheetNames;

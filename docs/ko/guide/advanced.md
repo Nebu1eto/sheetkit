@@ -63,7 +63,7 @@ sw.addMergeCell('A1:B1');
 // 스트림 라이터를 워크북에 적용
 wb.applyStreamWriter(sw);
 
-wb.save('large_file.xlsx');
+await wb.save('large_file.xlsx');
 ```
 
 #### StreamWriter API 요약
@@ -508,7 +508,7 @@ let cols = wb.get_cols("Sheet1")?;
 #### TypeScript
 
 ```typescript
-const wb = Workbook.open('data.xlsx');
+const wb = await Workbook.open('data.xlsx');
 
 const rows = wb.getRows('Sheet1');
 for (const row of rows) {
