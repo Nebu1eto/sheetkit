@@ -1,0 +1,688 @@
+### StreamWriter
+
+StreamWriter는 대용량 시트를 효율적으로 작성하기 위한 순방향 전용 스트리밍 API입니다. 전체 워크시트를 메모리에 올리지 않고 내부 버퍼에 XML을 직접 씁니다.
+
+행은 반드시 오름차순으로 작성해야 합니다. 열 너비는 행을 쓰기 전에 설정해야 합니다.
+
+#### Rust
+
+```rust
+use sheetkit::{CellValue, Workbook};
+
+let mut wb = Workbook::new();
+
+// 새 시트를 위한 스트림 라이터 생성
+let mut sw = wb.new_stream_writer("LargeSheet")?;
+
+// 열 너비 설정 (행 작성 전에 해야 함)
+sw.set_col_width(1, 20.0)?;     // 1번 열 (A)
+sw.set_col_width(2, 15.0)?;     // 2번 열 (B)
+
+// 오름차순으로 행 작성 (1부터 시작)
+sw.write_row(1, &[
+    CellValue::from("Name"),
+    CellValue::from("Score"),
+])?;
+for i in 2..=10_000 {
+    sw.write_row(i, &[
+        CellValue::from(format!("User_{}", i - 1)),
+        CellValue::from(i as f64 * 1.5),
+    ])?;
+}
+
+// 셀 병합 추가 (선택 사항)
+sw.add_merge_cell("A1:B1")?;
+
+// 스트림 라이터를 워크북에 적용
+wb.apply_stream_writer(sw)?;
+
+wb.save("large_file.xlsx")?;
+```
+
+#### TypeScript
+
+```typescript
+const wb = new Workbook();
+
+// 새 시트를 위한 스트림 라이터 생성
+const sw = wb.newStreamWriter('LargeSheet');
+
+// 열 너비 설정 (행 작성 전에 해야 함)
+sw.setColWidth(1, 20);     // 1번 열 (A)
+sw.setColWidth(2, 15);     // 2번 열 (B)
+
+// 오름차순으로 행 작성 (1부터 시작)
+sw.writeRow(1, ['Name', 'Score']);
+for (let i = 2; i <= 10000; i++) {
+    sw.writeRow(i, [`User_${i - 1}`, i * 1.5]);
+}
+
+// 셀 병합 추가 (선택 사항)
+sw.addMergeCell('A1:B1');
+
+// 스트림 라이터를 워크북에 적용
+wb.applyStreamWriter(sw);
+
+wb.save('large_file.xlsx');
+```
+
+#### StreamWriter API 요약
+
+| 메서드                 | 설명                                        |
+|-----------------------|---------------------------------------------|
+| `set_col_width`       | 단일 열 너비 설정 (1부터 시작하는 열 번호)     |
+| `set_col_width_range` | 열 범위의 너비 설정 (Rust 전용)               |
+| `write_row`           | 지정한 행 번호에 값 배열 작성                  |
+| `add_merge_cell`      | 셀 병합 참조 추가 (예: `"A1:C3"`)            |
+
+---
+
+### 문서 속성
+
+문서 메타데이터를 설정하고 읽습니다: 핵심 속성(제목, 작성자 등), 애플리케이션 속성, 사용자 정의 속성.
+
+#### Rust
+
+```rust
+use sheetkit::{AppProperties, CustomPropertyValue, DocProperties, Workbook};
+
+let mut wb = Workbook::new();
+
+// 핵심 문서 속성
+wb.set_doc_props(DocProperties {
+    title: Some("Annual Report".into()),
+    creator: Some("SheetKit".into()),
+    description: Some("Financial data for 2025".into()),
+    ..Default::default()
+});
+let props = wb.get_doc_props();
+
+// 애플리케이션 속성
+wb.set_app_props(AppProperties {
+    application: Some("SheetKit".into()),
+    company: Some("Acme Corp".into()),
+    ..Default::default()
+});
+let app_props = wb.get_app_props();
+
+// 사용자 정의 속성 (문자열, 정수, 실수, 불리언, 날짜시간)
+wb.set_custom_property("Project", CustomPropertyValue::String("SheetKit".into()));
+wb.set_custom_property("Version", CustomPropertyValue::Int(1));
+wb.set_custom_property("Released", CustomPropertyValue::Bool(false));
+
+let val = wb.get_custom_property("Project");
+let deleted = wb.delete_custom_property("Version");
+```
+
+#### TypeScript
+
+```typescript
+// 핵심 문서 속성
+wb.setDocProps({
+    title: 'Annual Report',
+    creator: 'SheetKit',
+    description: 'Financial data for 2025',
+});
+const props = wb.getDocProps();
+
+// 애플리케이션 속성
+wb.setAppProps({
+    application: 'SheetKit',
+    company: 'Acme Corp',
+});
+const appProps = wb.getAppProps();
+
+// 사용자 정의 속성 (문자열, 숫자, 불리언)
+wb.setCustomProperty('Project', 'SheetKit');
+wb.setCustomProperty('Version', 1);
+wb.setCustomProperty('Released', false);
+
+const val = wb.getCustomProperty('Project');       // string | number | boolean | null
+const deleted: boolean = wb.deleteCustomProperty('Version');
+```
+
+#### DocProperties 필드
+
+| 필드                | 타입              | 설명              |
+|--------------------|-------------------|-------------------|
+| `title`            | `Option<String>`  | 문서 제목          |
+| `subject`          | `Option<String>`  | 문서 주제          |
+| `creator`          | `Option<String>`  | 작성자 이름        |
+| `keywords`         | `Option<String>`  | 검색용 키워드       |
+| `description`      | `Option<String>`  | 문서 설명          |
+| `last_modified_by` | `Option<String>`  | 마지막 편집자       |
+| `revision`         | `Option<String>`  | 수정 번호          |
+| `created`          | `Option<String>`  | 생성 일시          |
+| `modified`         | `Option<String>`  | 최종 수정 일시      |
+| `category`         | `Option<String>`  | 분류              |
+| `content_status`   | `Option<String>`  | 콘텐츠 상태        |
+
+#### AppProperties 필드
+
+| 필드            | 타입              | 설명              |
+|----------------|-------------------|-------------------|
+| `application`  | `Option<String>`  | 애플리케이션 이름   |
+| `doc_security` | `Option<u32>`     | 문서 보안 수준      |
+| `company`      | `Option<String>`  | 회사 이름          |
+| `app_version`  | `Option<String>`  | 앱 버전            |
+| `manager`      | `Option<String>`  | 관리자 이름        |
+| `template`     | `Option<String>`  | 템플릿 이름        |
+
+---
+
+### 워크북 보호
+
+워크북 구조를 보호하여 사용자가 시트를 추가, 삭제, 이름 변경하는 것을 방지합니다. 선택적으로 비밀번호를 설정할 수 있습니다 (레거시 Excel 해시 -- 암호학적으로 안전하지 않음).
+
+#### Rust
+
+```rust
+use sheetkit::{Workbook, WorkbookProtectionConfig};
+
+let mut wb = Workbook::new();
+
+// 워크북 보호
+wb.protect_workbook(WorkbookProtectionConfig {
+    password: Some("secret".into()),
+    lock_structure: true,    // 시트 추가/삭제/이름 변경 방지
+    lock_windows: false,     // 창 크기 조정 허용
+    lock_revision: false,    // 수정 내용 추적 변경 허용
+});
+
+// 보호 상태 확인
+let is_protected: bool = wb.is_workbook_protected();
+
+// 보호 해제
+wb.unprotect_workbook();
+```
+
+#### TypeScript
+
+```typescript
+// 워크북 보호
+wb.protectWorkbook({
+    password: 'secret',
+    lockStructure: true,
+    lockWindows: false,
+    lockRevision: false,
+});
+
+// 보호 상태 확인
+const isProtected: boolean = wb.isWorkbookProtected();
+
+// 보호 해제
+wb.unprotectWorkbook();
+```
+
+---
+
+### 셀 병합
+
+여러 셀을 하나로 병합하거나 해제합니다. 병합된 셀의 값은 좌상단 셀에 저장됩니다.
+
+#### Rust
+
+```rust
+let mut wb = Workbook::new();
+
+wb.set_cell_value("Sheet1", "A1", CellValue::String("Header".into()))?;
+wb.merge_cells("Sheet1", "A1", "C1")?;
+
+let merged: Vec<String> = wb.get_merge_cells("Sheet1")?;
+wb.unmerge_cell("Sheet1", "A1:C1")?;
+```
+
+#### TypeScript
+
+```typescript
+const wb = new Workbook();
+
+wb.setCellValue('Sheet1', 'A1', 'Header');
+wb.mergeCells('Sheet1', 'A1', 'C1');
+
+const merged: string[] = wb.getMergeCells('Sheet1');
+wb.unmergeCell('Sheet1', 'A1:C1');
+```
+
+---
+
+### 하이퍼링크
+
+셀에 하이퍼링크를 설정합니다. 외부 URL, 이메일, 내부 시트 참조의 세 가지 유형을 지원합니다.
+
+#### Rust
+
+```rust
+use sheetkit::hyperlink::HyperlinkType;
+
+let mut wb = Workbook::new();
+
+// 외부 URL
+wb.set_cell_hyperlink(
+    "Sheet1", "A1",
+    HyperlinkType::External("https://example.com".into()),
+    Some("Example Site"), Some("Click here"),
+)?;
+
+// 이메일
+wb.set_cell_hyperlink(
+    "Sheet1", "A2",
+    HyperlinkType::Email("mailto:user@example.com".into()),
+    Some("Send email"), None,
+)?;
+
+// 내부 시트 참조
+wb.set_cell_hyperlink(
+    "Sheet1", "A3",
+    HyperlinkType::Internal("Sheet2!A1".into()),
+    None, None,
+)?;
+
+// 조회 및 삭제
+let info = wb.get_cell_hyperlink("Sheet1", "A1")?;
+wb.delete_cell_hyperlink("Sheet1", "A1")?;
+```
+
+#### TypeScript
+
+```typescript
+const wb = new Workbook();
+
+// 외부 URL
+wb.setCellHyperlink('Sheet1', 'A1', {
+    linkType: 'external',
+    target: 'https://example.com',
+    display: 'Example Site',
+    tooltip: 'Click here',
+});
+
+// 이메일
+wb.setCellHyperlink('Sheet1', 'A2', {
+    linkType: 'email',
+    target: 'mailto:user@example.com',
+    display: 'Send email',
+});
+
+// 내부 시트 참조
+wb.setCellHyperlink('Sheet1', 'A3', {
+    linkType: 'internal',
+    target: 'Sheet2!A1',
+});
+
+// 조회 및 삭제
+const info = wb.getCellHyperlink('Sheet1', 'A1');
+wb.deleteCellHyperlink('Sheet1', 'A1');
+```
+
+---
+
+### 조건부 서식
+
+셀 값이나 수식에 따라 자동으로 서식을 적용합니다. 18가지 규칙 유형을 지원합니다.
+
+#### cellIs (셀 값 비교)
+
+##### Rust
+
+```rust
+use sheetkit::conditional::*;
+use sheetkit::style::*;
+
+let mut wb = Workbook::new();
+
+wb.set_conditional_format("Sheet1", "A1:A100", &[
+    ConditionalFormatRule {
+        rule_type: ConditionalFormatType::CellIs {
+            operator: CfOperator::GreaterThan,
+            formula: "90".into(),
+            formula2: None,
+        },
+        format: Some(ConditionalStyle {
+            font: Some(FontStyle { bold: true, color: Some(StyleColor::Rgb("#006100".into())), ..Default::default() }),
+            fill: Some(FillStyle { pattern: PatternType::Solid, fg_color: Some(StyleColor::Rgb("#C6EFCE".into())), bg_color: None }),
+            border: None,
+            num_fmt: None,
+        }),
+        priority: Some(1),
+        stop_if_true: false,
+    },
+])?;
+```
+
+##### TypeScript
+
+```typescript
+wb.setConditionalFormat('Sheet1', 'A1:A100', [
+    {
+        ruleType: 'cellIs',
+        operator: 'greaterThan',
+        formula: '90',
+        format: {
+            font: { bold: true, color: '#006100' },
+            fill: { pattern: 'solid', fgColor: '#C6EFCE' },
+        },
+        priority: 1,
+    },
+]);
+```
+
+#### colorScale (색상 스케일)
+
+```typescript
+wb.setConditionalFormat('Sheet1', 'B1:B50', [
+    {
+        ruleType: 'colorScale',
+        minType: 'min',
+        minColor: 'FFF8696B',
+        midType: 'percentile',
+        midValue: '50',
+        midColor: 'FFFFEB84',
+        maxType: 'max',
+        maxColor: 'FF63BE7B',
+    },
+]);
+```
+
+#### dataBar (데이터 막대)
+
+```typescript
+wb.setConditionalFormat('Sheet1', 'C1:C50', [
+    { ruleType: 'dataBar', barColor: 'FF638EC6', showValue: true },
+]);
+```
+
+#### 조회 및 삭제
+
+```typescript
+const formats = wb.getConditionalFormats('Sheet1');
+wb.deleteConditionalFormat('Sheet1', 'A1:A100');
+```
+
+---
+
+### 틀 고정/분할
+
+특정 행이나 열을 고정하여 스크롤 시에도 항상 보이게 합니다. 셀 참조는 스크롤 가능 영역의 좌상단 셀입니다.
+
+#### Rust
+
+```rust
+let mut wb = Workbook::new();
+
+wb.set_panes("Sheet1", "A2")?;    // 첫 행 고정
+wb.set_panes("Sheet1", "B1")?;    // 첫 열 고정
+wb.set_panes("Sheet1", "B2")?;    // 첫 행 + 첫 열 고정
+
+let pane = wb.get_panes("Sheet1")?;
+wb.unset_panes("Sheet1")?;
+```
+
+#### TypeScript
+
+```typescript
+const wb = new Workbook();
+
+wb.setPanes('Sheet1', 'A2');       // 첫 행 고정
+wb.setPanes('Sheet1', 'B2');       // 첫 행 + 첫 열 고정
+
+const pane = wb.getPanes('Sheet1');
+wb.unsetPanes('Sheet1');
+```
+
+---
+
+### 페이지 레이아웃
+
+인쇄 관련 설정을 다룹니다. 여백, 용지 크기, 방향, 인쇄 옵션, 머리글/바닥글, 페이지 나누기를 포함합니다.
+
+#### Rust
+
+```rust
+use sheetkit::page_layout::*;
+
+let mut wb = Workbook::new();
+
+// 여백 (인치 단위)
+wb.set_page_margins("Sheet1", &PageMarginsConfig {
+    left: 0.7, right: 0.7, top: 0.75, bottom: 0.75, header: 0.3, footer: 0.3,
+})?;
+
+// 페이지 설정
+wb.set_page_setup("Sheet1", Some(Orientation::Landscape), Some(PaperSize::A4), Some(100), None, None)?;
+
+// 머리글/바닥글
+wb.set_header_footer("Sheet1", Some("&CMonthly Report"), Some("&LPage &P of &N"))?;
+
+// 페이지 나누기
+wb.insert_page_break("Sheet1", 20)?;
+```
+
+#### TypeScript
+
+```typescript
+const wb = new Workbook();
+
+// 여백 (인치 단위)
+wb.setPageMargins('Sheet1', {
+    left: 0.7, right: 0.7, top: 0.75, bottom: 0.75, header: 0.3, footer: 0.3,
+});
+
+// 페이지 설정
+wb.setPageSetup('Sheet1', {
+    paperSize: 'a4', orientation: 'landscape', scale: 100,
+});
+
+// 인쇄 옵션
+wb.setPrintOptions('Sheet1', { gridLines: true, horizontalCentered: true });
+
+// 머리글/바닥글
+wb.setHeaderFooter('Sheet1', '&CMonthly Report', '&LPage &P of &N');
+
+// 페이지 나누기
+wb.insertPageBreak('Sheet1', 20);
+```
+
+---
+
+### 행/열 이터레이터
+
+시트의 모든 행 또는 열 데이터를 한 번에 조회합니다. 데이터가 있는 행/열만 포함됩니다.
+
+#### Rust
+
+```rust
+let wb = Workbook::open("data.xlsx")?;
+
+// 모든 행 조회
+let rows = wb.get_rows("Sheet1")?;
+for (row_num, cells) in &rows {
+    for (col, val) in cells {
+        println!("Row {}, Col {}: {:?}", row_num, col, val);
+    }
+}
+
+// 모든 열 조회
+let cols = wb.get_cols("Sheet1")?;
+```
+
+#### TypeScript
+
+```typescript
+const wb = Workbook.open('data.xlsx');
+
+const rows = wb.getRows('Sheet1');
+for (const row of rows) {
+    for (const cell of row.cells) {
+        console.log(`Row ${row.row}, ${cell.column}: ${cell.value}`);
+    }
+}
+
+const cols = wb.getCols('Sheet1');
+```
+
+---
+
+### 행/열 아웃라인 및 스타일
+
+행과 열의 아웃라인(그룹) 수준(0-7)을 설정하고, 행/열 전체에 스타일을 적용합니다.
+
+#### Rust
+
+```rust
+let mut wb = Workbook::new();
+
+// 아웃라인 수준
+wb.set_row_outline_level("Sheet1", 2, 1)?;
+let level: u8 = wb.get_row_outline_level("Sheet1", 2)?;
+
+wb.set_col_outline_level("Sheet1", "B", 2)?;
+let col_level: u8 = wb.get_col_outline_level("Sheet1", "B")?;
+
+// 행/열 스타일
+let style_id = wb.add_style(&style)?;
+wb.set_row_style("Sheet1", 1, style_id)?;
+wb.set_col_style("Sheet1", "A", style_id)?;
+```
+
+#### TypeScript
+
+```typescript
+const wb = new Workbook();
+
+// 아웃라인 수준
+wb.setRowOutlineLevel('Sheet1', 2, 1);
+const level: number = wb.getRowOutlineLevel('Sheet1', 2);
+
+wb.setColOutlineLevel('Sheet1', 'B', 2);
+const colLevel: number = wb.getColOutlineLevel('Sheet1', 'B');
+
+// 행/열 스타일
+const styleId = wb.addStyle({ font: { bold: true } });
+wb.setRowStyle('Sheet1', 1, styleId);
+wb.setColStyle('Sheet1', 'A', styleId);
+```
+
+---
+
+### 수식 계산
+
+셀 수식을 평가합니다. `evaluate_formula`는 단일 수식을 계산하고, `calculate_all`은 워크북의 모든 수식 셀을 의존성 순서대로 재계산합니다. 110개 이상의 함수를 지원합니다 (SUM, VLOOKUP, IF, DATE 등).
+
+#### Rust
+
+```rust
+let mut wb = Workbook::new();
+
+wb.set_cell_value("Sheet1", "A1", CellValue::Number(10.0))?;
+wb.set_cell_value("Sheet1", "A2", CellValue::Number(20.0))?;
+wb.set_cell_value("Sheet1", "A3", CellValue::Formula {
+    expr: "SUM(A1:A2)".into(),
+    result: None,
+})?;
+
+let result = wb.evaluate_formula("Sheet1", "SUM(A1:A2)")?;
+wb.calculate_all()?;
+```
+
+#### TypeScript
+
+```typescript
+const wb = new Workbook();
+
+wb.setCellValue('Sheet1', 'A1', 10);
+wb.setCellValue('Sheet1', 'A2', 20);
+
+const result = wb.evaluateFormula('Sheet1', 'SUM(A1:A2)');
+wb.calculateAll();
+```
+
+---
+
+### 피벗 테이블
+
+소스 데이터 범위로부터 행/열/데이터 필드를 지정하여 피벗 테이블을 생성합니다.
+
+#### Rust
+
+```rust
+use sheetkit::pivot::*;
+
+let mut wb = Workbook::new();
+wb.new_sheet("PivotSheet")?;
+
+wb.add_pivot_table(&PivotTableConfig {
+    name: "SalesPivot".into(),
+    source_sheet: "Sheet1".into(),
+    source_range: "A1:D100".into(),
+    target_sheet: "PivotSheet".into(),
+    target_cell: "A3".into(),
+    rows: vec![PivotField { name: "Region".into() }],
+    columns: vec![PivotField { name: "Quarter".into() }],
+    data: vec![PivotDataField {
+        name: "Revenue".into(),
+        function: AggregateFunction::Sum,
+        display_name: Some("Total Revenue".into()),
+    }],
+})?;
+
+let tables = wb.get_pivot_tables();
+wb.delete_pivot_table("SalesPivot")?;
+```
+
+#### TypeScript
+
+```typescript
+const wb = new Workbook();
+wb.newSheet('PivotSheet');
+
+wb.addPivotTable({
+    name: 'SalesPivot',
+    sourceSheet: 'Sheet1',
+    sourceRange: 'A1:D100',
+    targetSheet: 'PivotSheet',
+    targetCell: 'A3',
+    rows: [{ name: 'Region' }],
+    columns: [{ name: 'Quarter' }],
+    data: [{ name: 'Revenue', function: 'sum', displayName: 'Total Revenue' }],
+});
+
+const tables = wb.getPivotTables();
+wb.deletePivotTable('SalesPivot');
+```
+
+#### 집계 함수
+
+`sum`, `count`, `average`, `max`, `min`, `product`, `countNums`
+
+---
+
+## 예제 프로젝트
+
+모든 기능을 보여주는 완전한 예제 프로젝트가 저장소에 포함되어 있습니다:
+
+- **Rust**: `examples/rust/` -- 독립된 Cargo 프로젝트 (해당 디렉토리에서 `cargo run` 실행)
+- **Node.js**: `examples/node/` -- TypeScript 프로젝트 (네이티브 모듈을 먼저 빌드한 후 `npx tsx index.ts`로 실행)
+
+각 예제는 워크북 생성, 셀 값 설정, 시트 관리, 스타일 적용, 차트와 이미지 추가, 데이터 유효성 검사, 코멘트, 자동 필터, 대용량 데이터 스트리밍, 문서 속성, 워크북 보호, 셀 병합, 하이퍼링크, 조건부 서식, 틀 고정, 페이지 레이아웃, 수식 계산, 피벗 테이블 등 모든 기능을 순서대로 시연합니다.
+
+---
+
+## 유틸리티 함수
+
+SheetKit은 셀 참조 변환을 위한 도우미 함수도 제공합니다:
+
+```rust
+use sheetkit::utils::cell_ref;
+
+// 셀 이름을 (열, 행) 좌표로 변환
+let (col, row) = cell_ref::cell_name_to_coordinates("B3")?;  // (2, 3)
+
+// 좌표를 셀 이름으로 변환
+let name = cell_ref::coordinates_to_cell_name(2, 3)?;  // "B3"
+
+// 열 이름을 번호로 변환
+let num = cell_ref::column_name_to_number("AA")?;  // 27
+
+// 열 번호를 이름으로 변환
+let name = cell_ref::column_number_to_name(27)?;  // "AA"
+```
