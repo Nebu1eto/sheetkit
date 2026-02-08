@@ -22,6 +22,15 @@ SheetKit은 Excel(.xlsx) 파일을 읽고 쓰기 위한 Rust 라이브러리이�
   - [StreamWriter](#streamwriter)
   - [문서 속성](#문서-속성)
   - [워크북 보호](#워크북-보호)
+  - [셀 병합](#셀-병합)
+  - [하이퍼링크](#하이퍼링크)
+  - [조건부 서식](#조건부-서식)
+  - [틀 고정/분할](#틀-고정분할)
+  - [페이지 레이아웃](#페이지-레이아웃)
+  - [행/열 이터레이터](#행열-이터레이터)
+  - [행/열 아웃라인 및 스타일](#행열-아웃라인-및-스타일)
+  - [수식 계산](#수식-계산)
+  - [피벗 테이블](#피벗-테이블)
 - [예제 프로젝트](#예제-프로젝트)
 
 ---
@@ -494,18 +503,100 @@ TypeScript에서는 스타일 객체의 `numFmtId`(기본 제공 형식 ID) 또�
 
 워크시트에 차트를 추가합니다. 차트는 두 셀(좌상단, 우하단) 사이에 앵커링되어 지정된 셀 범위의 데이터를 시각화합니다.
 
-#### 지원 차트 유형
+#### 지원 차트 유형 (41종)
 
-| Rust 변형                      | TS 문자열              | 설명                     |
-|-------------------------------|----------------------|--------------------------|
-| `ChartType::Col`              | `"col"`              | 세로 막대형 (클러스터)     |
-| `ChartType::ColStacked`       | `"colStacked"`       | 세로 막대형 (누적)        |
-| `ChartType::ColPercentStacked`| `"colPercentStacked"`| 세로 막대형 (백분율 누적)  |
-| `ChartType::Bar`              | `"bar"`              | 가로 막대형 (클러스터)     |
-| `ChartType::BarStacked`       | `"barStacked"`       | 가로 막대형 (누적)        |
-| `ChartType::BarPercentStacked`| `"barPercentStacked"`| 가로 막대형 (백분율 누적)  |
-| `ChartType::Line`             | `"line"`             | 꺾은선형                  |
-| `ChartType::Pie`              | `"pie"`              | 원형                     |
+**세로 막대 (Column)**
+
+| Rust 변형 | TS 문자열 | 설명 |
+|-----------|----------|------|
+| `ChartType::Col` | `"col"` | 세로 막대 |
+| `ChartType::ColStacked` | `"colStacked"` | 누적 세로 막대 |
+| `ChartType::ColPercentStacked` | `"colPercentStacked"` | 100% 누적 세로 막대 |
+| `ChartType::Col3D` | `"col3D"` | 3D 세로 막대 |
+| `ChartType::Col3DStacked` | `"col3DStacked"` | 3D 누적 세로 막대 |
+| `ChartType::Col3DPercentStacked` | `"col3DPercentStacked"` | 3D 100% 누적 세로 막대 |
+
+**가로 막대 (Bar)**
+
+| Rust 변형 | TS 문자열 | 설명 |
+|-----------|----------|------|
+| `ChartType::Bar` | `"bar"` | 가로 막대 |
+| `ChartType::BarStacked` | `"barStacked"` | 누적 가로 막대 |
+| `ChartType::BarPercentStacked` | `"barPercentStacked"` | 100% 누적 가로 막대 |
+| `ChartType::Bar3D` | `"bar3D"` | 3D 가로 막대 |
+| `ChartType::Bar3DStacked` | `"bar3DStacked"` | 3D 누적 가로 막대 |
+| `ChartType::Bar3DPercentStacked` | `"bar3DPercentStacked"` | 3D 100% 누적 가로 막대 |
+
+**꺾은선 (Line)**
+
+| Rust 변형 | TS 문자열 | 설명 |
+|-----------|----------|------|
+| `ChartType::Line` | `"line"` | 꺾은선 |
+| `ChartType::LineStacked` | `"lineStacked"` | 누적 꺾은선 |
+| `ChartType::LinePercentStacked` | `"linePercentStacked"` | 100% 누적 꺾은선 |
+| `ChartType::Line3D` | `"line3D"` | 3D 꺾은선 |
+
+**원형 (Pie)**
+
+| Rust 변형 | TS 문자열 | 설명 |
+|-----------|----------|------|
+| `ChartType::Pie` | `"pie"` | 원형 |
+| `ChartType::Pie3D` | `"pie3D"` | 3D 원형 |
+| `ChartType::Doughnut` | `"doughnut"` | 도넛형 |
+
+**영역 (Area)**
+
+| Rust 변형 | TS 문자열 | 설명 |
+|-----------|----------|------|
+| `ChartType::Area` | `"area"` | 영역 |
+| `ChartType::AreaStacked` | `"areaStacked"` | 누적 영역 |
+| `ChartType::AreaPercentStacked` | `"areaPercentStacked"` | 100% 누적 영역 |
+| `ChartType::Area3D` | `"area3D"` | 3D 영역 |
+| `ChartType::Area3DStacked` | `"area3DStacked"` | 3D 누적 영역 |
+| `ChartType::Area3DPercentStacked` | `"area3DPercentStacked"` | 3D 100% 누적 영역 |
+
+**분산형 (Scatter)**
+
+| Rust 변형 | TS 문자열 | 설명 |
+|-----------|----------|------|
+| `ChartType::Scatter` | `"scatter"` | 분산형 (표식만) |
+| `ChartType::ScatterSmooth` | `"scatterSmooth"` | 부드러운 선 |
+| `ChartType::ScatterLine` | `"scatterStraight"` | 직선 |
+
+**방사형 (Radar)**
+
+| Rust 변형 | TS 문자열 | 설명 |
+|-----------|----------|------|
+| `ChartType::Radar` | `"radar"` | 방사형 |
+| `ChartType::RadarFilled` | `"radarFilled"` | 채워진 방사형 |
+| `ChartType::RadarMarker` | `"radarMarker"` | 표식이 있는 방사형 |
+
+**주식 (Stock)**
+
+| Rust 변형 | TS 문자열 | 설명 |
+|-----------|----------|------|
+| `ChartType::StockHLC` | `"stockHLC"` | 고가-저가-종가 |
+| `ChartType::StockOHLC` | `"stockOHLC"` | 시가-고가-저가-종가 |
+| `ChartType::StockVHLC` | `"stockVHLC"` | 거래량-고가-저가-종가 |
+| `ChartType::StockVOHLC` | `"stockVOHLC"` | 거래량-시가-고가-저가-종가 |
+
+**기타**
+
+| Rust 변형 | TS 문자열 | 설명 |
+|-----------|----------|------|
+| `ChartType::Bubble` | `"bubble"` | 거품형 |
+| `ChartType::Surface` | `"surface"` | 표면형 |
+| `ChartType::Surface3D` | `"surfaceTop"` | 3D 표면형 |
+| `ChartType::SurfaceWireframe` | `"surfaceWireframe"` | 와이어프레임 표면형 |
+| `ChartType::SurfaceWireframe3D` | `"surfaceTopWireframe"` | 3D 와이어프레임 표면형 |
+
+**콤보 (Combo)**
+
+| Rust 변형 | TS 문자열 | 설명 |
+|-----------|----------|------|
+| `ChartType::ColLine` | `"colLine"` | 세로 막대 + 꺾은선 |
+| `ChartType::ColLineStacked` | `"colLineStacked"` | 누적 세로 막대 + 꺾은선 |
+| `ChartType::ColLinePercentStacked` | `"colLinePercentStacked"` | 100% 누적 세로 막대 + 꺾은선 |
 
 #### Rust
 
@@ -977,6 +1068,446 @@ wb.unprotectWorkbook();
 
 ---
 
+### 셀 병합
+
+여러 셀을 하나로 병합하거나 해제합니다. 병합된 셀의 값은 좌상단 셀에 저장됩니다.
+
+#### Rust
+
+```rust
+let mut wb = Workbook::new();
+
+wb.set_cell_value("Sheet1", "A1", CellValue::String("Header".into()))?;
+wb.merge_cells("Sheet1", "A1", "C1")?;
+
+let merged: Vec<String> = wb.get_merge_cells("Sheet1")?;
+wb.unmerge_cell("Sheet1", "A1:C1")?;
+```
+
+#### TypeScript
+
+```typescript
+const wb = new Workbook();
+
+wb.setCellValue('Sheet1', 'A1', 'Header');
+wb.mergeCells('Sheet1', 'A1', 'C1');
+
+const merged: string[] = wb.getMergeCells('Sheet1');
+wb.unmergeCell('Sheet1', 'A1:C1');
+```
+
+---
+
+### 하이퍼링크
+
+셀에 하이퍼링크를 설정합니다. 외부 URL, 이메일, 내부 시트 참조의 세 가지 유형을 지원합니다.
+
+#### Rust
+
+```rust
+use sheetkit::hyperlink::HyperlinkType;
+
+let mut wb = Workbook::new();
+
+// 외부 URL
+wb.set_cell_hyperlink(
+    "Sheet1", "A1",
+    HyperlinkType::External("https://example.com".into()),
+    Some("Example Site"), Some("Click here"),
+)?;
+
+// 이메일
+wb.set_cell_hyperlink(
+    "Sheet1", "A2",
+    HyperlinkType::Email("mailto:user@example.com".into()),
+    Some("Send email"), None,
+)?;
+
+// 내부 시트 참조
+wb.set_cell_hyperlink(
+    "Sheet1", "A3",
+    HyperlinkType::Internal("Sheet2!A1".into()),
+    None, None,
+)?;
+
+// 조회 및 삭제
+let info = wb.get_cell_hyperlink("Sheet1", "A1")?;
+wb.delete_cell_hyperlink("Sheet1", "A1")?;
+```
+
+#### TypeScript
+
+```typescript
+const wb = new Workbook();
+
+// 외부 URL
+wb.setCellHyperlink('Sheet1', 'A1', {
+    linkType: 'external',
+    target: 'https://example.com',
+    display: 'Example Site',
+    tooltip: 'Click here',
+});
+
+// 이메일
+wb.setCellHyperlink('Sheet1', 'A2', {
+    linkType: 'email',
+    target: 'mailto:user@example.com',
+    display: 'Send email',
+});
+
+// 내부 시트 참조
+wb.setCellHyperlink('Sheet1', 'A3', {
+    linkType: 'internal',
+    target: 'Sheet2!A1',
+});
+
+// 조회 및 삭제
+const info = wb.getCellHyperlink('Sheet1', 'A1');
+wb.deleteCellHyperlink('Sheet1', 'A1');
+```
+
+---
+
+### 조건부 서식
+
+셀 값이나 수식에 따라 자동으로 서식을 적용합니다. 18가지 규칙 유형을 지원합니다.
+
+#### cellIs (셀 값 비교)
+
+##### Rust
+
+```rust
+use sheetkit::conditional::*;
+use sheetkit::style::*;
+
+let mut wb = Workbook::new();
+
+wb.set_conditional_format("Sheet1", "A1:A100", &[
+    ConditionalFormatRule {
+        rule_type: ConditionalFormatType::CellIs {
+            operator: CfOperator::GreaterThan,
+            formula: "90".into(),
+            formula2: None,
+        },
+        format: Some(ConditionalStyle {
+            font: Some(FontStyle { bold: true, color: Some(StyleColor::Rgb("#006100".into())), ..Default::default() }),
+            fill: Some(FillStyle { pattern: PatternType::Solid, fg_color: Some(StyleColor::Rgb("#C6EFCE".into())), bg_color: None }),
+            border: None,
+            num_fmt: None,
+        }),
+        priority: Some(1),
+        stop_if_true: false,
+    },
+])?;
+```
+
+##### TypeScript
+
+```typescript
+wb.setConditionalFormat('Sheet1', 'A1:A100', [
+    {
+        ruleType: 'cellIs',
+        operator: 'greaterThan',
+        formula: '90',
+        format: {
+            font: { bold: true, color: '#006100' },
+            fill: { pattern: 'solid', fgColor: '#C6EFCE' },
+        },
+        priority: 1,
+    },
+]);
+```
+
+#### colorScale (색상 스케일)
+
+```typescript
+wb.setConditionalFormat('Sheet1', 'B1:B50', [
+    {
+        ruleType: 'colorScale',
+        minType: 'min',
+        minColor: 'FFF8696B',
+        midType: 'percentile',
+        midValue: '50',
+        midColor: 'FFFFEB84',
+        maxType: 'max',
+        maxColor: 'FF63BE7B',
+    },
+]);
+```
+
+#### dataBar (데이터 막대)
+
+```typescript
+wb.setConditionalFormat('Sheet1', 'C1:C50', [
+    { ruleType: 'dataBar', barColor: 'FF638EC6', showValue: true },
+]);
+```
+
+#### 조회 및 삭제
+
+```typescript
+const formats = wb.getConditionalFormats('Sheet1');
+wb.deleteConditionalFormat('Sheet1', 'A1:A100');
+```
+
+---
+
+### 틀 고정/분할
+
+특정 행이나 열을 고정하여 스크롤 시에도 항상 보이게 합니다. 셀 참조는 스크롤 가능 영역의 좌상단 셀입니다.
+
+#### Rust
+
+```rust
+let mut wb = Workbook::new();
+
+wb.set_panes("Sheet1", "A2")?;    // 첫 행 고정
+wb.set_panes("Sheet1", "B1")?;    // 첫 열 고정
+wb.set_panes("Sheet1", "B2")?;    // 첫 행 + 첫 열 고정
+
+let pane = wb.get_panes("Sheet1")?;
+wb.unset_panes("Sheet1")?;
+```
+
+#### TypeScript
+
+```typescript
+const wb = new Workbook();
+
+wb.setPanes('Sheet1', 'A2');       // 첫 행 고정
+wb.setPanes('Sheet1', 'B2');       // 첫 행 + 첫 열 고정
+
+const pane = wb.getPanes('Sheet1');
+wb.unsetPanes('Sheet1');
+```
+
+---
+
+### 페이지 레이아웃
+
+인쇄 관련 설정을 다룹니다. 여백, 용지 크기, 방향, 인쇄 옵션, 머리글/바닥글, 페이지 나누기를 포함합니다.
+
+#### Rust
+
+```rust
+use sheetkit::page_layout::*;
+
+let mut wb = Workbook::new();
+
+// 여백 (인치 단위)
+wb.set_page_margins("Sheet1", &PageMarginsConfig {
+    left: 0.7, right: 0.7, top: 0.75, bottom: 0.75, header: 0.3, footer: 0.3,
+})?;
+
+// 페이지 설정
+wb.set_page_setup("Sheet1", Some(Orientation::Landscape), Some(PaperSize::A4), Some(100), None, None)?;
+
+// 머리글/바닥글
+wb.set_header_footer("Sheet1", Some("&CMonthly Report"), Some("&LPage &P of &N"))?;
+
+// 페이지 나누기
+wb.insert_page_break("Sheet1", 20)?;
+```
+
+#### TypeScript
+
+```typescript
+const wb = new Workbook();
+
+// 여백 (인치 단위)
+wb.setPageMargins('Sheet1', {
+    left: 0.7, right: 0.7, top: 0.75, bottom: 0.75, header: 0.3, footer: 0.3,
+});
+
+// 페이지 설정
+wb.setPageSetup('Sheet1', {
+    paperSize: 'a4', orientation: 'landscape', scale: 100,
+});
+
+// 인쇄 옵션
+wb.setPrintOptions('Sheet1', { gridLines: true, horizontalCentered: true });
+
+// 머리글/바닥글
+wb.setHeaderFooter('Sheet1', '&CMonthly Report', '&LPage &P of &N');
+
+// 페이지 나누기
+wb.insertPageBreak('Sheet1', 20);
+```
+
+---
+
+### 행/열 이터레이터
+
+시트의 모든 행 또는 열 데이터를 한 번에 조회합니다. 데이터가 있는 행/열만 포함됩니다.
+
+#### Rust
+
+```rust
+let wb = Workbook::open("data.xlsx")?;
+
+// 모든 행 조회
+let rows = wb.get_rows("Sheet1")?;
+for (row_num, cells) in &rows {
+    for (col, val) in cells {
+        println!("Row {}, Col {}: {:?}", row_num, col, val);
+    }
+}
+
+// 모든 열 조회
+let cols = wb.get_cols("Sheet1")?;
+```
+
+#### TypeScript
+
+```typescript
+const wb = Workbook.open('data.xlsx');
+
+const rows = wb.getRows('Sheet1');
+for (const row of rows) {
+    for (const cell of row.cells) {
+        console.log(`Row ${row.row}, ${cell.column}: ${cell.value}`);
+    }
+}
+
+const cols = wb.getCols('Sheet1');
+```
+
+---
+
+### 행/열 아웃라인 및 스타일
+
+행과 열의 아웃라인(그룹) 수준(0-7)을 설정하고, 행/열 전체에 스타일을 적용합니다.
+
+#### Rust
+
+```rust
+let mut wb = Workbook::new();
+
+// 아웃라인 수준
+wb.set_row_outline_level("Sheet1", 2, 1)?;
+let level: u8 = wb.get_row_outline_level("Sheet1", 2)?;
+
+wb.set_col_outline_level("Sheet1", "B", 2)?;
+let col_level: u8 = wb.get_col_outline_level("Sheet1", "B")?;
+
+// 행/열 스타일
+let style_id = wb.add_style(&style)?;
+wb.set_row_style("Sheet1", 1, style_id)?;
+wb.set_col_style("Sheet1", "A", style_id)?;
+```
+
+#### TypeScript
+
+```typescript
+const wb = new Workbook();
+
+// 아웃라인 수준
+wb.setRowOutlineLevel('Sheet1', 2, 1);
+const level: number = wb.getRowOutlineLevel('Sheet1', 2);
+
+wb.setColOutlineLevel('Sheet1', 'B', 2);
+const colLevel: number = wb.getColOutlineLevel('Sheet1', 'B');
+
+// 행/열 스타일
+const styleId = wb.addStyle({ font: { bold: true } });
+wb.setRowStyle('Sheet1', 1, styleId);
+wb.setColStyle('Sheet1', 'A', styleId);
+```
+
+---
+
+### 수식 계산
+
+셀 수식을 평가합니다. `evaluate_formula`는 단일 수식을 계산하고, `calculate_all`은 워크북의 모든 수식 셀을 의존성 순서대로 재계산합니다. 110개 이상의 함수를 지원합니다 (SUM, VLOOKUP, IF, DATE 등).
+
+#### Rust
+
+```rust
+let mut wb = Workbook::new();
+
+wb.set_cell_value("Sheet1", "A1", CellValue::Number(10.0))?;
+wb.set_cell_value("Sheet1", "A2", CellValue::Number(20.0))?;
+wb.set_cell_value("Sheet1", "A3", CellValue::Formula {
+    expr: "SUM(A1:A2)".into(),
+    result: None,
+})?;
+
+let result = wb.evaluate_formula("Sheet1", "SUM(A1:A2)")?;
+wb.calculate_all()?;
+```
+
+#### TypeScript
+
+```typescript
+const wb = new Workbook();
+
+wb.setCellValue('Sheet1', 'A1', 10);
+wb.setCellValue('Sheet1', 'A2', 20);
+
+const result = wb.evaluateFormula('Sheet1', 'SUM(A1:A2)');
+wb.calculateAll();
+```
+
+---
+
+### 피벗 테이블
+
+소스 데이터 범위로부터 행/열/데이터 필드를 지정하여 피벗 테이블을 생성합니다.
+
+#### Rust
+
+```rust
+use sheetkit::pivot::*;
+
+let mut wb = Workbook::new();
+wb.new_sheet("PivotSheet")?;
+
+wb.add_pivot_table(&PivotTableConfig {
+    name: "SalesPivot".into(),
+    source_sheet: "Sheet1".into(),
+    source_range: "A1:D100".into(),
+    target_sheet: "PivotSheet".into(),
+    target_cell: "A3".into(),
+    rows: vec![PivotField { name: "Region".into() }],
+    columns: vec![PivotField { name: "Quarter".into() }],
+    data: vec![PivotDataField {
+        name: "Revenue".into(),
+        function: AggregateFunction::Sum,
+        display_name: Some("Total Revenue".into()),
+    }],
+})?;
+
+let tables = wb.get_pivot_tables();
+wb.delete_pivot_table("SalesPivot")?;
+```
+
+#### TypeScript
+
+```typescript
+const wb = new Workbook();
+wb.newSheet('PivotSheet');
+
+wb.addPivotTable({
+    name: 'SalesPivot',
+    sourceSheet: 'Sheet1',
+    sourceRange: 'A1:D100',
+    targetSheet: 'PivotSheet',
+    targetCell: 'A3',
+    rows: [{ name: 'Region' }],
+    columns: [{ name: 'Quarter' }],
+    data: [{ name: 'Revenue', function: 'sum', displayName: 'Total Revenue' }],
+});
+
+const tables = wb.getPivotTables();
+wb.deletePivotTable('SalesPivot');
+```
+
+#### 집계 함수
+
+`sum`, `count`, `average`, `max`, `min`, `product`, `countNums`
+
+---
+
 ## 예제 프로젝트
 
 모든 기능을 보여주는 완전한 예제 프로젝트가 저장소에 포함되어 있습니다:
@@ -984,7 +1515,7 @@ wb.unprotectWorkbook();
 - **Rust**: `examples/rust/` -- 독립된 Cargo 프로젝트 (해당 디렉토리에서 `cargo run` 실행)
 - **Node.js**: `examples/node/` -- TypeScript 프로젝트 (네이티브 모듈을 먼저 빌드한 후 `npx tsx index.ts`로 실행)
 
-각 예제는 워크북 생성, 셀 값 설정, 시트 관리, 스타일 적용, 차트와 이미지 추가, 데이터 유효성 검사, 코멘트, 자동 필터, 대용량 데이터 스트리밍, 문서 속성, 워크북 보호 등 모든 기능을 순서대로 시연합니다.
+각 예제는 워크북 생성, 셀 값 설정, 시트 관리, 스타일 적용, 차트와 이미지 추가, 데이터 유효성 검사, 코멘트, 자동 필터, 대용량 데이터 스트리밍, 문서 속성, 워크북 보호, 셀 병합, 하이퍼링크, 조건부 서식, 틀 고정, 페이지 레이아웃, 수식 계산, 피벗 테이블 등 모든 기능을 순서대로 시연합니다.
 
 ---
 

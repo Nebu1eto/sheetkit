@@ -202,6 +202,17 @@ When reading a date cell, `iso` is populated automatically. When writing, only `
 
 Cells with built-in date number formats (IDs 14-22 and 45-47) are automatically read as `CellValue::Date` in Rust, or `DateValue` in TypeScript. Custom number formats containing date/time tokens (y, m, d, h, s) are also detected.
 
+### `get_occupied_cells(sheet)` (Rust only)
+
+Return a list of `(col, row)` coordinate pairs for every non-empty cell in a sheet. Both values are 1-based. Useful for iterating only over cells that contain data without scanning the entire grid.
+
+```rust
+let cells = wb.get_occupied_cells("Sheet1")?;
+for (col, row) in &cells {
+    println!("Cell at col {}, row {}", col, row);
+}
+```
+
 ---
 
 ## 3. Sheet Management
@@ -2659,3 +2670,29 @@ assert_eq!(date, roundtrip);
 ```
 
 > Note: Excel uses the 1900 date system with a known bug where it incorrectly treats 1900 as a leap year. Serial number 60 (February 29, 1900) does not correspond to a real date. These conversion functions account for this bug.
+
+### `is_date_num_fmt(num_fmt_id)` (Rust only)
+
+Check whether a built-in number format ID represents a date or time format. Returns `true` for IDs 14-22 and 45-47.
+
+```rust
+use sheetkit::is_date_num_fmt;
+
+assert!(is_date_num_fmt(14));   // m/d/yyyy
+assert!(is_date_num_fmt(22));   // m/d/yyyy h:mm
+assert!(!is_date_num_fmt(0));   // General
+assert!(!is_date_num_fmt(49));  // @
+```
+
+### `is_date_format_code(code)` (Rust only)
+
+Check whether a custom number format string represents a date or time format. Returns `true` if the format code contains date/time tokens (y, m, d, h, s) outside of quoted strings and escaped characters.
+
+```rust
+use sheetkit::is_date_format_code;
+
+assert!(is_date_format_code("yyyy-mm-dd"));
+assert!(is_date_format_code("h:mm:ss AM/PM"));
+assert!(!is_date_format_code("#,##0.00"));
+assert!(!is_date_format_code("0%"));
+```
