@@ -277,47 +277,118 @@ const breaks: number[] = wb.getPageBreaks("Sheet1");
 
 ## 18. Defined Names
 
-Defined names (named ranges) assign a symbolic name to a cell reference or formula. They are available as standalone functions in `sheetkit_core::defined_names` (Rust only). There is currently no Workbook-level wrapper or Node.js binding for defined names.
+Defined names (named ranges) assign a symbolic name to a cell reference or formula. Names can be workbook-scoped (visible from all sheets) or sheet-scoped (visible only within a specific sheet).
 
-### `set_defined_name` (Rust only)
+### `set_defined_name` / `setDefinedName`
 
-Add or update a defined name.
+Add or update a defined name. If a name with the same name and scope already exists, its value and comment are updated (no duplication).
+
+**Rust:**
 
 ```rust
-use sheetkit_core::defined_names::{set_defined_name, DefinedNameScope};
+// Workbook-scoped name
+wb.set_defined_name("SalesTotal", "Sheet1!$B$10", None, None)?;
 
-set_defined_name(
-    &mut workbook_xml,
-    "SalesTotal",
-    "Sheet1!$B$10",
-    DefinedNameScope::Workbook,
-    None, // optional comment
-)?;
+// Sheet-scoped name with comment
+wb.set_defined_name("LocalRange", "Sheet1!$A$1:$D$10", Some("Sheet1"), Some("Local data range"))?;
 ```
 
-### `get_defined_name` (Rust only)
+**TypeScript:**
 
-Get the value of a defined name.
+```typescript
+// Workbook-scoped name
+wb.setDefinedName({ name: "SalesTotal", value: "Sheet1!$B$10" });
+
+// Sheet-scoped name with comment
+wb.setDefinedName({
+    name: "LocalRange",
+    value: "Sheet1!$A$1:$D$10",
+    scope: "Sheet1",
+    comment: "Local data range",
+});
+```
+
+### `get_defined_name` / `getDefinedName`
+
+Get a defined name by name and optional scope. Returns `None`/`null` if not found.
+
+**Rust:**
 
 ```rust
-use sheetkit_core::defined_names::get_defined_name;
-
-if let Some(info) = get_defined_name(&workbook_xml, "SalesTotal", DefinedNameScope::Workbook) {
+// Get workbook-scoped name
+if let Some(info) = wb.get_defined_name("SalesTotal", None)? {
     println!("Refers to: {}", info.value);
+}
+
+// Get sheet-scoped name
+if let Some(info) = wb.get_defined_name("LocalRange", Some("Sheet1"))? {
+    println!("Sheet-scoped: {}", info.value);
 }
 ```
 
-### `delete_defined_name` (Rust only)
+**TypeScript:**
 
-Delete a defined name. Returns `true` if the name existed.
+```typescript
+// Get workbook-scoped name
+const info = wb.getDefinedName("SalesTotal");
+if (info) {
+    console.log(`Refers to: ${info.value}`);
+}
 
-```rust
-use sheetkit_core::defined_names::delete_defined_name;
-
-let removed: bool = delete_defined_name(&mut workbook_xml, "SalesTotal", DefinedNameScope::Workbook);
+// Get sheet-scoped name
+const local = wb.getDefinedName("LocalRange", "Sheet1");
 ```
 
-> Note: These functions operate on the low-level `WorkbookXml` struct, not on the `Workbook` facade. They support both workbook-scoped and sheet-scoped names via `DefinedNameScope`.
+### `get_all_defined_names` / `getDefinedNames`
+
+List all defined names in the workbook.
+
+**Rust:**
+
+```rust
+let names = wb.get_all_defined_names();
+for dn in &names {
+    println!("{}: {} (scope: {:?})", dn.name, dn.value, dn.scope);
+}
+```
+
+**TypeScript:**
+
+```typescript
+const names = wb.getDefinedNames();
+for (const dn of names) {
+    console.log(`${dn.name}: ${dn.value} (scope: ${dn.scope ?? "workbook"})`);
+}
+```
+
+### `delete_defined_name` / `deleteDefinedName`
+
+Delete a defined name by name and optional scope. Returns an error if the name does not exist.
+
+**Rust:**
+
+```rust
+wb.delete_defined_name("SalesTotal", None)?;
+wb.delete_defined_name("LocalRange", Some("Sheet1"))?;
+```
+
+**TypeScript:**
+
+```typescript
+wb.deleteDefinedName("SalesTotal");
+wb.deleteDefinedName("LocalRange", "Sheet1");
+```
+
+### DefinedNameInfo
+
+| Field | Rust Type | TypeScript Type | Description |
+|---|---|---|---|
+| `name` | `String` | `string` | The defined name |
+| `value` | `String` | `string` | The reference or formula |
+| `scope` | `DefinedNameScope` | `string?` | Sheet name if sheet-scoped, or `None`/`undefined` if workbook-scoped |
+| `comment` | `Option<String>` | `string?` | Optional comment |
+
+> Defined names cannot contain `\ / ? * [ ]` characters and cannot start or end with whitespace.
 
 ---
 
@@ -572,44 +643,92 @@ const isProtected: boolean = wb.isWorkbookProtected();
 
 ## 21. Sheet Protection
 
-Sheet protection prevents editing of cells within a single sheet. It is available as standalone functions in `sheetkit_core::sheet` (Rust only). There is currently no Workbook-level wrapper or Node.js binding for sheet protection.
+Sheet protection prevents editing of cells within a single sheet. You can optionally specify a password and grant specific permissions.
 
-### `protect_sheet` (Rust only)
+### `protect_sheet` / `protectSheet`
 
-Protect a sheet with optional password and granular permission settings.
+Protect a sheet with optional password and granular permission settings. All permission booleans default to `false` (forbidden). Set a permission to `true` to allow that action even when the sheet is protected.
+
+**Rust:**
 
 ```rust
-use sheetkit_core::sheet::{protect_sheet, SheetProtectionConfig};
+use sheetkit::sheet::SheetProtectionConfig;
 
-protect_sheet(&mut worksheet_xml, &SheetProtectionConfig {
+wb.protect_sheet("Sheet1", &SheetProtectionConfig {
     password: Some("mypass".to_string()),
-    select_locked_cells: false,
-    select_unlocked_cells: false,
-    format_cells: false,
-    format_columns: false,
-    format_rows: false,
-    insert_columns: false,
-    insert_rows: false,
-    insert_hyperlinks: false,
-    delete_columns: false,
-    delete_rows: false,
-    sort: false,
-    auto_filter: false,
-    pivot_tables: false,
+    format_cells: true,
+    insert_rows: true,
+    sort: true,
+    ..SheetProtectionConfig::default()
 })?;
 ```
 
-### `unprotect_sheet` (Rust only)
+**TypeScript:**
+
+```typescript
+wb.protectSheet("Sheet1", {
+    password: "mypass",
+    formatCells: true,
+    insertRows: true,
+    sort: true,
+});
+
+// Protect with defaults (all actions forbidden, no password)
+wb.protectSheet("Sheet1");
+```
+
+### `unprotect_sheet` / `unprotectSheet`
 
 Remove protection from a sheet.
 
-```rust
-use sheetkit_core::sheet::unprotect_sheet;
+**Rust:**
 
-unprotect_sheet(&mut worksheet_xml)?;
+```rust
+wb.unprotect_sheet("Sheet1")?;
 ```
 
-> Note: These functions operate on `WorksheetXml` directly. The permission booleans default to `false` (locked). Setting a permission to `true` allows that action even when the sheet is protected.
+**TypeScript:**
+
+```typescript
+wb.unprotectSheet("Sheet1");
+```
+
+### `is_sheet_protected` / `isSheetProtected`
+
+Check if a sheet is protected.
+
+**Rust:**
+
+```rust
+let protected: bool = wb.is_sheet_protected("Sheet1")?;
+```
+
+**TypeScript:**
+
+```typescript
+const isProtected: boolean = wb.isSheetProtected("Sheet1");
+```
+
+### SheetProtectionConfig
+
+| Field | Rust Type | TypeScript Type | Default | Description |
+|---|---|---|---|---|
+| `password` | `Option<String>` | `string?` | `None` | Password (hashed with legacy Excel algorithm) |
+| `select_locked_cells` / `selectLockedCells` | `bool` | `boolean?` | `false` | Allow selecting locked cells |
+| `select_unlocked_cells` / `selectUnlockedCells` | `bool` | `boolean?` | `false` | Allow selecting unlocked cells |
+| `format_cells` / `formatCells` | `bool` | `boolean?` | `false` | Allow formatting cells |
+| `format_columns` / `formatColumns` | `bool` | `boolean?` | `false` | Allow formatting columns |
+| `format_rows` / `formatRows` | `bool` | `boolean?` | `false` | Allow formatting rows |
+| `insert_columns` / `insertColumns` | `bool` | `boolean?` | `false` | Allow inserting columns |
+| `insert_rows` / `insertRows` | `bool` | `boolean?` | `false` | Allow inserting rows |
+| `insert_hyperlinks` / `insertHyperlinks` | `bool` | `boolean?` | `false` | Allow inserting hyperlinks |
+| `delete_columns` / `deleteColumns` | `bool` | `boolean?` | `false` | Allow deleting columns |
+| `delete_rows` / `deleteRows` | `bool` | `boolean?` | `false` | Allow deleting rows |
+| `sort` | `bool` | `boolean?` | `false` | Allow sorting |
+| `auto_filter` / `autoFilter` | `bool` | `boolean?` | `false` | Allow using auto-filter |
+| `pivot_tables` / `pivotTables` | `bool` | `boolean?` | `false` | Allow using pivot tables |
+
+> Note: The password uses the legacy Excel hash algorithm, which is NOT cryptographically secure. It provides only basic deterrence.
 
 ---
 

@@ -1109,4 +1109,107 @@ impl Workbook {
     pub fn get_theme_color(&self, index: u32, tint: Option<f64>) -> Option<String> {
         self.inner.get_theme_color(index, tint)
     }
+
+    /// Add or update a defined name. If a name with the same name and scope
+    /// already exists, its value and comment are updated.
+    #[napi]
+    pub fn set_defined_name(&mut self, config: JsDefinedNameConfig) -> Result<()> {
+        self.inner
+            .set_defined_name(
+                &config.name,
+                &config.value,
+                config.scope.as_deref(),
+                config.comment.as_deref(),
+            )
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Get a defined name by name and optional scope (sheet name).
+    /// Returns null if no matching defined name is found.
+    #[napi]
+    pub fn get_defined_name(
+        &self,
+        name: String,
+        scope: Option<String>,
+    ) -> Result<Option<JsDefinedNameInfo>> {
+        let info = self
+            .inner
+            .get_defined_name(&name, scope.as_deref())
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        Ok(info.map(|i| self.defined_name_info_to_js(&i)))
+    }
+
+    /// Get all defined names in the workbook.
+    #[napi]
+    pub fn get_defined_names(&self) -> Vec<JsDefinedNameInfo> {
+        self.inner
+            .get_all_defined_names()
+            .iter()
+            .map(|i| self.defined_name_info_to_js(i))
+            .collect()
+    }
+
+    /// Delete a defined name by name and optional scope (sheet name).
+    #[napi]
+    pub fn delete_defined_name(&mut self, name: String, scope: Option<String>) -> Result<()> {
+        self.inner
+            .delete_defined_name(&name, scope.as_deref())
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Protect a sheet with optional password and permission settings.
+    #[napi]
+    pub fn protect_sheet(
+        &mut self,
+        sheet: String,
+        config: Option<JsSheetProtectionConfig>,
+    ) -> Result<()> {
+        let core_config = config
+            .as_ref()
+            .map(js_sheet_protection_to_core)
+            .unwrap_or_default();
+        self.inner
+            .protect_sheet(&sheet, &core_config)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Remove sheet protection.
+    #[napi]
+    pub fn unprotect_sheet(&mut self, sheet: String) -> Result<()> {
+        self.inner
+            .unprotect_sheet(&sheet)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Check if a sheet is protected.
+    #[napi]
+    pub fn is_sheet_protected(&self, sheet: String) -> Result<bool> {
+        self.inner
+            .is_sheet_protected(&sheet)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+}
+
+impl Workbook {
+    /// Convert a core DefinedNameInfo to a JS-facing JsDefinedNameInfo,
+    /// resolving the sheet index back to a sheet name.
+    fn defined_name_info_to_js(
+        &self,
+        info: &sheetkit_core::defined_names::DefinedNameInfo,
+    ) -> JsDefinedNameInfo {
+        use sheetkit_core::defined_names::DefinedNameScope;
+        let scope = match &info.scope {
+            DefinedNameScope::Workbook => None,
+            DefinedNameScope::Sheet(idx) => {
+                let names = self.inner.sheet_names();
+                names.get(*idx as usize).map(|s| s.to_string())
+            }
+        };
+        JsDefinedNameInfo {
+            name: info.name.clone(),
+            value: info.value.clone(),
+            scope,
+            comment: info.comment.clone(),
+        }
+    }
 }

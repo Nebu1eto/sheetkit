@@ -220,6 +220,26 @@ export declare class Workbook {
    * Returns the ARGB hex string (e.g. "FF4472C4") or null if out of range.
    */
   getThemeColor(index: number, tint?: number | undefined | null): string | null
+  /**
+   * Add or update a defined name. If a name with the same name and scope
+   * already exists, its value and comment are updated.
+   */
+  setDefinedName(config: JsDefinedNameConfig): void
+  /**
+   * Get a defined name by name and optional scope (sheet name).
+   * Returns null if no matching defined name is found.
+   */
+  getDefinedName(name: string, scope?: string | undefined | null): JsDefinedNameInfo | null
+  /** Get all defined names in the workbook. */
+  getDefinedNames(): Array<JsDefinedNameInfo>
+  /** Delete a defined name by name and optional scope (sheet name). */
+  deleteDefinedName(name: string, scope?: string | undefined | null): void
+  /** Protect a sheet with optional password and permission settings. */
+  protectSheet(sheet: string, config?: JsSheetProtectionConfig | undefined | null): void
+  /** Remove sheet protection. */
+  unprotectSheet(sheet: string): void
+  /** Check if a sheet is protected. */
+  isSheetProtected(sheet: string): boolean
 }
 
 export interface DateValue {
@@ -389,6 +409,30 @@ export interface JsDataValidationConfig {
   promptMessage?: string
   showInputMessage?: boolean
   showErrorMessage?: boolean
+}
+
+/** Configuration for setting a defined name. */
+export interface JsDefinedNameConfig {
+  /** The name to define (e.g., "SalesData"). */
+  name: string
+  /** The reference or formula (e.g., "Sheet1!$A$1:$D$10"). */
+  value: string
+  /** Optional sheet name for sheet-scoped names. Omit for workbook scope. */
+  scope?: string
+  /** Optional comment for the defined name. */
+  comment?: string
+}
+
+/** Information about a defined name returned by getDefinedName/getDefinedNames. */
+export interface JsDefinedNameInfo {
+  /** The defined name. */
+  name: string
+  /** The reference or formula. */
+  value: string
+  /** Sheet name if sheet-scoped, or null if workbook-scoped. */
+  scope?: string
+  /** Optional comment. */
+  comment?: string
 }
 
 export interface JsDocProperties {
@@ -565,6 +609,38 @@ export interface JsRowData {
   row: number
   /** Cells with data in this row. */
   cells: Array<JsRowCell>
+}
+
+/** Configuration for sheet protection. */
+export interface JsSheetProtectionConfig {
+  /** Optional password (hashed with legacy Excel algorithm). */
+  password?: string
+  /** Allow selecting locked cells. */
+  selectLockedCells?: boolean
+  /** Allow selecting unlocked cells. */
+  selectUnlockedCells?: boolean
+  /** Allow formatting cells. */
+  formatCells?: boolean
+  /** Allow formatting columns. */
+  formatColumns?: boolean
+  /** Allow formatting rows. */
+  formatRows?: boolean
+  /** Allow inserting columns. */
+  insertColumns?: boolean
+  /** Allow inserting rows. */
+  insertRows?: boolean
+  /** Allow inserting hyperlinks. */
+  insertHyperlinks?: boolean
+  /** Allow deleting columns. */
+  deleteColumns?: boolean
+  /** Allow deleting rows. */
+  deleteRows?: boolean
+  /** Allow sorting. */
+  sort?: boolean
+  /** Allow using auto-filter. */
+  autoFilter?: boolean
+  /** Allow using pivot tables. */
+  pivotTables?: boolean
 }
 
 export interface JsSparklineConfig {

@@ -410,6 +410,65 @@ pub struct JsSparklineConfig {
     pub style: Option<u32>,
 }
 
+/// Configuration for setting a defined name.
+#[napi(object)]
+pub struct JsDefinedNameConfig {
+    /// The name to define (e.g., "SalesData").
+    pub name: String,
+    /// The reference or formula (e.g., "Sheet1!$A$1:$D$10").
+    pub value: String,
+    /// Optional sheet name for sheet-scoped names. Omit for workbook scope.
+    pub scope: Option<String>,
+    /// Optional comment for the defined name.
+    pub comment: Option<String>,
+}
+
+/// Information about a defined name returned by getDefinedName/getDefinedNames.
+#[napi(object)]
+pub struct JsDefinedNameInfo {
+    /// The defined name.
+    pub name: String,
+    /// The reference or formula.
+    pub value: String,
+    /// Sheet name if sheet-scoped, or null if workbook-scoped.
+    pub scope: Option<String>,
+    /// Optional comment.
+    pub comment: Option<String>,
+}
+
+/// Configuration for sheet protection.
+#[napi(object)]
+pub struct JsSheetProtectionConfig {
+    /// Optional password (hashed with legacy Excel algorithm).
+    pub password: Option<String>,
+    /// Allow selecting locked cells.
+    pub select_locked_cells: Option<bool>,
+    /// Allow selecting unlocked cells.
+    pub select_unlocked_cells: Option<bool>,
+    /// Allow formatting cells.
+    pub format_cells: Option<bool>,
+    /// Allow formatting columns.
+    pub format_columns: Option<bool>,
+    /// Allow formatting rows.
+    pub format_rows: Option<bool>,
+    /// Allow inserting columns.
+    pub insert_columns: Option<bool>,
+    /// Allow inserting rows.
+    pub insert_rows: Option<bool>,
+    /// Allow inserting hyperlinks.
+    pub insert_hyperlinks: Option<bool>,
+    /// Allow deleting columns.
+    pub delete_columns: Option<bool>,
+    /// Allow deleting rows.
+    pub delete_rows: Option<bool>,
+    /// Allow sorting.
+    pub sort: Option<bool>,
+    /// Allow using auto-filter.
+    pub auto_filter: Option<bool>,
+    /// Allow using pivot tables.
+    pub pivot_tables: Option<bool>,
+}
+
 /// A single formatted text segment within a rich text cell.
 #[napi(object)]
 pub struct JsRichTextRun {

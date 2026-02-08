@@ -185,38 +185,113 @@ wb.remove_page_break("Sheet1", 20)?;
 
 ## 18. 정의된 이름
 
-워크북 내에서 셀 범위에 이름을 부여하는 기능을 다룬다. 워크북 범위 또는 시트 범위로 정의할 수 있다.
+워크북 내에서 셀 범위에 이름을 부여하는 기능을 다룬다. 워크북 범위(모든 시트에서 사용 가능) 또는 시트 범위(특정 시트에서만 사용 가능)로 정의할 수 있다.
 
-> 현재 이 기능은 Rust 코어 모듈(`sheetkit_core::defined_names`)에서 함수로 제공되며, Workbook 구조체 메서드 및 Node.js 바인딩에는 아직 노출되지 않았다.
+### `set_defined_name` / `setDefinedName`
 
-### Rust (모듈 함수 직접 사용)
+정의된 이름을 추가하거나 업데이트한다. 동일한 이름과 범위를 가진 항목이 이미 존재하면 값과 주석이 업데이트된다(중복 생성 없음).
+
+**Rust:**
 
 ```rust
-use sheetkit_core::defined_names::*;
+// Workbook-scoped name
+wb.set_defined_name("SalesTotal", "Sheet1!$B$10", None, None)?;
 
-// set_defined_name: add or update a defined name
-set_defined_name(
-    &mut workbook_xml,
-    "SalesData",                   // name
-    "Sheet1!$A$1:$D$100",         // reference
-    DefinedNameScope::Workbook,    // scope
-    Some("Monthly sales data"),    // comment
-)?;
-
-// get_defined_name: retrieve a defined name
-let info = get_defined_name(&workbook_xml, "SalesData", DefinedNameScope::Workbook)?;
-// info.name, info.value, info.scope, info.comment
-
-// delete_defined_name: remove a defined name
-delete_defined_name(&mut workbook_xml, "SalesData", DefinedNameScope::Workbook)?;
+// Sheet-scoped name with comment
+wb.set_defined_name("LocalRange", "Sheet1!$A$1:$D$10", Some("Sheet1"), Some("Local data range"))?;
 ```
 
-### DefinedNameScope
+**TypeScript:**
 
-| 값 | 설명 |
-|----|------|
-| `Workbook` | 워크북 전체에서 사용 가능 |
-| `Sheet(index)` | 특정 시트(0부터 시작하는 인덱스)에서만 사용 가능 |
+```typescript
+// Workbook-scoped name
+wb.setDefinedName({ name: "SalesTotal", value: "Sheet1!$B$10" });
+
+// Sheet-scoped name with comment
+wb.setDefinedName({
+    name: "LocalRange",
+    value: "Sheet1!$A$1:$D$10",
+    scope: "Sheet1",
+    comment: "Local data range",
+});
+```
+
+### `get_defined_name` / `getDefinedName`
+
+이름과 선택적 범위로 정의된 이름을 조회한다. 없으면 `None`/`null`을 반환한다.
+
+**Rust:**
+
+```rust
+if let Some(info) = wb.get_defined_name("SalesTotal", None)? {
+    println!("Refers to: {}", info.value);
+}
+
+// Sheet-scoped name
+if let Some(info) = wb.get_defined_name("LocalRange", Some("Sheet1"))? {
+    println!("Sheet-scoped: {}", info.value);
+}
+```
+
+**TypeScript:**
+
+```typescript
+const info = wb.getDefinedName("SalesTotal");
+if (info) {
+    console.log(`Refers to: ${info.value}`);
+}
+
+const local = wb.getDefinedName("LocalRange", "Sheet1");
+```
+
+### `get_all_defined_names` / `getDefinedNames`
+
+워크북의 모든 정의된 이름을 반환한다.
+
+**Rust:**
+
+```rust
+let names = wb.get_all_defined_names();
+for dn in &names {
+    println!("{}: {} (scope: {:?})", dn.name, dn.value, dn.scope);
+}
+```
+
+**TypeScript:**
+
+```typescript
+const names = wb.getDefinedNames();
+for (const dn of names) {
+    console.log(`${dn.name}: ${dn.value} (scope: ${dn.scope ?? "workbook"})`);
+}
+```
+
+### `delete_defined_name` / `deleteDefinedName`
+
+이름과 선택적 범위로 정의된 이름을 삭제한다. 해당 이름이 없으면 오류를 반환한다.
+
+**Rust:**
+
+```rust
+wb.delete_defined_name("SalesTotal", None)?;
+wb.delete_defined_name("LocalRange", Some("Sheet1"))?;
+```
+
+**TypeScript:**
+
+```typescript
+wb.deleteDefinedName("SalesTotal");
+wb.deleteDefinedName("LocalRange", "Sheet1");
+```
+
+### DefinedNameInfo
+
+| 속성 | Rust 타입 | TypeScript 타입 | 설명 |
+|------|-----------|-----------------|------|
+| `name` | `String` | `string` | 정의된 이름 |
+| `value` | `String` | `string` | 참조 또는 수식 |
+| `scope` | `DefinedNameScope` | `string?` | 시트 이름(시트 범위) 또는 `None`/`undefined`(워크북 범위) |
+| `comment` | `Option<String>` | `string?` | 선택적 주석 |
 
 > 정의된 이름에는 `\ / ? * [ ]` 문자를 사용할 수 없으며, 앞뒤 공백도 허용되지 않는다.
 
@@ -452,55 +527,92 @@ const isProtected: boolean = wb.isWorkbookProtected();
 
 ## 21. 시트 보호
 
-개별 시트의 편집을 제한하는 기능을 다룬다. 선택적으로 특정 작업을 허용할 수 있다.
+개별 시트의 편집을 제한하는 기능을 다룬다. 선택적으로 비밀번호를 설정하고 특정 작업을 허용할 수 있다.
 
-> 현재 이 기능은 Rust 코어 모듈(`sheetkit_core::sheet`)에서 함수로 제공되며, Workbook 구조체 메서드 및 Node.js 바인딩에는 아직 노출되지 않았다.
+### `protect_sheet` / `protectSheet`
 
-### Rust (모듈 함수 직접 사용)
+시트를 보호한다. 모든 권한 불리언 값은 기본적으로 `false`(금지)이며, `true`로 설정하면 보호 상태에서도 해당 작업이 허용된다.
+
+**Rust:**
 
 ```rust
-use sheetkit_core::sheet::{protect_sheet, unprotect_sheet, is_sheet_protected, SheetProtectionConfig};
+use sheetkit::sheet::SheetProtectionConfig;
 
-protect_sheet(&mut worksheet_xml, &SheetProtectionConfig {
-    password: Some("pass".into()),
-    select_locked_cells: true,
-    select_unlocked_cells: true,
-    format_cells: false,
-    format_columns: false,
-    format_rows: false,
-    insert_columns: false,
-    insert_rows: false,
-    insert_hyperlinks: false,
-    delete_columns: false,
-    delete_rows: false,
-    sort: false,
-    auto_filter: false,
-    pivot_tables: false,
+wb.protect_sheet("Sheet1", &SheetProtectionConfig {
+    password: Some("mypass".to_string()),
+    format_cells: true,
+    insert_rows: true,
+    sort: true,
+    ..SheetProtectionConfig::default()
 })?;
+```
 
-let protected: bool = is_sheet_protected(&worksheet_xml);
+**TypeScript:**
 
-unprotect_sheet(&mut worksheet_xml)?;
+```typescript
+wb.protectSheet("Sheet1", {
+    password: "mypass",
+    formatCells: true,
+    insertRows: true,
+    sort: true,
+});
+
+// Protect with defaults (all actions forbidden, no password)
+wb.protectSheet("Sheet1");
+```
+
+### `unprotect_sheet` / `unprotectSheet`
+
+시트 보호를 해제한다.
+
+**Rust:**
+
+```rust
+wb.unprotect_sheet("Sheet1")?;
+```
+
+**TypeScript:**
+
+```typescript
+wb.unprotectSheet("Sheet1");
+```
+
+### `is_sheet_protected` / `isSheetProtected`
+
+시트가 보호되어 있는지 확인한다.
+
+**Rust:**
+
+```rust
+let protected: bool = wb.is_sheet_protected("Sheet1")?;
+```
+
+**TypeScript:**
+
+```typescript
+const isProtected: boolean = wb.isSheetProtected("Sheet1");
 ```
 
 ### SheetProtectionConfig 속성
 
-| 속성 | 타입 | 기본값 | 설명 |
-|------|------|--------|------|
-| `password` | `Option<String>` | `None` | 보호 비밀번호 |
-| `select_locked_cells` | `bool` | `false` | 잠긴 셀 선택 허용 |
-| `select_unlocked_cells` | `bool` | `false` | 잠기지 않은 셀 선택 허용 |
-| `format_cells` | `bool` | `false` | 셀 서식 변경 허용 |
-| `format_columns` | `bool` | `false` | 열 서식 변경 허용 |
-| `format_rows` | `bool` | `false` | 행 서식 변경 허용 |
-| `insert_columns` | `bool` | `false` | 열 삽입 허용 |
-| `insert_rows` | `bool` | `false` | 행 삽입 허용 |
-| `insert_hyperlinks` | `bool` | `false` | 하이퍼링크 삽입 허용 |
-| `delete_columns` | `bool` | `false` | 열 삭제 허용 |
-| `delete_rows` | `bool` | `false` | 행 삭제 허용 |
-| `sort` | `bool` | `false` | 정렬 허용 |
-| `auto_filter` | `bool` | `false` | 자동 필터 사용 허용 |
-| `pivot_tables` | `bool` | `false` | 피벗 테이블 사용 허용 |
+| 속성 | Rust 타입 | TypeScript 타입 | 기본값 | 설명 |
+|------|-----------|-----------------|--------|------|
+| `password` | `Option<String>` | `string?` | `None` | 보호 비밀번호 (레거시 해시로 저장) |
+| `select_locked_cells` / `selectLockedCells` | `bool` | `boolean?` | `false` | 잠긴 셀 선택 허용 |
+| `select_unlocked_cells` / `selectUnlockedCells` | `bool` | `boolean?` | `false` | 잠기지 않은 셀 선택 허용 |
+| `format_cells` / `formatCells` | `bool` | `boolean?` | `false` | 셀 서식 변경 허용 |
+| `format_columns` / `formatColumns` | `bool` | `boolean?` | `false` | 열 서식 변경 허용 |
+| `format_rows` / `formatRows` | `bool` | `boolean?` | `false` | 행 서식 변경 허용 |
+| `insert_columns` / `insertColumns` | `bool` | `boolean?` | `false` | 열 삽입 허용 |
+| `insert_rows` / `insertRows` | `bool` | `boolean?` | `false` | 행 삽입 허용 |
+| `insert_hyperlinks` / `insertHyperlinks` | `bool` | `boolean?` | `false` | 하이퍼링크 삽입 허용 |
+| `delete_columns` / `deleteColumns` | `bool` | `boolean?` | `false` | 열 삭제 허용 |
+| `delete_rows` / `deleteRows` | `bool` | `boolean?` | `false` | 행 삭제 허용 |
+| `sort` | `bool` | `boolean?` | `false` | 정렬 허용 |
+| `auto_filter` / `autoFilter` | `bool` | `boolean?` | `false` | 자동 필터 사용 허용 |
+| `pivot_tables` / `pivotTables` | `bool` | `boolean?` | `false` | 피벗 테이블 사용 허용 |
+
+> 비밀번호는 Excel의 레거시 16비트 해시 알고리즘으로 저장된다. 이 해시는 암호학적으로 안전하지 않다.
 
 ---
 
