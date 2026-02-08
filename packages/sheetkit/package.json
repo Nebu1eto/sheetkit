@@ -15,8 +15,8 @@
   ],
   "scripts": {
     "artifacts": "napi artifacts",
-    "build": "napi build --platform --release && mv index.js binding.cjs",
-    "build:debug": "napi build --platform && mv index.js binding.cjs",
+    "build": "napi build --platform --release --esm",
+    "build:debug": "napi build --platform",
     "test": "vitest run",
     "test:watch": "vitest"
   },
