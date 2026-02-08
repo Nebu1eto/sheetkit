@@ -1,29 +1,29 @@
 {
-	"name": "sheetkit",
-	"version": "0.1.0",
-	"type": "module",
-	"main": "./index.js",
-	"types": "./index.d.ts",
-	"napi": {
-		"name": "sheetkit",
-		"triples": {
-			"defaults": true,
-			"additional": []
-		}
-	},
-	"files": [
-		"binding.cjs",
-		"index.js",
-		"index.d.ts"
-	],
-	"scripts": {
-		"artifacts": "napi artifacts",
-		"build": "napi build --platform --release && mv index.js binding.cjs",
-		"build:debug": "napi build --platform && mv index.js binding.cjs",
-		"test": "vitest run",
-		"test:watch": "vitest"
-	},
-	"devDependencies": {
-		"@napi-rs/cli": "^2.18.0"
-	}
+  "name": "sheetkit",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./index.js",
+  "types": "./index.d.ts",
+  "napi": {
+    "name": "sheetkit",
+    "triples": {
+      "defaults": true,
+      "additional": []
+    }
+  },
+  "files": [
+    "binding.cjs",
+    "index.js",
+    "index.d.ts"
+  ],
+  "scripts": {
+    "artifacts": "napi artifacts",
+    "build": "napi build --platform --release && mv index.js binding.cjs",
+    "build:debug": "napi build --platform && mv index.js binding.cjs",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^2.18.0"
+  }
 }
