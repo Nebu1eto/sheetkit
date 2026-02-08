@@ -29,6 +29,7 @@ use crate::comment::CommentConfig;
 use crate::conditional::ConditionalFormatRule;
 use crate::error::{Error, Result};
 use crate::image::ImageConfig;
+use crate::pivot::{PivotTableConfig, PivotTableInfo};
 use crate::protection::WorkbookProtectionConfig;
 use crate::sst::SharedStringTable;
 use crate::utils::cell_ref::cell_name_to_coordinates;
@@ -70,6 +71,12 @@ pub struct Workbook {
     app_properties: Option<sheetkit_xml::doc_props::ExtendedProperties>,
     /// Custom properties (docProps/custom.xml).
     custom_properties: Option<sheetkit_xml::doc_props::CustomProperties>,
+    /// Pivot table parts: (zip path, PivotTableDefinition data).
+    pivot_tables: Vec<(String, sheetkit_xml::pivot_table::PivotTableDefinition)>,
+    /// Pivot cache definition parts: (zip path, PivotCacheDefinition data).
+    pivot_cache_defs: Vec<(String, sheetkit_xml::pivot_cache::PivotCacheDefinition)>,
+    /// Pivot cache records parts: (zip path, PivotCacheRecords data).
+    pivot_cache_records: Vec<(String, sheetkit_xml::pivot_cache::PivotCacheRecords)>,
 }
 
 impl Workbook {
@@ -96,6 +103,9 @@ impl Workbook {
             core_properties: None,
             app_properties: None,
             custom_properties: None,
+            pivot_tables: vec![],
+            pivot_cache_defs: vec![],
+            pivot_cache_records: vec![],
         }
     }
 
@@ -172,6 +182,36 @@ impl Workbook {
                 sheetkit_xml::doc_props::deserialize_custom_properties(&xml_str).ok()
             });
 
+        // Parse pivot cache definitions, pivot tables, and pivot cache records.
+        let mut pivot_cache_defs = Vec::new();
+        let mut pivot_tables = Vec::new();
+        let mut pivot_cache_records = Vec::new();
+        for ovr in &content_types.overrides {
+            let path = ovr.part_name.trim_start_matches('/');
+            if ovr.content_type == mime_types::PIVOT_CACHE_DEFINITION {
+                if let Ok(pcd) = read_xml_part::<sheetkit_xml::pivot_cache::PivotCacheDefinition>(
+                    &mut archive,
+                    path,
+                ) {
+                    pivot_cache_defs.push((path.to_string(), pcd));
+                }
+            } else if ovr.content_type == mime_types::PIVOT_TABLE {
+                if let Ok(pt) = read_xml_part::<sheetkit_xml::pivot_table::PivotTableDefinition>(
+                    &mut archive,
+                    path,
+                ) {
+                    pivot_tables.push((path.to_string(), pt));
+                }
+            } else if ovr.content_type == mime_types::PIVOT_CACHE_RECORDS {
+                if let Ok(pcr) = read_xml_part::<sheetkit_xml::pivot_cache::PivotCacheRecords>(
+                    &mut archive,
+                    path,
+                ) {
+                    pivot_cache_records.push((path.to_string(), pcr));
+                }
+            }
+        }
+
         Ok(Self {
             content_types,
             package_rels,
@@ -191,6 +231,9 @@ impl Workbook {
             core_properties,
             app_properties,
             custom_properties,
+            pivot_tables,
+            pivot_cache_defs,
+            pivot_cache_records,
         })
     }
 
@@ -270,6 +313,21 @@ impl Workbook {
         for (drawing_idx, rels) in &self.drawing_rels {
             let path = format!("xl/drawings/_rels/drawing{}.xml.rels", drawing_idx + 1);
             write_xml_part(&mut zip, &path, rels, options)?;
+        }
+
+        // xl/pivotTables/pivotTable{N}.xml
+        for (path, pt) in &self.pivot_tables {
+            write_xml_part(&mut zip, path, pt, options)?;
+        }
+
+        // xl/pivotCache/pivotCacheDefinition{N}.xml
+        for (path, pcd) in &self.pivot_cache_defs {
+            write_xml_part(&mut zip, path, pcd, options)?;
+        }
+
+        // xl/pivotCache/pivotCacheRecords{N}.xml
+        for (path, pcr) in &self.pivot_cache_records {
+            write_xml_part(&mut zip, path, pcr, options)?;
         }
 
         // docProps/core.xml
@@ -1292,6 +1350,317 @@ impl Workbook {
         Ok(())
     }
 
+    /// Add a pivot table to the workbook.
+    ///
+    /// The pivot table summarizes data from `config.source_sheet` /
+    /// `config.source_range` and places its output on `config.target_sheet`
+    /// starting at `config.target_cell`.
+    pub fn add_pivot_table(&mut self, config: &PivotTableConfig) -> Result<()> {
+        // Validate source sheet exists.
+        let _src_idx = self.sheet_index(&config.source_sheet)?;
+
+        // Validate target sheet exists.
+        let target_idx = self.sheet_index(&config.target_sheet)?;
+
+        // Check for duplicate name.
+        if self
+            .pivot_tables
+            .iter()
+            .any(|(_, pt)| pt.name == config.name)
+        {
+            return Err(Error::PivotTableAlreadyExists {
+                name: config.name.clone(),
+            });
+        }
+
+        // Read header row from the source data.
+        let field_names = self.read_header_row(&config.source_sheet, &config.source_range)?;
+        if field_names.is_empty() {
+            return Err(Error::InvalidSourceRange(
+                "source range header row is empty".to_string(),
+            ));
+        }
+
+        // Assign a cache ID (next available).
+        let cache_id = self
+            .pivot_tables
+            .iter()
+            .map(|(_, pt)| pt.cache_id)
+            .max()
+            .map(|m| m + 1)
+            .unwrap_or(0);
+
+        // Build XML structures.
+        let pt_def = crate::pivot::build_pivot_table_xml(config, cache_id, &field_names)?;
+        let pcd = crate::pivot::build_pivot_cache_definition(
+            &config.source_sheet,
+            &config.source_range,
+            &field_names,
+        );
+        let pcr = sheetkit_xml::pivot_cache::PivotCacheRecords {
+            xmlns: sheetkit_xml::namespaces::SPREADSHEET_ML.to_string(),
+            xmlns_r: sheetkit_xml::namespaces::RELATIONSHIPS.to_string(),
+            count: Some(0),
+            records: vec![],
+        };
+
+        // Determine part numbers.
+        let pt_num = self.pivot_tables.len() + 1;
+        let cache_num = self.pivot_cache_defs.len() + 1;
+
+        let pt_path = format!("xl/pivotTables/pivotTable{}.xml", pt_num);
+        let pcd_path = format!("xl/pivotCache/pivotCacheDefinition{}.xml", cache_num);
+        let pcr_path = format!("xl/pivotCache/pivotCacheRecords{}.xml", cache_num);
+
+        // Store parts.
+        self.pivot_tables.push((pt_path.clone(), pt_def));
+        self.pivot_cache_defs.push((pcd_path.clone(), pcd));
+        self.pivot_cache_records.push((pcr_path.clone(), pcr));
+
+        // Add content type overrides.
+        self.content_types.overrides.push(ContentTypeOverride {
+            part_name: format!("/{}", pt_path),
+            content_type: mime_types::PIVOT_TABLE.to_string(),
+        });
+        self.content_types.overrides.push(ContentTypeOverride {
+            part_name: format!("/{}", pcd_path),
+            content_type: mime_types::PIVOT_CACHE_DEFINITION.to_string(),
+        });
+        self.content_types.overrides.push(ContentTypeOverride {
+            part_name: format!("/{}", pcr_path),
+            content_type: mime_types::PIVOT_CACHE_RECORDS.to_string(),
+        });
+
+        // Add workbook relationship for pivot cache definition.
+        let wb_rid = crate::sheet::next_rid(&self.workbook_rels.relationships);
+        self.workbook_rels.relationships.push(Relationship {
+            id: wb_rid.clone(),
+            rel_type: rel_types::PIVOT_CACHE_DEF.to_string(),
+            target: format!("pivotCache/pivotCacheDefinition{}.xml", cache_num),
+            target_mode: None,
+        });
+
+        // Update workbook_xml.pivot_caches.
+        let pivot_caches = self
+            .workbook_xml
+            .pivot_caches
+            .get_or_insert_with(|| sheetkit_xml::workbook::PivotCaches { caches: vec![] });
+        pivot_caches
+            .caches
+            .push(sheetkit_xml::workbook::PivotCacheEntry {
+                cache_id,
+                r_id: wb_rid,
+            });
+
+        // Add worksheet relationship for pivot table on the target sheet.
+        let ws_rid = self.next_worksheet_rid(target_idx);
+        let ws_rels = self
+            .worksheet_rels
+            .entry(target_idx)
+            .or_insert_with(|| Relationships {
+                xmlns: sheetkit_xml::namespaces::PACKAGE_RELATIONSHIPS.to_string(),
+                relationships: vec![],
+            });
+        ws_rels.relationships.push(Relationship {
+            id: ws_rid,
+            rel_type: rel_types::PIVOT_TABLE.to_string(),
+            target: format!("../pivotTables/pivotTable{}.xml", pt_num),
+            target_mode: None,
+        });
+
+        Ok(())
+    }
+
+    /// Get information about all pivot tables in the workbook.
+    pub fn get_pivot_tables(&self) -> Vec<PivotTableInfo> {
+        self.pivot_tables
+            .iter()
+            .map(|(_path, pt)| {
+                // Find the matching cache definition by cache_id.
+                let (source_sheet, source_range) = self
+                    .pivot_cache_defs
+                    .iter()
+                    .enumerate()
+                    .find(|(i, _)| {
+                        self.workbook_xml
+                            .pivot_caches
+                            .as_ref()
+                            .and_then(|pc| pc.caches.iter().find(|e| e.cache_id == pt.cache_id))
+                            .is_some()
+                            || *i == pt.cache_id as usize
+                    })
+                    .and_then(|(_, (_, pcd))| {
+                        pcd.cache_source
+                            .worksheet_source
+                            .as_ref()
+                            .map(|ws| (ws.sheet.clone(), ws.reference.clone()))
+                    })
+                    .unwrap_or_default();
+
+                // Determine target sheet from the pivot table path.
+                let target_sheet = self.find_pivot_table_target_sheet(pt).unwrap_or_default();
+
+                PivotTableInfo {
+                    name: pt.name.clone(),
+                    source_sheet,
+                    source_range,
+                    target_sheet,
+                    location: pt.location.reference.clone(),
+                }
+            })
+            .collect()
+    }
+
+    /// Delete a pivot table by name.
+    pub fn delete_pivot_table(&mut self, name: &str) -> Result<()> {
+        // Find the pivot table.
+        let pt_idx = self
+            .pivot_tables
+            .iter()
+            .position(|(_, pt)| pt.name == name)
+            .ok_or_else(|| Error::PivotTableNotFound {
+                name: name.to_string(),
+            })?;
+
+        let (pt_path, pt_def) = self.pivot_tables.remove(pt_idx);
+        let cache_id = pt_def.cache_id;
+
+        // Remove the matching pivot cache definition and records.
+        // Find the workbook_xml pivot cache entry for this cache_id.
+        let mut wb_cache_rid = None;
+        if let Some(ref mut pivot_caches) = self.workbook_xml.pivot_caches {
+            if let Some(pos) = pivot_caches
+                .caches
+                .iter()
+                .position(|e| e.cache_id == cache_id)
+            {
+                wb_cache_rid = Some(pivot_caches.caches[pos].r_id.clone());
+                pivot_caches.caches.remove(pos);
+            }
+            if pivot_caches.caches.is_empty() {
+                self.workbook_xml.pivot_caches = None;
+            }
+        }
+
+        // Remove the workbook relationship for this cache.
+        if let Some(ref rid) = wb_cache_rid {
+            // Find the target to determine which cache def to remove.
+            if let Some(rel) = self
+                .workbook_rels
+                .relationships
+                .iter()
+                .find(|r| r.id == *rid)
+            {
+                let target_path = format!("xl/{}", rel.target);
+                self.pivot_cache_defs.retain(|(p, _)| *p != target_path);
+
+                // Remove matching cache records (same numbering).
+                let records_path = target_path.replace("pivotCacheDefinition", "pivotCacheRecords");
+                self.pivot_cache_records.retain(|(p, _)| *p != records_path);
+            }
+            self.workbook_rels.relationships.retain(|r| r.id != *rid);
+        }
+
+        // Remove content type overrides for the removed parts.
+        let pt_part = format!("/{}", pt_path);
+        self.content_types
+            .overrides
+            .retain(|o| o.part_name != pt_part);
+
+        // Also remove cache def and records content types if the paths were removed.
+        self.content_types.overrides.retain(|o| {
+            let p = o.part_name.trim_start_matches('/');
+            // Keep if it is still in our live lists.
+            if o.content_type == mime_types::PIVOT_CACHE_DEFINITION {
+                return self.pivot_cache_defs.iter().any(|(path, _)| path == p);
+            }
+            if o.content_type == mime_types::PIVOT_CACHE_RECORDS {
+                return self.pivot_cache_records.iter().any(|(path, _)| path == p);
+            }
+            if o.content_type == mime_types::PIVOT_TABLE {
+                return self.pivot_tables.iter().any(|(path, _)| path == p);
+            }
+            true
+        });
+
+        // Remove worksheet relationship for this pivot table.
+        for (_idx, rels) in self.worksheet_rels.iter_mut() {
+            rels.relationships.retain(|r| {
+                if r.rel_type != rel_types::PIVOT_TABLE {
+                    return true;
+                }
+                // Check if the target matches the removed pivot table.
+                let full_target = format!(
+                    "xl/pivotTables/{}",
+                    r.target.trim_start_matches("../pivotTables/")
+                );
+                full_target != pt_path
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Read the header row (first row) of a range from a sheet, returning cell
+    /// values as strings.
+    fn read_header_row(&self, sheet: &str, range: &str) -> Result<Vec<String>> {
+        let parts: Vec<&str> = range.split(':').collect();
+        if parts.len() != 2 {
+            return Err(Error::InvalidSourceRange(range.to_string()));
+        }
+        let (start_col, start_row) = cell_name_to_coordinates(parts[0])
+            .map_err(|_| Error::InvalidSourceRange(range.to_string()))?;
+        let (end_col, _end_row) = cell_name_to_coordinates(parts[1])
+            .map_err(|_| Error::InvalidSourceRange(range.to_string()))?;
+
+        let mut headers = Vec::new();
+        for col in start_col..=end_col {
+            let cell_name = crate::utils::cell_ref::coordinates_to_cell_name(col, start_row)?;
+            let val = self.get_cell_value(sheet, &cell_name)?;
+            let s = match val {
+                CellValue::String(s) => s,
+                CellValue::Number(n) => n.to_string(),
+                CellValue::Bool(b) => b.to_string(),
+                _ => String::new(),
+            };
+            headers.push(s);
+        }
+        Ok(headers)
+    }
+
+    /// Find the target sheet name for a pivot table by looking at worksheet
+    /// relationships that reference its path.
+    fn find_pivot_table_target_sheet(
+        &self,
+        pt: &sheetkit_xml::pivot_table::PivotTableDefinition,
+    ) -> Option<String> {
+        // Find the pivot table path.
+        let pt_path = self
+            .pivot_tables
+            .iter()
+            .find(|(_, p)| p.name == pt.name)
+            .map(|(path, _)| path.as_str())?;
+
+        // Find which worksheet has a relationship pointing to this pivot table.
+        for (sheet_idx, rels) in &self.worksheet_rels {
+            for r in &rels.relationships {
+                if r.rel_type == rel_types::PIVOT_TABLE {
+                    let full_target = format!(
+                        "xl/pivotTables/{}",
+                        r.target.trim_start_matches("../pivotTables/")
+                    );
+                    if full_target == pt_path {
+                        return self
+                            .worksheets
+                            .get(*sheet_idx)
+                            .map(|(name, _)| name.clone());
+                    }
+                }
+            }
+        }
+        None
+    }
+
     /// Protect the workbook structure and/or windows.
     pub fn protect_workbook(&mut self, config: WorkbookProtectionConfig) {
         let password_hash = config.password.as_ref().map(|p| {
@@ -1363,14 +1732,15 @@ impl Workbook {
     }
 
     /// Recalculate every formula cell across all sheets and store the
-    /// computed result back into each cell.
+    /// computed result back into each cell. Uses a dependency graph and
+    /// topological sort so formulas are evaluated after their dependencies.
     pub fn calculate_all(&mut self) -> Result<()> {
-        // Collect formula cells and current-sheet context.
+        use crate::formula::eval::{build_dependency_graph, topological_sort, CellCoord};
+
         let sheet_names: Vec<String> = self.sheet_names().iter().map(|s| s.to_string()).collect();
 
-        // Build a single snapshot of all cell data.
-        let first_sheet = sheet_names.first().cloned().unwrap_or_default();
-        let mut snapshot = crate::formula::eval::CellSnapshot::new(first_sheet);
+        // Collect all formula cells with their coordinates and formula strings.
+        let mut formula_cells: Vec<(CellCoord, String)> = Vec::new();
         for sn in &sheet_names {
             let ws = self
                 .worksheets
@@ -1382,36 +1752,18 @@ impl Workbook {
                 })?;
             for row in &ws.sheet_data.rows {
                 for cell in &row.cells {
-                    if let Ok((c, r)) = cell_name_to_coordinates(&cell.r) {
-                        let cv = self.xml_cell_to_value(cell)?;
-                        snapshot.set_cell(sn, c, r, cv);
-                    }
-                }
-            }
-        }
-
-        // Collect all (sheet, col, row, formula_string) tuples.
-        let mut formulas: Vec<(String, u32, u32, String)> = Vec::new();
-        for sn in &sheet_names {
-            let ws = self
-                .worksheets
-                .iter()
-                .find(|(name, _)| name == sn)
-                .map(|(_, ws)| ws)
-                .ok_or_else(|| Error::SheetNotFound {
-                    name: sn.to_string(),
-                })?;
-            for row in &ws.sheet_data.rows {
-                for cell in &row.cells {
-                    if cell.f.is_some() {
-                        if let Ok((c, r)) = cell_name_to_coordinates(&cell.r) {
-                            let formula_str = cell
-                                .f
-                                .as_ref()
-                                .and_then(|f| f.value.clone())
-                                .unwrap_or_default();
-                            if !formula_str.is_empty() {
-                                formulas.push((sn.clone(), c, r, formula_str));
+                    if let Some(ref f) = cell.f {
+                        let formula_str = f.value.clone().unwrap_or_default();
+                        if !formula_str.is_empty() {
+                            if let Ok((c, r)) = cell_name_to_coordinates(&cell.r) {
+                                formula_cells.push((
+                                    CellCoord {
+                                        sheet: sn.clone(),
+                                        col: c,
+                                        row: r,
+                                    },
+                                    formula_str,
+                                ));
                             }
                         }
                     }
@@ -1419,60 +1771,69 @@ impl Workbook {
             }
         }
 
-        // Evaluate each formula and collect results.
-        let mut results: Vec<(String, String, CellValue)> = Vec::new();
-        for (sn, col, row, formula_str) in &formulas {
-            // Build a per-sheet evaluator context.
-            let mut sheet_snapshot = crate::formula::eval::CellSnapshot::new(sn.clone());
-            // Copy all data from the main snapshot.
-            for other_sn in &sheet_names {
-                let ws = self
-                    .worksheets
-                    .iter()
-                    .find(|(name, _)| name == other_sn)
-                    .map(|(_, ws)| ws)
-                    .unwrap();
-                for r in &ws.sheet_data.rows {
-                    for c in &r.cells {
-                        if let Ok((cc, rr)) = cell_name_to_coordinates(&c.r) {
-                            let cv = self.xml_cell_to_value(c)?;
-                            sheet_snapshot.set_cell(other_sn, cc, rr, cv);
+        if formula_cells.is_empty() {
+            return Ok(());
+        }
+
+        // Build dependency graph and determine evaluation order.
+        let deps = build_dependency_graph(&formula_cells)?;
+        let coords: Vec<CellCoord> = formula_cells.iter().map(|(c, _)| c.clone()).collect();
+        let eval_order = topological_sort(&coords, &deps)?;
+
+        // Build a lookup from coord to formula string.
+        let formula_map: HashMap<CellCoord, String> = formula_cells.into_iter().collect();
+
+        // Build a snapshot of all cell data.
+        let first_sheet = sheet_names.first().cloned().unwrap_or_default();
+        let mut snapshot = self.build_cell_snapshot(&first_sheet)?;
+
+        // Evaluate in dependency order, updating the snapshot progressively
+        // so later formulas see already-computed results.
+        let mut results: Vec<(CellCoord, String, CellValue)> = Vec::new();
+        for coord in &eval_order {
+            if let Some(formula_str) = formula_map.get(coord) {
+                snapshot.set_current_sheet(&coord.sheet);
+                let parsed = crate::formula::parser::parse_formula(formula_str)?;
+                let mut evaluator = crate::formula::eval::Evaluator::new(&snapshot);
+                let result = evaluator.eval_expr(&parsed)?;
+                snapshot.set_cell(&coord.sheet, coord.col, coord.row, result.clone());
+                results.push((coord.clone(), formula_str.clone(), result));
+            }
+        }
+
+        // Write results back directly to the XML cells, preserving the
+        // formula element and storing the computed value in the v/t fields.
+        for (coord, _formula_str, result) in results {
+            let cell_ref = crate::utils::cell_ref::coordinates_to_cell_name(coord.col, coord.row)?;
+            if let Some((_, ws)) = self.worksheets.iter_mut().find(|(n, _)| *n == coord.sheet) {
+                if let Some(row) = ws.sheet_data.rows.iter_mut().find(|r| r.r == coord.row) {
+                    if let Some(cell) = row.cells.iter_mut().find(|c| c.r == cell_ref) {
+                        match &result {
+                            CellValue::Number(n) => {
+                                cell.v = Some(n.to_string());
+                                cell.t = None;
+                            }
+                            CellValue::String(s) => {
+                                cell.v = Some(s.clone());
+                                cell.t = Some("str".to_string());
+                            }
+                            CellValue::Bool(b) => {
+                                cell.v = Some(if *b { "1".to_string() } else { "0".to_string() });
+                                cell.t = Some("b".to_string());
+                            }
+                            CellValue::Error(e) => {
+                                cell.v = Some(e.clone());
+                                cell.t = Some("e".to_string());
+                            }
+                            CellValue::Date(n) => {
+                                cell.v = Some(n.to_string());
+                                cell.t = None;
+                            }
+                            _ => {}
                         }
                     }
                 }
             }
-            let parsed = crate::formula::parser::parse_formula(formula_str)?;
-            let result = crate::formula::eval::evaluate(&parsed, &sheet_snapshot)?;
-            let cell_name = crate::utils::cell_ref::coordinates_to_cell_name(*col, *row)?;
-            results.push((sn.clone(), cell_name, result));
-        }
-
-        // Write results back. Formula cells retain their formula expression
-        // and gain a cached result.
-        for (sn, cell_name, result) in results {
-            let cv = CellValue::Formula {
-                expr: {
-                    // Re-read the formula expression from the cell.
-                    let ws = self
-                        .worksheets
-                        .iter()
-                        .find(|(name, _)| name == &sn)
-                        .map(|(_, ws)| ws)
-                        .unwrap();
-                    let (col, row) = cell_name_to_coordinates(&cell_name)?;
-                    let cell_ref = crate::utils::cell_ref::coordinates_to_cell_name(col, row)?;
-                    ws.sheet_data
-                        .rows
-                        .iter()
-                        .find(|r| r.r == row)
-                        .and_then(|r| r.cells.iter().find(|c| c.r == cell_ref))
-                        .and_then(|c| c.f.as_ref())
-                        .and_then(|f| f.value.clone())
-                        .unwrap_or_default()
-                },
-                result: Some(Box::new(result)),
-            };
-            self.set_cell_value(&sn, &cell_name, cv)?;
         }
 
         Ok(())
@@ -3973,5 +4334,618 @@ mod tests {
         assert_eq!(rows[1].1[0].1, CellValue::Bool(true));
 
         let _ = std::fs::remove_file(&tmp);
+    }
+
+    // -- Pivot table tests --
+
+    fn make_pivot_workbook() -> Workbook {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", "Name").unwrap();
+        wb.set_cell_value("Sheet1", "B1", "Region").unwrap();
+        wb.set_cell_value("Sheet1", "C1", "Sales").unwrap();
+        wb.set_cell_value("Sheet1", "A2", "Alice").unwrap();
+        wb.set_cell_value("Sheet1", "B2", "North").unwrap();
+        wb.set_cell_value("Sheet1", "C2", 100.0).unwrap();
+        wb.set_cell_value("Sheet1", "A3", "Bob").unwrap();
+        wb.set_cell_value("Sheet1", "B3", "South").unwrap();
+        wb.set_cell_value("Sheet1", "C3", 200.0).unwrap();
+        wb.set_cell_value("Sheet1", "A4", "Carol").unwrap();
+        wb.set_cell_value("Sheet1", "B4", "North").unwrap();
+        wb.set_cell_value("Sheet1", "C4", 150.0).unwrap();
+        wb
+    }
+
+    fn basic_pivot_config() -> PivotTableConfig {
+        use crate::pivot::{AggregateFunction, PivotDataField, PivotField};
+        PivotTableConfig {
+            name: "PivotTable1".to_string(),
+            source_sheet: "Sheet1".to_string(),
+            source_range: "A1:C4".to_string(),
+            target_sheet: "Sheet1".to_string(),
+            target_cell: "E1".to_string(),
+            rows: vec![PivotField {
+                name: "Name".to_string(),
+            }],
+            columns: vec![],
+            data: vec![PivotDataField {
+                name: "Sales".to_string(),
+                function: AggregateFunction::Sum,
+                display_name: None,
+            }],
+        }
+    }
+
+    #[test]
+    fn test_add_pivot_table_basic() {
+        let mut wb = make_pivot_workbook();
+        let config = basic_pivot_config();
+        wb.add_pivot_table(&config).unwrap();
+
+        assert_eq!(wb.pivot_tables.len(), 1);
+        assert_eq!(wb.pivot_cache_defs.len(), 1);
+        assert_eq!(wb.pivot_cache_records.len(), 1);
+        assert_eq!(wb.pivot_tables[0].1.name, "PivotTable1");
+        assert_eq!(wb.pivot_tables[0].1.cache_id, 0);
+    }
+
+    #[test]
+    fn test_add_pivot_table_with_columns() {
+        use crate::pivot::{AggregateFunction, PivotDataField, PivotField};
+        let mut wb = make_pivot_workbook();
+        let config = PivotTableConfig {
+            name: "PT2".to_string(),
+            source_sheet: "Sheet1".to_string(),
+            source_range: "A1:C4".to_string(),
+            target_sheet: "Sheet1".to_string(),
+            target_cell: "E1".to_string(),
+            rows: vec![PivotField {
+                name: "Name".to_string(),
+            }],
+            columns: vec![PivotField {
+                name: "Region".to_string(),
+            }],
+            data: vec![PivotDataField {
+                name: "Sales".to_string(),
+                function: AggregateFunction::Average,
+                display_name: Some("Avg Sales".to_string()),
+            }],
+        };
+        wb.add_pivot_table(&config).unwrap();
+
+        let pt = &wb.pivot_tables[0].1;
+        assert!(pt.row_fields.is_some());
+        assert!(pt.col_fields.is_some());
+        assert!(pt.data_fields.is_some());
+    }
+
+    #[test]
+    fn test_add_pivot_table_source_sheet_not_found() {
+        use crate::pivot::{AggregateFunction, PivotDataField, PivotField};
+        let mut wb = Workbook::new();
+        let config = PivotTableConfig {
+            name: "PT".to_string(),
+            source_sheet: "NonExistent".to_string(),
+            source_range: "A1:B2".to_string(),
+            target_sheet: "Sheet1".to_string(),
+            target_cell: "A1".to_string(),
+            rows: vec![PivotField {
+                name: "Col1".to_string(),
+            }],
+            columns: vec![],
+            data: vec![PivotDataField {
+                name: "Col2".to_string(),
+                function: AggregateFunction::Sum,
+                display_name: None,
+            }],
+        };
+        let result = wb.add_pivot_table(&config);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::SheetNotFound { .. }));
+    }
+
+    #[test]
+    fn test_add_pivot_table_target_sheet_not_found() {
+        use crate::pivot::{AggregateFunction, PivotDataField, PivotField};
+        let mut wb = make_pivot_workbook();
+        let config = PivotTableConfig {
+            name: "PT".to_string(),
+            source_sheet: "Sheet1".to_string(),
+            source_range: "A1:C4".to_string(),
+            target_sheet: "Report".to_string(),
+            target_cell: "A1".to_string(),
+            rows: vec![PivotField {
+                name: "Name".to_string(),
+            }],
+            columns: vec![],
+            data: vec![PivotDataField {
+                name: "Sales".to_string(),
+                function: AggregateFunction::Sum,
+                display_name: None,
+            }],
+        };
+        let result = wb.add_pivot_table(&config);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::SheetNotFound { .. }));
+    }
+
+    #[test]
+    fn test_add_pivot_table_duplicate_name() {
+        let mut wb = make_pivot_workbook();
+        let config = basic_pivot_config();
+        wb.add_pivot_table(&config).unwrap();
+
+        let result = wb.add_pivot_table(&config);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::PivotTableAlreadyExists { .. }
+        ));
+    }
+
+    #[test]
+    fn test_get_pivot_tables_empty() {
+        let wb = Workbook::new();
+        let pts = wb.get_pivot_tables();
+        assert!(pts.is_empty());
+    }
+
+    #[test]
+    fn test_get_pivot_tables_after_add() {
+        let mut wb = make_pivot_workbook();
+        let config = basic_pivot_config();
+        wb.add_pivot_table(&config).unwrap();
+
+        let pts = wb.get_pivot_tables();
+        assert_eq!(pts.len(), 1);
+        assert_eq!(pts[0].name, "PivotTable1");
+        assert_eq!(pts[0].source_sheet, "Sheet1");
+        assert_eq!(pts[0].source_range, "A1:C4");
+        assert_eq!(pts[0].target_sheet, "Sheet1");
+        assert_eq!(pts[0].location, "E1");
+    }
+
+    #[test]
+    fn test_delete_pivot_table() {
+        let mut wb = make_pivot_workbook();
+        let config = basic_pivot_config();
+        wb.add_pivot_table(&config).unwrap();
+        assert_eq!(wb.pivot_tables.len(), 1);
+
+        wb.delete_pivot_table("PivotTable1").unwrap();
+        assert!(wb.pivot_tables.is_empty());
+        assert!(wb.pivot_cache_defs.is_empty());
+        assert!(wb.pivot_cache_records.is_empty());
+        assert!(wb.workbook_xml.pivot_caches.is_none());
+
+        // Content type overrides for pivot parts should be gone.
+        let pivot_overrides: Vec<_> = wb
+            .content_types
+            .overrides
+            .iter()
+            .filter(|o| {
+                o.content_type == mime_types::PIVOT_TABLE
+                    || o.content_type == mime_types::PIVOT_CACHE_DEFINITION
+                    || o.content_type == mime_types::PIVOT_CACHE_RECORDS
+            })
+            .collect();
+        assert!(pivot_overrides.is_empty());
+    }
+
+    #[test]
+    fn test_delete_pivot_table_not_found() {
+        let wb_result = Workbook::new().delete_pivot_table("NonExistent");
+        assert!(wb_result.is_err());
+        assert!(matches!(
+            wb_result.unwrap_err(),
+            Error::PivotTableNotFound { .. }
+        ));
+    }
+
+    #[test]
+    fn test_pivot_table_save_open_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("pivot_roundtrip.xlsx");
+
+        let mut wb = make_pivot_workbook();
+        let config = basic_pivot_config();
+        wb.add_pivot_table(&config).unwrap();
+
+        wb.save(&path).unwrap();
+
+        // Verify the ZIP contains pivot parts.
+        let file = std::fs::File::open(&path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        assert!(archive.by_name("xl/pivotTables/pivotTable1.xml").is_ok());
+        assert!(archive
+            .by_name("xl/pivotCache/pivotCacheDefinition1.xml")
+            .is_ok());
+        assert!(archive
+            .by_name("xl/pivotCache/pivotCacheRecords1.xml")
+            .is_ok());
+
+        // Re-open and verify pivot table is parsed.
+        let wb2 = Workbook::open(&path).unwrap();
+        assert_eq!(wb2.pivot_tables.len(), 1);
+        assert_eq!(wb2.pivot_tables[0].1.name, "PivotTable1");
+        assert_eq!(wb2.pivot_cache_defs.len(), 1);
+        assert_eq!(wb2.pivot_cache_records.len(), 1);
+    }
+
+    #[test]
+    fn test_add_multiple_pivot_tables() {
+        use crate::pivot::{AggregateFunction, PivotDataField, PivotField};
+        let mut wb = make_pivot_workbook();
+
+        let config1 = basic_pivot_config();
+        wb.add_pivot_table(&config1).unwrap();
+
+        let config2 = PivotTableConfig {
+            name: "PivotTable2".to_string(),
+            source_sheet: "Sheet1".to_string(),
+            source_range: "A1:C4".to_string(),
+            target_sheet: "Sheet1".to_string(),
+            target_cell: "H1".to_string(),
+            rows: vec![PivotField {
+                name: "Region".to_string(),
+            }],
+            columns: vec![],
+            data: vec![PivotDataField {
+                name: "Sales".to_string(),
+                function: AggregateFunction::Count,
+                display_name: None,
+            }],
+        };
+        wb.add_pivot_table(&config2).unwrap();
+
+        assert_eq!(wb.pivot_tables.len(), 2);
+        assert_eq!(wb.pivot_cache_defs.len(), 2);
+        assert_eq!(wb.pivot_tables[0].1.cache_id, 0);
+        assert_eq!(wb.pivot_tables[1].1.cache_id, 1);
+
+        let pts = wb.get_pivot_tables();
+        assert_eq!(pts.len(), 2);
+        assert_eq!(pts[0].name, "PivotTable1");
+        assert_eq!(pts[1].name, "PivotTable2");
+    }
+
+    #[test]
+    fn test_add_pivot_table_content_types_added() {
+        let mut wb = make_pivot_workbook();
+        let config = basic_pivot_config();
+        wb.add_pivot_table(&config).unwrap();
+
+        let has_pt_ct = wb.content_types.overrides.iter().any(|o| {
+            o.content_type == mime_types::PIVOT_TABLE
+                && o.part_name == "/xl/pivotTables/pivotTable1.xml"
+        });
+        assert!(has_pt_ct);
+
+        let has_pcd_ct = wb.content_types.overrides.iter().any(|o| {
+            o.content_type == mime_types::PIVOT_CACHE_DEFINITION
+                && o.part_name == "/xl/pivotCache/pivotCacheDefinition1.xml"
+        });
+        assert!(has_pcd_ct);
+
+        let has_pcr_ct = wb.content_types.overrides.iter().any(|o| {
+            o.content_type == mime_types::PIVOT_CACHE_RECORDS
+                && o.part_name == "/xl/pivotCache/pivotCacheRecords1.xml"
+        });
+        assert!(has_pcr_ct);
+    }
+
+    #[test]
+    fn test_add_pivot_table_workbook_rels_and_pivot_caches() {
+        let mut wb = make_pivot_workbook();
+        let config = basic_pivot_config();
+        wb.add_pivot_table(&config).unwrap();
+
+        // Workbook rels should have a pivot cache definition relationship.
+        let cache_rel = wb
+            .workbook_rels
+            .relationships
+            .iter()
+            .find(|r| r.rel_type == rel_types::PIVOT_CACHE_DEF);
+        assert!(cache_rel.is_some());
+        let cache_rel = cache_rel.unwrap();
+        assert_eq!(cache_rel.target, "pivotCache/pivotCacheDefinition1.xml");
+
+        // Workbook XML should have pivot caches.
+        let pivot_caches = wb.workbook_xml.pivot_caches.as_ref().unwrap();
+        assert_eq!(pivot_caches.caches.len(), 1);
+        assert_eq!(pivot_caches.caches[0].cache_id, 0);
+        assert_eq!(pivot_caches.caches[0].r_id, cache_rel.id);
+    }
+
+    #[test]
+    fn test_add_pivot_table_worksheet_rels_added() {
+        let mut wb = make_pivot_workbook();
+        let config = basic_pivot_config();
+        wb.add_pivot_table(&config).unwrap();
+
+        // Sheet1 is index 0; its rels should have a pivot table relationship.
+        let ws_rels = wb.worksheet_rels.get(&0).unwrap();
+        let pt_rel = ws_rels
+            .relationships
+            .iter()
+            .find(|r| r.rel_type == rel_types::PIVOT_TABLE);
+        assert!(pt_rel.is_some());
+        assert_eq!(pt_rel.unwrap().target, "../pivotTables/pivotTable1.xml");
+    }
+
+    #[test]
+    fn test_add_pivot_table_on_separate_target_sheet() {
+        use crate::pivot::{AggregateFunction, PivotDataField, PivotField};
+        let mut wb = make_pivot_workbook();
+        wb.new_sheet("Report").unwrap();
+
+        let config = PivotTableConfig {
+            name: "CrossSheet".to_string(),
+            source_sheet: "Sheet1".to_string(),
+            source_range: "A1:C4".to_string(),
+            target_sheet: "Report".to_string(),
+            target_cell: "A1".to_string(),
+            rows: vec![PivotField {
+                name: "Name".to_string(),
+            }],
+            columns: vec![],
+            data: vec![PivotDataField {
+                name: "Sales".to_string(),
+                function: AggregateFunction::Sum,
+                display_name: None,
+            }],
+        };
+        wb.add_pivot_table(&config).unwrap();
+
+        let pts = wb.get_pivot_tables();
+        assert_eq!(pts.len(), 1);
+        assert_eq!(pts[0].target_sheet, "Report");
+        assert_eq!(pts[0].source_sheet, "Sheet1");
+
+        // Worksheet rels should be on the Report sheet (index 1).
+        let ws_rels = wb.worksheet_rels.get(&1).unwrap();
+        let pt_rel = ws_rels
+            .relationships
+            .iter()
+            .find(|r| r.rel_type == rel_types::PIVOT_TABLE);
+        assert!(pt_rel.is_some());
+    }
+
+    #[test]
+    fn test_pivot_table_invalid_source_range() {
+        use crate::pivot::{AggregateFunction, PivotDataField, PivotField};
+        let mut wb = make_pivot_workbook();
+        let config = PivotTableConfig {
+            name: "BadRange".to_string(),
+            source_sheet: "Sheet1".to_string(),
+            source_range: "INVALID".to_string(),
+            target_sheet: "Sheet1".to_string(),
+            target_cell: "E1".to_string(),
+            rows: vec![PivotField {
+                name: "Name".to_string(),
+            }],
+            columns: vec![],
+            data: vec![PivotDataField {
+                name: "Sales".to_string(),
+                function: AggregateFunction::Sum,
+                display_name: None,
+            }],
+        };
+        let result = wb.add_pivot_table(&config);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_delete_pivot_table_then_add_another() {
+        use crate::pivot::{AggregateFunction, PivotDataField, PivotField};
+        let mut wb = make_pivot_workbook();
+        let config1 = basic_pivot_config();
+        wb.add_pivot_table(&config1).unwrap();
+        wb.delete_pivot_table("PivotTable1").unwrap();
+
+        let config2 = PivotTableConfig {
+            name: "PivotTable2".to_string(),
+            source_sheet: "Sheet1".to_string(),
+            source_range: "A1:C4".to_string(),
+            target_sheet: "Sheet1".to_string(),
+            target_cell: "E1".to_string(),
+            rows: vec![PivotField {
+                name: "Region".to_string(),
+            }],
+            columns: vec![],
+            data: vec![PivotDataField {
+                name: "Sales".to_string(),
+                function: AggregateFunction::Max,
+                display_name: None,
+            }],
+        };
+        wb.add_pivot_table(&config2).unwrap();
+
+        assert_eq!(wb.pivot_tables.len(), 1);
+        assert_eq!(wb.pivot_tables[0].1.name, "PivotTable2");
+    }
+
+    #[test]
+    fn test_pivot_table_cache_definition_stores_source_info() {
+        let mut wb = make_pivot_workbook();
+        let config = basic_pivot_config();
+        wb.add_pivot_table(&config).unwrap();
+
+        let pcd = &wb.pivot_cache_defs[0].1;
+        let ws_source = pcd.cache_source.worksheet_source.as_ref().unwrap();
+        assert_eq!(ws_source.sheet, "Sheet1");
+        assert_eq!(ws_source.reference, "A1:C4");
+        assert_eq!(pcd.cache_fields.fields.len(), 3);
+        assert_eq!(pcd.cache_fields.fields[0].name, "Name");
+        assert_eq!(pcd.cache_fields.fields[1].name, "Region");
+        assert_eq!(pcd.cache_fields.fields[2].name, "Sales");
+    }
+
+    #[test]
+    fn test_pivot_table_field_names_from_data() {
+        let mut wb = make_pivot_workbook();
+        let config = basic_pivot_config();
+        wb.add_pivot_table(&config).unwrap();
+
+        let pt = &wb.pivot_tables[0].1;
+        assert_eq!(pt.pivot_fields.fields.len(), 3);
+        // Name is a row field.
+        assert_eq!(pt.pivot_fields.fields[0].axis, Some("axisRow".to_string()));
+        // Region is not used.
+        assert_eq!(pt.pivot_fields.fields[1].axis, None);
+        // Sales is a data field.
+        assert_eq!(pt.pivot_fields.fields[2].data_field, Some(true));
+    }
+
+    #[test]
+    fn test_pivot_table_empty_header_row_error() {
+        use crate::pivot::{AggregateFunction, PivotDataField, PivotField};
+        let mut wb = Workbook::new();
+        // No data set in the sheet.
+        let config = PivotTableConfig {
+            name: "Empty".to_string(),
+            source_sheet: "Sheet1".to_string(),
+            source_range: "A1:B1".to_string(),
+            target_sheet: "Sheet1".to_string(),
+            target_cell: "D1".to_string(),
+            rows: vec![PivotField {
+                name: "X".to_string(),
+            }],
+            columns: vec![],
+            data: vec![PivotDataField {
+                name: "Y".to_string(),
+                function: AggregateFunction::Sum,
+                display_name: None,
+            }],
+        };
+        let result = wb.add_pivot_table(&config);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_pivot_table_multiple_save_roundtrip() {
+        use crate::pivot::{AggregateFunction, PivotDataField, PivotField};
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("multi_pivot.xlsx");
+
+        let mut wb = make_pivot_workbook();
+        let config1 = basic_pivot_config();
+        wb.add_pivot_table(&config1).unwrap();
+
+        let config2 = PivotTableConfig {
+            name: "PT2".to_string(),
+            source_sheet: "Sheet1".to_string(),
+            source_range: "A1:C4".to_string(),
+            target_sheet: "Sheet1".to_string(),
+            target_cell: "H1".to_string(),
+            rows: vec![PivotField {
+                name: "Region".to_string(),
+            }],
+            columns: vec![],
+            data: vec![PivotDataField {
+                name: "Sales".to_string(),
+                function: AggregateFunction::Min,
+                display_name: None,
+            }],
+        };
+        wb.add_pivot_table(&config2).unwrap();
+        wb.save(&path).unwrap();
+
+        let wb2 = Workbook::open(&path).unwrap();
+        assert_eq!(wb2.pivot_tables.len(), 2);
+        let names: Vec<&str> = wb2
+            .pivot_tables
+            .iter()
+            .map(|(_, pt)| pt.name.as_str())
+            .collect();
+        assert!(names.contains(&"PivotTable1"));
+        assert!(names.contains(&"PT2"));
+    }
+
+    #[test]
+    fn test_calculate_all_with_dependency_order() {
+        let mut wb = Workbook::new();
+        // A1 = 10 (value)
+        wb.set_cell_value("Sheet1", "A1", 10.0).unwrap();
+        // A2 = A1 * 2 (formula depends on A1)
+        wb.set_cell_value(
+            "Sheet1",
+            "A2",
+            CellValue::Formula {
+                expr: "A1*2".to_string(),
+                result: None,
+            },
+        )
+        .unwrap();
+        // A3 = A2 + A1 (formula depends on A2 and A1)
+        wb.set_cell_value(
+            "Sheet1",
+            "A3",
+            CellValue::Formula {
+                expr: "A2+A1".to_string(),
+                result: None,
+            },
+        )
+        .unwrap();
+
+        wb.calculate_all().unwrap();
+
+        // A2 should be 20 (10 * 2)
+        let a2 = wb.get_cell_value("Sheet1", "A2").unwrap();
+        match a2 {
+            CellValue::Formula { result, .. } => {
+                assert_eq!(*result.unwrap(), CellValue::Number(20.0));
+            }
+            _ => panic!("A2 should be a formula cell"),
+        }
+
+        // A3 should be 30 (20 + 10)
+        let a3 = wb.get_cell_value("Sheet1", "A3").unwrap();
+        match a3 {
+            CellValue::Formula { result, .. } => {
+                assert_eq!(*result.unwrap(), CellValue::Number(30.0));
+            }
+            _ => panic!("A3 should be a formula cell"),
+        }
+    }
+
+    #[test]
+    fn test_calculate_all_no_formulas() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", 10.0).unwrap();
+        wb.set_cell_value("Sheet1", "B1", 20.0).unwrap();
+        // Should succeed without error when there are no formulas.
+        wb.calculate_all().unwrap();
+    }
+
+    #[test]
+    fn test_calculate_all_cycle_detection() {
+        let mut wb = Workbook::new();
+        // A1 = B1, B1 = A1
+        wb.set_cell_value(
+            "Sheet1",
+            "A1",
+            CellValue::Formula {
+                expr: "B1".to_string(),
+                result: None,
+            },
+        )
+        .unwrap();
+        wb.set_cell_value(
+            "Sheet1",
+            "B1",
+            CellValue::Formula {
+                expr: "A1".to_string(),
+                result: None,
+            },
+        )
+        .unwrap();
+
+        let result = wb.calculate_all();
+        assert!(result.is_err());
+        let err_str = result.unwrap_err().to_string();
+        assert!(
+            err_str.contains("circular reference"),
+            "expected circular reference error, got: {err_str}"
+        );
     }
 }

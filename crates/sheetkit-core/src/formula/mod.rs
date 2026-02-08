@@ -9,5 +9,8 @@ pub mod functions;
 pub mod parser;
 
 pub use ast::{BinaryOperator, CellReference, Expr, UnaryOperator};
-pub use eval::{evaluate, CellDataProvider, CellSnapshot, Evaluator};
+pub use eval::{
+    build_dependency_graph, evaluate, topological_sort, CellCoord, CellDataProvider, CellSnapshot,
+    Evaluator,
+};
 pub use parser::parse_formula;

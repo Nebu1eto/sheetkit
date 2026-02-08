@@ -15,7 +15,11 @@ pub struct PivotCacheDefinition {
     #[serde(rename = "@xmlns:r")]
     pub xmlns_r: String,
 
-    #[serde(rename = "@r:id", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "@r:id",
+        alias = "@id",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub r_id: Option<String>,
 
     #[serde(rename = "@recordCount", skip_serializing_if = "Option::is_none")]

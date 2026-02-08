@@ -3,10 +3,18 @@
 //! Provides [`lookup_function`] to resolve a function name to its implementation,
 //! and helper utilities used by individual function implementations.
 
+pub mod date_time;
+pub mod information;
+pub mod logical;
+pub mod lookup;
+pub mod math;
+pub mod statistical;
+pub mod text;
+
 use crate::cell::CellValue;
 use crate::error::{Error, Result};
 use crate::formula::ast::Expr;
-use crate::formula::eval::Evaluator;
+use crate::formula::eval::{coerce_to_number, coerce_to_string, Evaluator};
 
 /// Signature for a built-in function implementation.
 ///
@@ -47,6 +55,86 @@ pub fn lookup_function(name: &str) -> Option<FunctionFn> {
         "ISERROR" => Some(fn_iserror),
         "VALUE" => Some(fn_value),
         "TEXT" => Some(fn_text),
+        "SUMIF" => Some(math::fn_sumif),
+        "SUMIFS" => Some(math::fn_sumifs),
+        "ROUNDUP" => Some(math::fn_roundup),
+        "ROUNDDOWN" => Some(math::fn_rounddown),
+        "CEILING" => Some(math::fn_ceiling),
+        "FLOOR" => Some(math::fn_floor),
+        "SIGN" => Some(math::fn_sign),
+        "RAND" => Some(math::fn_rand),
+        "RANDBETWEEN" => Some(math::fn_randbetween),
+        "PI" => Some(math::fn_pi),
+        "LOG" => Some(math::fn_log),
+        "LOG10" => Some(math::fn_log10),
+        "LN" => Some(math::fn_ln),
+        "EXP" => Some(math::fn_exp),
+        "PRODUCT" => Some(math::fn_product),
+        "QUOTIENT" => Some(math::fn_quotient),
+        "FACT" => Some(math::fn_fact),
+        "AVERAGEIF" => Some(statistical::fn_averageif),
+        "AVERAGEIFS" => Some(statistical::fn_averageifs),
+        "COUNTBLANK" => Some(statistical::fn_countblank),
+        "COUNTIF" => Some(statistical::fn_countif),
+        "COUNTIFS" => Some(statistical::fn_countifs),
+        "MEDIAN" => Some(statistical::fn_median),
+        "MODE" => Some(statistical::fn_mode),
+        "LARGE" => Some(statistical::fn_large),
+        "SMALL" => Some(statistical::fn_small),
+        "RANK" => Some(statistical::fn_rank),
+        "ISERR" => Some(information::fn_iserr),
+        "ISNA" => Some(information::fn_isna),
+        "ISLOGICAL" => Some(information::fn_islogical),
+        "ISEVEN" => Some(information::fn_iseven),
+        "ISODD" => Some(information::fn_isodd),
+        "TYPE" => Some(information::fn_type),
+        "N" => Some(information::fn_n),
+        "NA" => Some(information::fn_na),
+        "ERROR.TYPE" => Some(information::fn_error_type),
+        "CONCAT" => Some(text::fn_concat),
+        "FIND" => Some(text::fn_find),
+        "SEARCH" => Some(text::fn_search),
+        "SUBSTITUTE" => Some(text::fn_substitute),
+        "REPLACE" => Some(text::fn_replace),
+        "REPT" => Some(text::fn_rept),
+        "EXACT" => Some(text::fn_exact),
+        "T" => Some(text::fn_t),
+        "PROPER" => Some(text::fn_proper),
+        "TRUE" => Some(logical::fn_true),
+        "FALSE" => Some(logical::fn_false),
+        "IFERROR" => Some(logical::fn_iferror),
+        "IFNA" => Some(logical::fn_ifna),
+        "IFS" => Some(logical::fn_ifs),
+        "SWITCH" => Some(logical::fn_switch),
+        "XOR" => Some(logical::fn_xor),
+        "DATE" => Some(date_time::fn_date),
+        "TODAY" => Some(date_time::fn_today),
+        "NOW" => Some(date_time::fn_now),
+        "YEAR" => Some(date_time::fn_year),
+        "MONTH" => Some(date_time::fn_month),
+        "DAY" => Some(date_time::fn_day),
+        "HOUR" => Some(date_time::fn_hour),
+        "MINUTE" => Some(date_time::fn_minute),
+        "SECOND" => Some(date_time::fn_second),
+        "DATEDIF" => Some(date_time::fn_datedif),
+        "EDATE" => Some(date_time::fn_edate),
+        "EOMONTH" => Some(date_time::fn_eomonth),
+        "DATEVALUE" => Some(date_time::fn_datevalue),
+        "WEEKDAY" => Some(date_time::fn_weekday),
+        "WEEKNUM" => Some(date_time::fn_weeknum),
+        "NETWORKDAYS" => Some(date_time::fn_networkdays),
+        "WORKDAY" => Some(date_time::fn_workday),
+        "VLOOKUP" => Some(lookup::fn_vlookup),
+        "HLOOKUP" => Some(lookup::fn_hlookup),
+        "INDEX" => Some(lookup::fn_index),
+        "MATCH" => Some(lookup::fn_match),
+        "LOOKUP" => Some(lookup::fn_lookup),
+        "ROW" => Some(lookup::fn_row),
+        "COLUMN" => Some(lookup::fn_column),
+        "ROWS" => Some(lookup::fn_rows),
+        "COLUMNS" => Some(lookup::fn_columns),
+        "CHOOSE" => Some(lookup::fn_choose),
+        "ADDRESS" => Some(lookup::fn_address),
         _ => None,
     }
 }
@@ -66,6 +154,108 @@ pub fn check_arg_count(name: &str, args: &[Expr], min: usize, max: usize) -> Res
         });
     }
     Ok(())
+}
+
+/// Check whether a cell value matches a criteria string.
+///
+/// Criteria format: ">5", "<=10", "<>text", "=exact", plain "text".
+/// Numeric comparisons are used when both sides parse as numbers;
+/// otherwise strings are compared case-insensitively. Wildcard `*` and
+/// `?` at the start/end of plain text are supported in a simplified form.
+pub fn matches_criteria(cell_value: &CellValue, criteria: &str) -> bool {
+    if criteria.is_empty() {
+        return matches!(cell_value, CellValue::Empty);
+    }
+
+    let (op, val_str) = if let Some(rest) = criteria.strip_prefix("<=") {
+        ("<=", rest)
+    } else if let Some(rest) = criteria.strip_prefix(">=") {
+        (">=", rest)
+    } else if let Some(rest) = criteria.strip_prefix("<>") {
+        ("<>", rest)
+    } else if let Some(rest) = criteria.strip_prefix('<') {
+        ("<", rest)
+    } else if let Some(rest) = criteria.strip_prefix('>') {
+        (">", rest)
+    } else if let Some(rest) = criteria.strip_prefix('=') {
+        ("=", rest)
+    } else {
+        ("=", criteria)
+    };
+
+    let cell_num = coerce_to_number(cell_value).ok();
+    let crit_num: Option<f64> = val_str.parse().ok();
+
+    if let (Some(cn), Some(crn)) = (cell_num, crit_num) {
+        return match op {
+            "<=" => cn <= crn,
+            ">=" => cn >= crn,
+            "<>" => (cn - crn).abs() > f64::EPSILON,
+            "<" => cn < crn,
+            ">" => cn > crn,
+            "=" => (cn - crn).abs() < f64::EPSILON,
+            _ => false,
+        };
+    }
+
+    let cell_str = coerce_to_string(cell_value).to_ascii_lowercase();
+    let crit_lower = val_str.to_ascii_lowercase();
+
+    match op {
+        "=" => {
+            if crit_lower.contains('*') || crit_lower.contains('?') {
+                wildcard_match(&cell_str, &crit_lower)
+            } else {
+                cell_str == crit_lower
+            }
+        }
+        "<>" => {
+            if crit_lower.contains('*') || crit_lower.contains('?') {
+                !wildcard_match(&cell_str, &crit_lower)
+            } else {
+                cell_str != crit_lower
+            }
+        }
+        "<" => cell_str < crit_lower,
+        ">" => cell_str > crit_lower,
+        "<=" => cell_str <= crit_lower,
+        ">=" => cell_str >= crit_lower,
+        _ => false,
+    }
+}
+
+fn wildcard_match(text: &str, pattern: &str) -> bool {
+    let t: Vec<char> = text.chars().collect();
+    let p: Vec<char> = pattern.chars().collect();
+    let (tlen, plen) = (t.len(), p.len());
+    let mut dp = vec![vec![false; plen + 1]; tlen + 1];
+    dp[0][0] = true;
+    for j in 1..=plen {
+        if p[j - 1] == '*' {
+            dp[0][j] = dp[0][j - 1];
+        }
+    }
+    for i in 1..=tlen {
+        for j in 1..=plen {
+            if p[j - 1] == '*' {
+                dp[i][j] = dp[i][j - 1] || dp[i - 1][j];
+            } else if p[j - 1] == '?' || p[j - 1] == t[i - 1] {
+                dp[i][j] = dp[i - 1][j - 1];
+            }
+        }
+    }
+    dp[tlen][plen]
+}
+
+/// Expand a single argument expression into a flat list of CellValues.
+pub fn collect_criteria_range_values(arg: &Expr, ctx: &mut Evaluator) -> Result<Vec<CellValue>> {
+    match arg {
+        Expr::Range { start, end } => ctx.expand_range(start, end),
+        _ => {
+            let v = ctx.eval_expr(arg)?;
+            Ok(vec![v])
+        }
+    }
 }
 
 // -- Aggregate functions --

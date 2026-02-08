@@ -53,12 +53,22 @@ export interface JsChartSeries {
   name: string
   categories: string
   values: string
+  xValues?: string
+  bubbleSizes?: string
 }
 export interface JsChartConfig {
   chartType: string
   title?: string
   series: Array<JsChartSeries>
   showLegend?: boolean
+  view3D?: JsView3DConfig
+}
+export interface JsView3DConfig {
+  rotX?: number
+  rotY?: number
+  depthPercent?: number
+  rightAngleAxes?: boolean
+  perspective?: number
 }
 export interface JsImageConfig {
   data: Buffer
