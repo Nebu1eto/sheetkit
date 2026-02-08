@@ -287,7 +287,7 @@ pub struct PivotCacheEntry {
     #[serde(rename = "@cacheId")]
     pub cache_id: u32,
 
-    #[serde(rename = "@r:id")]
+    #[serde(rename = "@r:id", alias = "@id")]
     pub r_id: String,
 }
 

@@ -4,7 +4,7 @@
 //! [`CellDataProvider`] trait. Supports arithmetic, comparison, string
 //! concatenation, cell/range references, and built-in function calls.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::cell::CellValue;
 use crate::error::{Error, Result};
@@ -41,6 +41,11 @@ impl CellSnapshot {
     /// Insert a cell value into the snapshot.
     pub fn set_cell(&mut self, sheet: &str, col: u32, row: u32, value: CellValue) {
         self.cells.insert((sheet.to_string(), col, row), value);
+    }
+
+    /// Change the current-sheet context used for unqualified cell references.
+    pub fn set_current_sheet(&mut self, sheet: &str) {
+        self.current_sheet = sheet.to_string();
     }
 }
 
@@ -432,6 +437,156 @@ pub fn compare_values(lhs: &CellValue, rhs: &CellValue) -> std::cmp::Ordering {
         (CellValue::Bool(a), CellValue::Bool(b)) => a.cmp(b),
         _ => Ordering::Equal,
     }
+}
+
+/// A cell coordinate used as a node in the dependency graph.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CellCoord {
+    pub sheet: String,
+    pub col: u32,
+    pub row: u32,
+}
+
+/// Build a dependency graph from formula cells.
+/// Returns a map from each formula cell to the cells it depends on.
+pub fn build_dependency_graph(
+    formula_cells: &[(CellCoord, String)],
+) -> Result<HashMap<CellCoord, Vec<CellCoord>>> {
+    let mut deps: HashMap<CellCoord, Vec<CellCoord>> = HashMap::new();
+    for (coord, formula_str) in formula_cells {
+        let expr = crate::formula::parser::parse_formula(formula_str)?;
+        let refs = extract_cell_refs(&expr, &coord.sheet);
+        deps.insert(coord.clone(), refs);
+    }
+    Ok(deps)
+}
+
+/// Extract all cell references from a parsed expression.
+fn extract_cell_refs(expr: &Expr, current_sheet: &str) -> Vec<CellCoord> {
+    let mut refs = Vec::new();
+    collect_refs(expr, current_sheet, &mut refs);
+    refs
+}
+
+fn collect_refs(expr: &Expr, current_sheet: &str, refs: &mut Vec<CellCoord>) {
+    match expr {
+        Expr::CellRef(cell_ref) => {
+            let sheet = cell_ref
+                .sheet
+                .as_deref()
+                .unwrap_or(current_sheet)
+                .to_string();
+            if let Ok(col) = column_name_to_number(&cell_ref.col) {
+                refs.push(CellCoord {
+                    sheet,
+                    col,
+                    row: cell_ref.row,
+                });
+            }
+        }
+        Expr::Range { start, end } => {
+            let sheet = start.sheet.as_deref().unwrap_or(current_sheet).to_string();
+            if let (Ok(start_col), Ok(end_col)) = (
+                column_name_to_number(&start.col),
+                column_name_to_number(&end.col),
+            ) {
+                let min_col = start_col.min(end_col);
+                let max_col = start_col.max(end_col);
+                let min_row = start.row.min(end.row);
+                let max_row = start.row.max(end.row);
+                for r in min_row..=max_row {
+                    for c in min_col..=max_col {
+                        refs.push(CellCoord {
+                            sheet: sheet.clone(),
+                            col: c,
+                            row: r,
+                        });
+                    }
+                }
+            }
+        }
+        Expr::Function { args, .. } => {
+            for arg in args {
+                collect_refs(arg, current_sheet, refs);
+            }
+        }
+        Expr::BinaryOp { left, right, .. } => {
+            collect_refs(left, current_sheet, refs);
+            collect_refs(right, current_sheet, refs);
+        }
+        Expr::UnaryOp { operand, .. } => {
+            collect_refs(operand, current_sheet, refs);
+        }
+        Expr::Paren(inner) => {
+            collect_refs(inner, current_sheet, refs);
+        }
+        _ => {}
+    }
+}
+
+/// Topological sort of formula cells based on dependencies.
+/// Returns cells in evaluation order (dependencies first).
+/// Detects cycles and returns an error if found.
+pub fn topological_sort(
+    formula_cells: &[CellCoord],
+    deps: &HashMap<CellCoord, Vec<CellCoord>>,
+) -> Result<Vec<CellCoord>> {
+    let formula_set: HashSet<CellCoord> = formula_cells.iter().cloned().collect();
+
+    let mut in_degree: HashMap<CellCoord, usize> = HashMap::new();
+    let mut dependents: HashMap<CellCoord, Vec<CellCoord>> = HashMap::new();
+
+    for cell in formula_cells {
+        in_degree.entry(cell.clone()).or_insert(0);
+    }
+
+    for (cell, cell_deps) in deps {
+        let dep_count = cell_deps.iter().filter(|d| formula_set.contains(d)).count();
+        in_degree.insert(cell.clone(), dep_count);
+        for dep in cell_deps {
+            if formula_set.contains(dep) {
+                dependents
+                    .entry(dep.clone())
+                    .or_default()
+                    .push(cell.clone());
+            }
+        }
+    }
+
+    // Kahn's algorithm
+    let mut queue: Vec<CellCoord> = in_degree
+        .iter()
+        .filter(|(_, &deg)| deg == 0)
+        .map(|(cell, _)| cell.clone())
+        .collect();
+    queue.sort_by(|a, b| (&a.sheet, a.row, a.col).cmp(&(&b.sheet, b.row, b.col)));
+
+    let mut sorted = Vec::new();
+    let mut visited = 0;
+
+    while let Some(cell) = queue.pop() {
+        sorted.push(cell.clone());
+        visited += 1;
+        if let Some(cell_dependents) = dependents.get(&cell) {
+            for dep in cell_dependents {
+                if let Some(deg) = in_degree.get_mut(dep) {
+                    *deg -= 1;
+                    if *deg == 0 {
+                        queue.push(dep.clone());
+                    }
+                }
+            }
+        }
+        queue.sort_by(|a, b| (&b.sheet, b.row, b.col).cmp(&(&a.sheet, a.row, a.col)));
+    }
+
+    if visited != formula_cells.len() {
+        return Err(Error::CircularReference {
+            cell: "multiple cells".to_string(),
+        });
+    }
+
+    Ok(sorted)
 }
 
 #[cfg(test)]
@@ -995,5 +1150,151 @@ mod tests {
             evaluate(&expr, &snap).unwrap(),
             CellValue::String("42 items".to_string())
         );
+    }
+
+    fn coord(sheet: &str, col: u32, row: u32) -> CellCoord {
+        CellCoord {
+            sheet: sheet.to_string(),
+            col,
+            row,
+        }
+    }
+
+    #[test]
+    fn test_build_dependency_graph_simple() {
+        // A1 = B1 + C1
+        let formula_cells = vec![(coord("Sheet1", 1, 1), "B1+C1".to_string())];
+        let deps = build_dependency_graph(&formula_cells).unwrap();
+        let a1_deps = deps.get(&coord("Sheet1", 1, 1)).unwrap();
+        assert!(a1_deps.contains(&coord("Sheet1", 2, 1))); // B1
+        assert!(a1_deps.contains(&coord("Sheet1", 3, 1))); // C1
+        assert_eq!(a1_deps.len(), 2);
+    }
+
+    #[test]
+    fn test_build_dependency_graph_range() {
+        // A1 = SUM(B1:B5)
+        let formula_cells = vec![(coord("Sheet1", 1, 1), "SUM(B1:B5)".to_string())];
+        let deps = build_dependency_graph(&formula_cells).unwrap();
+        let a1_deps = deps.get(&coord("Sheet1", 1, 1)).unwrap();
+        assert_eq!(a1_deps.len(), 5);
+        for r in 1..=5 {
+            assert!(a1_deps.contains(&coord("Sheet1", 2, r)));
+        }
+    }
+
+    #[test]
+    fn test_build_dependency_graph_cross_sheet() {
+        // Sheet1!A1 = Sheet2!B1
+        let formula_cells = vec![(coord("Sheet1", 1, 1), "Sheet2!B1".to_string())];
+        let deps = build_dependency_graph(&formula_cells).unwrap();
+        let a1_deps = deps.get(&coord("Sheet1", 1, 1)).unwrap();
+        assert_eq!(a1_deps.len(), 1);
+        assert_eq!(a1_deps[0], coord("Sheet2", 2, 1));
+    }
+
+    #[test]
+    fn test_extract_cell_refs_from_nested_expr() {
+        let expr = parse_formula("A1+SUM(B1:B3,C1)").unwrap();
+        let refs = extract_cell_refs(&expr, "Sheet1");
+        assert!(refs.contains(&coord("Sheet1", 1, 1))); // A1
+        assert!(refs.contains(&coord("Sheet1", 2, 1))); // B1
+        assert!(refs.contains(&coord("Sheet1", 2, 2))); // B2
+        assert!(refs.contains(&coord("Sheet1", 2, 3))); // B3
+        assert!(refs.contains(&coord("Sheet1", 3, 1))); // C1
+        assert_eq!(refs.len(), 5);
+    }
+
+    #[test]
+    fn test_topological_sort_linear_chain() {
+        // A2 = A1 + 1, A3 = A2 + 1 (A1 is a value, not a formula)
+        let formula_cells = vec![coord("Sheet1", 1, 2), coord("Sheet1", 1, 3)];
+        let mut deps = HashMap::new();
+        deps.insert(coord("Sheet1", 1, 2), vec![coord("Sheet1", 1, 1)]); // A2 depends on A1 (value)
+        deps.insert(
+            coord("Sheet1", 1, 3),
+            vec![coord("Sheet1", 1, 2)], // A3 depends on A2 (formula)
+        );
+        let sorted = topological_sort(&formula_cells, &deps).unwrap();
+        assert_eq!(sorted.len(), 2);
+        // A2 must come before A3
+        let pos_a2 = sorted
+            .iter()
+            .position(|c| *c == coord("Sheet1", 1, 2))
+            .unwrap();
+        let pos_a3 = sorted
+            .iter()
+            .position(|c| *c == coord("Sheet1", 1, 3))
+            .unwrap();
+        assert!(pos_a2 < pos_a3);
+    }
+
+    #[test]
+    fn test_topological_sort_diamond() {
+        // A1 = B1 + C1, B1 = D1, C1 = D1
+        // D1 is a value, so formula_cells = [A1, B1, C1]
+        let formula_cells = vec![
+            coord("Sheet1", 1, 1), // A1
+            coord("Sheet1", 2, 1), // B1
+            coord("Sheet1", 3, 1), // C1
+        ];
+        let mut deps = HashMap::new();
+        deps.insert(
+            coord("Sheet1", 1, 1),
+            vec![coord("Sheet1", 2, 1), coord("Sheet1", 3, 1)],
+        );
+        deps.insert(coord("Sheet1", 2, 1), vec![coord("Sheet1", 4, 1)]); // D1 value
+        deps.insert(coord("Sheet1", 3, 1), vec![coord("Sheet1", 4, 1)]); // D1 value
+
+        let sorted = topological_sort(&formula_cells, &deps).unwrap();
+        assert_eq!(sorted.len(), 3);
+        let pos_a1 = sorted
+            .iter()
+            .position(|c| *c == coord("Sheet1", 1, 1))
+            .unwrap();
+        let pos_b1 = sorted
+            .iter()
+            .position(|c| *c == coord("Sheet1", 2, 1))
+            .unwrap();
+        let pos_c1 = sorted
+            .iter()
+            .position(|c| *c == coord("Sheet1", 3, 1))
+            .unwrap();
+        // B1 and C1 must come before A1
+        assert!(pos_b1 < pos_a1);
+        assert!(pos_c1 < pos_a1);
+    }
+
+    #[test]
+    fn test_topological_sort_cycle_detection() {
+        // A1 = B1, B1 = A1
+        let formula_cells = vec![coord("Sheet1", 1, 1), coord("Sheet1", 2, 1)];
+        let mut deps = HashMap::new();
+        deps.insert(coord("Sheet1", 1, 1), vec![coord("Sheet1", 2, 1)]);
+        deps.insert(coord("Sheet1", 2, 1), vec![coord("Sheet1", 1, 1)]);
+
+        let result = topological_sort(&formula_cells, &deps);
+        assert!(result.is_err());
+        let err_str = result.unwrap_err().to_string();
+        assert!(
+            err_str.contains("circular reference"),
+            "expected circular reference error, got: {err_str}"
+        );
+    }
+
+    #[test]
+    fn test_topological_sort_no_formulas() {
+        let formula_cells: Vec<CellCoord> = vec![];
+        let deps: HashMap<CellCoord, Vec<CellCoord>> = HashMap::new();
+        let sorted = topological_sort(&formula_cells, &deps).unwrap();
+        assert!(sorted.is_empty());
+    }
+
+    #[test]
+    fn test_set_current_sheet() {
+        let mut snap = CellSnapshot::new("Sheet1".to_string());
+        assert_eq!(snap.current_sheet(), "Sheet1");
+        snap.set_current_sheet("Sheet2");
+        assert_eq!(snap.current_sheet(), "Sheet2");
     }
 }
