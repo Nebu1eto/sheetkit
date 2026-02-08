@@ -702,6 +702,97 @@ describe('Phase 8 - Data Validation', () => {
     expect(v[1].operator).toBe('lessThanOrEqual');
     expect(v[1].validationType).toBe('textLength');
   });
+
+  it('should add date validation with between operator', () => {
+    const wb = new Workbook();
+    wb.addDataValidation('Sheet1', {
+      sqref: 'A1:A100',
+      validationType: 'date',
+      operator: 'between',
+      formula1: '44927',
+      formula2: '45291',
+      errorStyle: 'stop',
+      errorTitle: 'Invalid date',
+      errorMessage: 'Enter a date in 2023',
+      showErrorMessage: true,
+    });
+    const v = wb.getDataValidations('Sheet1');
+    expect(v.length).toBe(1);
+    expect(v[0].validationType).toBe('date');
+    expect(v[0].operator).toBe('between');
+    expect(v[0].formula1).toBe('44927');
+    expect(v[0].formula2).toBe('45291');
+    expect(v[0].errorTitle).toBe('Invalid date');
+  });
+
+  it('should add time validation with greaterThan operator', () => {
+    const wb = new Workbook();
+    wb.addDataValidation('Sheet1', {
+      sqref: 'B1:B50',
+      validationType: 'time',
+      operator: 'greaterThan',
+      formula1: '0.375',
+      errorStyle: 'warning',
+      errorMessage: 'Time must be after 9:00 AM',
+      showErrorMessage: true,
+    });
+    const v = wb.getDataValidations('Sheet1');
+    expect(v.length).toBe(1);
+    expect(v[0].validationType).toBe('time');
+    expect(v[0].operator).toBe('greaterThan');
+    expect(v[0].formula1).toBe('0.375');
+    expect(v[0].errorStyle).toBe('warning');
+  });
+
+  it('should persist none type validation through save/open cycle', async () => {
+    const wb = new Workbook();
+    wb.addDataValidation('Sheet1', {
+      sqref: 'A1:A10',
+      validationType: 'none',
+      promptTitle: 'Instructions',
+      promptMessage: 'Enter any value here',
+      showInputMessage: true,
+    });
+    await wb.save(out);
+
+    const wb2 = await Workbook.open(out);
+    const v = wb2.getDataValidations('Sheet1');
+    expect(v.length).toBe(1);
+    expect(v[0].validationType).toBe('none');
+    expect(v[0].promptTitle).toBe('Instructions');
+    expect(v[0].promptMessage).toBe('Enter any value here');
+    expect(v[0].showInputMessage).toBe(true);
+  });
+
+  it('should persist all boolean properties through save/open cycle', async () => {
+    const wb = new Workbook();
+    wb.addDataValidation('Sheet1', {
+      sqref: 'A1:A10',
+      validationType: 'list',
+      formula1: '"Yes,No"',
+      allowBlank: true,
+      showInputMessage: true,
+      showErrorMessage: true,
+      errorStyle: 'stop',
+      errorTitle: 'Error',
+      errorMessage: 'Select Yes or No',
+      promptTitle: 'Choice',
+      promptMessage: 'Pick one',
+    });
+    await wb.save(out);
+
+    const wb2 = await Workbook.open(out);
+    const v = wb2.getDataValidations('Sheet1');
+    expect(v.length).toBe(1);
+    expect(v[0].allowBlank).toBe(true);
+    expect(v[0].showInputMessage).toBe(true);
+    expect(v[0].showErrorMessage).toBe(true);
+    expect(v[0].errorStyle).toBe('stop');
+    expect(v[0].errorTitle).toBe('Error');
+    expect(v[0].errorMessage).toBe('Select Yes or No');
+    expect(v[0].promptTitle).toBe('Choice');
+    expect(v[0].promptMessage).toBe('Pick one');
+  });
 });
 
 describe('Merge Cells', () => {
