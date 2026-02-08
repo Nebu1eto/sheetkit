@@ -2,13 +2,27 @@
 	"name": "sheetkit",
 	"version": "0.1.0",
 	"type": "module",
-	"main": "./dist/index.js",
-	"types": "./dist/index.d.ts",
-	"files": ["dist"],
+	"main": "./index.js",
+	"types": "./index.d.ts",
+	"napi": {
+		"name": "sheetkit",
+		"triples": {
+			"defaults": true,
+			"additional": []
+		}
+	},
+	"files": [
+		"index.js",
+		"index.d.ts"
+	],
 	"scripts": {
-		"build": "tsc",
+		"artifacts": "napi artifacts",
+		"build": "napi build --platform --release",
+		"build:debug": "napi build --platform",
 		"test": "vitest run",
 		"test:watch": "vitest"
 	},
-	"devDependencies": {}
+	"devDependencies": {
+		"@napi-rs/cli": "^2.18.0"
+	}
 }

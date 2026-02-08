@@ -1,0 +1,17 @@
+[package]
+name = "sheetkit-node"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+napi = { version = "2", features = ["napi8"] }
+napi-derive = "2"
+sheetkit-core = { path = "../../crates/sheetkit-core" }
+sheetkit-xml = { path = "../../crates/sheetkit-xml" }
+
+[build-dependencies]
+napi-build = "2"
