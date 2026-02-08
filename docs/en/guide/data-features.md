@@ -564,6 +564,7 @@ Add data validation rules to cell ranges to restrict what values users can enter
 
 | Rust Variant | TS String | Description |
 |---|---|---|
+| `ValidationType::None` | `"none"` | No constraint (prompt/message only) |
 | `ValidationType::Whole` | `"whole"` | Whole number constraint |
 | `ValidationType::Decimal` | `"decimal"` | Decimal number constraint |
 | `ValidationType::List` | `"list"` | Dropdown list |
@@ -576,7 +577,9 @@ Add data validation rules to cell ranges to restrict what values users can enter
 
 `Between`, `NotBetween`, `Equal`, `NotEqual`, `LessThan`, `LessThanOrEqual`, `GreaterThan`, `GreaterThanOrEqual`.
 
-In TypeScript, use lowercase strings: `"between"`, `"notbetween"`, `"equal"`, etc.
+In TypeScript, input is case-insensitive; output uses camelCase: `"between"`, `"notBetween"`, `"lessThan"`, etc.
+
+The `sqref` must be a valid cell range reference. For types other than `none`, `formula1` is required. For `between`/`notBetween` operators, `formula2` is also required.
 
 #### Error Styles
 

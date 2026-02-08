@@ -488,7 +488,7 @@ impl Workbook {
                 .and_then(|s| parse_validation_operator(s)),
             formula1: config.formula1,
             formula2: config.formula2,
-            allow_blank: config.allow_blank.unwrap_or(true),
+            allow_blank: config.allow_blank.unwrap_or(false),
             error_style: config
                 .error_style
                 .as_ref()

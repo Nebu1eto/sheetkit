@@ -475,21 +475,24 @@ wb.addImage('Sheet1', {
 
 #### 유효성 검사 유형
 
-| Rust 변형                   | TS 문자열       | 설명                  |
-|----------------------------|----------------|-----------------------|
-| `ValidationType::Whole`    | `"whole"`      | 정수 제약              |
-| `ValidationType::Decimal`  | `"decimal"`    | 소수 제약              |
-| `ValidationType::List`     | `"list"`       | 드롭다운 목록          |
-| `ValidationType::Date`     | `"date"`       | 날짜 제약              |
-| `ValidationType::Time`     | `"time"`       | 시간 제약              |
-| `ValidationType::TextLength`| `"textLength"` | 텍스트 길이 제약       |
-| `ValidationType::Custom`   | `"custom"`     | 사용자 정의 수식 제약   |
+| Rust 변형                   | TS 문자열       | 설명                         |
+|----------------------------|----------------|------------------------------|
+| `ValidationType::None`     | `"none"`       | 제한 없음 (프롬프트/메시지만) |
+| `ValidationType::Whole`    | `"whole"`      | 정수 제약                     |
+| `ValidationType::Decimal`  | `"decimal"`    | 소수 제약                     |
+| `ValidationType::List`     | `"list"`       | 드롭다운 목록                 |
+| `ValidationType::Date`     | `"date"`       | 날짜 제약                     |
+| `ValidationType::Time`     | `"time"`       | 시간 제약                     |
+| `ValidationType::TextLength`| `"textLength"` | 텍스트 길이 제약              |
+| `ValidationType::Custom`   | `"custom"`     | 사용자 정의 수식 제약          |
 
 #### 비교 연산자
 
 `Between`, `NotBetween`, `Equal`, `NotEqual`, `LessThan`, `LessThanOrEqual`, `GreaterThan`, `GreaterThanOrEqual`.
 
-TypeScript에서는 소문자 문자열 사용: `"between"`, `"notBetween"`, `"equal"` 등.
+TypeScript 입력은 대소문자를 구분하지 않으며, 출력은 OOXML 규격에 맞는 camelCase를 사용: `"between"`, `"notBetween"`, `"lessThan"` 등.
+
+`sqref`는 유효한 셀 범위 참조여야 한다. `none` 이외의 타입에는 `formula1`이 필수이며, `between`/`notBetween` 연산자에는 `formula2`도 필수이다.
 
 #### 오류 스타일
 

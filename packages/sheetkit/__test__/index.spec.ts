@@ -456,13 +456,13 @@ describe('Phase 8 - Data Validation', () => {
     wb.addDataValidation('Sheet1', {
       sqref: 'D1:D50',
       validationType: 'decimal',
-      operator: 'greaterthan',
+      operator: 'greaterThan',
       formula1: '0.5',
     });
     const v = wb.getDataValidations('Sheet1');
     expect(v.length).toBe(1);
     expect(v[0].validationType).toBe('decimal');
-    expect(v[0].operator).toBe('greaterthan');
+    expect(v[0].operator).toBe('greaterThan');
     expect(v[0].formula1).toBe('0.5');
   });
 
@@ -471,13 +471,13 @@ describe('Phase 8 - Data Validation', () => {
     wb.addDataValidation('Sheet1', {
       sqref: 'E1:E50',
       validationType: 'textLength',
-      operator: 'lessthanorequal',
+      operator: 'lessThanOrEqual',
       formula1: '255',
     });
     const v = wb.getDataValidations('Sheet1');
     expect(v.length).toBe(1);
-    expect(v[0].validationType).toBe('textlength');
-    expect(v[0].operator).toBe('lessthanorequal');
+    expect(v[0].validationType).toBe('textLength');
+    expect(v[0].operator).toBe('lessThanOrEqual');
     expect(v[0].formula1).toBe('255');
   });
 
@@ -499,14 +499,14 @@ describe('Phase 8 - Data Validation', () => {
     wb.addDataValidation('Sheet1', {
       sqref: 'A1:A10',
       validationType: 'whole',
-      operator: 'greaterthan',
+      operator: 'greaterThan',
       formula1: '0',
       errorStyle: 'warning',
     });
     wb.addDataValidation('Sheet1', {
       sqref: 'B1:B10',
       validationType: 'whole',
-      operator: 'greaterthan',
+      operator: 'greaterThan',
       formula1: '0',
       errorStyle: 'information',
     });
@@ -533,7 +533,7 @@ describe('Phase 8 - Data Validation', () => {
     wb.addDataValidation('Sheet1', {
       sqref: 'C1:C10',
       validationType: 'decimal',
-      operator: 'greaterthanorequal',
+      operator: 'greaterThanOrEqual',
       formula1: '0',
     });
     const v = wb.getDataValidations('Sheet1');
@@ -609,6 +609,98 @@ describe('Phase 8 - Data Validation', () => {
     const wb = new Workbook();
     wb.removeDataValidation('Sheet1', 'Z1:Z99');
     expect(wb.getDataValidations('Sheet1').length).toBe(0);
+  });
+
+  it('should support none validation type for prompt-only rules', () => {
+    const wb = new Workbook();
+    wb.addDataValidation('Sheet1', {
+      sqref: 'A1:A10',
+      validationType: 'none',
+      promptTitle: 'Hint',
+      promptMessage: 'Enter any value',
+      showInputMessage: true,
+    });
+    const v = wb.getDataValidations('Sheet1');
+    expect(v.length).toBe(1);
+    expect(v[0].validationType).toBe('none');
+    expect(v[0].promptTitle).toBe('Hint');
+  });
+
+  it('should default allowBlank to false per OOXML spec', () => {
+    const wb = new Workbook();
+    wb.addDataValidation('Sheet1', {
+      sqref: 'A1:A10',
+      validationType: 'list',
+      formula1: '"X,Y"',
+    });
+    const v = wb.getDataValidations('Sheet1');
+    expect(v[0].allowBlank).toBe(false);
+  });
+
+  it('should reject invalid sqref', () => {
+    const wb = new Workbook();
+    expect(() =>
+      wb.addDataValidation('Sheet1', {
+        sqref: '',
+        validationType: 'list',
+        formula1: '"A,B"',
+      }),
+    ).toThrow();
+  });
+
+  it('should reject list validation without formula1', () => {
+    const wb = new Workbook();
+    expect(() =>
+      wb.addDataValidation('Sheet1', {
+        sqref: 'A1:A10',
+        validationType: 'list',
+      }),
+    ).toThrow();
+  });
+
+  it('should reject between operator without formula2', () => {
+    const wb = new Workbook();
+    expect(() =>
+      wb.addDataValidation('Sheet1', {
+        sqref: 'A1:A10',
+        validationType: 'whole',
+        operator: 'between',
+        formula1: '1',
+      }),
+    ).toThrow();
+  });
+
+  it('should accept case-insensitive operator input', () => {
+    const wb = new Workbook();
+    wb.addDataValidation('Sheet1', {
+      sqref: 'A1:A10',
+      validationType: 'whole',
+      operator: 'GREATERTHAN',
+      formula1: '0',
+    });
+    const v = wb.getDataValidations('Sheet1');
+    expect(v[0].operator).toBe('greaterThan');
+  });
+
+  it('should return camelCase operator strings', () => {
+    const wb = new Workbook();
+    wb.addDataValidation('Sheet1', {
+      sqref: 'A1:A10',
+      validationType: 'whole',
+      operator: 'notbetween',
+      formula1: '1',
+      formula2: '10',
+    });
+    wb.addDataValidation('Sheet1', {
+      sqref: 'B1:B10',
+      validationType: 'textLength',
+      operator: 'lessthanorequal',
+      formula1: '255',
+    });
+    const v = wb.getDataValidations('Sheet1');
+    expect(v[0].operator).toBe('notBetween');
+    expect(v[1].operator).toBe('lessThanOrEqual');
+    expect(v[1].validationType).toBe('textLength');
   });
 });
 

@@ -152,6 +152,14 @@ pub enum Error {
     #[error("invalid merge cell reference: {0}")]
     InvalidMergeCellReference(String),
 
+    /// A cell range reference (sqref) is invalid.
+    #[error("invalid reference: {reference}")]
+    InvalidReference { reference: String },
+
+    /// A function argument or configuration value is invalid.
+    #[error("invalid argument: {0}")]
+    InvalidArgument(String),
+
     /// An internal or otherwise unclassified error.
     #[error("internal error: {0}")]
     Internal(String),

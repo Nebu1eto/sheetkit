@@ -408,6 +408,19 @@ pub struct DataValidations {
     #[serde(rename = "@count", skip_serializing_if = "Option::is_none")]
     pub count: Option<u32>,
 
+    #[serde(
+        rename = "@disablePrompts",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub disable_prompts: Option<bool>,
+
+    #[serde(rename = "@xWindow", skip_serializing_if = "Option::is_none", default)]
+    pub x_window: Option<u32>,
+
+    #[serde(rename = "@yWindow", skip_serializing_if = "Option::is_none", default)]
+    pub y_window: Option<u32>,
+
     #[serde(rename = "dataValidation", default)]
     pub data_validations: Vec<DataValidation>,
 }
@@ -424,6 +437,13 @@ pub struct DataValidation {
     #[serde(rename = "@allowBlank", skip_serializing_if = "Option::is_none")]
     pub allow_blank: Option<bool>,
 
+    #[serde(
+        rename = "@showDropDown",
+        skip_serializing_if = "Option::is_none",
+        default
+    )]
+    pub show_drop_down: Option<bool>,
+
     #[serde(rename = "@showInputMessage", skip_serializing_if = "Option::is_none")]
     pub show_input_message: Option<bool>,
 
@@ -432,6 +452,9 @@ pub struct DataValidation {
 
     #[serde(rename = "@errorStyle", skip_serializing_if = "Option::is_none")]
     pub error_style: Option<String>,
+
+    #[serde(rename = "@imeMode", skip_serializing_if = "Option::is_none", default)]
+    pub ime_mode: Option<String>,
 
     #[serde(rename = "@errorTitle", skip_serializing_if = "Option::is_none")]
     pub error_title: Option<String>,
