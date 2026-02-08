@@ -3,6 +3,7 @@
 pub mod cell;
 pub mod chart;
 pub mod col;
+pub mod comment;
 pub mod error;
 pub mod formula;
 pub mod image;
@@ -10,5 +11,7 @@ pub mod row;
 pub mod sheet;
 pub mod sst;
 pub mod style;
+pub mod table;
 pub mod utils;
+pub mod validation;
 pub mod workbook;
