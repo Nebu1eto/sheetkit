@@ -1019,7 +1019,7 @@ mod tests {
         assert!(matches!(result.unwrap_err(), Error::InvalidColumnNumber(0)));
     }
 
-    // --- StreamRowOptions tests ---
+    // StreamRowOptions tests
 
     #[test]
     fn test_write_row_with_options_height() {
@@ -1171,7 +1171,7 @@ mod tests {
         assert!(!xml.contains("hidden="));
     }
 
-    // --- Column options tests ---
+    // Column options tests
 
     #[test]
     fn test_col_style() {
@@ -1267,7 +1267,7 @@ mod tests {
         assert!(matches!(result.unwrap_err(), Error::StreamColumnsAfterRows));
     }
 
-    // --- Freeze panes tests ---
+    // Freeze panes tests
 
     #[test]
     fn test_freeze_panes_rows() {
@@ -1383,7 +1383,7 @@ mod tests {
         assert!(!xml.contains("<sheetViews>"));
     }
 
-    // --- Backward compatibility tests ---
+    // Backward compatibility tests
 
     #[test]
     fn test_write_row_backward_compat() {
