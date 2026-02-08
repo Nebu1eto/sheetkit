@@ -13,11 +13,15 @@ use sheetkit_xml::relationships::{self, rel_types, Relationships};
 use sheetkit_xml::shared_strings::Sst;
 use sheetkit_xml::styles::StyleSheet;
 use sheetkit_xml::workbook::WorkbookXml;
-use sheetkit_xml::worksheet::WorksheetXml;
+use sheetkit_xml::worksheet::{Cell, CellFormula, Row, WorksheetXml};
 use zip::write::SimpleFileOptions;
 use zip::CompressionMethod;
 
+use crate::cell::CellValue;
 use crate::error::{Error, Result};
+use crate::sst::SharedStringTable;
+use crate::utils::cell_ref::cell_name_to_coordinates;
+use crate::utils::constants::MAX_CELL_CHARS;
 
 /// XML declaration prepended to every XML part in the package.
 const XML_DECLARATION: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#;
@@ -30,12 +34,16 @@ pub struct Workbook {
     workbook_rels: Relationships,
     worksheets: Vec<(String, WorksheetXml)>,
     stylesheet: StyleSheet,
+    #[allow(dead_code)]
     shared_strings: Sst,
+    sst_runtime: SharedStringTable,
 }
 
 impl Workbook {
     /// Create a new empty workbook containing a single empty sheet named "Sheet1".
     pub fn new() -> Self {
+        let shared_strings = Sst::default();
+        let sst_runtime = SharedStringTable::from_sst(&shared_strings);
         Self {
             content_types: ContentTypes::default(),
             package_rels: relationships::package_rels(),
@@ -43,7 +51,8 @@ impl Workbook {
             workbook_rels: relationships::workbook_rels(),
             worksheets: vec![("Sheet1".to_string(), WorksheetXml::default())],
             stylesheet: StyleSheet::default(),
-            shared_strings: Sst::default(),
+            shared_strings,
+            sst_runtime,
         }
     }
 
@@ -88,6 +97,8 @@ impl Workbook {
         let shared_strings: Sst =
             read_xml_part(&mut archive, "xl/sharedStrings.xml").unwrap_or_default();
 
+        let sst_runtime = SharedStringTable::from_sst(&shared_strings);
+
         Ok(Self {
             content_types,
             package_rels,
@@ -96,6 +107,7 @@ impl Workbook {
             worksheets,
             stylesheet,
             shared_strings,
+            sst_runtime,
         })
     }
 
@@ -136,13 +148,9 @@ impl Workbook {
         // xl/styles.xml
         write_xml_part(&mut zip, "xl/styles.xml", &self.stylesheet, options)?;
 
-        // xl/sharedStrings.xml
-        write_xml_part(
-            &mut zip,
-            "xl/sharedStrings.xml",
-            &self.shared_strings,
-            options,
-        )?;
+        // xl/sharedStrings.xml -- write from the runtime SST
+        let sst_xml = self.sst_runtime.to_sst();
+        write_xml_part(&mut zip, "xl/sharedStrings.xml", &sst_xml, options)?;
 
         zip.finish().map_err(|e| Error::Zip(e.to_string()))?;
         Ok(())
@@ -154,6 +162,270 @@ impl Workbook {
             .iter()
             .map(|(name, _)| name.as_str())
             .collect()
+    }
+
+    // -----------------------------------------------------------------------
+    // Cell operations
+    // -----------------------------------------------------------------------
+
+    /// Get the value of a cell.
+    ///
+    /// Returns [`CellValue::Empty`] for cells that have no value or do not
+    /// exist in the sheet data.
+    pub fn get_cell_value(&self, sheet: &str, cell: &str) -> Result<CellValue> {
+        let ws = self
+            .worksheets
+            .iter()
+            .find(|(name, _)| name == sheet)
+            .map(|(_, ws)| ws)
+            .ok_or_else(|| Error::SheetNotFound {
+                name: sheet.to_string(),
+            })?;
+
+        let (col, row) = cell_name_to_coordinates(cell)?;
+        let cell_ref = crate::utils::cell_ref::coordinates_to_cell_name(col, row)?;
+
+        // Find the row.
+        let xml_row = ws.sheet_data.rows.iter().find(|r| r.r == row);
+        let xml_row = match xml_row {
+            Some(r) => r,
+            None => return Ok(CellValue::Empty),
+        };
+
+        // Find the cell.
+        let xml_cell = xml_row.cells.iter().find(|c| c.r == cell_ref);
+        let xml_cell = match xml_cell {
+            Some(c) => c,
+            None => return Ok(CellValue::Empty),
+        };
+
+        self.xml_cell_to_value(xml_cell)
+    }
+
+    /// Set the value of a cell.
+    ///
+    /// The value can be any type that implements `Into<CellValue>`, including
+    /// `&str`, `String`, `f64`, `i32`, `i64`, and `bool`.
+    ///
+    /// Setting a cell to [`CellValue::Empty`] removes the cell from the row.
+    pub fn set_cell_value(
+        &mut self,
+        sheet: &str,
+        cell: &str,
+        value: impl Into<CellValue>,
+    ) -> Result<()> {
+        let value = value.into();
+
+        // Validate string length.
+        if let CellValue::String(ref s) = value {
+            if s.len() > MAX_CELL_CHARS {
+                return Err(Error::CellValueTooLong {
+                    length: s.len(),
+                    max: MAX_CELL_CHARS,
+                });
+            }
+        }
+
+        let ws = self
+            .worksheets
+            .iter_mut()
+            .find(|(name, _)| name == sheet)
+            .map(|(_, ws)| ws)
+            .ok_or_else(|| Error::SheetNotFound {
+                name: sheet.to_string(),
+            })?;
+
+        let (col, row_num) = cell_name_to_coordinates(cell)?;
+        let cell_ref = crate::utils::cell_ref::coordinates_to_cell_name(col, row_num)?;
+
+        // Find or create the row (keep rows sorted by row number).
+        let row_idx = match ws.sheet_data.rows.iter().position(|r| r.r >= row_num) {
+            Some(idx) if ws.sheet_data.rows[idx].r == row_num => idx,
+            Some(idx) => {
+                ws.sheet_data.rows.insert(idx, new_row(row_num));
+                idx
+            }
+            None => {
+                ws.sheet_data.rows.push(new_row(row_num));
+                ws.sheet_data.rows.len() - 1
+            }
+        };
+
+        let row = &mut ws.sheet_data.rows[row_idx];
+
+        // Handle Empty: remove the cell if present.
+        if value == CellValue::Empty {
+            row.cells.retain(|c| c.r != cell_ref);
+            return Ok(());
+        }
+
+        // Find or create the cell.
+        let cell_idx = match row.cells.iter().position(|c| c.r == cell_ref) {
+            Some(idx) => idx,
+            None => {
+                // Insert in column order.
+                let insert_pos = row
+                    .cells
+                    .iter()
+                    .position(|c| {
+                        cell_name_to_coordinates(&c.r)
+                            .map(|(c_col, _)| c_col > col)
+                            .unwrap_or(false)
+                    })
+                    .unwrap_or(row.cells.len());
+                row.cells.insert(
+                    insert_pos,
+                    Cell {
+                        r: cell_ref,
+                        s: None,
+                        t: None,
+                        v: None,
+                        f: None,
+                        is: None,
+                    },
+                );
+                insert_pos
+            }
+        };
+
+        let xml_cell = &mut row.cells[cell_idx];
+        value_to_xml_cell(&mut self.sst_runtime, xml_cell, value);
+
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Sheet management
+    // -----------------------------------------------------------------------
+
+    /// Create a new empty sheet with the given name. Returns the 0-based sheet index.
+    pub fn new_sheet(&mut self, name: &str) -> Result<usize> {
+        crate::sheet::add_sheet(
+            &mut self.workbook_xml,
+            &mut self.workbook_rels,
+            &mut self.content_types,
+            &mut self.worksheets,
+            name,
+            WorksheetXml::default(),
+        )
+    }
+
+    /// Delete a sheet by name.
+    pub fn delete_sheet(&mut self, name: &str) -> Result<()> {
+        crate::sheet::delete_sheet(
+            &mut self.workbook_xml,
+            &mut self.workbook_rels,
+            &mut self.content_types,
+            &mut self.worksheets,
+            name,
+        )
+    }
+
+    /// Rename a sheet.
+    pub fn set_sheet_name(&mut self, old_name: &str, new_name: &str) -> Result<()> {
+        crate::sheet::rename_sheet(
+            &mut self.workbook_xml,
+            &mut self.worksheets,
+            old_name,
+            new_name,
+        )
+    }
+
+    /// Copy a sheet, returning the 0-based index of the new copy.
+    pub fn copy_sheet(&mut self, source: &str, target: &str) -> Result<usize> {
+        crate::sheet::copy_sheet(
+            &mut self.workbook_xml,
+            &mut self.workbook_rels,
+            &mut self.content_types,
+            &mut self.worksheets,
+            source,
+            target,
+        )
+    }
+
+    /// Get a sheet's 0-based index by name. Returns `None` if not found.
+    pub fn get_sheet_index(&self, name: &str) -> Option<usize> {
+        crate::sheet::find_sheet_index(&self.worksheets, name)
+    }
+
+    /// Get the name of the active sheet.
+    pub fn get_active_sheet(&self) -> &str {
+        let idx = crate::sheet::active_sheet_index(&self.workbook_xml);
+        self.worksheets
+            .get(idx)
+            .map(|(n, _)| n.as_str())
+            .unwrap_or_else(|| self.worksheets[0].0.as_str())
+    }
+
+    /// Set the active sheet by name.
+    pub fn set_active_sheet(&mut self, name: &str) -> Result<()> {
+        let idx = crate::sheet::find_sheet_index(&self.worksheets, name).ok_or_else(|| {
+            Error::SheetNotFound {
+                name: name.to_string(),
+            }
+        })?;
+        crate::sheet::set_active_sheet_index(&mut self.workbook_xml, idx as u32);
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Private helpers for cell conversion
+    // -----------------------------------------------------------------------
+
+    /// Convert an XML Cell to a CellValue.
+    fn xml_cell_to_value(&self, xml_cell: &Cell) -> Result<CellValue> {
+        // Check for formula first.
+        if let Some(ref formula) = xml_cell.f {
+            let expr = formula.value.clone().unwrap_or_default();
+            let result = match (&xml_cell.t, &xml_cell.v) {
+                (Some(t), Some(v)) if t == "b" => Some(Box::new(CellValue::Bool(v == "1"))),
+                (Some(t), Some(v)) if t == "e" => Some(Box::new(CellValue::Error(v.clone()))),
+                (_, Some(v)) => v
+                    .parse::<f64>()
+                    .ok()
+                    .map(|n| Box::new(CellValue::Number(n))),
+                _ => None,
+            };
+            return Ok(CellValue::Formula { expr, result });
+        }
+
+        let cell_type = xml_cell.t.as_deref();
+        let cell_value = xml_cell.v.as_deref();
+
+        match (cell_type, cell_value) {
+            // Shared string
+            (Some("s"), Some(v)) => {
+                let idx: usize = v
+                    .parse()
+                    .map_err(|_| Error::Internal(format!("invalid SST index: {v}")))?;
+                let s = self.sst_runtime.get(idx).unwrap_or("").to_string();
+                Ok(CellValue::String(s))
+            }
+            // Boolean
+            (Some("b"), Some(v)) => Ok(CellValue::Bool(v == "1")),
+            // Error
+            (Some("e"), Some(v)) => Ok(CellValue::Error(v.to_string())),
+            // Inline string
+            (Some("inlineStr"), _) => {
+                let s = xml_cell
+                    .is
+                    .as_ref()
+                    .and_then(|is| is.t.clone())
+                    .unwrap_or_default();
+                Ok(CellValue::String(s))
+            }
+            // Formula string (cached string result)
+            (Some("str"), Some(v)) => Ok(CellValue::String(v.to_string())),
+            // Number (explicit or default type)
+            (None | Some("n"), Some(v)) => {
+                let n: f64 = v
+                    .parse()
+                    .map_err(|_| Error::Internal(format!("invalid number: {v}")))?;
+                Ok(CellValue::Number(n))
+            }
+            // No value
+            _ => Ok(CellValue::Empty),
+        }
     }
 }
 
@@ -186,6 +458,59 @@ fn read_xml_part<T: serde::de::DeserializeOwned>(
         .read_to_string(&mut content)
         .map_err(|e| Error::Zip(e.to_string()))?;
     quick_xml::de::from_str(&content).map_err(|e| Error::XmlDeserialize(e.to_string()))
+}
+
+/// Write a CellValue into an XML Cell (mutating it in place).
+fn value_to_xml_cell(sst: &mut SharedStringTable, xml_cell: &mut Cell, value: CellValue) {
+    // Clear previous values.
+    xml_cell.t = None;
+    xml_cell.v = None;
+    xml_cell.f = None;
+    xml_cell.is = None;
+
+    match value {
+        CellValue::String(s) => {
+            let idx = sst.add(&s);
+            xml_cell.t = Some("s".to_string());
+            xml_cell.v = Some(idx.to_string());
+        }
+        CellValue::Number(n) => {
+            xml_cell.v = Some(n.to_string());
+        }
+        CellValue::Bool(b) => {
+            xml_cell.t = Some("b".to_string());
+            xml_cell.v = Some(if b { "1" } else { "0" }.to_string());
+        }
+        CellValue::Formula { expr, .. } => {
+            xml_cell.f = Some(CellFormula {
+                t: None,
+                reference: None,
+                si: None,
+                value: Some(expr),
+            });
+        }
+        CellValue::Error(e) => {
+            xml_cell.t = Some("e".to_string());
+            xml_cell.v = Some(e);
+        }
+        CellValue::Empty => {
+            // Already cleared above; the caller should have removed the cell.
+        }
+    }
+}
+
+/// Create a new empty row with the given 1-based row number.
+fn new_row(row_num: u32) -> Row {
+    Row {
+        r: row_num,
+        spans: None,
+        s: None,
+        custom_format: None,
+        ht: None,
+        hidden: None,
+        custom_height: None,
+        cells: vec![],
+    }
 }
 
 /// Serialize a value to XML and write it as a ZIP entry.
@@ -297,5 +622,359 @@ mod tests {
         let xml = serialize_xml(&ct).unwrap();
         assert!(xml.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"));
         assert!(xml.contains("<Types"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Cell operation tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_set_and_get_string_value() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", "Hello").unwrap();
+        let val = wb.get_cell_value("Sheet1", "A1").unwrap();
+        assert_eq!(val, CellValue::String("Hello".to_string()));
+    }
+
+    #[test]
+    fn test_set_and_get_number_value() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "B2", 42.5f64).unwrap();
+        let val = wb.get_cell_value("Sheet1", "B2").unwrap();
+        assert_eq!(val, CellValue::Number(42.5));
+    }
+
+    #[test]
+    fn test_set_and_get_bool_value() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "C3", true).unwrap();
+        let val = wb.get_cell_value("Sheet1", "C3").unwrap();
+        assert_eq!(val, CellValue::Bool(true));
+
+        wb.set_cell_value("Sheet1", "D4", false).unwrap();
+        let val = wb.get_cell_value("Sheet1", "D4").unwrap();
+        assert_eq!(val, CellValue::Bool(false));
+    }
+
+    #[test]
+    fn test_set_value_sheet_not_found() {
+        let mut wb = Workbook::new();
+        let result = wb.set_cell_value("NoSuchSheet", "A1", "test");
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::SheetNotFound { .. }));
+    }
+
+    #[test]
+    fn test_get_value_sheet_not_found() {
+        let wb = Workbook::new();
+        let result = wb.get_cell_value("NoSuchSheet", "A1");
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::SheetNotFound { .. }));
+    }
+
+    #[test]
+    fn test_get_empty_cell_returns_empty() {
+        let wb = Workbook::new();
+        let val = wb.get_cell_value("Sheet1", "Z99").unwrap();
+        assert_eq!(val, CellValue::Empty);
+    }
+
+    #[test]
+    fn test_cell_value_roundtrip_save_open() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("cell_roundtrip.xlsx");
+
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", "Hello").unwrap();
+        wb.set_cell_value("Sheet1", "B1", 42.0f64).unwrap();
+        wb.set_cell_value("Sheet1", "C1", true).unwrap();
+        wb.save(&path).unwrap();
+
+        let wb2 = Workbook::open(&path).unwrap();
+        assert_eq!(
+            wb2.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("Hello".to_string())
+        );
+        assert_eq!(
+            wb2.get_cell_value("Sheet1", "B1").unwrap(),
+            CellValue::Number(42.0)
+        );
+        assert_eq!(
+            wb2.get_cell_value("Sheet1", "C1").unwrap(),
+            CellValue::Bool(true)
+        );
+    }
+
+    #[test]
+    fn test_set_empty_value_clears_cell() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", "test").unwrap();
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("test".to_string())
+        );
+
+        wb.set_cell_value("Sheet1", "A1", CellValue::Empty).unwrap();
+        assert_eq!(wb.get_cell_value("Sheet1", "A1").unwrap(), CellValue::Empty);
+    }
+
+    #[test]
+    fn test_string_too_long_returns_error() {
+        let mut wb = Workbook::new();
+        let long_string = "x".repeat(MAX_CELL_CHARS + 1);
+        let result = wb.set_cell_value("Sheet1", "A1", long_string.as_str());
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::CellValueTooLong { .. }
+        ));
+    }
+
+    #[test]
+    fn test_set_multiple_cells_same_row() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", "first").unwrap();
+        wb.set_cell_value("Sheet1", "B1", "second").unwrap();
+        wb.set_cell_value("Sheet1", "C1", "third").unwrap();
+
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("first".to_string())
+        );
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "B1").unwrap(),
+            CellValue::String("second".to_string())
+        );
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "C1").unwrap(),
+            CellValue::String("third".to_string())
+        );
+    }
+
+    #[test]
+    fn test_overwrite_cell_value() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", "original").unwrap();
+        wb.set_cell_value("Sheet1", "A1", "updated").unwrap();
+
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("updated".to_string())
+        );
+    }
+
+    #[test]
+    fn test_set_and_get_error_value() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", CellValue::Error("#DIV/0!".to_string()))
+            .unwrap();
+        let val = wb.get_cell_value("Sheet1", "A1").unwrap();
+        assert_eq!(val, CellValue::Error("#DIV/0!".to_string()));
+    }
+
+    #[test]
+    fn test_set_and_get_formula_value() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value(
+            "Sheet1",
+            "A1",
+            CellValue::Formula {
+                expr: "SUM(B1:B10)".to_string(),
+                result: None,
+            },
+        )
+        .unwrap();
+        let val = wb.get_cell_value("Sheet1", "A1").unwrap();
+        match val {
+            CellValue::Formula { expr, .. } => {
+                assert_eq!(expr, "SUM(B1:B10)");
+            }
+            other => panic!("expected Formula, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_set_i32_value() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", 100i32).unwrap();
+        let val = wb.get_cell_value("Sheet1", "A1").unwrap();
+        assert_eq!(val, CellValue::Number(100.0));
+    }
+
+    #[test]
+    fn test_set_string_at_max_length() {
+        let mut wb = Workbook::new();
+        let max_string = "x".repeat(MAX_CELL_CHARS);
+        wb.set_cell_value("Sheet1", "A1", max_string.as_str())
+            .unwrap();
+        let val = wb.get_cell_value("Sheet1", "A1").unwrap();
+        assert_eq!(val, CellValue::String(max_string));
+    }
+
+    #[test]
+    fn test_set_cells_different_rows() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", "row1").unwrap();
+        wb.set_cell_value("Sheet1", "A3", "row3").unwrap();
+        wb.set_cell_value("Sheet1", "A2", "row2").unwrap(); // inserted between
+
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("row1".to_string())
+        );
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "A2").unwrap(),
+            CellValue::String("row2".to_string())
+        );
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "A3").unwrap(),
+            CellValue::String("row3".to_string())
+        );
+    }
+
+    #[test]
+    fn test_string_deduplication_in_sst() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", "same").unwrap();
+        wb.set_cell_value("Sheet1", "A2", "same").unwrap();
+        wb.set_cell_value("Sheet1", "A3", "different").unwrap();
+
+        // Both A1 and A2 should point to the same SST index
+        assert_eq!(wb.sst_runtime.len(), 2);
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("same".to_string())
+        );
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "A2").unwrap(),
+            CellValue::String("same".to_string())
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Sheet management tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_new_sheet_basic() {
+        let mut wb = Workbook::new();
+        let idx = wb.new_sheet("Sheet2").unwrap();
+        assert_eq!(idx, 1);
+        assert_eq!(wb.sheet_names(), vec!["Sheet1", "Sheet2"]);
+    }
+
+    #[test]
+    fn test_new_sheet_duplicate_returns_error() {
+        let mut wb = Workbook::new();
+        let result = wb.new_sheet("Sheet1");
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::SheetAlreadyExists { .. }
+        ));
+    }
+
+    #[test]
+    fn test_new_sheet_invalid_name_returns_error() {
+        let mut wb = Workbook::new();
+        let result = wb.new_sheet("Bad/Name");
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::InvalidSheetName(_)));
+    }
+
+    #[test]
+    fn test_delete_sheet_basic() {
+        let mut wb = Workbook::new();
+        wb.new_sheet("Sheet2").unwrap();
+        wb.delete_sheet("Sheet1").unwrap();
+        assert_eq!(wb.sheet_names(), vec!["Sheet2"]);
+    }
+
+    #[test]
+    fn test_delete_last_sheet_returns_error() {
+        let mut wb = Workbook::new();
+        let result = wb.delete_sheet("Sheet1");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_delete_nonexistent_sheet_returns_error() {
+        let mut wb = Workbook::new();
+        let result = wb.delete_sheet("NoSuchSheet");
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::SheetNotFound { .. }));
+    }
+
+    #[test]
+    fn test_set_sheet_name_basic() {
+        let mut wb = Workbook::new();
+        wb.set_sheet_name("Sheet1", "Renamed").unwrap();
+        assert_eq!(wb.sheet_names(), vec!["Renamed"]);
+    }
+
+    #[test]
+    fn test_set_sheet_name_to_existing_returns_error() {
+        let mut wb = Workbook::new();
+        wb.new_sheet("Sheet2").unwrap();
+        let result = wb.set_sheet_name("Sheet1", "Sheet2");
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::SheetAlreadyExists { .. }
+        ));
+    }
+
+    #[test]
+    fn test_copy_sheet_basic() {
+        let mut wb = Workbook::new();
+        let idx = wb.copy_sheet("Sheet1", "Sheet1 Copy").unwrap();
+        assert_eq!(idx, 1);
+        assert_eq!(wb.sheet_names(), vec!["Sheet1", "Sheet1 Copy"]);
+    }
+
+    #[test]
+    fn test_get_sheet_index() {
+        let mut wb = Workbook::new();
+        wb.new_sheet("Sheet2").unwrap();
+        assert_eq!(wb.get_sheet_index("Sheet1"), Some(0));
+        assert_eq!(wb.get_sheet_index("Sheet2"), Some(1));
+        assert_eq!(wb.get_sheet_index("Nonexistent"), None);
+    }
+
+    #[test]
+    fn test_get_active_sheet_default() {
+        let wb = Workbook::new();
+        assert_eq!(wb.get_active_sheet(), "Sheet1");
+    }
+
+    #[test]
+    fn test_set_active_sheet() {
+        let mut wb = Workbook::new();
+        wb.new_sheet("Sheet2").unwrap();
+        wb.set_active_sheet("Sheet2").unwrap();
+        assert_eq!(wb.get_active_sheet(), "Sheet2");
+    }
+
+    #[test]
+    fn test_set_active_sheet_not_found() {
+        let mut wb = Workbook::new();
+        let result = wb.set_active_sheet("NoSuchSheet");
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::SheetNotFound { .. }));
+    }
+
+    #[test]
+    fn test_sheet_management_roundtrip_save_open() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("sheet_mgmt.xlsx");
+
+        let mut wb = Workbook::new();
+        wb.new_sheet("Data").unwrap();
+        wb.new_sheet("Summary").unwrap();
+        wb.set_sheet_name("Sheet1", "Overview").unwrap();
+        wb.save(&path).unwrap();
+
+        let wb2 = Workbook::open(&path).unwrap();
+        assert_eq!(wb2.sheet_names(), vec!["Overview", "Data", "Summary"]);
     }
 }
