@@ -7,5 +7,6 @@ pub mod formula;
 pub mod row;
 pub mod sheet;
 pub mod sst;
+pub mod style;
 pub mod utils;
 pub mod workbook;

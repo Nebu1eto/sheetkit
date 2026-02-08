@@ -65,6 +65,15 @@ pub enum Error {
     #[error("cell value too long: {length} characters (max {max})")]
     CellValueTooLong { length: usize, max: usize },
 
+    // ===== Style errors =====
+    /// The style ID was not found in the stylesheet.
+    #[error("style not found: {id}")]
+    StyleNotFound { id: u32 },
+
+    /// Too many cell styles have been registered.
+    #[error("cell styles exceeded maximum ({max})")]
+    CellStylesExceeded { max: usize },
+
     /// An internal or otherwise unclassified error.
     #[error("internal error: {0}")]
     Internal(String),
