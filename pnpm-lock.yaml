@@ -1292,6 +1292,9 @@ packages:
     resolution: {integrity: sha512-42AtmgqjV+X1VpdOfyTGOYRi0/zsoLqtXQckTmqTeybT+BDIbM/Guxo7x3pE2vtpr1ok6xRqM9OpBe+Jyoqyww==}
     engines: {node: '>=18'}
 
+ignoredOptionalDependencies:
+  - '@sheetkit/node-*'
+
 snapshots:
 
   '@biomejs/biome@2.3.14':

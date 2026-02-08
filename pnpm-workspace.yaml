@@ -2,5 +2,8 @@ packages:
   - packages/*
   - examples/*
 
+ignoredOptionalDependencies:
+  - "@sheetkit/node-*"
+
 onlyBuiltDependencies:
   - esbuild
