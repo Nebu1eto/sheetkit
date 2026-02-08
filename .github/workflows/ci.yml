@@ -69,15 +69,14 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Biome check
-        run: npx biome check .
+        run: pnpm check
 
       - name: Build napi binding
+        run: pnpm --filter sheetkit build
+
+      - name: Restore ESM wrapper
         working-directory: packages/sheetkit
-        run: |
-          npx napi build --platform --release
-          mv index.js binding.cjs
-          git checkout -- index.js
+        run: git checkout -- index.js
 
       - name: Test
-        working-directory: packages/sheetkit
-        run: npx vitest run
+        run: pnpm test
