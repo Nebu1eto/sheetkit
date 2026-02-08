@@ -79,10 +79,7 @@ pub fn insert_cols(ws: &mut WorksheetXml, col: &str, count: u32) -> Result<()> {
         .max()
         .unwrap_or(0);
     let furthest = max_existing.max(start_col);
-    if furthest
-        .checked_add(count)
-        .is_none_or(|v| v > MAX_COLUMNS)
-    {
+    if furthest.checked_add(count).is_none_or(|v| v > MAX_COLUMNS) {
         return Err(Error::InvalidColumnNumber(furthest + count));
     }
 
