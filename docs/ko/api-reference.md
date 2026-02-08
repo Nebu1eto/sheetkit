@@ -212,6 +212,17 @@ wb.setCellValue("Sheet1", "E1", { type: "date", serial: 45458 });
 
 > 시트 이름이 존재하지 않거나 셀 참조가 유효하지 않으면 오류가 발생한다.
 
+### `get_occupied_cells(sheet)` (Rust 전용)
+
+시트에서 값이 있는 모든 셀의 `(col, row)` 좌표 쌍을 반환한다. 두 값 모두 1부터 시작한다. 전체 그리드를 탐색하지 않고 데이터가 존재하는 셀만 순회할 때 유용하다.
+
+```rust
+let cells = wb.get_occupied_cells("Sheet1")?;
+for (col, row) in &cells {
+    println!("Cell at col {}, row {}", col, row);
+}
+```
+
 ---
 
 ## 3. 시트 관리
@@ -2732,6 +2743,32 @@ assert_eq!(column_number_to_name(16384)?, "XFD");
 ```
 
 > 유틸리티 함수는 현재 Rust 전용으로 제공된다. TypeScript에서는 문자열 기반 셀 참조("A1", "B2" 등)를 직접 사용한다.
+
+### `is_date_num_fmt(num_fmt_id)` (Rust 전용)
+
+내장 숫자 서식 ID가 날짜/시간 서식인지 확인한다. ID 14-22 및 45-47에 대해 `true`를 반환한다.
+
+```rust
+use sheetkit::is_date_num_fmt;
+
+assert!(is_date_num_fmt(14));   // m/d/yyyy
+assert!(is_date_num_fmt(22));   // m/d/yyyy h:mm
+assert!(!is_date_num_fmt(0));   // General
+assert!(!is_date_num_fmt(49));  // @
+```
+
+### `is_date_format_code(code)` (Rust 전용)
+
+사용자 정의 숫자 서식 문자열이 날짜/시간 서식인지 확인한다. 따옴표로 감싸진 문자열과 이스케이프된 문자를 제외하고, 서식 코드에 날짜/시간 토큰(y, m, d, h, s)이 포함되어 있으면 `true`를 반환한다.
+
+```rust
+use sheetkit::is_date_format_code;
+
+assert!(is_date_format_code("yyyy-mm-dd"));
+assert!(is_date_format_code("h:mm:ss AM/PM"));
+assert!(!is_date_format_code("#,##0.00"));
+assert!(!is_date_format_code("0%"));
+```
 
 ---
 
