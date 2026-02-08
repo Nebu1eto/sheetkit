@@ -1,0 +1,31 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/sheetkit-xml",
+    "crates/sheetkit-core",
+    "crates/sheetkit",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+quick-xml = { version = "0.36", features = ["serialize", "overlapped-lists"] }
+serde = { version = "1.0", features = ["derive"] }
+zip = { version = "2.2", default-features = false, features = ["deflate"] }
+thiserror = "2.0"
+chrono = { version = "0.4", features = ["serde"] }
+regex = "1.10"
+dashmap = "6"
+rayon = "1.10"
+nom = "7.1"
+tempfile = "3.10"
+pretty_assertions = "1.4"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = true

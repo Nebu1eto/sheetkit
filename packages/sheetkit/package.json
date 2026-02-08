@@ -1,0 +1,14 @@
+{
+	"name": "sheetkit",
+	"version": "0.1.0",
+	"type": "module",
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"files": ["dist"],
+	"scripts": {
+		"build": "tsc",
+		"test": "vitest run",
+		"test:watch": "vitest"
+	},
+	"devDependencies": {}
+}

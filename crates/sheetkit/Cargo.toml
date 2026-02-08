@@ -1,0 +1,13 @@
+[package]
+name = "sheetkit"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+sheetkit-core = { path = "../sheetkit-core" }
+sheetkit-xml = { path = "../sheetkit-xml" }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+pretty_assertions = { workspace = true }

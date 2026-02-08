@@ -1,0 +1,10 @@
+[package]
+name = "sheetkit-xml"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+quick-xml = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
