@@ -109,7 +109,7 @@ Test files are co-located with their modules using `#[cfg(test)]` inline test mo
 ### Node.js
 
 ```bash
-cd packages/sheetkit && npx vitest run
+cd packages/sheetkit && pnpm test
 ```
 
 Test file: `packages/sheetkit/__test__/index.spec.ts`
@@ -122,7 +122,7 @@ Before completing any task, confirm all of the following pass:
 - [ ] `cargo test --workspace` passes
 - [ ] `cargo clippy --workspace` passes (no warnings)
 - [ ] `cargo fmt --check` passes
-- [ ] `cd packages/sheetkit && npx vitest run` passes (if Node.js code changed)
+- [ ] `cd packages/sheetkit && pnpm test` passes (if Node.js code changed)
 - [ ] Update docs if API changed
 
 ## Common Gotchas
