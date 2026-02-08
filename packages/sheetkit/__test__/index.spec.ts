@@ -591,10 +591,10 @@ describe('Hyperlinks', () => {
 		});
 		const info = wb.getCellHyperlink('Sheet1', 'A1');
 		expect(info).not.toBeNull();
-		expect(info!.linkType).toBe('external');
-		expect(info!.target).toBe('https://example.com');
-		expect(info!.display).toBe('Example');
-		expect(info!.tooltip).toBe('Visit Example');
+		expect(info?.linkType).toBe('external');
+		expect(info?.target).toBe('https://example.com');
+		expect(info?.display).toBe('Example');
+		expect(info?.tooltip).toBe('Visit Example');
 	});
 
 	it('should set and get internal hyperlink', () => {
@@ -606,9 +606,9 @@ describe('Hyperlinks', () => {
 		});
 		const info = wb.getCellHyperlink('Sheet1', 'B2');
 		expect(info).not.toBeNull();
-		expect(info!.linkType).toBe('internal');
-		expect(info!.target).toBe('Sheet1!C1');
-		expect(info!.display).toBe('Go to C1');
+		expect(info?.linkType).toBe('internal');
+		expect(info?.target).toBe('Sheet1!C1');
+		expect(info?.display).toBe('Go to C1');
 	});
 
 	it('should set and get email hyperlink', () => {
@@ -619,8 +619,8 @@ describe('Hyperlinks', () => {
 		});
 		const info = wb.getCellHyperlink('Sheet1', 'C3');
 		expect(info).not.toBeNull();
-		expect(info!.linkType).toBe('email');
-		expect(info!.target).toBe('mailto:user@example.com');
+		expect(info?.linkType).toBe('email');
+		expect(info?.target).toBe('mailto:user@example.com');
 	});
 
 	it('should return null for cell without hyperlink', () => {
@@ -651,8 +651,8 @@ describe('Hyperlinks', () => {
 			display: 'New Link',
 		});
 		const info = wb.getCellHyperlink('Sheet1', 'A1');
-		expect(info!.target).toBe('https://new.com');
-		expect(info!.display).toBe('New Link');
+		expect(info?.target).toBe('https://new.com');
+		expect(info?.display).toBe('New Link');
 	});
 
 	it('should handle multiple hyperlinks on different cells', () => {
@@ -670,9 +670,9 @@ describe('Hyperlinks', () => {
 			target: 'mailto:test@test.com',
 		});
 
-		expect(wb.getCellHyperlink('Sheet1', 'A1')!.linkType).toBe('external');
-		expect(wb.getCellHyperlink('Sheet1', 'B1')!.linkType).toBe('internal');
-		expect(wb.getCellHyperlink('Sheet1', 'C1')!.linkType).toBe('email');
+		expect(wb.getCellHyperlink('Sheet1', 'A1')?.linkType).toBe('external');
+		expect(wb.getCellHyperlink('Sheet1', 'B1')?.linkType).toBe('internal');
+		expect(wb.getCellHyperlink('Sheet1', 'C1')?.linkType).toBe('email');
 	});
 
 	it('should roundtrip hyperlinks through save/open', () => {
@@ -698,20 +698,20 @@ describe('Hyperlinks', () => {
 		const wb2 = Workbook.open(out);
 		const a1 = wb2.getCellHyperlink('Sheet1', 'A1');
 		expect(a1).not.toBeNull();
-		expect(a1!.linkType).toBe('external');
-		expect(a1!.target).toBe('https://rust-lang.org');
-		expect(a1!.display).toBe('Rust');
-		expect(a1!.tooltip).toBe('Rust Homepage');
+		expect(a1?.linkType).toBe('external');
+		expect(a1?.target).toBe('https://rust-lang.org');
+		expect(a1?.display).toBe('Rust');
+		expect(a1?.tooltip).toBe('Rust Homepage');
 
 		const b1 = wb2.getCellHyperlink('Sheet1', 'B1');
 		expect(b1).not.toBeNull();
-		expect(b1!.linkType).toBe('internal');
-		expect(b1!.target).toBe('Sheet1!C1');
+		expect(b1?.linkType).toBe('internal');
+		expect(b1?.target).toBe('Sheet1!C1');
 
 		const c1 = wb2.getCellHyperlink('Sheet1', 'C1');
 		expect(c1).not.toBeNull();
-		expect(c1!.linkType).toBe('email');
-		expect(c1!.target).toBe('mailto:hello@example.com');
+		expect(c1?.linkType).toBe('email');
+		expect(c1?.target).toBe('mailto:hello@example.com');
 	});
 });
 
@@ -1130,5 +1130,157 @@ describe('Page Layout', () => {
 
 		const breaks = wb2.getPageBreaks('Sheet1');
 		expect(breaks).toEqual([15]);
+	});
+});
+
+describe('Formula Evaluation', () => {
+	const out = tmpFile('test-formula-eval.xlsx');
+	afterEach(() => cleanup(out));
+
+	it('should evaluate a simple formula', () => {
+		const wb = new Workbook();
+		wb.setCellValue('Sheet1', 'A1', 10);
+		wb.setCellValue('Sheet1', 'A2', 20);
+		const result = wb.evaluateFormula('Sheet1', 'SUM(A1:A2)');
+		expect(result).toBe(30);
+	});
+
+	it('should evaluate string functions', () => {
+		const wb = new Workbook();
+		wb.setCellValue('Sheet1', 'A1', 'hello');
+		const result = wb.evaluateFormula('Sheet1', 'UPPER(A1)');
+		expect(result).toBe('HELLO');
+	});
+
+	it('should calculate all formulas', () => {
+		const wb = new Workbook();
+		wb.setCellValue('Sheet1', 'A1', 5);
+		wb.setCellValue('Sheet1', 'A2', 10);
+		wb.setCellValue('Sheet1', 'A3', 100);
+		wb.calculateAll();
+		wb.save(out);
+		const wb2 = Workbook.open(out);
+		expect(wb2.getCellValue('Sheet1', 'A1')).toBe(5);
+		expect(wb2.getCellValue('Sheet1', 'A2')).toBe(10);
+	});
+});
+
+describe('Pivot Tables', () => {
+	const out = tmpFile('test-pivot.xlsx');
+	afterEach(() => cleanup(out));
+
+	it('should add and get pivot tables', () => {
+		const wb = new Workbook();
+		wb.setCellValue('Sheet1', 'A1', 'Name');
+		wb.setCellValue('Sheet1', 'B1', 'Region');
+		wb.setCellValue('Sheet1', 'C1', 'Sales');
+		wb.setCellValue('Sheet1', 'A2', 'Alice');
+		wb.setCellValue('Sheet1', 'B2', 'East');
+		wb.setCellValue('Sheet1', 'C2', 1000);
+		wb.setCellValue('Sheet1', 'A3', 'Bob');
+		wb.setCellValue('Sheet1', 'B3', 'West');
+		wb.setCellValue('Sheet1', 'C3', 2000);
+
+		wb.newSheet('PivotSheet');
+		wb.addPivotTable({
+			name: 'PivotTable1',
+			sourceSheet: 'Sheet1',
+			sourceRange: 'A1:C3',
+			targetSheet: 'PivotSheet',
+			targetCell: 'A1',
+			rows: [{ name: 'Region' }],
+			columns: [],
+			data: [{ name: 'Sales', function: 'sum' }],
+		});
+
+		const pivots = wb.getPivotTables();
+		expect(pivots.length).toBe(1);
+		expect(pivots[0].name).toBe('PivotTable1');
+		expect(pivots[0].sourceSheet).toBe('Sheet1');
+	});
+
+	it('should delete a pivot table', () => {
+		const wb = new Workbook();
+		wb.setCellValue('Sheet1', 'A1', 'Name');
+		wb.setCellValue('Sheet1', 'B1', 'Sales');
+		wb.setCellValue('Sheet1', 'A2', 'Alice');
+		wb.setCellValue('Sheet1', 'B2', 100);
+
+		wb.newSheet('PivotSheet');
+		wb.addPivotTable({
+			name: 'PT1',
+			sourceSheet: 'Sheet1',
+			sourceRange: 'A1:B2',
+			targetSheet: 'PivotSheet',
+			targetCell: 'A1',
+			rows: [{ name: 'Name' }],
+			columns: [],
+			data: [{ name: 'Sales', function: 'sum' }],
+		});
+
+		expect(wb.getPivotTables().length).toBe(1);
+		wb.deletePivotTable('PT1');
+		expect(wb.getPivotTables().length).toBe(0);
+	});
+
+	it('should save and open with pivot tables', () => {
+		const wb = new Workbook();
+		wb.setCellValue('Sheet1', 'A1', 'Category');
+		wb.setCellValue('Sheet1', 'B1', 'Amount');
+		wb.setCellValue('Sheet1', 'A2', 'Food');
+		wb.setCellValue('Sheet1', 'B2', 500);
+		wb.setCellValue('Sheet1', 'A3', 'Transport');
+		wb.setCellValue('Sheet1', 'B3', 300);
+
+		wb.newSheet('PivotSheet');
+		wb.addPivotTable({
+			name: 'PT1',
+			sourceSheet: 'Sheet1',
+			sourceRange: 'A1:B3',
+			targetSheet: 'PivotSheet',
+			targetCell: 'A1',
+			rows: [{ name: 'Category' }],
+			columns: [],
+			data: [{ name: 'Amount', function: 'sum' }],
+		});
+
+		wb.save(out);
+		const wb2 = Workbook.open(out);
+		const pivots = wb2.getPivotTables();
+		expect(pivots.length).toBe(1);
+		expect(pivots[0].name).toBe('PT1');
+	});
+
+	it('should throw on duplicate pivot table name', () => {
+		const wb = new Workbook();
+		wb.setCellValue('Sheet1', 'A1', 'X');
+		wb.setCellValue('Sheet1', 'B1', 'Y');
+		wb.setCellValue('Sheet1', 'A2', 'a');
+		wb.setCellValue('Sheet1', 'B2', 1);
+
+		wb.newSheet('PivotSheet');
+		wb.addPivotTable({
+			name: 'PT1',
+			sourceSheet: 'Sheet1',
+			sourceRange: 'A1:B2',
+			targetSheet: 'PivotSheet',
+			targetCell: 'A1',
+			rows: [{ name: 'X' }],
+			columns: [],
+			data: [{ name: 'Y', function: 'sum' }],
+		});
+
+		expect(() =>
+			wb.addPivotTable({
+				name: 'PT1',
+				sourceSheet: 'Sheet1',
+				sourceRange: 'A1:B2',
+				targetSheet: 'PivotSheet',
+				targetCell: 'A5',
+				rows: [{ name: 'X' }],
+				columns: [],
+				data: [{ name: 'Y', function: 'count' }],
+			}),
+		).toThrow();
 	});
 });

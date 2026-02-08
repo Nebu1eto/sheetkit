@@ -14,6 +14,7 @@ use sheetkit_core::doc_props::{AppProperties, CustomPropertyValue, DocProperties
 use sheetkit_core::hyperlink::{HyperlinkInfo, HyperlinkType};
 use sheetkit_core::image::{ImageConfig, ImageFormat};
 use sheetkit_core::page_layout::{Orientation, PageMarginsConfig, PaperSize};
+use sheetkit_core::pivot::{AggregateFunction, PivotDataField, PivotField, PivotTableConfig};
 use sheetkit_core::protection::WorkbookProtectionConfig;
 use sheetkit_core::stream::StreamWriter;
 use sheetkit_core::style::{
@@ -1399,6 +1400,56 @@ fn core_cf_rule_to_js(rule: &ConditionalFormatRule) -> JsConditionalFormatRule {
     }
 }
 
+#[napi(object)]
+pub struct JsPivotField {
+    pub name: String,
+}
+
+#[napi(object)]
+pub struct JsPivotDataField {
+    pub name: String,
+    pub function: String,
+    pub display_name: Option<String>,
+}
+
+#[napi(object)]
+pub struct JsPivotTableConfig {
+    pub name: String,
+    pub source_sheet: String,
+    pub source_range: String,
+    pub target_sheet: String,
+    pub target_cell: String,
+    pub rows: Vec<JsPivotField>,
+    pub columns: Vec<JsPivotField>,
+    pub data: Vec<JsPivotDataField>,
+}
+
+#[napi(object)]
+pub struct JsPivotTableInfo {
+    pub name: String,
+    pub source_sheet: String,
+    pub source_range: String,
+    pub target_sheet: String,
+    pub location: String,
+}
+
+fn parse_aggregate_function(s: &str) -> AggregateFunction {
+    match s.to_lowercase().as_str() {
+        "sum" => AggregateFunction::Sum,
+        "count" => AggregateFunction::Count,
+        "average" => AggregateFunction::Average,
+        "max" => AggregateFunction::Max,
+        "min" => AggregateFunction::Min,
+        "product" => AggregateFunction::Product,
+        "countnums" => AggregateFunction::CountNums,
+        "stddev" => AggregateFunction::StdDev,
+        "stddevp" => AggregateFunction::StdDevP,
+        "var" => AggregateFunction::Var,
+        "varp" => AggregateFunction::VarP,
+        _ => AggregateFunction::Sum,
+    }
+}
+
 /// Excel workbook for reading and writing .xlsx files.
 #[napi]
 pub struct Workbook {
@@ -2324,6 +2375,86 @@ impl Workbook {
                     .collect(),
             })
             .collect())
+    }
+
+    /// Evaluate a formula string against the current workbook data.
+    #[napi]
+    pub fn evaluate_formula(&self, env: Env, sheet: String, formula: String) -> Result<JsUnknown> {
+        let result = self
+            .inner
+            .evaluate_formula(&sheet, &formula)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        cell_value_to_js(env, result)
+    }
+
+    /// Recalculate all formula cells in the workbook.
+    #[napi]
+    pub fn calculate_all(&mut self) -> Result<()> {
+        self.inner
+            .calculate_all()
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Add a pivot table to the workbook.
+    #[napi]
+    pub fn add_pivot_table(&mut self, config: JsPivotTableConfig) -> Result<()> {
+        let core_config = PivotTableConfig {
+            name: config.name,
+            source_sheet: config.source_sheet,
+            source_range: config.source_range,
+            target_sheet: config.target_sheet,
+            target_cell: config.target_cell,
+            rows: config
+                .rows
+                .iter()
+                .map(|f| PivotField {
+                    name: f.name.clone(),
+                })
+                .collect(),
+            columns: config
+                .columns
+                .iter()
+                .map(|f| PivotField {
+                    name: f.name.clone(),
+                })
+                .collect(),
+            data: config
+                .data
+                .iter()
+                .map(|f| PivotDataField {
+                    name: f.name.clone(),
+                    function: parse_aggregate_function(&f.function),
+                    display_name: f.display_name.clone(),
+                })
+                .collect(),
+        };
+        self.inner
+            .add_pivot_table(&core_config)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Get all pivot tables in the workbook.
+    #[napi]
+    pub fn get_pivot_tables(&self) -> Vec<JsPivotTableInfo> {
+        self.inner
+            .get_pivot_tables()
+            .into_iter()
+            .map(|info| JsPivotTableInfo {
+                name: info.name,
+                source_sheet: info.source_sheet,
+                source_range: info.source_range,
+                target_sheet: info.target_sheet,
+                location: info.location,
+            })
+            .collect()
+    }
+
+    /// Delete a pivot table by name.
+    #[napi]
+    pub fn delete_pivot_table(&mut self, name: String) -> Result<()> {
+        self.inner
+            .delete_pivot_table(&name)
+            .map_err(|e| Error::from_reason(e.to_string()))
     }
 }
 
