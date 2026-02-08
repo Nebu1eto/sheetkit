@@ -52,8 +52,8 @@ jobs:
           pnpm build --target aarch64-apple-darwin -x
           pnpm build --target x86_64-pc-windows-msvc -x
           pnpm build --target aarch64-pc-windows-msvc -x
-          pnpm build --target x86_64-unknown-linux-gnu --use-napi-cross
-          pnpm build --target aarch64-unknown-linux-gnu --use-napi-cross
+          pnpm build --target x86_64-unknown-linux-gnu -x
+          pnpm build --target aarch64-unknown-linux-gnu -x
           pnpm build --target x86_64-unknown-linux-musl -x
           pnpm build --target aarch64-unknown-linux-musl -x
 
@@ -113,7 +113,7 @@ jobs:
 
       - name: Create npm dirs
         working-directory: packages/sheetkit
-        run: pnpm napi create-npm-dirs
+        run: pnpm exec napi create-npm-dirs
 
       - name: Move artifacts
         working-directory: packages/sheetkit

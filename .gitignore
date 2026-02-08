@@ -6,7 +6,7 @@ Cargo.lock
 # Node.js
 node_modules/
 *.node
-packages/sheetkit/npm/*/sheetkit.*.node
+packages/**/*.node
 dist/
 
 # IDE
