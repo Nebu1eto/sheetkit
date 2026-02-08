@@ -90,6 +90,9 @@ pub struct Workbook {
     theme_colors: sheetkit_xml::theme::ThemeColors,
     /// Per-sheet sparkline configurations, parallel to the `worksheets` vector.
     sheet_sparklines: Vec<Vec<crate::sparkline::SparklineConfig>>,
+    /// Per-sheet VML drawing bytes (for legacy comment rendering), parallel to `worksheets`.
+    /// `None` means no VML part exists for that sheet.
+    sheet_vml: Vec<Option<Vec<u8>>>,
 }
 
 impl Workbook {
@@ -123,6 +126,7 @@ impl Workbook {
             theme_xml: None,
             theme_colors: crate::theme::default_theme_colors(),
             sheet_sparklines: vec![vec![]],
+            sheet_vml: vec![None],
         }
     }
 
@@ -194,8 +198,9 @@ impl Workbook {
             }
         }
 
-        // Parse comments, drawings, drawing rels, charts, and images.
+        // Parse comments, VML drawings, drawings, drawing rels, charts, and images.
         let mut sheet_comments: Vec<Option<Comments>> = vec![None; worksheets.len()];
+        let mut sheet_vml: Vec<Option<Vec<u8>>> = vec![None; worksheets.len()];
         let mut drawings: Vec<(String, WsDr)> = Vec::new();
         let mut worksheet_drawings: HashMap<usize, usize> = HashMap::new();
         let mut drawing_path_to_idx: HashMap<String, usize> = HashMap::new();
@@ -213,6 +218,17 @@ impl Workbook {
                 let comment_path = resolve_relationship_target(sheet_path, &comment_rel.target);
                 if let Ok(comments) = read_xml_part::<Comments>(&mut archive, &comment_path) {
                     sheet_comments[sheet_idx] = Some(comments);
+                }
+            }
+
+            if let Some(vml_rel) = rels
+                .relationships
+                .iter()
+                .find(|r| r.rel_type == rel_types::VML_DRAWING)
+            {
+                let vml_path = resolve_relationship_target(sheet_path, &vml_rel.target);
+                if let Ok(bytes) = read_bytes_part(&mut archive, &vml_path) {
+                    sheet_vml[sheet_idx] = Some(bytes);
                 }
             }
 
@@ -397,6 +413,7 @@ impl Workbook {
             theme_xml,
             theme_colors,
             sheet_sparklines,
+            sheet_vml,
         })
     }
 
@@ -408,7 +425,15 @@ impl Workbook {
         let mut content_types = self.content_types.clone();
         let mut worksheet_rels = self.worksheet_rels.clone();
 
-        // Synchronize comment parts with worksheet relationships/content types.
+        // Synchronize comment and VML parts with worksheet relationships/content types.
+        // Per-sheet VML bytes to write: (sheet_idx, zip_path, bytes).
+        let mut vml_parts_to_write: Vec<(usize, String, Vec<u8>)> = Vec::new();
+        // Per-sheet legacy drawing relationship IDs for worksheet XML serialization.
+        let mut legacy_drawing_rids: HashMap<usize, String> = HashMap::new();
+
+        // Ensure the vml extension default content type is present if any VML exists.
+        let mut has_any_vml = false;
+
         for sheet_idx in 0..self.worksheets.len() {
             let has_comments = self
                 .sheet_comments
@@ -418,6 +443,8 @@ impl Workbook {
             if let Some(rels) = worksheet_rels.get_mut(&sheet_idx) {
                 rels.relationships
                     .retain(|r| r.rel_type != rel_types::COMMENTS);
+                rels.relationships
+                    .retain(|r| r.rel_type != rel_types::VML_DRAWING);
             }
             if !has_comments {
                 continue;
@@ -448,6 +475,56 @@ impl Workbook {
                 target,
                 target_mode: None,
             });
+
+            // Determine VML bytes: use preserved bytes if available, otherwise generate.
+            let vml_path = format!("xl/drawings/vmlDrawing{}.vml", sheet_idx + 1);
+            let vml_bytes =
+                if let Some(bytes) = self.sheet_vml.get(sheet_idx).and_then(|v| v.as_ref()) {
+                    bytes.clone()
+                } else {
+                    // Generate VML from comment cell references.
+                    let comments = self.sheet_comments[sheet_idx].as_ref().unwrap();
+                    let cells: Vec<&str> = comments
+                        .comment_list
+                        .comments
+                        .iter()
+                        .map(|c| c.r#ref.as_str())
+                        .collect();
+                    crate::vml::build_vml_drawing(&cells).into_bytes()
+                };
+
+            let vml_part_name = format!("/{}", vml_path);
+            if !content_types
+                .overrides
+                .iter()
+                .any(|o| o.part_name == vml_part_name && o.content_type == mime_types::VML_DRAWING)
+            {
+                content_types.overrides.push(ContentTypeOverride {
+                    part_name: vml_part_name,
+                    content_type: mime_types::VML_DRAWING.to_string(),
+                });
+            }
+
+            let vml_target = relative_relationship_target(&sheet_path, &vml_path);
+            let vml_rid = crate::sheet::next_rid(&rels.relationships);
+            rels.relationships.push(Relationship {
+                id: vml_rid.clone(),
+                rel_type: rel_types::VML_DRAWING.to_string(),
+                target: vml_target,
+                target_mode: None,
+            });
+
+            legacy_drawing_rids.insert(sheet_idx, vml_rid);
+            vml_parts_to_write.push((sheet_idx, vml_path, vml_bytes));
+            has_any_vml = true;
+        }
+
+        // Add vml extension default content type if needed.
+        if has_any_vml && !content_types.defaults.iter().any(|d| d.extension == "vml") {
+            content_types.defaults.push(ContentTypeDefault {
+                extension: "vml".to_string(),
+                content_type: mime_types::VML_DRAWING.to_string(),
+            });
         }
 
         // [Content_Types].xml
@@ -471,13 +548,24 @@ impl Workbook {
         for (i, (_name, ws)) in self.worksheets.iter().enumerate() {
             let entry_name = self.sheet_part_path(i);
             let sparklines = self.sheet_sparklines.get(i).cloned().unwrap_or_default();
-            if sparklines.is_empty() {
+            let needs_legacy_drawing = legacy_drawing_rids.contains_key(&i);
+
+            if !needs_legacy_drawing && sparklines.is_empty() {
                 write_xml_part(&mut zip, &entry_name, ws, options)?;
             } else {
-                let xml = serialize_worksheet_with_sparklines(ws, &sparklines)?;
-                zip.start_file(&entry_name, options)
-                    .map_err(|e| Error::Zip(e.to_string()))?;
-                zip.write_all(xml.as_bytes())?;
+                let mut ws_clone = ws.clone();
+                if let Some(rid) = legacy_drawing_rids.get(&i) {
+                    ws_clone.legacy_drawing =
+                        Some(sheetkit_xml::worksheet::LegacyDrawingRef { r_id: rid.clone() });
+                }
+                if sparklines.is_empty() {
+                    write_xml_part(&mut zip, &entry_name, &ws_clone, options)?;
+                } else {
+                    let xml = serialize_worksheet_with_sparklines(&ws_clone, &sparklines)?;
+                    zip.start_file(&entry_name, options)
+                        .map_err(|e| Error::Zip(e.to_string()))?;
+                    zip.write_all(xml.as_bytes())?;
+                }
             }
         }
 
@@ -494,6 +582,13 @@ impl Workbook {
                 let entry_name = format!("xl/comments{}.xml", i + 1);
                 write_xml_part(&mut zip, &entry_name, c, options)?;
             }
+        }
+
+        // xl/drawings/vmlDrawing{N}.vml -- write VML drawing parts
+        for (_sheet_idx, vml_path, vml_bytes) in &vml_parts_to_write {
+            zip.start_file(vml_path, options)
+                .map_err(|e| Error::Zip(e.to_string()))?;
+            zip.write_all(vml_bytes)?;
         }
 
         // xl/drawings/drawing{N}.xml -- write drawing parts
@@ -735,6 +830,9 @@ impl Workbook {
         if self.sheet_sparklines.len() < self.worksheets.len() {
             self.sheet_sparklines.push(vec![]);
         }
+        if self.sheet_vml.len() < self.worksheets.len() {
+            self.sheet_vml.push(None);
+        }
         Ok(idx)
     }
 
@@ -754,6 +852,9 @@ impl Workbook {
         }
         if idx < self.sheet_sparklines.len() {
             self.sheet_sparklines.remove(idx);
+        }
+        if idx < self.sheet_vml.len() {
+            self.sheet_vml.remove(idx);
         }
         self.reindex_sheet_maps_after_delete(idx);
         Ok(())
@@ -791,6 +892,9 @@ impl Workbook {
         };
         if self.sheet_sparklines.len() < self.worksheets.len() {
             self.sheet_sparklines.push(source_sparklines);
+        }
+        if self.sheet_vml.len() < self.worksheets.len() {
+            self.sheet_vml.push(None);
         }
         Ok(idx)
     }
@@ -883,6 +987,9 @@ impl Workbook {
         )?;
         if self.sheet_comments.len() < self.worksheets.len() {
             self.sheet_comments.push(None);
+        }
+        if self.sheet_vml.len() < self.worksheets.len() {
+            self.sheet_vml.push(None);
         }
         Ok(idx)
     }
@@ -1268,9 +1375,16 @@ impl Workbook {
     }
 
     /// Add a comment to a cell on the given sheet.
+    ///
+    /// A VML drawing part is generated automatically when saving so that
+    /// the comment renders correctly in Excel.
     pub fn add_comment(&mut self, sheet: &str, config: &CommentConfig) -> Result<()> {
         let idx = self.sheet_index(sheet)?;
         crate::comment::add_comment(&mut self.sheet_comments[idx], config);
+        // Invalidate cached VML so save() regenerates it from current comments.
+        if idx < self.sheet_vml.len() {
+            self.sheet_vml[idx] = None;
+        }
         Ok(())
     }
 
@@ -1281,9 +1395,16 @@ impl Workbook {
     }
 
     /// Remove a comment from a cell on the given sheet.
+    ///
+    /// When the last comment on a sheet is removed, the VML drawing part is
+    /// cleaned up automatically during save.
     pub fn remove_comment(&mut self, sheet: &str, cell: &str) -> Result<()> {
         let idx = self.sheet_index(sheet)?;
         crate::comment::remove_comment(&mut self.sheet_comments[idx], cell);
+        // Invalidate cached VML so save() regenerates or omits it.
+        if idx < self.sheet_vml.len() {
+            self.sheet_vml[idx] = None;
+        }
         Ok(())
     }
 
@@ -4346,6 +4467,177 @@ mod tests {
         assert_eq!(comments[0].cell, "A1");
         assert_eq!(comments[0].author, "Author");
         assert_eq!(comments[0].text, "Persist me");
+    }
+
+    #[test]
+    fn test_workbook_comment_produces_vml_part() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("comment_vml.xlsx");
+
+        let mut wb = Workbook::new();
+        wb.add_comment(
+            "Sheet1",
+            &crate::comment::CommentConfig {
+                cell: "B3".to_string(),
+                author: "Tester".to_string(),
+                text: "VML check".to_string(),
+            },
+        )
+        .unwrap();
+        wb.save(&path).unwrap();
+
+        let file = std::fs::File::open(&path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        assert!(
+            archive.by_name("xl/drawings/vmlDrawing1.vml").is_ok(),
+            "vmlDrawing1.vml should be present in the ZIP"
+        );
+
+        // Verify the VML content references the correct cell.
+        let mut vml_data = Vec::new();
+        archive
+            .by_name("xl/drawings/vmlDrawing1.vml")
+            .unwrap()
+            .read_to_end(&mut vml_data)
+            .unwrap();
+        let vml_str = String::from_utf8(vml_data).unwrap();
+        assert!(vml_str.contains("<x:Row>2</x:Row>"));
+        assert!(vml_str.contains("<x:Column>1</x:Column>"));
+        assert!(vml_str.contains("ObjectType=\"Note\""));
+    }
+
+    #[test]
+    fn test_workbook_comment_vml_roundtrip_open() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("comment_vml_roundtrip.xlsx");
+
+        let mut wb = Workbook::new();
+        wb.add_comment(
+            "Sheet1",
+            &crate::comment::CommentConfig {
+                cell: "A1".to_string(),
+                author: "Author".to_string(),
+                text: "Roundtrip VML".to_string(),
+            },
+        )
+        .unwrap();
+        wb.save(&path).unwrap();
+
+        // Reopen and re-save.
+        let wb2 = Workbook::open(&path).unwrap();
+        let path2 = dir.path().join("comment_vml_roundtrip2.xlsx");
+        wb2.save(&path2).unwrap();
+
+        // Verify VML part is preserved through the round-trip.
+        let file = std::fs::File::open(&path2).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        assert!(archive.by_name("xl/drawings/vmlDrawing1.vml").is_ok());
+
+        // Comments should still be readable.
+        let wb3 = Workbook::open(&path2).unwrap();
+        let comments = wb3.get_comments("Sheet1").unwrap();
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments[0].text, "Roundtrip VML");
+    }
+
+    #[test]
+    fn test_workbook_comment_vml_legacy_drawing_ref() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("comment_vml_legacy_ref.xlsx");
+
+        let mut wb = Workbook::new();
+        wb.add_comment(
+            "Sheet1",
+            &crate::comment::CommentConfig {
+                cell: "C5".to_string(),
+                author: "Author".to_string(),
+                text: "Legacy drawing test".to_string(),
+            },
+        )
+        .unwrap();
+        wb.save(&path).unwrap();
+
+        // Verify the worksheet XML contains a legacyDrawing element.
+        let file = std::fs::File::open(&path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let mut ws_data = Vec::new();
+        archive
+            .by_name("xl/worksheets/sheet1.xml")
+            .unwrap()
+            .read_to_end(&mut ws_data)
+            .unwrap();
+        let ws_str = String::from_utf8(ws_data).unwrap();
+        assert!(
+            ws_str.contains("legacyDrawing"),
+            "worksheet should contain legacyDrawing element"
+        );
+    }
+
+    #[test]
+    fn test_workbook_comment_vml_cleanup_on_last_remove() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("comment_vml_cleanup.xlsx");
+
+        let mut wb = Workbook::new();
+        wb.add_comment(
+            "Sheet1",
+            &crate::comment::CommentConfig {
+                cell: "A1".to_string(),
+                author: "Author".to_string(),
+                text: "Will be removed".to_string(),
+            },
+        )
+        .unwrap();
+        wb.remove_comment("Sheet1", "A1").unwrap();
+        wb.save(&path).unwrap();
+
+        // Verify no VML part when all comments are removed.
+        let file = std::fs::File::open(&path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        assert!(
+            archive.by_name("xl/drawings/vmlDrawing1.vml").is_err(),
+            "vmlDrawing1.vml should not be present when there are no comments"
+        );
+    }
+
+    #[test]
+    fn test_workbook_multiple_comments_vml() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("multi_comment_vml.xlsx");
+
+        let mut wb = Workbook::new();
+        wb.add_comment(
+            "Sheet1",
+            &crate::comment::CommentConfig {
+                cell: "A1".to_string(),
+                author: "Alice".to_string(),
+                text: "First".to_string(),
+            },
+        )
+        .unwrap();
+        wb.add_comment(
+            "Sheet1",
+            &crate::comment::CommentConfig {
+                cell: "D10".to_string(),
+                author: "Bob".to_string(),
+                text: "Second".to_string(),
+            },
+        )
+        .unwrap();
+        wb.save(&path).unwrap();
+
+        let file = std::fs::File::open(&path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let mut vml_data = Vec::new();
+        archive
+            .by_name("xl/drawings/vmlDrawing1.vml")
+            .unwrap()
+            .read_to_end(&mut vml_data)
+            .unwrap();
+        let vml_str = String::from_utf8(vml_data).unwrap();
+        // Should have two shapes.
+        assert!(vml_str.contains("_x0000_s1025"));
+        assert!(vml_str.contains("_x0000_s1026"));
     }
 
     #[test]

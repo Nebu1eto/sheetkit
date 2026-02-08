@@ -136,6 +136,9 @@ pub mod rel_types {
     pub const PRINTER_SETTINGS: &str =
         "http://schemas.openxmlformats.org/officeDocument/2006/relationships/printerSettings";
 
+    pub const VML_DRAWING: &str =
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/vmlDrawing";
+
     // Drawing level
     pub const CHART: &str =
         "http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart";

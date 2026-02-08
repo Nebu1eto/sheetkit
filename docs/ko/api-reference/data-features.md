@@ -533,6 +533,10 @@ wb.removeDataValidation("Sheet1", "A1:A100");
 
 셀에 메모(코멘트)를 추가, 조회, 삭제하는 기능을 다룬다.
 
+코멘트를 추가하면 SheetKit이 자동으로 VML(Vector Markup Language) 드로잉 파트(`xl/drawings/vmlDrawingN.vml`)와 워크시트 XML의 `<legacyDrawing>` 참조를 생성한다. 이를 통해 Excel UI에서 코멘트 팝업 상자가 올바르게 렌더링된다.
+
+기존 VML 코멘트 드로잉이 포함된 워크북을 열면 SheetKit이 저장/열기 사이클을 통해 VML 파트를 보존한다. 시트의 모든 코멘트가 제거되면 관련 VML 파트와 관계가 자동으로 정리된다.
+
 ### `add_comment` / `addComment`
 
 셀에 코멘트를 추가한다.
@@ -596,6 +600,18 @@ wb.remove_comment("Sheet1", "A1")?;
 ```typescript
 wb.removeComment("Sheet1", "A1");
 ```
+
+### VML 호환성
+
+Excel은 코멘트 노트 상자를 렌더링하기 위해 VML(Vector Markup Language)을 사용한다. SheetKit은 다음을 자동으로 처리한다:
+
+- 새 코멘트 생성 시 최소한의 VML 드로잉 파트 생성
+- 디스크에서 열린 워크북의 기존 VML 파트 보존
+- 워크시트 XML에 `<legacyDrawing>` 관계 참조 연결
+- VML 파트에 대한 적절한 콘텐츠 타입 항목 추가
+- 시트의 모든 코멘트가 제거될 때 VML 파트 및 관계 정리
+
+추가적인 API 호출이 필요하지 않다. VML 처리는 사용자에게 투명하게 수행된다.
 
 ---
 
