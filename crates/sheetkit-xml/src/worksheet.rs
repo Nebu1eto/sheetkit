@@ -127,6 +127,9 @@ pub struct Col {
 
     #[serde(rename = "@customWidth", skip_serializing_if = "Option::is_none")]
     pub custom_width: Option<bool>,
+
+    #[serde(rename = "@outlineLevel", skip_serializing_if = "Option::is_none")]
+    pub outline_level: Option<u8>,
 }
 
 /// Sheet data container holding all rows.
@@ -160,6 +163,9 @@ pub struct Row {
 
     #[serde(rename = "@customHeight", skip_serializing_if = "Option::is_none")]
     pub custom_height: Option<bool>,
+
+    #[serde(rename = "@outlineLevel", skip_serializing_if = "Option::is_none")]
+    pub outline_level: Option<u8>,
 
     #[serde(rename = "c", default)]
     pub cells: Vec<Cell>,
@@ -393,6 +399,7 @@ mod tests {
                     ht: None,
                     hidden: None,
                     custom_height: None,
+                    outline_level: None,
                     cells: vec![
                         Cell {
                             r: "A1".to_string(),
@@ -539,6 +546,7 @@ mod tests {
             ht: None,
             hidden: None,
             custom_height: None,
+            outline_level: None,
             cells: vec![],
         };
         let xml = quick_xml::se::to_string(&row).unwrap();
@@ -569,6 +577,7 @@ mod tests {
                     style: None,
                     hidden: None,
                     custom_width: Some(true),
+                    outline_level: None,
                 }],
             }),
             ..WorksheetXml::default()

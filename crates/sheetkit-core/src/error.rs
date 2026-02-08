@@ -51,6 +51,15 @@ pub enum Error {
     #[error("XML deserialization error: {0}")]
     XmlDeserialize(String),
 
+    // ===== Dimension / size errors =====
+    /// Column width exceeds the allowed maximum (255).
+    #[error("column width {width} exceeds maximum {max}")]
+    ColumnWidthExceeded { width: f64, max: f64 },
+
+    /// Row height exceeds the allowed maximum (409).
+    #[error("row height {height} exceeds maximum {max}")]
+    RowHeightExceeded { height: f64, max: f64 },
+
     // ===== Value errors =====
     /// A cell value exceeds the maximum character limit.
     #[error("cell value too long: {length} characters (max {max})")]

@@ -369,6 +369,106 @@ impl Workbook {
     }
 
     // -----------------------------------------------------------------------
+    // Row operations
+    // -----------------------------------------------------------------------
+
+    /// Insert `count` empty rows starting at `start_row` in the named sheet.
+    pub fn insert_rows(&mut self, sheet: &str, start_row: u32, count: u32) -> Result<()> {
+        let ws = self.worksheet_mut(sheet)?;
+        crate::row::insert_rows(ws, start_row, count)
+    }
+
+    /// Remove a single row from the named sheet, shifting rows below it up.
+    pub fn remove_row(&mut self, sheet: &str, row: u32) -> Result<()> {
+        let ws = self.worksheet_mut(sheet)?;
+        crate::row::remove_row(ws, row)
+    }
+
+    /// Duplicate a row, inserting the copy directly below.
+    pub fn duplicate_row(&mut self, sheet: &str, row: u32) -> Result<()> {
+        let ws = self.worksheet_mut(sheet)?;
+        crate::row::duplicate_row(ws, row)
+    }
+
+    /// Set the height of a row in points.
+    pub fn set_row_height(&mut self, sheet: &str, row: u32, height: f64) -> Result<()> {
+        let ws = self.worksheet_mut(sheet)?;
+        crate::row::set_row_height(ws, row, height)
+    }
+
+    /// Get the height of a row.
+    pub fn get_row_height(&self, sheet: &str, row: u32) -> Result<Option<f64>> {
+        let ws = self.worksheet_ref(sheet)?;
+        Ok(crate::row::get_row_height(ws, row))
+    }
+
+    /// Set the visibility of a row.
+    pub fn set_row_visible(&mut self, sheet: &str, row: u32, visible: bool) -> Result<()> {
+        let ws = self.worksheet_mut(sheet)?;
+        crate::row::set_row_visible(ws, row, visible)
+    }
+
+    // -----------------------------------------------------------------------
+    // Column operations
+    // -----------------------------------------------------------------------
+
+    /// Set the width of a column.
+    pub fn set_col_width(&mut self, sheet: &str, col: &str, width: f64) -> Result<()> {
+        let ws = self.worksheet_mut(sheet)?;
+        crate::col::set_col_width(ws, col, width)
+    }
+
+    /// Get the width of a column.
+    pub fn get_col_width(&self, sheet: &str, col: &str) -> Result<Option<f64>> {
+        let ws = self.worksheet_ref(sheet)?;
+        Ok(crate::col::get_col_width(ws, col))
+    }
+
+    /// Set the visibility of a column.
+    pub fn set_col_visible(&mut self, sheet: &str, col: &str, visible: bool) -> Result<()> {
+        let ws = self.worksheet_mut(sheet)?;
+        crate::col::set_col_visible(ws, col, visible)
+    }
+
+    /// Insert `count` columns starting at `col` in the named sheet.
+    pub fn insert_cols(&mut self, sheet: &str, col: &str, count: u32) -> Result<()> {
+        let ws = self.worksheet_mut(sheet)?;
+        crate::col::insert_cols(ws, col, count)
+    }
+
+    /// Remove a single column from the named sheet.
+    pub fn remove_col(&mut self, sheet: &str, col: &str) -> Result<()> {
+        let ws = self.worksheet_mut(sheet)?;
+        crate::col::remove_col(ws, col)
+    }
+
+    // -----------------------------------------------------------------------
+    // Private helpers
+    // -----------------------------------------------------------------------
+
+    /// Get a mutable reference to the worksheet XML for the named sheet.
+    fn worksheet_mut(&mut self, sheet: &str) -> Result<&mut WorksheetXml> {
+        self.worksheets
+            .iter_mut()
+            .find(|(name, _)| name == sheet)
+            .map(|(_, ws)| ws)
+            .ok_or_else(|| Error::SheetNotFound {
+                name: sheet.to_string(),
+            })
+    }
+
+    /// Get an immutable reference to the worksheet XML for the named sheet.
+    fn worksheet_ref(&self, sheet: &str) -> Result<&WorksheetXml> {
+        self.worksheets
+            .iter()
+            .find(|(name, _)| name == sheet)
+            .map(|(_, ws)| ws)
+            .ok_or_else(|| Error::SheetNotFound {
+                name: sheet.to_string(),
+            })
+    }
+
+    // -----------------------------------------------------------------------
     // Private helpers for cell conversion
     // -----------------------------------------------------------------------
 
@@ -509,6 +609,7 @@ fn new_row(row_num: u32) -> Row {
         ht: None,
         hidden: None,
         custom_height: None,
+        outline_level: None,
         cells: vec![],
     }
 }
@@ -976,5 +1077,184 @@ mod tests {
 
         let wb2 = Workbook::open(&path).unwrap();
         assert_eq!(wb2.sheet_names(), vec!["Overview", "Data", "Summary"]);
+    }
+
+    // -----------------------------------------------------------------------
+    // Row operation wrapper tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_workbook_insert_rows() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", "stay").unwrap();
+        wb.set_cell_value("Sheet1", "A2", "shift").unwrap();
+        wb.insert_rows("Sheet1", 2, 1).unwrap();
+
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("stay".to_string())
+        );
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "A3").unwrap(),
+            CellValue::String("shift".to_string())
+        );
+        assert_eq!(wb.get_cell_value("Sheet1", "A2").unwrap(), CellValue::Empty);
+    }
+
+    #[test]
+    fn test_workbook_insert_rows_sheet_not_found() {
+        let mut wb = Workbook::new();
+        let result = wb.insert_rows("NoSheet", 1, 1);
+        assert!(matches!(result.unwrap_err(), Error::SheetNotFound { .. }));
+    }
+
+    #[test]
+    fn test_workbook_remove_row() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", "first").unwrap();
+        wb.set_cell_value("Sheet1", "A2", "second").unwrap();
+        wb.set_cell_value("Sheet1", "A3", "third").unwrap();
+        wb.remove_row("Sheet1", 2).unwrap();
+
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("first".to_string())
+        );
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "A2").unwrap(),
+            CellValue::String("third".to_string())
+        );
+    }
+
+    #[test]
+    fn test_workbook_remove_row_sheet_not_found() {
+        let mut wb = Workbook::new();
+        let result = wb.remove_row("NoSheet", 1);
+        assert!(matches!(result.unwrap_err(), Error::SheetNotFound { .. }));
+    }
+
+    #[test]
+    fn test_workbook_duplicate_row() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", "original").unwrap();
+        wb.duplicate_row("Sheet1", 1).unwrap();
+
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("original".to_string())
+        );
+        // The duplicated row at row 2 has the same SST index.
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "A2").unwrap(),
+            CellValue::String("original".to_string())
+        );
+    }
+
+    #[test]
+    fn test_workbook_set_and_get_row_height() {
+        let mut wb = Workbook::new();
+        wb.set_row_height("Sheet1", 3, 25.0).unwrap();
+        assert_eq!(wb.get_row_height("Sheet1", 3).unwrap(), Some(25.0));
+    }
+
+    #[test]
+    fn test_workbook_get_row_height_sheet_not_found() {
+        let wb = Workbook::new();
+        let result = wb.get_row_height("NoSheet", 1);
+        assert!(matches!(result.unwrap_err(), Error::SheetNotFound { .. }));
+    }
+
+    #[test]
+    fn test_workbook_set_row_visible() {
+        let mut wb = Workbook::new();
+        wb.set_row_visible("Sheet1", 1, false).unwrap();
+    }
+
+    #[test]
+    fn test_workbook_set_row_visible_sheet_not_found() {
+        let mut wb = Workbook::new();
+        let result = wb.set_row_visible("NoSheet", 1, false);
+        assert!(matches!(result.unwrap_err(), Error::SheetNotFound { .. }));
+    }
+
+    // -----------------------------------------------------------------------
+    // Column operation wrapper tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_workbook_set_and_get_col_width() {
+        let mut wb = Workbook::new();
+        wb.set_col_width("Sheet1", "A", 18.0).unwrap();
+        assert_eq!(wb.get_col_width("Sheet1", "A").unwrap(), Some(18.0));
+    }
+
+    #[test]
+    fn test_workbook_get_col_width_sheet_not_found() {
+        let wb = Workbook::new();
+        let result = wb.get_col_width("NoSheet", "A");
+        assert!(matches!(result.unwrap_err(), Error::SheetNotFound { .. }));
+    }
+
+    #[test]
+    fn test_workbook_set_col_visible() {
+        let mut wb = Workbook::new();
+        wb.set_col_visible("Sheet1", "B", false).unwrap();
+    }
+
+    #[test]
+    fn test_workbook_set_col_visible_sheet_not_found() {
+        let mut wb = Workbook::new();
+        let result = wb.set_col_visible("NoSheet", "A", false);
+        assert!(matches!(result.unwrap_err(), Error::SheetNotFound { .. }));
+    }
+
+    #[test]
+    fn test_workbook_insert_cols() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", "a").unwrap();
+        wb.set_cell_value("Sheet1", "B1", "b").unwrap();
+        wb.insert_cols("Sheet1", "B", 1).unwrap();
+
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("a".to_string())
+        );
+        assert_eq!(wb.get_cell_value("Sheet1", "B1").unwrap(), CellValue::Empty);
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "C1").unwrap(),
+            CellValue::String("b".to_string())
+        );
+    }
+
+    #[test]
+    fn test_workbook_insert_cols_sheet_not_found() {
+        let mut wb = Workbook::new();
+        let result = wb.insert_cols("NoSheet", "A", 1);
+        assert!(matches!(result.unwrap_err(), Error::SheetNotFound { .. }));
+    }
+
+    #[test]
+    fn test_workbook_remove_col() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", "a").unwrap();
+        wb.set_cell_value("Sheet1", "B1", "b").unwrap();
+        wb.set_cell_value("Sheet1", "C1", "c").unwrap();
+        wb.remove_col("Sheet1", "B").unwrap();
+
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("a".to_string())
+        );
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "B1").unwrap(),
+            CellValue::String("c".to_string())
+        );
+    }
+
+    #[test]
+    fn test_workbook_remove_col_sheet_not_found() {
+        let mut wb = Workbook::new();
+        let result = wb.remove_col("NoSheet", "A");
+        assert!(matches!(result.unwrap_err(), Error::SheetNotFound { .. }));
     }
 }
