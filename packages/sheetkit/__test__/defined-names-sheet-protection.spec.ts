@@ -1,4 +1,4 @@
-import { existsSync, unlinkSync } from 'node:fs';
+import { unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { Workbook } from '../index.js';
@@ -9,9 +9,9 @@ function tmpFile(name: string) {
   return join(TEST_DIR, name);
 }
 
-function cleanup(...files: string[]) {
+async function cleanup(...files: string[]) {
   for (const f of files) {
-    if (existsSync(f)) unlinkSync(f);
+    await unlink(f).catch(() => {});
   }
 }
 
@@ -19,7 +19,7 @@ function cleanup(...files: string[]) {
 
 describe('Defined Names', () => {
   const out = tmpFile('test-defined-names.xlsx');
-  afterEach(() => cleanup(out));
+  afterEach(async () => cleanup(out));
 
   it('should set and get a workbook-scoped defined name', () => {
     const wb = new Workbook();
@@ -148,7 +148,7 @@ describe('Defined Names', () => {
 
 describe('Sheet Protection', () => {
   const out = tmpFile('test-sheet-protection.xlsx');
-  afterEach(() => cleanup(out));
+  afterEach(async () => cleanup(out));
 
   it('should protect a sheet with default config', () => {
     const wb = new Workbook();

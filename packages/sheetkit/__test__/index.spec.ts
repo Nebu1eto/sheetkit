@@ -1,4 +1,4 @@
-import { existsSync, unlinkSync } from 'node:fs';
+import { access, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { Workbook } from '../index.js';
@@ -9,15 +9,15 @@ function tmpFile(name: string) {
   return join(TEST_DIR, name);
 }
 
-function cleanup(...files: string[]) {
+async function cleanup(...files: string[]) {
   for (const f of files) {
-    if (existsSync(f)) unlinkSync(f);
+    await unlink(f).catch(() => {});
   }
 }
 
 describe('Phase 1 - Basic I/O', () => {
   const out = tmpFile('test-basic.xlsx');
-  afterEach(() => cleanup(out));
+  afterEach(async () => cleanup(out));
 
   it('should create a new workbook', () => {
     const wb = new Workbook();
@@ -27,7 +27,7 @@ describe('Phase 1 - Basic I/O', () => {
   it('should save and open a workbook', async () => {
     const wb = new Workbook();
     await wb.save(out);
-    expect(existsSync(out)).toBe(true);
+    await expect(access(out)).resolves.toBeUndefined();
     const wb2 = await Workbook.open(out);
     expect(wb2.sheetNames).toEqual(['Sheet1']);
   });
@@ -39,7 +39,7 @@ describe('Phase 1 - Basic I/O', () => {
 
 describe('Phase 2 - Cell Operations', () => {
   const out = tmpFile('test-cell.xlsx');
-  afterEach(() => cleanup(out));
+  afterEach(async () => cleanup(out));
 
   it('should set and get string cell value', () => {
     const wb = new Workbook();
@@ -323,7 +323,7 @@ describe('Row/Col Style', () => {
 
 describe('Phase 7 - Charts & Images', () => {
   const out = tmpFile('test-chart.xlsx');
-  afterEach(() => cleanup(out));
+  afterEach(async () => cleanup(out));
 
   it('should add a column chart and save', async () => {
     const wb = new Workbook();
@@ -334,7 +334,7 @@ describe('Phase 7 - Charts & Images', () => {
       series: [{ name: 'S1', categories: 'Sheet1!$A$1:$A$3', values: 'Sheet1!$B$1:$B$3' }],
     });
     await wb.save(out);
-    expect(existsSync(out)).toBe(true);
+    await expect(access(out)).resolves.toBeUndefined();
   });
 
   it('should add a PNG image and save', async () => {
@@ -354,7 +354,7 @@ describe('Phase 7 - Charts & Images', () => {
       heightPx: 100,
     });
     await wb.save(out);
-    expect(existsSync(out)).toBe(true);
+    await expect(access(out)).resolves.toBeUndefined();
   });
 });
 
@@ -403,7 +403,7 @@ describe('Phase 8 - Data Validation', () => {
 
 describe('Merge Cells', () => {
   const out = tmpFile('test-merge.xlsx');
-  afterEach(() => cleanup(out));
+  afterEach(async () => cleanup(out));
 
   it('should merge and get merge cells', () => {
     const wb = new Workbook();
@@ -459,7 +459,7 @@ describe('Merge Cells', () => {
 
 describe('Phase 8 - Auto-filter', () => {
   const out = tmpFile('test-autofilter.xlsx');
-  afterEach(() => cleanup(out));
+  afterEach(async () => cleanup(out));
 
   it('should set and remove auto filter', () => {
     const wb = new Workbook();
@@ -473,13 +473,13 @@ describe('Phase 8 - Auto-filter', () => {
     wb.setCellValue('Sheet1', 'B1', 'Age');
     wb.setAutoFilter('Sheet1', 'A1:B1');
     await wb.save(out);
-    expect(existsSync(out)).toBe(true);
+    await expect(access(out)).resolves.toBeUndefined();
   });
 });
 
 describe('Phase 9 - StreamWriter', () => {
   const out = tmpFile('test-stream.xlsx');
-  afterEach(() => cleanup(out));
+  afterEach(async () => cleanup(out));
 
   it('should create and use stream writer', () => {
     const wb = new Workbook();
@@ -510,7 +510,7 @@ describe('Phase 9 - StreamWriter', () => {
 
 describe('Phase 10 - Document Properties', () => {
   const out = tmpFile('test-docprops.xlsx');
-  afterEach(() => cleanup(out));
+  afterEach(async () => cleanup(out));
 
   it('should set and get doc properties', () => {
     const wb = new Workbook();
@@ -555,7 +555,7 @@ describe('Phase 10 - Document Properties', () => {
 
 describe('Phase 10 - Workbook Protection', () => {
   const out = tmpFile('test-protection.xlsx');
-  afterEach(() => cleanup(out));
+  afterEach(async () => cleanup(out));
 
   it('should protect and unprotect workbook', () => {
     const wb = new Workbook();
@@ -579,7 +579,7 @@ describe('Phase 10 - Workbook Protection', () => {
 
 describe('Hyperlinks', () => {
   const out = tmpFile('test-hyperlink.xlsx');
-  afterEach(() => cleanup(out));
+  afterEach(async () => cleanup(out));
 
   it('should set and get external hyperlink', () => {
     const wb = new Workbook();
@@ -717,7 +717,7 @@ describe('Hyperlinks', () => {
 
 describe('Freeze Panes', () => {
   const out = tmpFile('test-panes.xlsx');
-  afterEach(() => cleanup(out));
+  afterEach(async () => cleanup(out));
 
   it('should return null when no panes are set', () => {
     const wb = new Workbook();
@@ -785,7 +785,7 @@ describe('Freeze Panes', () => {
 
 describe('Date CellValue', () => {
   const out = tmpFile('test-date.xlsx');
-  afterEach(() => cleanup(out));
+  afterEach(async () => cleanup(out));
 
   it('should set a date value object and read it back as date', () => {
     const wb = new Workbook();
@@ -842,7 +842,7 @@ describe('Date CellValue', () => {
 
 describe('Row/Col Iterators', () => {
   const out = tmpFile('test-iterators.xlsx');
-  afterEach(() => cleanup(out));
+  afterEach(async () => cleanup(out));
 
   it('should return empty array for empty sheet', () => {
     const wb = new Workbook();
@@ -964,7 +964,7 @@ describe('Row/Col Iterators', () => {
 
 describe('Page Layout', () => {
   const out = tmpFile('test-page-layout.xlsx');
-  afterEach(() => cleanup(out));
+  afterEach(async () => cleanup(out));
 
   it('should set and get page margins', () => {
     const wb = new Workbook();
@@ -1135,7 +1135,7 @@ describe('Page Layout', () => {
 
 describe('Formula Evaluation', () => {
   const out = tmpFile('test-formula-eval.xlsx');
-  afterEach(() => cleanup(out));
+  afterEach(async () => cleanup(out));
 
   it('should evaluate a simple formula', () => {
     const wb = new Workbook();
@@ -1167,7 +1167,7 @@ describe('Formula Evaluation', () => {
 
 describe('Pivot Tables', () => {
   const out = tmpFile('test-pivot.xlsx');
-  afterEach(() => cleanup(out));
+  afterEach(async () => cleanup(out));
 
   it('should add and get pivot tables', () => {
     const wb = new Workbook();
@@ -1344,7 +1344,7 @@ describe('Theme Colors', () => {
 // Rich Text
 describe('Rich Text', () => {
   const out = tmpFile('test-rich-text.xlsx');
-  afterEach(() => cleanup(out));
+  afterEach(async () => cleanup(out));
 
   it('should set and get rich text', () => {
     const wb = new Workbook();

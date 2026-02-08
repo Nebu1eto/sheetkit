@@ -1,4 +1,4 @@
-import { existsSync, unlinkSync } from 'node:fs';
+import { unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { Workbook } from '../index.js';
@@ -9,15 +9,15 @@ function tmpFile(name: string) {
   return join(TEST_DIR, name);
 }
 
-function cleanup(...files: string[]) {
+async function cleanup(...files: string[]) {
   for (const f of files) {
-    if (existsSync(f)) unlinkSync(f);
+    await unlink(f).catch(() => {});
   }
 }
 
 describe('Workbook API behavior', () => {
   const out = tmpFile('test-api-behavior.xlsx');
-  afterEach(() => cleanup(out));
+  afterEach(async () => cleanup(out));
 
   it('should support openSync/saveSync', () => {
     const wb = new Workbook();

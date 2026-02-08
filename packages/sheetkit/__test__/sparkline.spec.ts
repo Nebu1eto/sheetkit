@@ -1,4 +1,4 @@
-import { existsSync, unlinkSync } from 'node:fs';
+import { unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { Workbook } from '../index.js';
@@ -9,15 +9,15 @@ function tmpFile(name: string) {
   return join(TEST_DIR, name);
 }
 
-function cleanup(...files: string[]) {
+async function cleanup(...files: string[]) {
   for (const f of files) {
-    if (existsSync(f)) unlinkSync(f);
+    await unlink(f).catch(() => {});
   }
 }
 
 describe('Sparklines', () => {
   const out = tmpFile('test-sparklines.xlsx');
-  afterEach(() => cleanup(out));
+  afterEach(async () => cleanup(out));
 
   it('should add and get sparklines', () => {
     const wb = new Workbook();
@@ -84,7 +84,7 @@ describe('Sparklines', () => {
     expect(() => wb.removeSparkline('NoSheet', 'B1')).toThrow();
   });
 
-  it('should preserve sparklines through save/open roundtrip', () => {
+  it('should preserve sparklines through save/open roundtrip', async () => {
     const wb = new Workbook();
     for (let i = 1; i <= 10; i++) {
       wb.setCellValue('Sheet1', `A${i}`, i * 10);
@@ -105,9 +105,9 @@ describe('Sparklines', () => {
       sparklineType: 'line',
     });
 
-    wb.saveSync(out);
+    await wb.save(out);
 
-    const wb2 = Workbook.openSync(out);
+    const wb2 = await Workbook.open(out);
     const sparklines = wb2.getSparklines('Sheet1');
     expect(sparklines).toHaveLength(2);
     expect(sparklines[0].dataRange).toBe('Sheet1!A1:A10');
