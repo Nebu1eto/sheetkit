@@ -1,16 +1,14 @@
 {
   "$schema": "https://biomejs.dev/schemas/2.3.14/schema.json",
   "files": {
-    "includes": ["packages/**", "examples/**"],
+    "includes": [
+      "packages/**",
+      "examples/**",
+      "!packages/sheetkit/index.js",
+      "!packages/sheetkit/index.d.ts"
+    ],
     "ignoreUnknown": true
   },
-  "overrides": [
-    {
-      "includes": ["packages/sheetkit/index.js", "packages/sheetkit/index.d.ts"],
-      "linter": { "enabled": false },
-      "formatter": { "enabled": false }
-    }
-  ],
   "linter": {
     "enabled": true,
     "rules": {
