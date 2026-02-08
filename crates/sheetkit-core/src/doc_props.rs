@@ -483,7 +483,7 @@ mod tests {
         assert_eq!(props.properties[2].pid, 4);
     }
 
-    // ---- WorkbookSettings tests ----
+    // WorkbookSettings tests
 
     #[test]
     fn test_workbook_settings_default() {
@@ -568,7 +568,7 @@ mod tests {
         assert!(back.filter_privacy.is_none());
     }
 
-    // ---- CalcSettings tests ----
+    // CalcSettings tests
 
     #[test]
     fn test_calc_settings_default() {

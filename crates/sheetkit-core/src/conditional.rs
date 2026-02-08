@@ -15,10 +15,6 @@ use sheetkit_xml::worksheet::{
     CfColor, CfColorScale, CfDataBar, CfRule, CfVo, ConditionalFormatting, WorksheetXml,
 };
 
-// ---------------------------------------------------------------------------
-// Public types
-// ---------------------------------------------------------------------------
-
 /// Comparison operator for CellIs conditional formatting rules.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CfOperator {
@@ -186,10 +182,6 @@ pub struct ConditionalFormatRule {
     /// If true, no rules with lower priority are applied when this rule matches.
     pub stop_if_true: bool,
 }
-
-// ---------------------------------------------------------------------------
-// DXF handling
-// ---------------------------------------------------------------------------
 
 /// Convert a `ConditionalStyle` to an XML `Dxf` and add it to the stylesheet.
 /// Returns the DXF index.
@@ -437,10 +429,6 @@ fn parse_border_line_style(s: &str) -> Option<BorderLineStyle> {
         _ => None,
     }
 }
-
-// ---------------------------------------------------------------------------
-// Conversion: rule -> XML CfRule
-// ---------------------------------------------------------------------------
 
 /// Compute the next priority across all existing conditional formatting rules.
 fn next_priority(ws: &WorksheetXml) -> u32 {
@@ -838,10 +826,6 @@ fn rule_to_xml(rule: &ConditionalFormatRule, stylesheet: &mut StyleSheet, priori
     }
 }
 
-// ---------------------------------------------------------------------------
-// Conversion: XML CfRule -> rule
-// ---------------------------------------------------------------------------
-
 /// Convert an XML `CfRule` to a `ConditionalFormatRule`, looking up the DXF
 /// style from the stylesheet.
 fn xml_to_rule(cf_rule: &CfRule, stylesheet: &StyleSheet) -> ConditionalFormatRule {
@@ -1022,10 +1006,6 @@ fn xml_to_rule(cf_rule: &CfRule, stylesheet: &StyleSheet) -> ConditionalFormatRu
     }
 }
 
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
-
 /// Set conditional formatting rules on a cell range. Each call adds a new
 /// `conditionalFormatting` element with one or more `cfRule` children.
 pub fn set_conditional_format(
@@ -1083,9 +1063,7 @@ mod tests {
         StyleSheet::default()
     }
 
-    // -----------------------------------------------------------------------
     // CellIs tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_cell_is_greater_than() {
@@ -1221,9 +1199,7 @@ mod tests {
         assert_eq!(rule.formulas.len(), 2);
     }
 
-    // -----------------------------------------------------------------------
     // Expression tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_expression_rule() {
@@ -1253,9 +1229,7 @@ mod tests {
         assert!(rule.dxf_id.is_some());
     }
 
-    // -----------------------------------------------------------------------
     // ColorScale tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_two_color_scale() {
@@ -1324,9 +1298,7 @@ mod tests {
         assert_eq!(cs.colors[1].rgb, Some("FFFFEB84".to_string()));
     }
 
-    // -----------------------------------------------------------------------
     // DataBar tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_data_bar() {
@@ -1385,9 +1357,7 @@ mod tests {
         assert_eq!(db.cfvos[0].val, Some("0".to_string()));
     }
 
-    // -----------------------------------------------------------------------
     // DuplicateValues / UniqueValues tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_duplicate_values() {
@@ -1431,9 +1401,7 @@ mod tests {
         assert_eq!(rule.rule_type, "uniqueValues");
     }
 
-    // -----------------------------------------------------------------------
     // Top10 / Bottom10 tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_top_10() {
@@ -1501,9 +1469,7 @@ mod tests {
         assert_eq!(rule.bottom, Some(true));
     }
 
-    // -----------------------------------------------------------------------
     // AboveAverage tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_above_average() {
@@ -1548,9 +1514,7 @@ mod tests {
         assert_eq!(rule.equal_average, Some(true));
     }
 
-    // -----------------------------------------------------------------------
     // Text-based tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_contains_text() {
@@ -1633,9 +1597,7 @@ mod tests {
         assert_eq!(rule.text, Some("Inc.".to_string()));
     }
 
-    // -----------------------------------------------------------------------
     // Blanks / Errors tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_contains_blanks() {
@@ -1709,9 +1671,7 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
     // Delete tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_delete_conditional_format() {
@@ -1747,9 +1707,7 @@ mod tests {
         assert!(ws.conditional_formatting.is_empty());
     }
 
-    // -----------------------------------------------------------------------
     // Multiple rules on same range
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_multiple_rules_same_range() {
@@ -1802,9 +1760,7 @@ mod tests {
         assert_eq!(dxfs.dxfs.len(), 2);
     }
 
-    // -----------------------------------------------------------------------
     // Get (roundtrip) tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_get_conditional_formats_cell_is() {
@@ -2054,9 +2010,7 @@ mod tests {
         assert!(formats.is_empty());
     }
 
-    // -----------------------------------------------------------------------
     // Priority auto-increment
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_priority_auto_increment() {
@@ -2099,9 +2053,7 @@ mod tests {
         assert_eq!(ws.conditional_formatting[0].cf_rules[0].priority, 42);
     }
 
-    // -----------------------------------------------------------------------
     // Stop if true
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_stop_if_true() {
@@ -2122,9 +2074,7 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
     // DXF style roundtrip
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_dxf_style_roundtrip_font() {
@@ -2192,9 +2142,7 @@ mod tests {
         assert_eq!(left.color, Some(StyleColor::Rgb("FF000000".to_string())));
     }
 
-    // -----------------------------------------------------------------------
     // XML serialization roundtrip
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_xml_serialization_roundtrip() {
@@ -2303,9 +2251,7 @@ mod tests {
         assert_eq!(db.cfvos.len(), 2);
     }
 
-    // -----------------------------------------------------------------------
     // CfOperator / CfValueType parse roundtrip
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_cf_operator_roundtrip() {
