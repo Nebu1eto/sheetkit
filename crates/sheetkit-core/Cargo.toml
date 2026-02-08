@@ -12,6 +12,7 @@ dashmap = { workspace = true }
 chrono = { workspace = true }
 quick-xml = { workspace = true }
 serde = { workspace = true }
+nom = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
