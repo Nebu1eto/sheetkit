@@ -7,7 +7,7 @@
     "start": "tsx index.ts"
   },
   "dependencies": {
-    "sheetkit": "workspace:*"
+    "@sheetkit/node": "workspace:*"
   },
   "devDependencies": {
     "tsx": "^4"

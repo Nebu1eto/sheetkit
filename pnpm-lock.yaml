@@ -20,7 +20,7 @@ importers:
 
   examples/node:
     dependencies:
-      sheetkit:
+      '@sheetkit/node':
         specifier: workspace:*
         version: link:../../packages/sheetkit
     devDependencies:
@@ -28,11 +28,52 @@ importers:
         specifier: ^4
         version: 4.21.0
 
+  packages/darwin-arm64: {}
+
+  packages/darwin-x64: {}
+
+  packages/linux-arm64-gnu: {}
+
+  packages/linux-arm64-musl: {}
+
+  packages/linux-x64-gnu: {}
+
+  packages/linux-x64-musl: {}
+
   packages/sheetkit:
     devDependencies:
       '@napi-rs/cli':
         specifier: ^3.5.1
         version: 3.5.1(@emnapi/runtime@1.8.1)
+    optionalDependencies:
+      '@sheetkit/node-darwin-arm64':
+        specifier: 0.1.0
+        version: 0.1.0
+      '@sheetkit/node-darwin-x64':
+        specifier: 0.1.0
+        version: 0.1.0
+      '@sheetkit/node-linux-arm64-gnu':
+        specifier: 0.1.0
+        version: 0.1.0
+      '@sheetkit/node-linux-arm64-musl':
+        specifier: 0.1.0
+        version: 0.1.0
+      '@sheetkit/node-linux-x64-gnu':
+        specifier: 0.1.0
+        version: 0.1.0
+      '@sheetkit/node-linux-x64-musl':
+        specifier: 0.1.0
+        version: 0.1.0
+      '@sheetkit/node-win32-arm64-msvc':
+        specifier: 0.1.0
+        version: 0.1.0
+      '@sheetkit/node-win32-x64-msvc':
+        specifier: 0.1.0
+        version: 0.1.0
+
+  packages/win32-arm64-msvc: {}
+
+  packages/win32-x64-msvc: {}
 
 packages:
 
@@ -932,6 +973,50 @@ packages:
 
   '@rollup/rollup-win32-x64-msvc@4.57.1':
     resolution: {integrity: sha512-mxRFDdHIWRxg3UfIIAwCm6NzvxG0jDX/wBN6KsQFTvKFqqg9vTrWUE68qEjHt19A5wwx5X5aUi2zuZT7YR0jrA==}
+    cpu: [x64]
+    os: [win32]
+
+  '@sheetkit/node-darwin-arm64@0.1.0':
+    resolution: {integrity: sha512-GYPmJSoAVY5xfsfpxD5aKyDvGWNcEcS9mLD98Q2hMgpElboJYzxebdcY8CjCPZxSbIfXV26SDLHfxHCCLTAYKw==}
+    cpu: [arm64]
+    os: [darwin]
+
+  '@sheetkit/node-darwin-x64@0.1.0':
+    resolution: {integrity: sha512-h13mPxI46+hX0roQRQ+jDMU9jnVuZeaN3/5WgfdbVmtIrPwNUhxLJzahPKT6wxzPHLmwZ+DjEGBqtyZ/s7+h7w==}
+    cpu: [x64]
+    os: [darwin]
+
+  '@sheetkit/node-linux-arm64-gnu@0.1.0':
+    resolution: {integrity: sha512-YAKy5GgUMrv0k2mRLxFfZdr8Xy0rP0HqI0E2oLjW4sjabea8qGWlN/CCHudJlvBM9yyhwf9qRjrpRwGy1CC1xA==}
+    cpu: [arm64]
+    os: [linux]
+    libc: [glibc]
+
+  '@sheetkit/node-linux-arm64-musl@0.1.0':
+    resolution: {integrity: sha512-EOBKQM2iN+mUe/W1Tw5FuR8sTQscnWuCnksxwb4HdjRYF3QAPlhLZE6EoP0JuVyQm8NKr0uTM9ppo9tCYDLf+Q==}
+    cpu: [arm64]
+    os: [linux]
+    libc: [musl]
+
+  '@sheetkit/node-linux-x64-gnu@0.1.0':
+    resolution: {integrity: sha512-iRhUhCHjCLh97Wbbt1gFwp91uCNv/Bk4NV2+pNlJPUvPJctdsNEhKdpMJi4EsAYvMh95+bSDFiMMu+sqiK45LA==}
+    cpu: [x64]
+    os: [linux]
+    libc: [glibc]
+
+  '@sheetkit/node-linux-x64-musl@0.1.0':
+    resolution: {integrity: sha512-JzqWEf63jGT3wGc/CmI1xJaKSzqW3gO2IJ3uVxRuNZALWJ4RLRRUYb4aeUXjSkpDJ/s/ZsojindvUYfYruwNkQ==}
+    cpu: [x64]
+    os: [linux]
+    libc: [musl]
+
+  '@sheetkit/node-win32-arm64-msvc@0.1.0':
+    resolution: {integrity: sha512-10H/wNqsSImYU7jHPVcqJsHlHX0pTB6mJF95DT2P2U6KtramRq8qfJdPxBjkXyK+RDHxlS0fNMMZNMG/PHcE8g==}
+    cpu: [arm64]
+    os: [win32]
+
+  '@sheetkit/node-win32-x64-msvc@0.1.0':
+    resolution: {integrity: sha512-vkhSYTCWCW4o70HJHfdlwYmG8A+D2jLAj6szCTMWd/hp2mIaRP14R5OluaaXUYHowiE50sATIuuAA2Y2PjXRLQ==}
     cpu: [x64]
     os: [win32]
 
@@ -1880,6 +1965,30 @@ snapshots:
     optional: true
 
   '@rollup/rollup-win32-x64-msvc@4.57.1':
+    optional: true
+
+  '@sheetkit/node-darwin-arm64@0.1.0':
+    optional: true
+
+  '@sheetkit/node-darwin-x64@0.1.0':
+    optional: true
+
+  '@sheetkit/node-linux-arm64-gnu@0.1.0':
+    optional: true
+
+  '@sheetkit/node-linux-arm64-musl@0.1.0':
+    optional: true
+
+  '@sheetkit/node-linux-x64-gnu@0.1.0':
+    optional: true
+
+  '@sheetkit/node-linux-x64-musl@0.1.0':
+    optional: true
+
+  '@sheetkit/node-win32-arm64-msvc@0.1.0':
+    optional: true
+
+  '@sheetkit/node-win32-x64-msvc@0.1.0':
     optional: true
 
   '@standard-schema/spec@1.1.0': {}
