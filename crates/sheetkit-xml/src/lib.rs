@@ -16,6 +16,7 @@
 pub mod chart;
 pub mod comments;
 pub mod content_types;
+pub mod doc_props;
 pub mod drawing;
 pub mod namespaces;
 pub mod relationships;

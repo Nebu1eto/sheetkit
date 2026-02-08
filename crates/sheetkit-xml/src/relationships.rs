@@ -35,16 +35,31 @@ pub struct Relationship {
 
 /// Creates the package-level relationships (`_rels/.rels`).
 ///
-/// Contains the relationship from the package root to the workbook part.
+/// Contains relationships from the package root to the workbook, core
+/// properties, and extended properties parts.
 pub fn package_rels() -> Relationships {
     Relationships {
         xmlns: namespaces::PACKAGE_RELATIONSHIPS.to_string(),
-        relationships: vec![Relationship {
-            id: "rId1".to_string(),
-            rel_type: rel_types::OFFICE_DOCUMENT.to_string(),
-            target: "xl/workbook.xml".to_string(),
-            target_mode: None,
-        }],
+        relationships: vec![
+            Relationship {
+                id: "rId1".to_string(),
+                rel_type: rel_types::OFFICE_DOCUMENT.to_string(),
+                target: "xl/workbook.xml".to_string(),
+                target_mode: None,
+            },
+            Relationship {
+                id: "rId2".to_string(),
+                rel_type: rel_types::CORE_PROPERTIES.to_string(),
+                target: "docProps/core.xml".to_string(),
+                target_mode: None,
+            },
+            Relationship {
+                id: "rId3".to_string(),
+                rel_type: rel_types::EXTENDED_PROPERTIES.to_string(),
+                target: "docProps/app.xml".to_string(),
+                target_mode: None,
+            },
+        ],
     }
 }
 
@@ -122,6 +137,10 @@ pub mod rel_types {
         "http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart";
     pub const IMAGE: &str =
         "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image";
+
+    // Custom properties
+    pub const CUSTOM_PROPERTIES: &str =
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/custom-properties";
 }
 
 #[cfg(test)]
@@ -132,11 +151,26 @@ mod tests {
     fn test_package_rels_factory() {
         let rels = package_rels();
         assert_eq!(rels.xmlns, namespaces::PACKAGE_RELATIONSHIPS);
-        assert_eq!(rels.relationships.len(), 1);
+        assert_eq!(rels.relationships.len(), 3);
+
+        // Office document relationship
         assert_eq!(rels.relationships[0].id, "rId1");
         assert_eq!(rels.relationships[0].rel_type, rel_types::OFFICE_DOCUMENT);
         assert_eq!(rels.relationships[0].target, "xl/workbook.xml");
         assert!(rels.relationships[0].target_mode.is_none());
+
+        // Core properties relationship
+        assert_eq!(rels.relationships[1].id, "rId2");
+        assert_eq!(rels.relationships[1].rel_type, rel_types::CORE_PROPERTIES);
+        assert_eq!(rels.relationships[1].target, "docProps/core.xml");
+
+        // Extended properties relationship
+        assert_eq!(rels.relationships[2].id, "rId3");
+        assert_eq!(
+            rels.relationships[2].rel_type,
+            rel_types::EXTENDED_PROPERTIES
+        );
+        assert_eq!(rels.relationships[2].target, "docProps/app.xml");
     }
 
     #[test]

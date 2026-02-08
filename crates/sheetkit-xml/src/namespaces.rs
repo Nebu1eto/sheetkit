@@ -32,6 +32,16 @@ pub const EXTENDED_PROPERTIES: &str =
 pub const CORE_PROPERTIES: &str =
     "http://schemas.openxmlformats.org/package/2006/metadata/core-properties";
 
+// Dublin Core DCMI Type
+pub const DC_MITYPE: &str = "http://purl.org/dc/dcmitype/";
+
+// VT Types (docProps)
+pub const VT: &str = "http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes";
+
+// Custom Properties
+pub const CUSTOM_PROPERTIES: &str =
+    "http://schemas.openxmlformats.org/officeDocument/2006/custom-properties";
+
 // XML standard
 pub const XML: &str = "http://www.w3.org/XML/1998/namespace";
 pub const XSI: &str = "http://www.w3.org/2001/XMLSchema-instance";

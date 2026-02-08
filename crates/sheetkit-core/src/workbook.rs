@@ -18,7 +18,7 @@ use sheetkit_xml::drawing::{MarkerType, WsDr};
 use sheetkit_xml::relationships::{self, rel_types, Relationship, Relationships};
 use sheetkit_xml::shared_strings::Sst;
 use sheetkit_xml::styles::StyleSheet;
-use sheetkit_xml::workbook::WorkbookXml;
+use sheetkit_xml::workbook::{WorkbookProtection, WorkbookXml};
 use sheetkit_xml::worksheet::{Cell, CellFormula, DrawingRef, Row, WorksheetXml};
 use zip::write::SimpleFileOptions;
 use zip::CompressionMethod;
@@ -28,6 +28,7 @@ use crate::chart::ChartConfig;
 use crate::comment::CommentConfig;
 use crate::error::{Error, Result};
 use crate::image::ImageConfig;
+use crate::protection::WorkbookProtectionConfig;
 use crate::sst::SharedStringTable;
 use crate::utils::cell_ref::cell_name_to_coordinates;
 use crate::utils::constants::MAX_CELL_CHARS;
@@ -62,6 +63,12 @@ pub struct Workbook {
     worksheet_rels: HashMap<usize, Relationships>,
     /// Per-drawing relationship files: drawing_index -> Relationships.
     drawing_rels: HashMap<usize, Relationships>,
+    /// Core document properties (docProps/core.xml).
+    core_properties: Option<sheetkit_xml::doc_props::CoreProperties>,
+    /// Extended/application properties (docProps/app.xml).
+    app_properties: Option<sheetkit_xml::doc_props::ExtendedProperties>,
+    /// Custom properties (docProps/custom.xml).
+    custom_properties: Option<sheetkit_xml::doc_props::CustomProperties>,
 }
 
 impl Workbook {
@@ -85,6 +92,9 @@ impl Workbook {
             worksheet_drawings: HashMap::new(),
             worksheet_rels: HashMap::new(),
             drawing_rels: HashMap::new(),
+            core_properties: None,
+            app_properties: None,
+            custom_properties: None,
         }
     }
 
@@ -134,6 +144,24 @@ impl Workbook {
         // Initialize per-sheet comments (one entry per worksheet).
         let sheet_comments: Vec<Option<Comments>> = vec![None; worksheets.len()];
 
+        // Parse docProps/core.xml (optional - uses manual XML parsing)
+        let core_properties = read_string_part(&mut archive, "docProps/core.xml")
+            .ok()
+            .and_then(|xml_str| {
+                sheetkit_xml::doc_props::deserialize_core_properties(&xml_str).ok()
+            });
+
+        // Parse docProps/app.xml (optional - uses serde)
+        let app_properties: Option<sheetkit_xml::doc_props::ExtendedProperties> =
+            read_xml_part(&mut archive, "docProps/app.xml").ok();
+
+        // Parse docProps/custom.xml (optional - uses manual XML parsing)
+        let custom_properties = read_string_part(&mut archive, "docProps/custom.xml")
+            .ok()
+            .and_then(|xml_str| {
+                sheetkit_xml::doc_props::deserialize_custom_properties(&xml_str).ok()
+            });
+
         Ok(Self {
             content_types,
             package_rels,
@@ -150,6 +178,9 @@ impl Workbook {
             worksheet_drawings: HashMap::new(),
             worksheet_rels: HashMap::new(),
             drawing_rels: HashMap::new(),
+            core_properties,
+            app_properties,
+            custom_properties,
         })
     }
 
@@ -229,6 +260,27 @@ impl Workbook {
         for (drawing_idx, rels) in &self.drawing_rels {
             let path = format!("xl/drawings/_rels/drawing{}.xml.rels", drawing_idx + 1);
             write_xml_part(&mut zip, &path, rels, options)?;
+        }
+
+        // docProps/core.xml
+        if let Some(ref props) = self.core_properties {
+            let xml_str = sheetkit_xml::doc_props::serialize_core_properties(props);
+            zip.start_file("docProps/core.xml", options)
+                .map_err(|e| Error::Zip(e.to_string()))?;
+            zip.write_all(xml_str.as_bytes())?;
+        }
+
+        // docProps/app.xml
+        if let Some(ref props) = self.app_properties {
+            write_xml_part(&mut zip, "docProps/app.xml", props, options)?;
+        }
+
+        // docProps/custom.xml
+        if let Some(ref props) = self.custom_properties {
+            let xml_str = sheetkit_xml::doc_props::serialize_custom_properties(props);
+            zip.start_file("docProps/custom.xml", options)
+                .map_err(|e| Error::Zip(e.to_string()))?;
+            zip.write_all(xml_str.as_bytes())?;
         }
 
         zip.finish().map_err(|e| Error::Zip(e.to_string()))?;
@@ -913,6 +965,47 @@ impl Workbook {
     }
 
     // -----------------------------------------------------------------------
+    // Workbook Protection
+    // -----------------------------------------------------------------------
+
+    /// Protect the workbook structure and/or windows.
+    pub fn protect_workbook(&mut self, config: WorkbookProtectionConfig) {
+        let password_hash = config.password.as_ref().map(|p| {
+            let hash = crate::protection::legacy_password_hash(p);
+            format!("{:04X}", hash)
+        });
+        self.workbook_xml.workbook_protection = Some(WorkbookProtection {
+            workbook_password: password_hash,
+            lock_structure: if config.lock_structure {
+                Some(true)
+            } else {
+                None
+            },
+            lock_windows: if config.lock_windows {
+                Some(true)
+            } else {
+                None
+            },
+            revisions_password: None,
+            lock_revision: if config.lock_revision {
+                Some(true)
+            } else {
+                None
+            },
+        });
+    }
+
+    /// Remove workbook protection.
+    pub fn unprotect_workbook(&mut self) {
+        self.workbook_xml.workbook_protection = None;
+    }
+
+    /// Check if the workbook is protected.
+    pub fn is_workbook_protected(&self) -> bool {
+        self.workbook_xml.workbook_protection.is_some()
+    }
+
+    // -----------------------------------------------------------------------
     // Private helpers
     // -----------------------------------------------------------------------
 
@@ -1070,6 +1163,136 @@ impl Workbook {
             _ => Ok(CellValue::Empty),
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Document properties
+    // -----------------------------------------------------------------------
+
+    /// Set the core document properties (title, author, etc.).
+    pub fn set_doc_props(&mut self, props: crate::doc_props::DocProperties) {
+        self.core_properties = Some(props.to_core_properties());
+        // Ensure content types includes core properties
+        self.ensure_doc_props_content_types();
+    }
+
+    /// Get the core document properties.
+    pub fn get_doc_props(&self) -> crate::doc_props::DocProperties {
+        self.core_properties
+            .as_ref()
+            .map(crate::doc_props::DocProperties::from)
+            .unwrap_or_default()
+    }
+
+    /// Set the application properties (company, app version, etc.).
+    pub fn set_app_props(&mut self, props: crate::doc_props::AppProperties) {
+        self.app_properties = Some(props.to_extended_properties());
+        // Ensure content types includes extended properties
+        self.ensure_doc_props_content_types();
+    }
+
+    /// Get the application properties.
+    pub fn get_app_props(&self) -> crate::doc_props::AppProperties {
+        self.app_properties
+            .as_ref()
+            .map(crate::doc_props::AppProperties::from)
+            .unwrap_or_default()
+    }
+
+    /// Set a custom property by name. If a property with the same name already
+    /// exists, its value is replaced.
+    pub fn set_custom_property(
+        &mut self,
+        name: &str,
+        value: crate::doc_props::CustomPropertyValue,
+    ) {
+        let props = self
+            .custom_properties
+            .get_or_insert_with(sheetkit_xml::doc_props::CustomProperties::default);
+        crate::doc_props::set_custom_property(props, name, value);
+        self.ensure_custom_props_content_types();
+    }
+
+    /// Get a custom property value by name, or `None` if it does not exist.
+    pub fn get_custom_property(&self, name: &str) -> Option<crate::doc_props::CustomPropertyValue> {
+        self.custom_properties
+            .as_ref()
+            .and_then(|p| crate::doc_props::find_custom_property(p, name))
+    }
+
+    /// Remove a custom property by name. Returns `true` if a property was
+    /// found and removed.
+    pub fn delete_custom_property(&mut self, name: &str) -> bool {
+        if let Some(ref mut props) = self.custom_properties {
+            crate::doc_props::delete_custom_property(props, name)
+        } else {
+            false
+        }
+    }
+
+    /// Ensure content types contains entries for core and extended properties.
+    fn ensure_doc_props_content_types(&mut self) {
+        let core_part = "/docProps/core.xml";
+        let app_part = "/docProps/app.xml";
+
+        let has_core = self
+            .content_types
+            .overrides
+            .iter()
+            .any(|o| o.part_name == core_part);
+        if !has_core {
+            self.content_types.overrides.push(ContentTypeOverride {
+                part_name: core_part.to_string(),
+                content_type: mime_types::CORE_PROPERTIES.to_string(),
+            });
+        }
+
+        let has_app = self
+            .content_types
+            .overrides
+            .iter()
+            .any(|o| o.part_name == app_part);
+        if !has_app {
+            self.content_types.overrides.push(ContentTypeOverride {
+                part_name: app_part.to_string(),
+                content_type: mime_types::EXTENDED_PROPERTIES.to_string(),
+            });
+        }
+    }
+
+    /// Ensure content types and package rels contain entries for custom properties.
+    fn ensure_custom_props_content_types(&mut self) {
+        // Ensure doc props content types exist first
+        self.ensure_doc_props_content_types();
+
+        let custom_part = "/docProps/custom.xml";
+        let has_custom = self
+            .content_types
+            .overrides
+            .iter()
+            .any(|o| o.part_name == custom_part);
+        if !has_custom {
+            self.content_types.overrides.push(ContentTypeOverride {
+                part_name: custom_part.to_string(),
+                content_type: mime_types::CUSTOM_PROPERTIES.to_string(),
+            });
+        }
+
+        // Ensure package rels contains custom properties relationship
+        let has_custom_rel = self
+            .package_rels
+            .relationships
+            .iter()
+            .any(|r| r.rel_type == rel_types::CUSTOM_PROPERTIES);
+        if !has_custom_rel {
+            let next_id = self.package_rels.relationships.len() + 1;
+            self.package_rels.relationships.push(Relationship {
+                id: format!("rId{next_id}"),
+                rel_type: rel_types::CUSTOM_PROPERTIES.to_string(),
+                target: "docProps/custom.xml".to_string(),
+                target_mode: None,
+            });
+        }
+    }
 }
 
 impl Default for Workbook {
@@ -1101,6 +1324,18 @@ fn read_xml_part<T: serde::de::DeserializeOwned>(
         .read_to_string(&mut content)
         .map_err(|e| Error::Zip(e.to_string()))?;
     quick_xml::de::from_str(&content).map_err(|e| Error::XmlDeserialize(e.to_string()))
+}
+
+/// Read a ZIP entry as a raw string (no serde deserialization).
+fn read_string_part(archive: &mut zip::ZipArchive<std::fs::File>, name: &str) -> Result<String> {
+    let mut entry = archive
+        .by_name(name)
+        .map_err(|e| Error::Zip(e.to_string()))?;
+    let mut content = String::new();
+    entry
+        .read_to_string(&mut content)
+        .map_err(|e| Error::Zip(e.to_string()))?;
+    Ok(content)
 }
 
 /// Write a CellValue into an XML Cell (mutating it in place).
@@ -2594,5 +2829,329 @@ mod tests {
         let wb2 = Workbook::open(&path).unwrap();
         let ws = wb2.worksheet_ref("Sheet1").unwrap();
         assert!(ws.drawing.is_some());
+    }
+
+    #[test]
+    fn test_protect_unprotect_workbook() {
+        let mut wb = Workbook::new();
+        assert!(!wb.is_workbook_protected());
+
+        wb.protect_workbook(crate::protection::WorkbookProtectionConfig {
+            password: None,
+            lock_structure: true,
+            lock_windows: false,
+            lock_revision: false,
+        });
+        assert!(wb.is_workbook_protected());
+
+        wb.unprotect_workbook();
+        assert!(!wb.is_workbook_protected());
+    }
+
+    #[test]
+    fn test_protect_workbook_with_password() {
+        let mut wb = Workbook::new();
+        wb.protect_workbook(crate::protection::WorkbookProtectionConfig {
+            password: Some("secret".to_string()),
+            lock_structure: true,
+            lock_windows: false,
+            lock_revision: false,
+        });
+
+        let prot = wb.workbook_xml.workbook_protection.as_ref().unwrap();
+        assert!(prot.workbook_password.is_some());
+        let hash_str = prot.workbook_password.as_ref().unwrap();
+        // Should be a 4-character uppercase hex string
+        assert_eq!(hash_str.len(), 4);
+        assert!(hash_str.chars().all(|c| c.is_ascii_hexdigit()));
+        assert_eq!(prot.lock_structure, Some(true));
+    }
+
+    #[test]
+    fn test_protect_workbook_structure_only() {
+        let mut wb = Workbook::new();
+        wb.protect_workbook(crate::protection::WorkbookProtectionConfig {
+            password: None,
+            lock_structure: true,
+            lock_windows: false,
+            lock_revision: false,
+        });
+
+        let prot = wb.workbook_xml.workbook_protection.as_ref().unwrap();
+        assert!(prot.workbook_password.is_none());
+        assert_eq!(prot.lock_structure, Some(true));
+        assert!(prot.lock_windows.is_none());
+        assert!(prot.lock_revision.is_none());
+    }
+
+    #[test]
+    fn test_protect_workbook_save_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("protected.xlsx");
+
+        let mut wb = Workbook::new();
+        wb.protect_workbook(crate::protection::WorkbookProtectionConfig {
+            password: Some("hello".to_string()),
+            lock_structure: true,
+            lock_windows: true,
+            lock_revision: false,
+        });
+        wb.save(&path).unwrap();
+
+        let wb2 = Workbook::open(&path).unwrap();
+        assert!(wb2.is_workbook_protected());
+        let prot = wb2.workbook_xml.workbook_protection.as_ref().unwrap();
+        assert!(prot.workbook_password.is_some());
+        assert_eq!(prot.lock_structure, Some(true));
+        assert_eq!(prot.lock_windows, Some(true));
+    }
+
+    #[test]
+    fn test_is_workbook_protected() {
+        let wb = Workbook::new();
+        assert!(!wb.is_workbook_protected());
+
+        let mut wb2 = Workbook::new();
+        wb2.protect_workbook(crate::protection::WorkbookProtectionConfig {
+            password: None,
+            lock_structure: false,
+            lock_windows: false,
+            lock_revision: false,
+        });
+        // Even with no locks, the protection element is present
+        assert!(wb2.is_workbook_protected());
+    }
+
+    #[test]
+    fn test_unprotect_already_unprotected() {
+        let mut wb = Workbook::new();
+        assert!(!wb.is_workbook_protected());
+        // Should be a no-op, not panic
+        wb.unprotect_workbook();
+        assert!(!wb.is_workbook_protected());
+    }
+
+    // -----------------------------------------------------------------------
+    // Document properties tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_set_get_doc_props() {
+        let mut wb = Workbook::new();
+        let props = crate::doc_props::DocProperties {
+            title: Some("My Title".to_string()),
+            subject: Some("My Subject".to_string()),
+            creator: Some("Author".to_string()),
+            keywords: Some("rust, excel".to_string()),
+            description: Some("A test workbook".to_string()),
+            last_modified_by: Some("Editor".to_string()),
+            revision: Some("2".to_string()),
+            created: Some("2024-01-01T00:00:00Z".to_string()),
+            modified: Some("2024-06-01T12:00:00Z".to_string()),
+            category: Some("Testing".to_string()),
+            content_status: Some("Draft".to_string()),
+        };
+        wb.set_doc_props(props);
+
+        let got = wb.get_doc_props();
+        assert_eq!(got.title.as_deref(), Some("My Title"));
+        assert_eq!(got.subject.as_deref(), Some("My Subject"));
+        assert_eq!(got.creator.as_deref(), Some("Author"));
+        assert_eq!(got.keywords.as_deref(), Some("rust, excel"));
+        assert_eq!(got.description.as_deref(), Some("A test workbook"));
+        assert_eq!(got.last_modified_by.as_deref(), Some("Editor"));
+        assert_eq!(got.revision.as_deref(), Some("2"));
+        assert_eq!(got.created.as_deref(), Some("2024-01-01T00:00:00Z"));
+        assert_eq!(got.modified.as_deref(), Some("2024-06-01T12:00:00Z"));
+        assert_eq!(got.category.as_deref(), Some("Testing"));
+        assert_eq!(got.content_status.as_deref(), Some("Draft"));
+    }
+
+    #[test]
+    fn test_set_get_app_props() {
+        let mut wb = Workbook::new();
+        let props = crate::doc_props::AppProperties {
+            application: Some("SheetKit".to_string()),
+            doc_security: Some(0),
+            company: Some("Acme Corp".to_string()),
+            app_version: Some("1.0.0".to_string()),
+            manager: Some("Boss".to_string()),
+            template: Some("default.xltx".to_string()),
+        };
+        wb.set_app_props(props);
+
+        let got = wb.get_app_props();
+        assert_eq!(got.application.as_deref(), Some("SheetKit"));
+        assert_eq!(got.doc_security, Some(0));
+        assert_eq!(got.company.as_deref(), Some("Acme Corp"));
+        assert_eq!(got.app_version.as_deref(), Some("1.0.0"));
+        assert_eq!(got.manager.as_deref(), Some("Boss"));
+        assert_eq!(got.template.as_deref(), Some("default.xltx"));
+    }
+
+    #[test]
+    fn test_custom_property_crud() {
+        let mut wb = Workbook::new();
+
+        // Set
+        wb.set_custom_property(
+            "Project",
+            crate::doc_props::CustomPropertyValue::String("SheetKit".to_string()),
+        );
+
+        // Get
+        let val = wb.get_custom_property("Project");
+        assert_eq!(
+            val,
+            Some(crate::doc_props::CustomPropertyValue::String(
+                "SheetKit".to_string()
+            ))
+        );
+
+        // Update
+        wb.set_custom_property(
+            "Project",
+            crate::doc_props::CustomPropertyValue::String("Updated".to_string()),
+        );
+        let val = wb.get_custom_property("Project");
+        assert_eq!(
+            val,
+            Some(crate::doc_props::CustomPropertyValue::String(
+                "Updated".to_string()
+            ))
+        );
+
+        // Delete
+        assert!(wb.delete_custom_property("Project"));
+        assert!(wb.get_custom_property("Project").is_none());
+        assert!(!wb.delete_custom_property("Project")); // already gone
+    }
+
+    #[test]
+    fn test_doc_props_save_open_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("doc_props.xlsx");
+
+        let mut wb = Workbook::new();
+        wb.set_doc_props(crate::doc_props::DocProperties {
+            title: Some("Test Title".to_string()),
+            creator: Some("Test Author".to_string()),
+            created: Some("2024-01-01T00:00:00Z".to_string()),
+            ..Default::default()
+        });
+        wb.set_app_props(crate::doc_props::AppProperties {
+            application: Some("SheetKit".to_string()),
+            company: Some("TestCorp".to_string()),
+            ..Default::default()
+        });
+        wb.set_custom_property("Version", crate::doc_props::CustomPropertyValue::Int(42));
+        wb.save(&path).unwrap();
+
+        let wb2 = Workbook::open(&path).unwrap();
+        let doc = wb2.get_doc_props();
+        assert_eq!(doc.title.as_deref(), Some("Test Title"));
+        assert_eq!(doc.creator.as_deref(), Some("Test Author"));
+        assert_eq!(doc.created.as_deref(), Some("2024-01-01T00:00:00Z"));
+
+        let app = wb2.get_app_props();
+        assert_eq!(app.application.as_deref(), Some("SheetKit"));
+        assert_eq!(app.company.as_deref(), Some("TestCorp"));
+
+        let custom = wb2.get_custom_property("Version");
+        assert_eq!(custom, Some(crate::doc_props::CustomPropertyValue::Int(42)));
+    }
+
+    #[test]
+    fn test_open_without_doc_props() {
+        // A newly created workbook saved without setting doc props should
+        // still open gracefully (core/app/custom properties are all None).
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("no_props.xlsx");
+
+        let wb = Workbook::new();
+        wb.save(&path).unwrap();
+
+        let wb2 = Workbook::open(&path).unwrap();
+        let doc = wb2.get_doc_props();
+        assert!(doc.title.is_none());
+        assert!(doc.creator.is_none());
+
+        let app = wb2.get_app_props();
+        assert!(app.application.is_none());
+
+        assert!(wb2.get_custom_property("anything").is_none());
+    }
+
+    #[test]
+    fn test_custom_property_multiple_types() {
+        let mut wb = Workbook::new();
+
+        wb.set_custom_property(
+            "StringProp",
+            crate::doc_props::CustomPropertyValue::String("hello".to_string()),
+        );
+        wb.set_custom_property("IntProp", crate::doc_props::CustomPropertyValue::Int(-7));
+        wb.set_custom_property(
+            "FloatProp",
+            crate::doc_props::CustomPropertyValue::Float(3.14),
+        );
+        wb.set_custom_property(
+            "BoolProp",
+            crate::doc_props::CustomPropertyValue::Bool(true),
+        );
+        wb.set_custom_property(
+            "DateProp",
+            crate::doc_props::CustomPropertyValue::DateTime("2024-01-01T00:00:00Z".to_string()),
+        );
+
+        assert_eq!(
+            wb.get_custom_property("StringProp"),
+            Some(crate::doc_props::CustomPropertyValue::String(
+                "hello".to_string()
+            ))
+        );
+        assert_eq!(
+            wb.get_custom_property("IntProp"),
+            Some(crate::doc_props::CustomPropertyValue::Int(-7))
+        );
+        assert_eq!(
+            wb.get_custom_property("FloatProp"),
+            Some(crate::doc_props::CustomPropertyValue::Float(3.14))
+        );
+        assert_eq!(
+            wb.get_custom_property("BoolProp"),
+            Some(crate::doc_props::CustomPropertyValue::Bool(true))
+        );
+        assert_eq!(
+            wb.get_custom_property("DateProp"),
+            Some(crate::doc_props::CustomPropertyValue::DateTime(
+                "2024-01-01T00:00:00Z".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn test_doc_props_default_values() {
+        let wb = Workbook::new();
+        let doc = wb.get_doc_props();
+        assert!(doc.title.is_none());
+        assert!(doc.subject.is_none());
+        assert!(doc.creator.is_none());
+        assert!(doc.keywords.is_none());
+        assert!(doc.description.is_none());
+        assert!(doc.last_modified_by.is_none());
+        assert!(doc.revision.is_none());
+        assert!(doc.created.is_none());
+        assert!(doc.modified.is_none());
+        assert!(doc.category.is_none());
+        assert!(doc.content_status.is_none());
+
+        let app = wb.get_app_props();
+        assert!(app.application.is_none());
+        assert!(app.doc_security.is_none());
+        assert!(app.company.is_none());
+        assert!(app.app_version.is_none());
+        assert!(app.manager.is_none());
+        assert!(app.template.is_none());
     }
 }
