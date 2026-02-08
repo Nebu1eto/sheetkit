@@ -1,0 +1,374 @@
+# SheetKit 시작 가이드
+
+SheetKit은 Excel (.xlsx) 파일을 읽고 쓰기 위한 라이브러리입니다.
+Rust 크레이트와 napi-rs 기반 Node.js 바인딩을 제공합니다.
+
+## 설치
+
+### Rust
+
+`Cargo.toml`에 SheetKit을 추가합니다:
+
+```toml
+[dependencies]
+sheetkit = "0.1"
+```
+
+### Node.js
+
+npm으로 설치합니다. 네이티브 컴파일을 위해 Rust 툴체인이 필요합니다.
+
+```bash
+npm install sheetkit
+```
+
+## 빠른 시작
+
+### 워크북 생성 및 셀 쓰기
+
+**Rust**
+
+```rust
+use sheetkit::{CellValue, Workbook};
+
+fn main() -> sheetkit::Result<()> {
+    let mut wb = Workbook::new();
+
+    // Write different value types
+    wb.set_cell_value("Sheet1", "A1", CellValue::String("Name".into()))?;
+    wb.set_cell_value("Sheet1", "B1", CellValue::Number(42.0))?;
+    wb.set_cell_value("Sheet1", "C1", CellValue::Bool(true))?;
+    wb.set_cell_value("Sheet1", "D1", CellValue::Empty)?;
+
+    // Read a cell value
+    let val = wb.get_cell_value("Sheet1", "A1")?;
+    println!("A1 = {:?}", val); // CellValue::String("Name")
+
+    // Save to file
+    wb.save("output.xlsx")?;
+    Ok(())
+}
+```
+
+**TypeScript**
+
+```typescript
+import { Workbook } from "sheetkit";
+
+const wb = new Workbook();
+
+// Write different value types
+wb.setCellValue("Sheet1", "A1", "Name");
+wb.setCellValue("Sheet1", "B1", 42);
+wb.setCellValue("Sheet1", "C1", true);
+wb.setCellValue("Sheet1", "D1", null); // clear/empty
+
+// Read a cell value
+const val = wb.getCellValue("Sheet1", "A1");
+console.log("A1 =", val); // "Name"
+
+// Save to file
+wb.save("output.xlsx");
+```
+
+### 기존 파일 열기
+
+**Rust**
+
+```rust
+use sheetkit::Workbook;
+
+fn main() -> sheetkit::Result<()> {
+    let wb = Workbook::open("input.xlsx")?;
+
+    // List all sheet names
+    let names = wb.sheet_names();
+    println!("Sheets: {:?}", names);
+
+    // Read a cell from the first sheet
+    let val = wb.get_cell_value(&names[0], "A1")?;
+    println!("A1 = {:?}", val);
+
+    Ok(())
+}
+```
+
+**TypeScript**
+
+```typescript
+import { Workbook } from "sheetkit";
+
+const wb = Workbook.open("input.xlsx");
+
+// List all sheet names
+console.log("Sheets:", wb.sheetNames);
+
+// Read a cell from the first sheet
+const val = wb.getCellValue(wb.sheetNames[0], "A1");
+console.log("A1 =", val);
+```
+
+## 핵심 개념
+
+### CellValue 타입
+
+SheetKit은 타입이 지정된 셀 값 모델을 사용합니다. 모든 셀은 다음 중 하나의 값을 가집니다:
+
+| 타입    | Rust                                            | TypeScript               |
+| ------- | ----------------------------------------------- | ------------------------ |
+| String  | `CellValue::String(String)`                     | `string`                 |
+| Number  | `CellValue::Number(f64)`                        | `number`                 |
+| Bool    | `CellValue::Bool(bool)`                         | `boolean`                |
+| Empty   | `CellValue::Empty`                              | `null`                   |
+| Date    | `CellValue::Date(f64)`                          | `{ type: 'date', serial: number, iso?: string }` |
+| Formula | `CellValue::Formula { expr, result }`           | *(수식 평가를 통해 설정)* |
+| Error   | `CellValue::Error(String)`                      | *(읽기 전용)*            |
+
+### 날짜 값
+
+날짜는 Excel 시리얼 넘버(1900-01-01 기준 경과 일수)로 저장됩니다. 정수 부분은 날짜, 소수 부분은 시간을 나타냅니다 (예: 0.5 = 정오).
+
+날짜를 Excel에서 올바르게 표시하려면 셀에 날짜 숫자 형식 스타일을 적용해야 합니다.
+
+**Rust**
+
+```rust
+use sheetkit::{CellValue, Style, NumFmtStyle, Workbook};
+
+let mut wb = Workbook::new();
+
+// Excel serial 45292 = 2024-01-01
+wb.set_cell_value("Sheet1", "A1", CellValue::Date(45292.0))?;
+
+// Apply a date format so Excel renders it as a date
+let style_id = wb.add_style(&Style {
+    num_fmt: Some(NumFmtStyle { num_fmt_id: Some(14), custom_format: None }),
+    ..Default::default()
+})?;
+wb.set_cell_style("Sheet1", "A1", style_id)?;
+```
+
+**TypeScript**
+
+```typescript
+const wb = new Workbook();
+
+// Excel serial 45292 = 2024-01-01
+wb.setCellValue("Sheet1", "A1", { type: "date", serial: 45292 });
+
+// Apply a date format so Excel renders it as a date
+const styleId = wb.addStyle({ numFmtId: 14 });
+wb.setCellStyle("Sheet1", "A1", styleId);
+```
+
+날짜 셀을 다시 읽으면 `DateValue` 객체에 ISO 8601 문자열 표현이 포함된 선택적 `iso` 필드가 포함됩니다 (예: `"2024-01-01"` 또는 `"2024-01-01T12:00:00"`).
+
+### 셀 참조
+
+셀 참조는 A1 스타일 표기법을 사용합니다: 열 문자 뒤에 1 기반 행 번호가 옵니다.
+
+- `"A1"` -- A열, 1행
+- `"B2"` -- B열, 2행
+- `"AA100"` -- AA열 (27번째 열), 100행
+
+### 시트 이름
+
+시트 이름은 대소문자를 구분하는 문자열입니다. 새 워크북은 `"Sheet1"`이라는 단일 시트로 시작합니다.
+
+### 1 기반 vs 0 기반 인덱싱
+
+- **행**: 1 기반 (행 1이 첫 번째 행)
+- **열 번호**: 1 기반 (열 1 = "A")
+- **시트 인덱스**: 0 기반 (첫 번째 시트의 인덱스는 0)
+
+### 스타일 시스템
+
+스타일은 등록 후 적용 패턴을 따릅니다:
+
+1. 글꼴, 채우기, 테두리, 정렬, 숫자 형식 옵션으로 `Style` 구조체/객체를 정의합니다.
+2. `add_style` / `addStyle`로 등록하여 숫자 스타일 ID를 받습니다.
+3. 스타일 ID를 셀, 행 또는 열에 적용합니다.
+
+스타일 중복 제거는 자동으로 처리됩니다. 동일한 스타일을 두 번 등록하면 같은 ID가 반환됩니다.
+
+## 스타일 사용하기
+
+**Rust**
+
+```rust
+use sheetkit::{
+    CellValue, FillStyle, FontStyle, PatternType, Style, StyleColor, Workbook,
+};
+
+let mut wb = Workbook::new();
+wb.set_cell_value("Sheet1", "A1", CellValue::String("Styled".into()))?;
+
+let style_id = wb.add_style(&Style {
+    font: Some(FontStyle {
+        bold: true,
+        size: Some(14.0),
+        color: Some(StyleColor::Rgb("#FFFFFF".into())),
+        ..Default::default()
+    }),
+    fill: Some(FillStyle {
+        pattern: PatternType::Solid,
+        fg_color: Some(StyleColor::Rgb("#4472C4".into())),
+        bg_color: None,
+    }),
+    ..Default::default()
+})?;
+
+wb.set_cell_style("Sheet1", "A1", style_id)?;
+wb.save("styled.xlsx")?;
+```
+
+**TypeScript**
+
+```typescript
+const wb = new Workbook();
+wb.setCellValue("Sheet1", "A1", "Styled");
+
+const styleId = wb.addStyle({
+  font: { bold: true, size: 14, color: "#FFFFFF" },
+  fill: { pattern: "solid", fgColor: "#4472C4" },
+});
+
+wb.setCellStyle("Sheet1", "A1", styleId);
+wb.save("styled.xlsx");
+```
+
+## 차트 사용하기
+
+앵커 범위(왼쪽 상단, 오른쪽 하단 셀), 차트 유형, 데이터 시리즈를 지정하여 차트를 추가합니다.
+
+**Rust**
+
+```rust
+use sheetkit::{CellValue, ChartConfig, ChartSeries, ChartType, Workbook};
+
+let mut wb = Workbook::new();
+
+// Prepare data
+wb.set_cell_value("Sheet1", "A1", CellValue::String("Q1".into()))?;
+wb.set_cell_value("Sheet1", "A2", CellValue::String("Q2".into()))?;
+wb.set_cell_value("Sheet1", "A3", CellValue::String("Q3".into()))?;
+wb.set_cell_value("Sheet1", "B1", CellValue::Number(1500.0))?;
+wb.set_cell_value("Sheet1", "B2", CellValue::Number(2300.0))?;
+wb.set_cell_value("Sheet1", "B3", CellValue::Number(1800.0))?;
+
+// Add a column chart
+wb.add_chart(
+    "Sheet1",
+    "D1",   // top-left anchor
+    "K15",  // bottom-right anchor
+    &ChartConfig {
+        chart_type: ChartType::Col,
+        title: Some("Quarterly Revenue".into()),
+        series: vec![ChartSeries {
+            name: "Revenue".into(),
+            categories: "Sheet1!$A$1:$A$3".into(),
+            values: "Sheet1!$B$1:$B$3".into(),
+            x_values: None,
+            bubble_sizes: None,
+        }],
+        show_legend: true,
+        view_3d: None,
+    },
+)?;
+
+wb.save("chart.xlsx")?;
+```
+
+**TypeScript**
+
+```typescript
+const wb = new Workbook();
+
+// Prepare data
+wb.setCellValue("Sheet1", "A1", "Q1");
+wb.setCellValue("Sheet1", "A2", "Q2");
+wb.setCellValue("Sheet1", "A3", "Q3");
+wb.setCellValue("Sheet1", "B1", 1500);
+wb.setCellValue("Sheet1", "B2", 2300);
+wb.setCellValue("Sheet1", "B3", 1800);
+
+// Add a column chart
+wb.addChart("Sheet1", "D1", "K15", {
+  chartType: "col",
+  title: "Quarterly Revenue",
+  series: [
+    {
+      name: "Revenue",
+      categories: "Sheet1!$A$1:$A$3",
+      values: "Sheet1!$B$1:$B$3",
+    },
+  ],
+  showLegend: true,
+});
+
+wb.save("chart.xlsx");
+```
+
+## 대용량 파일을 위한 StreamWriter
+
+`StreamWriter`는 전체 워크시트를 메모리에 구축하지 않고 내부 버퍼에 행을 순차적으로 씁니다. 행은 오름차순으로 작성해야 합니다.
+
+**Rust**
+
+```rust
+use sheetkit::{CellValue, Workbook};
+
+let mut wb = Workbook::new();
+let mut sw = wb.new_stream_writer("LargeSheet")?;
+
+// Set column widths
+sw.set_col_width(1, 20.0)?;
+sw.set_col_width(2, 15.0)?;
+
+// Write header
+sw.write_row(1, &[
+    CellValue::String("Item".into()),
+    CellValue::String("Value".into()),
+])?;
+
+// Write 10,000 data rows
+for i in 2..=10_001 {
+    sw.write_row(i, &[
+        CellValue::String(format!("Item_{}", i - 1)),
+        CellValue::Number(i as f64 * 1.5),
+    ])?;
+}
+
+// Apply the stream writer output to the workbook
+wb.apply_stream_writer(sw)?;
+wb.save("large.xlsx")?;
+```
+
+**TypeScript**
+
+```typescript
+const wb = new Workbook();
+const sw = wb.newStreamWriter("LargeSheet");
+
+// Set column widths
+sw.setColWidth(1, 20);
+sw.setColWidth(2, 15);
+
+// Write header
+sw.writeRow(1, ["Item", "Value"]);
+
+// Write 10,000 data rows
+for (let i = 2; i <= 10_001; i++) {
+  sw.writeRow(i, [`Item_${i - 1}`, i * 1.5]);
+}
+
+// Apply the stream writer output to the workbook
+wb.applyStreamWriter(sw);
+wb.save("large.xlsx");
+```
+
+## 다음 단계
+
+- [API 레퍼런스](api-reference.md) -- 모든 메서드와 타입에 대한 전체 문서.
+- [아키텍처](architecture.md) -- 내부 설계 및 크레이트 구조.
+- [기여 가이드](contributing.md) -- 개발 환경 설정 및 기여 가이드라인.
