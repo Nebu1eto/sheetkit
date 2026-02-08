@@ -1,6 +1,7 @@
 {
 	"name": "sheetkit-monorepo",
 	"private": true,
+	"license": "MIT OR Apache-2.0",
 	"packageManager": "pnpm@10.29.1",
 	"scripts": {
 		"lint": "biome lint .",
