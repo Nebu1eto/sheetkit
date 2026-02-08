@@ -52,28 +52,17 @@ cargo fmt --check              # Verify formatting
 
 ### Node.js bindings
 
-The napi build process has three steps that must be followed in order:
-
 ```bash
 cd packages/sheetkit
 
-# Step 1: Build the native addon. This compiles the Rust cdylib and generates
-# index.js (CJS binding loader) and index.d.ts (TypeScript declarations).
-npx napi build --platform
+# Build the native addon (compiles the Rust cdylib, generates index.js and index.d.ts)
+pnpm build
 
-# Step 2: Rename the generated CJS file. The napi build overwrites index.js
-# with a CJS module, but we need to keep our ESM wrapper as index.js.
-cp index.js binding.cjs
-
-# Step 3: Restore the ESM wrapper. The real index.js is an ESM module that
-# loads binding.cjs via createRequire. Restore it from git.
-git checkout -- index.js
-
-# Step 4: Run the Node.js test suite.
-npx vitest run
+# Run the Node.js test suite
+pnpm test
 ```
 
-The ESM wrapper (`index.js`) is checked into the repository and must never be overwritten permanently by the napi build output. It loads the CJS binding using Node.js `createRequire`.
+The `pnpm build` command runs `napi build --platform --release --esm`, which produces ESM output directly. No manual file renaming is needed.
 
 ## 5. Development Workflow
 
@@ -103,7 +92,7 @@ Every change must pass all of the following before submission:
 ### TypeScript / JavaScript
 
 - Use Biome for formatting and linting.
-- ESM only for all JavaScript and TypeScript code. The napi CJS output (`binding.cjs`) is the sole exception and is loaded via `createRequire` in the ESM wrapper.
+- ESM only for all JavaScript and TypeScript code.
 
 ### General Rules
 
@@ -197,7 +186,7 @@ SimpleFileOptions::default().compression_method(CompressionMethod::Deflated)
 
 ### napi build output
 
-The napi build generates a CJS `index.js` that overwrites the ESM wrapper. Always rename it to `binding.cjs` and restore the ESM wrapper from git after building.
+With napi v3 and the `--esm` flag, the build produces ESM output directly. Run `pnpm build` from `packages/sheetkit` and the generated `index.js` and `index.d.ts` are ready to use.
 
 ### File organization
 

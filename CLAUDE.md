@@ -36,8 +36,8 @@ cargo clippy --workspace
 cargo fmt --check
 
 # Node.js bindings
-cd packages/sheetkit && napi build --platform && mv index.js binding.cjs
-cd packages/sheetkit && npx vitest run
+cd packages/sheetkit && pnpm build
+cd packages/sheetkit && pnpm test
 ```
 
 Always verify builds, lints, and formatting pass before declaring work complete.
@@ -67,7 +67,7 @@ Always verify builds, lints, and formatting pass before declaring work complete.
 - No emoji in any code or output.
 - Rust: Follow standard Rust conventions. Use `cargo fmt` for formatting.
 - TypeScript: Use Biome for formatting and linting.
-- ESM only for all JavaScript/TypeScript. No CommonJS (the napi build output is renamed to `binding.cjs` and loaded via `createRequire` in the ESM wrapper).
+- ESM only for all JavaScript/TypeScript. napi v3 with `--esm` produces ESM output directly.
 
 ## Architecture
 
@@ -132,6 +132,6 @@ Before completing any task, confirm all of the following pass:
 - `nom` crate is used for formula parsing in sheetkit-core.
 - Put new features in separate files (e.g., `cell.rs`, `sst.rs`, `sheet.rs`, `formula/`) to minimize merge conflicts when working in parallel.
 - Stage only specific files when committing. Do not use `git add -A` or `git add .`.
-- napi build generates a CJS `index.js` which must be renamed to `binding.cjs`. The real `index.js` is the ESM wrapper that loads `binding.cjs` via `createRequire`.
+- napi v3 with `--esm` generates ESM output directly. Run `pnpm build` from `packages/sheetkit`.
 - `sheetkit-core` needs `quick-xml` and `serde` as direct dependencies for the workbook module.
 - Test output `.xlsx` files are gitignored (except under `fixtures/`).
