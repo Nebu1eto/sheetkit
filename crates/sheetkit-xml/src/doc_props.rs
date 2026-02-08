@@ -12,10 +12,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::namespaces;
 
-// ---------------------------------------------------------------------------
-// Core Properties (docProps/core.xml)
-// ---------------------------------------------------------------------------
-
 /// Core document properties (docProps/core.xml).
 ///
 /// Uses Dublin Core namespaces (`dc:`, `dcterms:`, `cp:`).
@@ -173,10 +169,6 @@ pub fn deserialize_core_properties(xml: &str) -> Result<CoreProperties, String> 
 // DCMI Type namespace (not in namespaces.rs because it's only used here)
 const DC_MITYPE: &str = "http://purl.org/dc/dcmitype/";
 
-// ---------------------------------------------------------------------------
-// Extended Properties (docProps/app.xml)
-// ---------------------------------------------------------------------------
-
 /// Extended (application) properties (`docProps/app.xml`).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename = "Properties")]
@@ -218,10 +210,6 @@ impl ExtendedProperties {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Custom Properties (docProps/custom.xml)
-// ---------------------------------------------------------------------------
 
 /// Custom properties collection (`docProps/custom.xml`).
 ///
@@ -433,10 +421,6 @@ pub fn deserialize_custom_properties(xml: &str) -> Result<CustomProperties, Stri
 mod tests {
     use super::*;
 
-    // -----------------------------------------------------------------------
-    // Core Properties tests
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_core_properties_roundtrip() {
         let props = CoreProperties {
@@ -531,10 +515,6 @@ mod tests {
         assert_eq!(props.content_status.as_deref(), Some("Final"));
     }
 
-    // -----------------------------------------------------------------------
-    // Extended Properties tests
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_extended_properties_serde_roundtrip() {
         let props = ExtendedProperties {
@@ -587,10 +567,6 @@ mod tests {
         assert!(!xml.contains("DocSecurity"));
         assert!(!xml.contains("Company"));
     }
-
-    // -----------------------------------------------------------------------
-    // Custom Properties tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_custom_properties_roundtrip() {

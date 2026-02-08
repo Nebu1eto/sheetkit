@@ -134,10 +134,6 @@ pub fn build_drawing_with_chart(chart_ref_id: &str, from: MarkerType, to: Marker
     }
 }
 
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
-
 /// Build a single XML Series from a ChartSeries.
 fn build_series(index: u32, series: &ChartSeries) -> Series {
     let tx = if series.name.is_empty() {
@@ -343,10 +339,6 @@ fn build_plot_area(chart_type: &ChartType, series: Vec<Series>, is_pie: bool) ->
 
     plot_area
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {

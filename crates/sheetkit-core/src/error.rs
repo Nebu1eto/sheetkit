@@ -8,7 +8,6 @@ use thiserror::Error;
 /// The top-level error type for SheetKit.
 #[derive(Error, Debug)]
 pub enum Error {
-    // ===== Cell reference errors =====
     /// The given string is not a valid A1-style cell reference.
     #[error("invalid cell reference: {0}")]
     InvalidCellReference(String),
@@ -21,7 +20,6 @@ pub enum Error {
     #[error("invalid column number: {0}")]
     InvalidColumnNumber(u32),
 
-    // ===== Sheet errors =====
     /// No sheet with the given name exists in the workbook.
     #[error("sheet '{name}' does not exist")]
     SheetNotFound { name: String },
@@ -34,7 +32,6 @@ pub enum Error {
     #[error("invalid sheet name: {0}")]
     InvalidSheetName(String),
 
-    // ===== I/O errors =====
     /// An underlying I/O error.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
@@ -51,7 +48,6 @@ pub enum Error {
     #[error("XML deserialization error: {0}")]
     XmlDeserialize(String),
 
-    // ===== Dimension / size errors =====
     /// Column width exceeds the allowed maximum (255).
     #[error("column width {width} exceeds maximum {max}")]
     ColumnWidthExceeded { width: f64, max: f64 },
@@ -60,12 +56,10 @@ pub enum Error {
     #[error("row height {height} exceeds maximum {max}")]
     RowHeightExceeded { height: f64, max: f64 },
 
-    // ===== Value errors =====
     /// A cell value exceeds the maximum character limit.
     #[error("cell value too long: {length} characters (max {max})")]
     CellValueTooLong { length: usize, max: usize },
 
-    // ===== Style errors =====
     /// The style ID was not found in the stylesheet.
     #[error("style not found: {id}")]
     StyleNotFound { id: u32 },
@@ -74,7 +68,6 @@ pub enum Error {
     #[error("cell styles exceeded maximum ({max})")]
     CellStylesExceeded { max: usize },
 
-    // ===== Streaming errors =====
     /// A row has already been written; rows must be written in ascending order.
     #[error("row {row} has already been written (must write rows in ascending order)")]
     StreamRowAlreadyWritten { row: u32 },

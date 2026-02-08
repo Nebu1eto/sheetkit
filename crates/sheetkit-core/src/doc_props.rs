@@ -9,10 +9,6 @@ use sheetkit_xml::doc_props::{
 };
 use sheetkit_xml::namespaces;
 
-// ---------------------------------------------------------------------------
-// DocProperties (core properties)
-// ---------------------------------------------------------------------------
-
 /// User-facing document core properties.
 #[derive(Debug, Clone, Default)]
 pub struct DocProperties {
@@ -66,10 +62,6 @@ impl DocProperties {
     }
 }
 
-// ---------------------------------------------------------------------------
-// AppProperties (extended properties)
-// ---------------------------------------------------------------------------
-
 /// User-facing application properties.
 #[derive(Debug, Clone, Default)]
 pub struct AppProperties {
@@ -114,10 +106,6 @@ impl AppProperties {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Custom property values
-// ---------------------------------------------------------------------------
-
 /// Value type for custom properties.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CustomPropertyValue {
@@ -152,10 +140,6 @@ impl CustomPropertyValue {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Helper for custom property management
-// ---------------------------------------------------------------------------
-
 /// Find a custom property by name and return its value, or None.
 pub(crate) fn find_custom_property(
     props: &sheetkit_xml::doc_props::CustomProperties,
@@ -175,13 +159,11 @@ pub(crate) fn set_custom_property(
     name: &str,
     value: CustomPropertyValue,
 ) {
-    // Check if it already exists
     if let Some(existing) = props.properties.iter_mut().find(|p| p.name == name) {
         existing.value = value.to_xml();
         return;
     }
 
-    // Compute next pid: max existing pid + 1, minimum 2
     let next_pid = props
         .properties
         .iter()

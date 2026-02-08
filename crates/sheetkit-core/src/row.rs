@@ -10,10 +10,6 @@ use crate::error::{Error, Result};
 use crate::utils::cell_ref::{cell_name_to_coordinates, coordinates_to_cell_name};
 use crate::utils::constants::{MAX_ROWS, MAX_ROW_HEIGHT};
 
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
-
 /// Insert `count` empty rows starting at `start_row`, shifting existing rows
 /// at and below `start_row` downward.
 ///
@@ -178,10 +174,6 @@ pub fn set_row_outline_level(ws: &mut WorksheetXml, row: u32, level: u8) -> Resu
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
-
 /// Update all cell references in a row to point to `new_row_num`.
 fn shift_row_cells(row: &mut Row, new_row_num: u32) -> Result<()> {
     for cell in row.cells.iter_mut() {
@@ -222,10 +214,6 @@ fn find_or_create_row(ws: &mut WorksheetXml, row: u32) -> &mut Row {
     );
     &mut ws.sheet_data.rows[pos]
 }
-
-// ===========================================================================
-// Tests
-// ===========================================================================
 
 #[cfg(test)]
 mod tests {
@@ -306,8 +294,6 @@ mod tests {
         ws
     }
 
-    // ----- insert_rows --------------------------------------------------
-
     #[test]
     fn test_insert_rows_shifts_cells_down() {
         let mut ws = sample_ws();
@@ -379,8 +365,6 @@ mod tests {
         assert!(ws.sheet_data.rows.is_empty());
     }
 
-    // ----- remove_row ---------------------------------------------------
-
     #[test]
     fn test_remove_row_shifts_up() {
         let mut ws = sample_ws();
@@ -422,8 +406,6 @@ mod tests {
         let result = remove_row(&mut ws, 0);
         assert!(result.is_err());
     }
-
-    // ----- duplicate_row ------------------------------------------------
 
     #[test]
     fn test_duplicate_row_inserts_copy_below() {
@@ -470,8 +452,6 @@ mod tests {
         let result = duplicate_row(&mut ws, 99);
         assert!(result.is_err());
     }
-
-    // ----- set_row_height / get_row_height ------------------------------
 
     #[test]
     fn test_set_and_get_row_height() {
@@ -538,8 +518,6 @@ mod tests {
         assert_eq!(get_row_height(&ws, 99), None);
     }
 
-    // ----- set_row_visible ----------------------------------------------
-
     #[test]
     fn test_set_row_hidden() {
         let mut ws = sample_ws();
@@ -574,8 +552,6 @@ mod tests {
         let result = set_row_visible(&mut ws, 0, true);
         assert!(result.is_err());
     }
-
-    // ----- set_row_outline_level ----------------------------------------
 
     #[test]
     fn test_set_row_outline_level() {

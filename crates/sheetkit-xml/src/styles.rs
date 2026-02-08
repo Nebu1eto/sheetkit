@@ -42,8 +42,6 @@ pub struct StyleSheet {
     pub table_styles: Option<TableStyles>,
 }
 
-// ===== Number Formats =====
-
 /// Number formats container.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct NumFmts {
@@ -63,8 +61,6 @@ pub struct NumFmt {
     #[serde(rename = "@formatCode")]
     pub format_code: String,
 }
-
-// ===== Fonts =====
 
 /// Fonts container.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -107,8 +103,6 @@ pub struct Font {
     pub scheme: Option<FontScheme>,
 }
 
-// ===== Fills =====
-
 /// Fills container.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Fills {
@@ -138,8 +132,6 @@ pub struct PatternFill {
     #[serde(rename = "bgColor", skip_serializing_if = "Option::is_none")]
     pub bg_color: Option<Color>,
 }
-
-// ===== Borders =====
 
 /// Borders container.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -185,8 +177,6 @@ pub struct BorderSide {
     #[serde(rename = "color", skip_serializing_if = "Option::is_none")]
     pub color: Option<Color>,
 }
-
-// ===== Cell Formats =====
 
 /// Cell style XFs container (base style formats).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -280,8 +270,6 @@ pub struct Protection {
     pub hidden: Option<bool>,
 }
 
-// ===== Cell Styles =====
-
 /// Cell styles container.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CellStyles {
@@ -304,8 +292,6 @@ pub struct CellStyle {
     #[serde(rename = "@builtinId", skip_serializing_if = "Option::is_none")]
     pub builtin_id: Option<u32>,
 }
-
-// ===== Differential Formats =====
 
 /// Differential formats container (for conditional formatting).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -330,8 +316,6 @@ pub struct Dxf {
     pub border: Option<Border>,
 }
 
-// ===== Table Styles =====
-
 /// Table styles container.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TableStyles {
@@ -344,8 +328,6 @@ pub struct TableStyles {
     #[serde(rename = "@defaultPivotStyle", skip_serializing_if = "Option::is_none")]
     pub default_pivot_style: Option<String>,
 }
-
-// ===== Shared types =====
 
 /// Color definition (used across fonts, fills, borders).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

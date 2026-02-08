@@ -7,48 +7,48 @@ use sheetkit::{
 };
 
 fn main() -> sheetkit::Result<()> {
-    println!("=== SheetKit Rust 예제 ===\n");
+    println!("=== SheetKit Rust Example ===\n");
 
-    // ── Phase 1: 워크북 생성 및 저장 ──
+    // ── Phase 1: Create and save workbook ──
     let mut wb = Workbook::new();
     println!(
-        "[Phase 1] 새 워크북 생성 완료. 시트: {:?}",
+        "[Phase 1] New workbook created. Sheets: {:?}",
         wb.sheet_names()
     );
 
-    // ── Phase 2: 셀 값 읽기/쓰기 ──
-    wb.set_cell_value("Sheet1", "A1", CellValue::String("이름".into()))?;
-    wb.set_cell_value("Sheet1", "B1", CellValue::String("나이".into()))?;
-    wb.set_cell_value("Sheet1", "C1", CellValue::String("활성".into()))?;
-    wb.set_cell_value("Sheet1", "A2", CellValue::String("홍길동".into()))?;
+    // ── Phase 2: Read/write cell values ──
+    wb.set_cell_value("Sheet1", "A1", CellValue::String("Name".into()))?;
+    wb.set_cell_value("Sheet1", "B1", CellValue::String("Age".into()))?;
+    wb.set_cell_value("Sheet1", "C1", CellValue::String("Active".into()))?;
+    wb.set_cell_value("Sheet1", "A2", CellValue::String("John Doe".into()))?;
     wb.set_cell_value("Sheet1", "B2", CellValue::Number(30.0))?;
     wb.set_cell_value("Sheet1", "C2", CellValue::Bool(true))?;
-    wb.set_cell_value("Sheet1", "A3", CellValue::String("김철수".into()))?;
+    wb.set_cell_value("Sheet1", "A3", CellValue::String("Jane Smith".into()))?;
     wb.set_cell_value("Sheet1", "B3", CellValue::Number(25.0))?;
     wb.set_cell_value("Sheet1", "C3", CellValue::Bool(false))?;
 
     let val = wb.get_cell_value("Sheet1", "A1")?;
-    println!("[Phase 2] A1 셀 값: {:?}", val);
+    println!("[Phase 2] A1 cell value: {:?}", val);
 
-    // ── Phase 5: 시트 관리 ──
-    let idx = wb.new_sheet("매출데이터")?;
-    println!("[Phase 5] '매출데이터' 시트 추가 (인덱스: {})", idx);
-    wb.set_sheet_name("매출데이터", "Sales")?;
-    wb.copy_sheet("Sheet1", "Sheet1_복사")?;
+    // ── Phase 5: Sheet management ──
+    let idx = wb.new_sheet("SalesData")?;
+    println!("[Phase 5] 'SalesData' sheet added (index: {})", idx);
+    wb.set_sheet_name("SalesData", "Sales")?;
+    wb.copy_sheet("Sheet1", "Sheet1_Copy")?;
     wb.set_active_sheet("Sheet1")?;
-    println!("[Phase 5] 시트 목록: {:?}", wb.sheet_names());
+    println!("[Phase 5] Sheet list: {:?}", wb.sheet_names());
 
-    // ── Phase 3: 행/열 조작 ──
+    // ── Phase 3: Row/column operations ──
     wb.set_row_height("Sheet1", 1, 25.0)?;
     wb.set_col_width("Sheet1", "A", 20.0)?;
     wb.set_col_width("Sheet1", "B", 15.0)?;
     wb.set_col_width("Sheet1", "C", 12.0)?;
-    wb.insert_rows("Sheet1", 1, 1)?; // 헤더 위에 제목 행 삽입
-    wb.set_cell_value("Sheet1", "A1", CellValue::String("직원 목록".into()))?;
-    println!("[Phase 3] 행/열 크기 조정 및 행 삽입 완료");
+    wb.insert_rows("Sheet1", 1, 1)?; // Insert title row above header
+    wb.set_cell_value("Sheet1", "A1", CellValue::String("Employee List".into()))?;
+    println!("[Phase 3] Row/column sizing and row insertion complete");
 
-    // ── Phase 4: 스타일 ──
-    // 제목 스타일
+    // ── Phase 4: Styles ──
+    // Title style
     let title_style = wb.add_style(&Style {
         font: Some(FontStyle {
             name: Some("Arial".into()),
@@ -71,7 +71,7 @@ fn main() -> sheetkit::Result<()> {
     })?;
     wb.set_cell_style("Sheet1", "A1", title_style)?;
 
-    // 헤더 스타일
+    // Header style
     let header_style = wb.add_style(&Style {
         font: Some(FontStyle {
             bold: true,
@@ -101,12 +101,12 @@ fn main() -> sheetkit::Result<()> {
     wb.set_cell_style("Sheet1", "A2", header_style)?;
     wb.set_cell_style("Sheet1", "B2", header_style)?;
     wb.set_cell_style("Sheet1", "C2", header_style)?;
-    println!("[Phase 4] 스타일 적용 완료 (제목 + 헤더)");
+    println!("[Phase 4] Styles applied (title + header)");
 
-    // ── Phase 7: 차트 ──
-    // Sales 시트에 차트 데이터 작성
-    wb.set_cell_value("Sales", "A1", CellValue::String("분기".into()))?;
-    wb.set_cell_value("Sales", "B1", CellValue::String("매출".into()))?;
+    // ── Phase 7: Chart ──
+    // Write chart data on Sales sheet
+    wb.set_cell_value("Sales", "A1", CellValue::String("Quarter".into()))?;
+    wb.set_cell_value("Sales", "B1", CellValue::String("Revenue".into()))?;
     wb.set_cell_value("Sales", "A2", CellValue::String("Q1".into()))?;
     wb.set_cell_value("Sales", "B2", CellValue::Number(1500.0))?;
     wb.set_cell_value("Sales", "A3", CellValue::String("Q2".into()))?;
@@ -122,18 +122,18 @@ fn main() -> sheetkit::Result<()> {
         "K15",
         &ChartConfig {
             chart_type: ChartType::Col,
-            title: Some("분기별 매출".into()),
+            title: Some("Quarterly Revenue".into()),
             series: vec![ChartSeries {
-                name: "매출".into(),
+                name: "Revenue".into(),
                 categories: "Sales!$A$2:$A$5".into(),
                 values: "Sales!$B$2:$B$5".into(),
             }],
             show_legend: true,
         },
     )?;
-    println!("[Phase 7] 차트 추가 완료 (Sales 시트)");
+    println!("[Phase 7] Chart added (Sales sheet)");
 
-    // ── Phase 7: 이미지 (1x1 PNG placeholder) ──
+    // ── Phase 7: Image (1x1 PNG placeholder) ──
     let png_1x1: Vec<u8> = vec![
         0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44,
         0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1F,
@@ -151,73 +151,73 @@ fn main() -> sheetkit::Result<()> {
             height_px: 64,
         },
     )?;
-    println!("[Phase 7] 이미지 추가 완료");
+    println!("[Phase 7] Image added");
 
-    // ── Phase 8: 데이터 유효성 검사 ──
+    // ── Phase 8: Data validation ──
     wb.add_data_validation(
         "Sales",
         &DataValidationConfig {
             sqref: "C2:C5".into(),
             validation_type: ValidationType::List,
             operator: None,
-            formula1: Some("\"달성,미달성,진행중\"".into()),
+            formula1: Some("\"Achieved,Not Achieved,In Progress\"".into()),
             formula2: None,
             allow_blank: true,
             show_input_message: true,
-            prompt_title: Some("상태 선택".into()),
-            prompt_message: Some("드롭다운에서 상태를 선택하세요".into()),
+            prompt_title: Some("Select Status".into()),
+            prompt_message: Some("Select a status from the dropdown".into()),
             show_error_message: true,
             error_style: Some(ErrorStyle::Stop),
-            error_title: Some("오류".into()),
-            error_message: Some("목록에서 선택해주세요".into()),
+            error_title: Some("Error".into()),
+            error_message: Some("Please select from the list".into()),
         },
     )?;
-    println!("[Phase 8] 데이터 유효성 검사 추가 완료");
+    println!("[Phase 8] Data validation added");
 
-    // ── Phase 8: 코멘트 ──
+    // ── Phase 8: Comment ──
     wb.add_comment(
         "Sheet1",
         &CommentConfig {
             cell: "A1".into(),
-            author: "관리자".into(),
-            text: "이 시트는 직원 목록을 포함합니다.".into(),
+            author: "Admin".into(),
+            text: "This sheet contains the employee list.".into(),
         },
     )?;
-    println!("[Phase 8] 코멘트 추가 완료");
+    println!("[Phase 8] Comment added");
 
-    // ── Phase 8: 자동 필터 ──
+    // ── Phase 8: Auto filter ──
     wb.set_auto_filter("Sheet1", "A2:C4")?;
-    println!("[Phase 8] 자동 필터 설정 완료");
+    println!("[Phase 8] Auto filter set");
 
     // ── Phase 9: StreamWriter ──
-    let mut sw = wb.new_stream_writer("대용량시트")?;
+    let mut sw = wb.new_stream_writer("LargeSheet")?;
     sw.set_col_width(1, 15.0)?;
     sw.set_col_width(2, 10.0)?;
     sw.write_row(
         1,
         &[
-            CellValue::String("항목".into()),
-            CellValue::String("값".into()),
+            CellValue::String("Item".into()),
+            CellValue::String("Value".into()),
         ],
     )?;
     for i in 2..=100 {
         sw.write_row(
             i,
             &[
-                CellValue::String(format!("항목_{}", i - 1)),
+                CellValue::String(format!("Item_{}", i - 1)),
                 CellValue::Number(i as f64 * 10.0),
             ],
         )?;
     }
     sw.add_merge_cell("A1:B1")?;
     wb.apply_stream_writer(sw)?;
-    println!("[Phase 9] StreamWriter로 100행 작성 완료");
+    println!("[Phase 9] StreamWriter wrote 100 rows");
 
-    // ── Phase 10: 문서 속성 ──
+    // ── Phase 10: Document properties ──
     wb.set_doc_props(DocProperties {
-        title: Some("SheetKit 예제 문서".into()),
+        title: Some("SheetKit Example Document".into()),
         creator: Some("SheetKit Rust Example".into()),
-        description: Some("SheetKit의 모든 기능을 보여주는 예제 파일".into()),
+        description: Some("An example file demonstrating all SheetKit features".into()),
         ..Default::default()
     });
     wb.set_app_props(AppProperties {
@@ -225,24 +225,24 @@ fn main() -> sheetkit::Result<()> {
         company: Some("SheetKit Project".into()),
         ..Default::default()
     });
-    wb.set_custom_property("프로젝트", CustomPropertyValue::String("SheetKit".into()));
-    wb.set_custom_property("버전", CustomPropertyValue::Int(1));
-    wb.set_custom_property("릴리즈", CustomPropertyValue::Bool(false));
-    println!("[Phase 10] 문서 속성 설정 완료");
+    wb.set_custom_property("Project", CustomPropertyValue::String("SheetKit".into()));
+    wb.set_custom_property("Version", CustomPropertyValue::Int(1));
+    wb.set_custom_property("Release", CustomPropertyValue::Bool(false));
+    println!("[Phase 10] Document properties set");
 
-    // ── Phase 10: 워크북 보호 ──
+    // ── Phase 10: Workbook protection ──
     wb.protect_workbook(WorkbookProtectionConfig {
         password: Some("demo".into()),
         lock_structure: true,
         lock_windows: false,
         lock_revision: false,
     });
-    println!("[Phase 10] 워크북 보호 설정 완료");
+    println!("[Phase 10] Workbook protection set");
 
-    // ── 최종 저장 ──
+    // ── Save ──
     wb.save("output.xlsx")?;
-    println!("\noutput.xlsx 파일이 생성되었습니다!");
-    println!("시트 목록: {:?}", wb.sheet_names());
+    println!("\noutput.xlsx has been created!");
+    println!("Sheet list: {:?}", wb.sheet_names());
 
     Ok(())
 }

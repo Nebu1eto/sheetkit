@@ -9,7 +9,6 @@
 //! wb.save("output.xlsx").unwrap();
 //! ```
 
-// Re-export core types
 pub use sheetkit_core::doc_props::{AppProperties, CustomPropertyValue, DocProperties};
 pub use sheetkit_core::error::{Error, Result};
 pub use sheetkit_core::protection::WorkbookProtectionConfig;

@@ -12,10 +12,6 @@ use crate::utils::cell_ref::{
 };
 use crate::utils::constants::{MAX_COLUMNS, MAX_COLUMN_WIDTH};
 
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
-
 /// Set the width of a column. Creates the `Cols` container and/or a `Col`
 /// entry if they do not yet exist.
 ///
@@ -157,10 +153,6 @@ pub fn remove_col(ws: &mut WorksheetXml, col: &str) -> Result<()> {
     Ok(())
 }
 
-// ---------------------------------------------------------------------------
-// Internal helpers
-// ---------------------------------------------------------------------------
-
 /// Find an existing Col entry that covers exactly `col_num`, or create a
 /// new single-column entry for it.
 fn find_or_create_col(ws: &mut WorksheetXml, col_num: u32) -> &mut Col {
@@ -193,10 +185,6 @@ fn find_or_create_col(ws: &mut WorksheetXml, col_num: u32) -> &mut Col {
     let last = cols.cols.len() - 1;
     &mut cols.cols[last]
 }
-
-// ===========================================================================
-// Tests
-// ===========================================================================
 
 #[cfg(test)]
 mod tests {
@@ -277,8 +265,6 @@ mod tests {
         ws
     }
 
-    // ----- set_col_width / get_col_width --------------------------------
-
     #[test]
     fn test_set_and_get_col_width() {
         let mut ws = WorksheetXml::default();
@@ -344,8 +330,6 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ----- set_col_visible ----------------------------------------------
-
     #[test]
     fn test_set_col_hidden() {
         let mut ws = WorksheetXml::default();
@@ -364,8 +348,6 @@ mod tests {
         let col = &ws.cols.as_ref().unwrap().cols[0];
         assert_eq!(col.hidden, None);
     }
-
-    // ----- insert_cols --------------------------------------------------
 
     #[test]
     fn test_insert_cols_shifts_cells_right() {
@@ -423,8 +405,6 @@ mod tests {
         assert_eq!(col.max, 5);
     }
 
-    // ----- remove_col ---------------------------------------------------
-
     #[test]
     fn test_remove_col_shifts_cells_left() {
         let mut ws = sample_ws();
@@ -473,8 +453,6 @@ mod tests {
         let result = remove_col(&mut ws, "XFE");
         assert!(result.is_err());
     }
-
-    // ----- Multiple column widths ---------------------------------------
 
     #[test]
     fn test_set_multiple_col_widths() {

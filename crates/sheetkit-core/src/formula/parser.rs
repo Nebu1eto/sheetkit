@@ -45,10 +45,6 @@ pub fn parse_formula(input: &str) -> Result<Expr> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Whitespace helper
-// ---------------------------------------------------------------------------
-
 /// Wraps a parser to consume optional surrounding whitespace.
 fn ws<'a, F, O>(inner: F) -> impl FnMut(&'a str) -> IResult<&'a str, O>
 where
@@ -56,10 +52,6 @@ where
 {
     delimited(multispace0, inner, multispace0)
 }
-
-// ---------------------------------------------------------------------------
-// Expression parsers (ordered by precedence, lowest first)
-// ---------------------------------------------------------------------------
 
 /// Top-level expression: comparison operators (lowest precedence).
 fn parse_expr(input: &str) -> IResult<&str, Expr> {
@@ -173,10 +165,6 @@ fn parse_primary(input: &str) -> IResult<&str, Expr> {
     ))(input)
 }
 
-// ---------------------------------------------------------------------------
-// Literal parsers
-// ---------------------------------------------------------------------------
-
 /// Parse a numeric literal (integer or decimal).
 fn parse_number_literal(input: &str) -> IResult<&str, Expr> {
     let (input, num_str) = recognize(pair(
@@ -261,10 +249,6 @@ fn parse_error_literal(input: &str) -> IResult<&str, Expr> {
     ))(input)?;
     Ok((input, Expr::Error(err.to_string())))
 }
-
-// ---------------------------------------------------------------------------
-// Cell reference and range parsers
-// ---------------------------------------------------------------------------
 
 /// Parse a cell reference (possibly with a sheet prefix) or a range (A1:B10).
 fn parse_cell_ref_or_range(input: &str) -> IResult<&str, Expr> {
@@ -364,10 +348,6 @@ fn parse_quoted_sheet_prefix(input: &str) -> IResult<&str, String> {
     Ok((remaining, result))
 }
 
-// ---------------------------------------------------------------------------
-// Function call parser
-// ---------------------------------------------------------------------------
-
 /// Parse a function call: `FUNCNAME(arg1, arg2, ...)`.
 fn parse_function_call(input: &str) -> IResult<&str, Expr> {
     // Function name: letters, digits, underscores, dots (e.g., _xlfn.CONCAT)
@@ -393,10 +373,6 @@ fn parse_function_call(input: &str) -> IResult<&str, Expr> {
     ))
 }
 
-// ---------------------------------------------------------------------------
-// Parenthesized expression
-// ---------------------------------------------------------------------------
-
 /// Parse a parenthesized expression.
 fn parse_paren_expr(input: &str) -> IResult<&str, Expr> {
     let (input, _) = char('(')(input)?;
@@ -405,10 +381,6 @@ fn parse_paren_expr(input: &str) -> IResult<&str, Expr> {
     let (input, _) = preceded(multispace0, char(')'))(input)?;
     Ok((input, Expr::Paren(Box::new(expr))))
 }
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 /// Fold a left-associative chain of binary operations into a single AST node.
 fn fold_binary(first: Expr, rest: Vec<(BinaryOperator, Expr)>) -> Expr {
@@ -420,18 +392,10 @@ fn fold_binary(first: Expr, rest: Vec<(BinaryOperator, Expr)>) -> Expr {
         })
 }
 
-// ===========================================================================
-// Tests
-// ===========================================================================
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::formula::ast::{BinaryOperator, CellReference, Expr, UnaryOperator};
-
-    // -----------------------------------------------------------------------
-    // Number parsing
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_parse_integer() {
@@ -457,10 +421,6 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
-    // String parsing
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_parse_string() {
         let result = parse_formula("\"hello\"").unwrap();
@@ -472,10 +432,6 @@ mod tests {
         let result = parse_formula("\"\"").unwrap();
         assert_eq!(result, Expr::String(String::new()));
     }
-
-    // -----------------------------------------------------------------------
-    // Boolean parsing
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_parse_true() {
@@ -489,10 +445,6 @@ mod tests {
         assert_eq!(result, Expr::Bool(false));
     }
 
-    // -----------------------------------------------------------------------
-    // Error parsing
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_parse_error_div0() {
         let result = parse_formula("#DIV/0!").unwrap();
@@ -504,10 +456,6 @@ mod tests {
         let result = parse_formula("#N/A").unwrap();
         assert_eq!(result, Expr::Error("#N/A".to_string()));
     }
-
-    // -----------------------------------------------------------------------
-    // Cell reference parsing
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_parse_cell_ref() {
@@ -554,10 +502,6 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
-    // Range parsing
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_parse_range() {
         let result = parse_formula("A1:B10").unwrap();
@@ -581,10 +525,6 @@ mod tests {
             }
         );
     }
-
-    // -----------------------------------------------------------------------
-    // Arithmetic
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_parse_addition() {
@@ -638,10 +578,6 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
-    // Operator precedence
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_precedence_mul_over_add() {
         // "1+2*3" should parse as Add(1, Mul(2, 3))
@@ -677,10 +613,6 @@ mod tests {
             }
         );
     }
-
-    // -----------------------------------------------------------------------
-    // Function calls
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_parse_function_no_args() {
@@ -769,10 +701,6 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
-    // Comparison operators
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_parse_equal() {
         let result = parse_formula("A1=B1").unwrap();
@@ -848,10 +776,6 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
-    // Concatenation
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_parse_concat() {
         let result = parse_formula("A1&B1").unwrap();
@@ -876,10 +800,6 @@ mod tests {
             }
         );
     }
-
-    // -----------------------------------------------------------------------
-    // Complex expressions
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_parse_complex_formula() {
@@ -934,10 +854,6 @@ mod tests {
             }
         );
     }
-
-    // -----------------------------------------------------------------------
-    // Sheet reference
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_parse_sheet_ref() {

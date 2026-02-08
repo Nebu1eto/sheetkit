@@ -58,10 +58,6 @@ impl fmt::Display for CellValue {
     }
 }
 
-// ---------------------------------------------------------------------------
-// From implementations
-// ---------------------------------------------------------------------------
-
 impl From<&str> for CellValue {
     fn from(s: &str) -> Self {
         CellValue::String(s.to_string())

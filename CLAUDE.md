@@ -1,0 +1,137 @@
+# SheetKit Development Guide
+
+## Project Overview
+
+SheetKit is a Rust library for reading and writing Excel (.xlsx) files, with Node.js bindings via napi-rs. It is a Rust rewrite of the Go excelize library.
+
+### Crate Structure
+
+- **sheetkit-xml** (`crates/sheetkit-xml`): Serde-based XML schema types for OOXML. Low-level XML data structures.
+- **sheetkit-core** (`crates/sheetkit-core`): Business logic -- workbook operations, cell manipulation, styles, formulas, charts, images, streaming, and more. Modules: cell, chart, col, comment, doc_props, error, formula, image, protection, row, sheet, sst, stream, style, table, utils, validation, workbook.
+- **sheetkit** (`crates/sheetkit`): Public facade crate that re-exports types from sheetkit-core for end users.
+- **sheetkit-node** (`packages/sheetkit`): Node.js bindings via napi-rs. The Rust crate produces a cdylib, and an ESM wrapper (`index.js`) loads the CJS binding.
+
+### Tech Stack
+
+- **quick-xml** (with `serialize` and `overlapped-lists` features): XML parsing and serialization
+- **serde**: Derive-based (de)serialization for XML types
+- **zip** (with `deflate` feature): ZIP archive handling for .xlsx files
+- **thiserror**: Error type definitions
+- **nom**: Formula parsing
+- **napi / napi-derive**: Node.js native addon bindings
+- **chrono**: Date/time handling
+- **tempfile**, **pretty_assertions**: Testing utilities
+
+## Development Workflow
+
+Follow a TDD approach: write tests FIRST, then implement. Tests should verify essential behaviors, not trivial things.
+
+### Build Commands
+
+```bash
+# Rust workspace
+cargo build --workspace
+cargo test --workspace
+cargo clippy --workspace
+cargo fmt --check
+
+# Node.js bindings
+cd packages/sheetkit && napi build --platform && mv index.js binding.cjs
+cd packages/sheetkit && npx vitest run
+```
+
+Always verify builds, lints, and formatting pass before declaring work complete.
+
+### Workspace Layout
+
+- Cargo workspace: `crates/sheetkit-xml`, `crates/sheetkit-core`, `crates/sheetkit`, `packages/sheetkit`, `examples/rust`
+- pnpm workspace: `packages/*`, `examples/*`
+
+## Code Style
+
+### Comments
+
+- Doc comments (`///` for Rust, `/** */` for TypeScript): Describe inputs, behavior, and outputs concisely.
+- Inline comments: Only for complex logic that is not self-evident from the code.
+- No section markers, decorative comments, or emoji in code or output.
+- Keep all comments concise.
+
+### Language
+
+- All code must be written in English. This includes variable names, string literals, comments, and example data values.
+- Even in example or demo code, use English for all content (e.g., "Name", "Sales", "Employee List" instead of localized text).
+- Documentation prose may be in other languages (e.g., Korean guide), but all code blocks within documentation must use English.
+
+### General
+
+- No emoji in any code or output.
+- Rust: Follow standard Rust conventions. Use `cargo fmt` for formatting.
+- TypeScript: Use Biome for formatting and linting.
+- ESM only for all JavaScript/TypeScript. No CommonJS (the napi build output is renamed to `binding.cjs` and loaded via `createRequire` in the ESM wrapper).
+
+## Architecture
+
+### XML Layer (sheetkit-xml)
+
+Serde-based XML schema types mapping to OOXML structures. Used by sheetkit-core for reading and writing .xlsx internals.
+
+### Core Layer (sheetkit-core)
+
+All business logic lives here: workbook open/save, cell get/set, SST (shared strings table) management, sheet operations, row/column manipulation, style system, formula parsing, chart/image/drawing support, data validation, comments, streaming writer, document properties, and workbook protection.
+
+### Facade Layer (sheetkit)
+
+Thin re-export crate. Provides the public API surface (`Workbook`, `CellValue`, `Style`, `ChartConfig`, etc.) by re-exporting from sheetkit-core.
+
+### Node.js Layer (packages/sheetkit)
+
+napi-rs bindings that wrap sheetkit-core types for JavaScript consumption. The napi `Workbook` class wraps `sheetkit_core::workbook::Workbook` with an `inner` field pattern.
+
+### Key Patterns
+
+- XML declaration is prepended manually: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`
+- SharedStrings (SST) is optional on open -- use `Sst::default()` if the file has no sharedStrings.xml.
+- DC namespace (`dc:`, `dcterms:`, `cp:`) and `vt:` prefix require manual quick-xml Writer/Reader because serde does not handle namespace prefixes correctly.
+- napi Workbook wraps core Workbook with an `inner` field.
+
+## Testing
+
+### Rust
+
+Run the full test suite:
+
+```bash
+cargo test --workspace
+```
+
+Test files are co-located with their modules using `#[cfg(test)]` inline test modules.
+
+### Node.js
+
+```bash
+cd packages/sheetkit && npx vitest run
+```
+
+Test file: `packages/sheetkit/__test__/index.spec.ts`
+
+## Verification Checklist
+
+Before completing any task, confirm all of the following pass:
+
+- [ ] `cargo build --workspace` passes
+- [ ] `cargo test --workspace` passes
+- [ ] `cargo clippy --workspace` passes (no warnings)
+- [ ] `cargo fmt --check` passes
+- [ ] `cd packages/sheetkit && npx vitest run` passes (if Node.js code changed)
+- [ ] Update docs if API changed
+
+## Common Gotchas
+
+- `cargo fmt` may reformat files in other crates -- include those reformatted files in commits.
+- ZIP options must use: `SimpleFileOptions::default().compression_method(CompressionMethod::Deflated)`
+- `nom` crate is used for formula parsing in sheetkit-core.
+- Put new features in separate files (e.g., `cell.rs`, `sst.rs`, `sheet.rs`, `formula/`) to minimize merge conflicts when working in parallel.
+- Stage only specific files when committing. Do not use `git add -A` or `git add .`.
+- napi build generates a CJS `index.js` which must be renamed to `binding.cjs`. The real `index.js` is the ESM wrapper that loads `binding.cjs` via `createRequire`.
+- `sheetkit-core` needs `quick-xml` and `serde` as direct dependencies for the workbook module.
+- Test output `.xlsx` files are gitignored (except under `fixtures/`).

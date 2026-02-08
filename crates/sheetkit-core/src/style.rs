@@ -12,8 +12,6 @@ use sheetkit_xml::styles::{
 
 use crate::error::{Error, Result};
 
-// ===== Constants =====
-
 /// Maximum number of cell XFs Excel supports.
 const MAX_CELL_XFS: usize = 65430;
 
@@ -59,8 +57,6 @@ pub mod builtin_num_fmts {
     /// @
     pub const TEXT: u32 = 49;
 }
-
-// ===== User-facing style types =====
 
 /// User-facing style definition.
 #[derive(Debug, Clone, Default)]
@@ -326,8 +322,6 @@ pub struct ProtectionStyle {
     pub hidden: bool,
 }
 
-// ===== Conversion helpers =====
-
 /// Convert a `StyleColor` to the XML `Color` struct.
 fn style_color_to_xml(color: &StyleColor) -> Color {
     match color {
@@ -530,8 +524,6 @@ fn xml_protection_to_style(prot: &Protection) -> ProtectionStyle {
     }
 }
 
-// ===== Deduplicating add functions =====
-
 /// Check if two XML `Font` values are equivalent for deduplication purposes.
 fn fonts_equal(a: &Font, b: &Font) -> bool {
     a.b.is_some() == b.b.is_some()
@@ -572,14 +564,12 @@ fn xfs_equal(a: &Xf, b: &Xf) -> bool {
 fn add_or_find_font(fonts: &mut Fonts, font: &FontStyle) -> u32 {
     let xml_font = font_style_to_xml(font);
 
-    // Check for existing duplicate.
     for (i, existing) in fonts.fonts.iter().enumerate() {
         if fonts_equal(existing, &xml_font) {
             return i as u32;
         }
     }
 
-    // Add new.
     let id = fonts.fonts.len() as u32;
     fonts.fonts.push(xml_font);
     fonts.count = Some(fonts.fonts.len() as u32);
@@ -591,14 +581,12 @@ fn add_or_find_font(fonts: &mut Fonts, font: &FontStyle) -> u32 {
 fn add_or_find_fill(fills: &mut Fills, fill: &FillStyle) -> u32 {
     let xml_fill = fill_style_to_xml(fill);
 
-    // Check for existing duplicate.
     for (i, existing) in fills.fills.iter().enumerate() {
         if fills_equal(existing, &xml_fill) {
             return i as u32;
         }
     }
 
-    // Add new.
     let id = fills.fills.len() as u32;
     fills.fills.push(xml_fill);
     fills.count = Some(fills.fills.len() as u32);
@@ -610,14 +598,12 @@ fn add_or_find_fill(fills: &mut Fills, fill: &FillStyle) -> u32 {
 fn add_or_find_border(borders: &mut Borders, border: &BorderStyle) -> u32 {
     let xml_border = border_style_to_xml(border);
 
-    // Check for existing duplicate.
     for (i, existing) in borders.borders.iter().enumerate() {
         if borders_equal(existing, &xml_border) {
             return i as u32;
         }
     }
 
-    // Add new.
     let id = borders.borders.len() as u32;
     borders.borders.push(xml_border);
     borders.count = Some(borders.borders.len() as u32);
@@ -627,20 +613,17 @@ fn add_or_find_border(borders: &mut Borders, border: &BorderStyle) -> u32 {
 /// Register a custom number format, return its ID (starting from 164).
 /// If an identical format code already exists, returns the existing ID.
 fn add_or_find_num_fmt(stylesheet: &mut StyleSheet, fmt: &str) -> u32 {
-    // Ensure num_fmts container exists.
     let num_fmts = stylesheet.num_fmts.get_or_insert_with(|| NumFmts {
         count: Some(0),
         num_fmts: Vec::new(),
     });
 
-    // Check for existing.
     for nf in &num_fmts.num_fmts {
         if nf.format_code == fmt {
             return nf.num_fmt_id;
         }
     }
 
-    // Find the next available ID.
     let next_id = num_fmts
         .num_fmts
         .iter()
@@ -649,7 +632,6 @@ fn add_or_find_num_fmt(stylesheet: &mut StyleSheet, fmt: &str) -> u32 {
         .map(|max_id| max_id + 1)
         .unwrap_or(CUSTOM_NUM_FMT_BASE);
 
-    // Ensure we don't go below the custom base.
     let next_id = next_id.max(CUSTOM_NUM_FMT_BASE);
 
     num_fmts.num_fmts.push(NumFmt {
@@ -661,48 +643,37 @@ fn add_or_find_num_fmt(stylesheet: &mut StyleSheet, fmt: &str) -> u32 {
     next_id
 }
 
-// ===== Public API =====
-
 /// Convert a high-level `Style` to XML components and register in the stylesheet.
 /// Returns the style ID (index into cellXfs).
 pub fn add_style(stylesheet: &mut StyleSheet, style: &Style) -> Result<u32> {
-    // Check the limit.
     if stylesheet.cell_xfs.xfs.len() >= MAX_CELL_XFS {
         return Err(Error::CellStylesExceeded { max: MAX_CELL_XFS });
     }
 
-    // Resolve font.
     let font_id = match &style.font {
         Some(font) => add_or_find_font(&mut stylesheet.fonts, font),
         None => 0, // default font
     };
 
-    // Resolve fill.
     let fill_id = match &style.fill {
         Some(fill) => add_or_find_fill(&mut stylesheet.fills, fill),
         None => 0, // default fill (none)
     };
 
-    // Resolve border.
     let border_id = match &style.border {
         Some(border) => add_or_find_border(&mut stylesheet.borders, border),
         None => 0, // default border (empty)
     };
 
-    // Resolve number format.
     let num_fmt_id = match &style.num_fmt {
         Some(NumFmtStyle::Builtin(id)) => *id,
         Some(NumFmtStyle::Custom(code)) => add_or_find_num_fmt(stylesheet, code),
         None => 0, // General
     };
 
-    // Resolve alignment.
     let alignment = style.alignment.as_ref().map(alignment_style_to_xml);
-
-    // Resolve protection.
     let protection = style.protection.as_ref().map(protection_style_to_xml);
 
-    // Build the Xf.
     let xf = Xf {
         num_fmt_id: Some(num_fmt_id),
         font_id: Some(font_id),
@@ -722,14 +693,12 @@ pub fn add_style(stylesheet: &mut StyleSheet, style: &Style) -> Result<u32> {
         protection,
     };
 
-    // Check for existing duplicate Xf.
     for (i, existing) in stylesheet.cell_xfs.xfs.iter().enumerate() {
         if xfs_equal(existing, &xf) {
             return Ok(i as u32);
         }
     }
 
-    // Add new Xf.
     let id = stylesheet.cell_xfs.xfs.len() as u32;
     stylesheet.cell_xfs.xfs.push(xf);
     stylesheet.cell_xfs.count = Some(stylesheet.cell_xfs.xfs.len() as u32);
@@ -741,28 +710,23 @@ pub fn add_style(stylesheet: &mut StyleSheet, style: &Style) -> Result<u32> {
 pub fn get_style(stylesheet: &StyleSheet, style_id: u32) -> Option<Style> {
     let xf = stylesheet.cell_xfs.xfs.get(style_id as usize)?;
 
-    // Resolve font.
     let font = xf
         .font_id
         .and_then(|id| stylesheet.fonts.fonts.get(id as usize))
         .map(xml_font_to_style);
 
-    // Resolve fill.
     let fill = xf
         .fill_id
         .and_then(|id| stylesheet.fills.fills.get(id as usize))
         .and_then(xml_fill_to_style);
 
-    // Resolve border.
     let border = xf
         .border_id
         .and_then(|id| stylesheet.borders.borders.get(id as usize))
         .map(xml_border_to_style);
 
-    // Resolve alignment.
     let alignment = xf.alignment.as_ref().map(xml_alignment_to_style);
 
-    // Resolve number format.
     let num_fmt = xf.num_fmt_id.and_then(|id| {
         if id == 0 {
             return None;
@@ -780,7 +744,6 @@ pub fn get_style(stylesheet: &StyleSheet, style_id: u32) -> Option<Style> {
         }
     });
 
-    // Resolve protection.
     let protection = xf.protection.as_ref().map(xml_protection_to_style);
 
     Some(Style {
@@ -801,10 +764,6 @@ mod tests {
     fn default_stylesheet() -> StyleSheet {
         StyleSheet::default()
     }
-
-    // -----------------------------------------------------------------------
-    // add_style: basic font tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_add_bold_font_style() {
@@ -958,10 +917,6 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
-    // add_style: fill tests
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_fill_solid_color() {
         let mut ss = default_stylesheet();
@@ -1022,10 +977,6 @@ mod tests {
         // Default has 2 fills (none + gray125), we added 1 more.
         assert_eq!(ss.fills.fills.len(), 3);
     }
-
-    // -----------------------------------------------------------------------
-    // add_style: border tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_border_thin_all_sides() {
@@ -1125,10 +1076,6 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
-    // add_style: number format tests
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_num_fmt_builtin() {
         let mut ss = default_stylesheet();
@@ -1182,10 +1129,6 @@ mod tests {
         let num_fmts = ss.num_fmts.as_ref().unwrap();
         assert_eq!(num_fmts.num_fmts.len(), 1);
     }
-
-    // -----------------------------------------------------------------------
-    // add_style: alignment tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_alignment_horizontal_center() {
@@ -1256,10 +1199,6 @@ mod tests {
         assert_eq!(align.text_rotation, Some(90));
     }
 
-    // -----------------------------------------------------------------------
-    // add_style: protection tests
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_protection_locked() {
         let mut ss = default_stylesheet();
@@ -1295,10 +1234,6 @@ mod tests {
         assert_eq!(prot.locked, Some(false));
         assert_eq!(prot.hidden, Some(true));
     }
-
-    // -----------------------------------------------------------------------
-    // Combined style test
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_combined_style_all_components() {
@@ -1368,10 +1303,6 @@ mod tests {
         assert_eq!(xf.apply_number_format, Some(true));
         assert_eq!(xf.apply_alignment, Some(true));
     }
-
-    // -----------------------------------------------------------------------
-    // get_style tests
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_get_style_default() {
@@ -1506,10 +1437,6 @@ mod tests {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Builtin number format constants
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_builtin_num_fmt_constants() {
         assert_eq!(builtin_num_fmts::GENERAL, 0);
@@ -1532,10 +1459,6 @@ mod tests {
         assert_eq!(builtin_num_fmts::TEXT, 49);
     }
 
-    // -----------------------------------------------------------------------
-    // PatternType as_str / from_str
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_pattern_type_roundtrip() {
         let types = [
@@ -1552,10 +1475,6 @@ mod tests {
             assert_eq!(*pt, back);
         }
     }
-
-    // -----------------------------------------------------------------------
-    // BorderLineStyle as_str / from_str
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_border_line_style_roundtrip() {
@@ -1580,10 +1499,6 @@ mod tests {
             assert_eq!(*bls, back);
         }
     }
-
-    // -----------------------------------------------------------------------
-    // HorizontalAlign / VerticalAlign roundtrip
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_horizontal_align_roundtrip() {
@@ -1620,10 +1535,6 @@ mod tests {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // StyleColor conversion roundtrip
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_style_color_rgb_roundtrip() {
         let color = StyleColor::Rgb("FF00FF00".to_string());
@@ -1648,10 +1559,6 @@ mod tests {
         assert_eq!(color, back);
     }
 
-    // -----------------------------------------------------------------------
-    // Font deduplication
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_font_deduplication() {
         let mut ss = default_stylesheet();
@@ -1669,10 +1576,6 @@ mod tests {
         assert_eq!(ss.fonts.fonts.len(), 2);
     }
 
-    // -----------------------------------------------------------------------
-    // Multiple custom num fmts get sequential IDs
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_multiple_custom_num_fmts() {
         let mut ss = default_stylesheet();
@@ -1685,10 +1588,6 @@ mod tests {
         let id3 = add_or_find_num_fmt(&mut ss, "0.0%");
         assert_eq!(id3, 164);
     }
-
-    // -----------------------------------------------------------------------
-    // Xf count is correctly maintained
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_xf_count_maintained() {

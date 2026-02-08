@@ -171,8 +171,6 @@ impl StreamWriter {
         Ok((xml, self.sst))
     }
 
-    // --- Internal helpers ---
-
     /// Ensure the XML header and sheetData opening tag have been written.
     fn ensure_started(&mut self) {
         if !self.started {
@@ -330,10 +328,6 @@ mod tests {
     use super::*;
     use sheetkit_xml::worksheet::WorksheetXml;
 
-    // -----------------------------------------------------------------------
-    // Basic functionality
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_basic_write_and_finish() {
         let mut sw = StreamWriter::new("Sheet1");
@@ -467,10 +461,6 @@ mod tests {
         assert!(xml.contains("s=\"5\""));
     }
 
-    // -----------------------------------------------------------------------
-    // Column widths
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_set_col_width_before_rows() {
         let mut sw = StreamWriter::new("Sheet1");
@@ -523,10 +513,6 @@ mod tests {
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), Error::StreamColumnsAfterRows));
     }
-
-    // -----------------------------------------------------------------------
-    // Row ordering
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_rows_in_order_succeeds() {
@@ -585,10 +571,6 @@ mod tests {
         ));
     }
 
-    // -----------------------------------------------------------------------
-    // Merge cells
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_merge_cells_in_output() {
         let mut sw = StreamWriter::new("Sheet1");
@@ -619,10 +601,6 @@ mod tests {
         assert_eq!(mc.merge_cells[0].reference, "A1:B1");
         assert_eq!(mc.merge_cells[1].reference, "C1:D1");
     }
-
-    // -----------------------------------------------------------------------
-    // finish() behavior
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_finish_twice_returns_error() {
@@ -667,10 +645,6 @@ mod tests {
         assert!(ws.sheet_data.rows.is_empty());
     }
 
-    // -----------------------------------------------------------------------
-    // into_parts
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_into_parts() {
         let mut sw = StreamWriter::new("Sheet1");
@@ -681,10 +655,6 @@ mod tests {
         assert_eq!(sst.len(), 1);
         assert_eq!(sst.get(0), Some("Hello"));
     }
-
-    // -----------------------------------------------------------------------
-    // SST deduplication
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_sst_deduplication() {
@@ -698,10 +668,6 @@ mod tests {
         assert_eq!(sw.sst().get(0), Some("same"));
         assert_eq!(sw.sst().get(1), Some("other"));
     }
-
-    // -----------------------------------------------------------------------
-    // Large-scale test
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_large_scale_10000_rows() {
@@ -746,10 +712,6 @@ mod tests {
         assert_eq!(sw.sst().len(), 3);
     }
 
-    // -----------------------------------------------------------------------
-    // XML escaping
-    // -----------------------------------------------------------------------
-
     #[test]
     fn test_xml_escape_in_formula() {
         let mut sw = StreamWriter::new("Sheet1");
@@ -767,10 +729,6 @@ mod tests {
         assert!(xml.contains("&gt;"));
         assert!(xml.contains("&quot;"));
     }
-
-    // -----------------------------------------------------------------------
-    // Edge cases
-    // -----------------------------------------------------------------------
 
     #[test]
     fn test_add_merge_cell_after_finish_fails() {

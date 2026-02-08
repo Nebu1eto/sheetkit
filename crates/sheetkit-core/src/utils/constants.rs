@@ -3,8 +3,6 @@
 //! These constants mirror the hard limits enforced by Microsoft Excel 2007+
 //! (OOXML / `.xlsx` format).
 
-// ===== Dimension limits =====
-
 /// Maximum number of columns (XFD = 16 384 = 2^14).
 pub const MAX_COLUMNS: u32 = 16_384;
 
@@ -31,8 +29,6 @@ pub const MAX_CELL_CHARS: usize = 32_767;
 
 /// Characters that are not allowed in Excel sheet names.
 pub const SHEET_NAME_INVALID_CHARS: &[char] = &[':', '\\', '/', '?', '*', '[', ']'];
-
-// ===== Default values =====
 
 /// Default column width used when no explicit width is set (character-width units).
 pub const DEFAULT_COL_WIDTH: f64 = 9.140625;
