@@ -74,7 +74,7 @@ See the [docs/en/](docs/en/) folder for detailed documentation.
 
 ## Acknowledgements
 
-SheetKit is a Rust rewrite inspired by [Excelize](https://github.com/qax-os/excelize), the Go library for Excel files.
+SheetKit is heavily inspired by the implementation of [Excelize](https://github.com/qax-os/excelize), the Go library for Excel files. This project was built for the Rust and TypeScript projects, and we have great respect and admiration for the work done by the Excelize team and its contributors.
 
 ## License
 

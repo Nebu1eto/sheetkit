@@ -74,7 +74,7 @@ npm install sheetkit
 
 ## 감사의 글
 
-SheetKit은 Excel 파일 처리를 위한 Go 라이브러리인 [Excelize](https://github.com/qax-os/excelize)에서 영감을 받아 Rust로 재작성한 프로젝트입니다.
+SheetKit은 Go 언어로 작성된 Excel 라이브러리인 [Excelize](https://github.com/qax-os/excelize)의 구현에서 깊은 영감을 받아 Rust와 TypeScript 생태계를 위해 만들어진 프로젝트입니다. Excelize 팀과 기여자분들의 훌륭한 작업에 깊은 존경과 감사를 표합니다.
 
 ## 라이선스
 
