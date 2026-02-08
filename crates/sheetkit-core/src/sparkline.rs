@@ -102,6 +102,7 @@ pub struct SparklineGroupConfig {
 }
 
 /// Convert a SparklineConfig to the XML representation.
+#[allow(dead_code)]
 pub(crate) fn config_to_xml_group(
     config: &SparklineConfig,
 ) -> sheetkit_xml::sparkline::SparklineGroup {

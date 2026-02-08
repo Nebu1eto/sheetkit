@@ -290,8 +290,8 @@ pub(crate) fn js_style_to_core(js: &JsStyle) -> Style {
     }
 }
 
-pub(crate) fn parse_chart_type(s: &str) -> ChartType {
-    match s.to_lowercase().as_str() {
+pub(crate) fn parse_chart_type(s: &str) -> Result<ChartType> {
+    let chart_type = match s.to_lowercase().as_str() {
         "col" => ChartType::Col,
         "colstacked" => ChartType::ColStacked,
         "colpercentstacked" => ChartType::ColPercentStacked,
@@ -335,8 +335,11 @@ pub(crate) fn parse_chart_type(s: &str) -> ChartType {
         "colline" => ChartType::ColLine,
         "collinestacked" => ChartType::ColLineStacked,
         "collinepercentstacked" => ChartType::ColLinePercentStacked,
-        _ => ChartType::Col,
-    }
+        _ => {
+            return Err(Error::from_reason(format!("unknown chart type: {s}")));
+        }
+    };
+    Ok(chart_type)
 }
 
 pub(crate) fn parse_image_format(s: &str) -> Result<ImageFormat> {
@@ -348,8 +351,8 @@ pub(crate) fn parse_image_format(s: &str) -> Result<ImageFormat> {
     }
 }
 
-pub(crate) fn parse_validation_type(s: &str) -> ValidationType {
-    match s.to_lowercase().as_str() {
+pub(crate) fn parse_validation_type(s: &str) -> Result<ValidationType> {
+    let validation_type = match s.to_lowercase().as_str() {
         "whole" => ValidationType::Whole,
         "decimal" => ValidationType::Decimal,
         "list" => ValidationType::List,
@@ -357,8 +360,11 @@ pub(crate) fn parse_validation_type(s: &str) -> ValidationType {
         "time" => ValidationType::Time,
         "textlength" => ValidationType::TextLength,
         "custom" => ValidationType::Custom,
-        _ => ValidationType::List,
-    }
+        _ => {
+            return Err(Error::from_reason(format!("unknown validation type: {s}")));
+        }
+    };
+    Ok(validation_type)
 }
 
 pub(crate) fn parse_validation_operator(s: &str) -> Option<ValidationOperator> {
@@ -1013,8 +1019,8 @@ pub(crate) fn core_cf_rule_to_js(rule: &ConditionalFormatRule) -> JsConditionalF
     }
 }
 
-pub(crate) fn parse_aggregate_function(s: &str) -> AggregateFunction {
-    match s.to_lowercase().as_str() {
+pub(crate) fn parse_aggregate_function(s: &str) -> Result<AggregateFunction> {
+    let func = match s.to_lowercase().as_str() {
         "sum" => AggregateFunction::Sum,
         "count" => AggregateFunction::Count,
         "average" => AggregateFunction::Average,
@@ -1026,10 +1032,16 @@ pub(crate) fn parse_aggregate_function(s: &str) -> AggregateFunction {
         "stddevp" => AggregateFunction::StdDevP,
         "var" => AggregateFunction::Var,
         "varp" => AggregateFunction::VarP,
-        _ => AggregateFunction::Sum,
-    }
+        _ => {
+            return Err(Error::from_reason(format!(
+                "unknown aggregate function: {s}"
+            )));
+        }
+    };
+    Ok(func)
 }
 
+#[allow(dead_code)]
 pub(crate) fn js_sparkline_to_core(
     js: &crate::types::JsSparklineConfig,
 ) -> sheetkit_core::sparkline::SparklineConfig {

@@ -442,7 +442,7 @@ sw.addMergeCell('A1:B1');
 // Apply the stream writer to the workbook
 wb.applyStreamWriter(sw);
 
-wb.save('large_file.xlsx');
+await wb.save('large_file.xlsx');
 ```
 
 #### StreamWriter API Summary

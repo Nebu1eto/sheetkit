@@ -68,7 +68,7 @@ const val = wb.getCellValue("Sheet1", "A1");
 console.log("A1 =", val); // "Name"
 
 // Save to file
-wb.save("output.xlsx");
+await wb.save("output.xlsx");
 ```
 
 ### 기존 파일 열기
@@ -98,7 +98,7 @@ fn main() -> sheetkit::Result<()> {
 ```typescript
 import { Workbook } from "sheetkit";
 
-const wb = Workbook.open("input.xlsx");
+const wb = await Workbook.open("input.xlsx");
 
 // List all sheet names
 console.log("Sheets:", wb.sheetNames);
@@ -234,7 +234,7 @@ const styleId = wb.addStyle({
 });
 
 wb.setCellStyle("Sheet1", "A1", styleId);
-wb.save("styled.xlsx");
+await wb.save("styled.xlsx");
 ```
 
 ## 차트 사용하기
@@ -306,7 +306,7 @@ wb.addChart("Sheet1", "D1", "K15", {
   showLegend: true,
 });
 
-wb.save("chart.xlsx");
+await wb.save("chart.xlsx");
 ```
 
 ## 대용량 파일을 위한 StreamWriter
@@ -364,7 +364,7 @@ for (let i = 2; i <= 10_001; i++) {
 
 // Apply the stream writer output to the workbook
 wb.applyStreamWriter(sw);
-wb.save("large.xlsx");
+await wb.save("large.xlsx");
 ```
 
 ## 다음 단계

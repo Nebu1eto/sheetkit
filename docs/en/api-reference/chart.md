@@ -42,6 +42,8 @@ wb.addChart("Sheet1", "D1", "K15", {
 });
 ```
 
+> Note (Node.js): `chartType` must be one of the supported values. Unknown values now return an error instead of silently falling back.
+
 ### ChartConfig
 
 | Field | Rust Type | TS Type | Description |

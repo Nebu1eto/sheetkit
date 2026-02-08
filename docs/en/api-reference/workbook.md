@@ -35,8 +35,10 @@ let wb = Workbook::open("report.xlsx")?;
 **TypeScript:**
 
 ```typescript
-const wb = Workbook.open("report.xlsx");
+const wb = await Workbook.open("report.xlsx");
 ```
+
+> Note (Node.js): `Workbook.open(path)` is async and returns `Promise<Workbook>`. Use `Workbook.openSync(path)` for synchronous behavior.
 
 ### `wb.save(path)` / `wb.save(path)`
 
@@ -51,8 +53,10 @@ wb.save("output.xlsx")?;
 **TypeScript:**
 
 ```typescript
-wb.save("output.xlsx");
+await wb.save("output.xlsx");
 ```
+
+> Note (Node.js): `wb.save(path)` is async and returns `Promise<void>`. Use `wb.saveSync(path)` for synchronous behavior.
 
 ### `wb.sheet_names()` / `wb.sheetNames`
 

@@ -35,10 +35,11 @@ let wb = Workbook::open("report.xlsx")?;
 **TypeScript:**
 
 ```typescript
-const wb = Workbook.open("report.xlsx");
+const wb = await Workbook.open("report.xlsx");
 ```
 
 > 파일이 존재하지 않거나 유효한 .xlsx 형식이 아니면 오류가 발생한다.
+> Node.js에서 `Workbook.open(path)`는 비동기이며 `Promise<Workbook>`을 반환한다. 동기 동작이 필요하면 `Workbook.openSync(path)`를 사용한다.
 
 ### `wb.save(path)`
 
@@ -53,10 +54,11 @@ wb.save("output.xlsx")?;
 **TypeScript:**
 
 ```typescript
-wb.save("output.xlsx");
+await wb.save("output.xlsx");
 ```
 
 > ZIP 압축은 Deflate 방식을 사용한다.
+> Node.js에서 `wb.save(path)`는 비동기이며 `Promise<void>`를 반환한다. 동기 동작이 필요하면 `wb.saveSync(path)`를 사용한다.
 
 ### `wb.sheet_names()` / `wb.sheetNames`
 

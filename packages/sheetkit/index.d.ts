@@ -19,9 +19,13 @@ export declare class Workbook {
   /** Create a new empty workbook with a single sheet named "Sheet1". */
   constructor()
   /** Open an existing .xlsx file from disk. */
-  static open(path: string): Workbook
+  static openSync(path: string): Workbook
+  /** Open an existing .xlsx file from disk asynchronously. */
+  static open(path: string): Promise<Workbook>
   /** Save the workbook to a .xlsx file. */
-  save(path: string): void
+  saveSync(path: string): void
+  /** Save the workbook to a .xlsx file asynchronously. */
+  save(path: string): Promise<void>
   /** Get the names of all sheets in workbook order. */
   get sheetNames(): Array<string>
   /** Get the value of a cell. Returns string, number, boolean, DateValue, or null. */

@@ -429,6 +429,8 @@ wb.addDataValidation("Sheet1", {
 });
 ```
 
+> Note (Node.js): `validationType` must be a supported value (`list`, `whole`, `decimal`, `date`, `time`, `textLength`, `custom`). Unknown values return an error.
+
 ### `get_data_validations` / `getDataValidations`
 
 Get all data validation rules on a sheet.

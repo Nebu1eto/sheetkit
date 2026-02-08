@@ -45,19 +45,31 @@ impl Workbook {
     }
 
     /// Open an existing .xlsx file from disk.
-    #[napi(factory)]
-    pub fn open(path: String) -> Result<Self> {
+    #[napi(factory, js_name = "openSync")]
+    pub fn open_sync(path: String) -> Result<Self> {
         let inner = sheetkit_core::workbook::Workbook::open(&path)
             .map_err(|e| Error::from_reason(e.to_string()))?;
         Ok(Self { inner })
     }
 
+    /// Open an existing .xlsx file from disk asynchronously.
+    #[napi(factory)]
+    pub async fn open(path: String) -> Result<Self> {
+        Self::open_sync(path)
+    }
+
     /// Save the workbook to a .xlsx file.
-    #[napi]
-    pub fn save(&self, path: String) -> Result<()> {
+    #[napi(js_name = "saveSync")]
+    pub fn save_sync(&self, path: String) -> Result<()> {
         self.inner
             .save(&path)
             .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Save the workbook to a .xlsx file asynchronously.
+    #[napi]
+    pub async fn save(&self, path: String) -> Result<()> {
+        self.save_sync(path)
     }
 
     /// Get the names of all sheets in workbook order.
@@ -361,7 +373,7 @@ impl Workbook {
         config: JsChartConfig,
     ) -> Result<()> {
         let core_config = ChartConfig {
-            chart_type: parse_chart_type(&config.chart_type),
+            chart_type: parse_chart_type(&config.chart_type)?,
             title: config.title,
             series: config
                 .series
@@ -441,7 +453,7 @@ impl Workbook {
     ) -> Result<()> {
         let core_config = DataValidationConfig {
             sqref: config.sqref,
-            validation_type: parse_validation_type(&config.validation_type),
+            validation_type: parse_validation_type(&config.validation_type)?,
             operator: config
                 .operator
                 .as_ref()
@@ -1004,12 +1016,14 @@ impl Workbook {
             data: config
                 .data
                 .iter()
-                .map(|f| PivotDataField {
-                    name: f.name.clone(),
-                    function: parse_aggregate_function(&f.function),
-                    display_name: f.display_name.clone(),
+                .map(|f| {
+                    Ok(PivotDataField {
+                        name: f.name.clone(),
+                        function: parse_aggregate_function(&f.function)?,
+                        display_name: f.display_name.clone(),
+                    })
                 })
-                .collect(),
+                .collect::<Result<Vec<_>>>()?,
         };
         self.inner
             .add_pivot_table(&core_config)

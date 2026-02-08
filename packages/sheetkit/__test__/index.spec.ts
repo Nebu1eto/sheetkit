@@ -24,16 +24,16 @@ describe('Phase 1 - Basic I/O', () => {
     expect(wb.sheetNames).toEqual(['Sheet1']);
   });
 
-  it('should save and open a workbook', () => {
+  it('should save and open a workbook', async () => {
     const wb = new Workbook();
-    wb.save(out);
+    await wb.save(out);
     expect(existsSync(out)).toBe(true);
-    const wb2 = Workbook.open(out);
+    const wb2 = await Workbook.open(out);
     expect(wb2.sheetNames).toEqual(['Sheet1']);
   });
 
-  it('should throw on invalid path', () => {
-    expect(() => Workbook.open('/nonexistent/path.xlsx')).toThrow();
+  it('should throw on invalid path', async () => {
+    await expect(Workbook.open('/nonexistent/path.xlsx')).rejects.toThrow();
   });
 });
 
@@ -71,14 +71,14 @@ describe('Phase 2 - Cell Operations', () => {
     expect(wb.getCellValue('Sheet1', 'Z99')).toBeNull();
   });
 
-  it('should roundtrip cell values through save/open', () => {
+  it('should roundtrip cell values through save/open', async () => {
     const wb = new Workbook();
     wb.setCellValue('Sheet1', 'A1', 'text');
     wb.setCellValue('Sheet1', 'B1', 123);
     wb.setCellValue('Sheet1', 'C1', true);
-    wb.save(out);
+    await wb.save(out);
 
-    const wb2 = Workbook.open(out);
+    const wb2 = await Workbook.open(out);
     expect(wb2.getCellValue('Sheet1', 'A1')).toBe('text');
     expect(wb2.getCellValue('Sheet1', 'B1')).toBe(123);
     expect(wb2.getCellValue('Sheet1', 'C1')).toBe(true);
@@ -325,7 +325,7 @@ describe('Phase 7 - Charts & Images', () => {
   const out = tmpFile('test-chart.xlsx');
   afterEach(() => cleanup(out));
 
-  it('should add a column chart and save', () => {
+  it('should add a column chart and save', async () => {
     const wb = new Workbook();
     wb.setCellValue('Sheet1', 'A1', 'Category');
     wb.setCellValue('Sheet1', 'B1', 100);
@@ -333,11 +333,11 @@ describe('Phase 7 - Charts & Images', () => {
       chartType: 'col',
       series: [{ name: 'S1', categories: 'Sheet1!$A$1:$A$3', values: 'Sheet1!$B$1:$B$3' }],
     });
-    wb.save(out);
+    await wb.save(out);
     expect(existsSync(out)).toBe(true);
   });
 
-  it('should add a PNG image and save', () => {
+  it('should add a PNG image and save', async () => {
     const wb = new Workbook();
     const pngData = Buffer.from([
       0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
@@ -353,7 +353,7 @@ describe('Phase 7 - Charts & Images', () => {
       widthPx: 100,
       heightPx: 100,
     });
-    wb.save(out);
+    await wb.save(out);
     expect(existsSync(out)).toBe(true);
   });
 });
@@ -445,13 +445,13 @@ describe('Merge Cells', () => {
     expect(wb.getMergeCells('Sheet1')).toEqual([]);
   });
 
-  it('should roundtrip merge cells through save/open', () => {
+  it('should roundtrip merge cells through save/open', async () => {
     const wb = new Workbook();
     wb.setCellValue('Sheet1', 'A1', 'Merged');
     wb.mergeCells('Sheet1', 'A1', 'C3');
-    wb.save(out);
+    await wb.save(out);
 
-    const wb2 = Workbook.open(out);
+    const wb2 = await Workbook.open(out);
     const merged = wb2.getMergeCells('Sheet1');
     expect(merged).toEqual(['A1:C3']);
   });
@@ -467,12 +467,12 @@ describe('Phase 8 - Auto-filter', () => {
     wb.removeAutoFilter('Sheet1');
   });
 
-  it('should set auto filter and save', () => {
+  it('should set auto filter and save', async () => {
     const wb = new Workbook();
     wb.setCellValue('Sheet1', 'A1', 'Name');
     wb.setCellValue('Sheet1', 'B1', 'Age');
     wb.setAutoFilter('Sheet1', 'A1:B1');
-    wb.save(out);
+    await wb.save(out);
     expect(existsSync(out)).toBe(true);
   });
 });
@@ -493,15 +493,15 @@ describe('Phase 9 - StreamWriter', () => {
     expect(wb.sheetNames).toContain('Stream1');
   });
 
-  it('should roundtrip stream writer data', () => {
+  it('should roundtrip stream writer data', async () => {
     const wb = new Workbook();
     const sw = wb.newStreamWriter('Data');
     sw.writeRow(1, ['Name', 'Value']);
     sw.writeRow(2, ['A', 100]);
     wb.applyStreamWriter(sw);
-    wb.save(out);
+    await wb.save(out);
 
-    const wb2 = Workbook.open(out);
+    const wb2 = await Workbook.open(out);
     expect(wb2.sheetNames).toContain('Data');
     expect(wb2.getCellValue('Data', 'A1')).toBe('Name');
     expect(wb2.getCellValue('Data', 'B2')).toBe(100);
@@ -527,12 +527,12 @@ describe('Phase 10 - Document Properties', () => {
     expect(props.company).toBe('TestCorp');
   });
 
-  it('should roundtrip doc properties', () => {
+  it('should roundtrip doc properties', async () => {
     const wb = new Workbook();
     wb.setDocProps({ title: 'My Doc', creator: 'Author' });
-    wb.save(out);
+    await wb.save(out);
 
-    const wb2 = Workbook.open(out);
+    const wb2 = await Workbook.open(out);
     const props = wb2.getDocProps();
     expect(props.title).toBe('My Doc');
     expect(props.creator).toBe('Author');
@@ -566,13 +566,13 @@ describe('Phase 10 - Workbook Protection', () => {
     expect(wb.isWorkbookProtected()).toBe(false);
   });
 
-  it('should protect with password and roundtrip', () => {
+  it('should protect with password and roundtrip', async () => {
     const wb = new Workbook();
     wb.protectWorkbook({ password: 'secret', lockStructure: true, lockWindows: true });
     expect(wb.isWorkbookProtected()).toBe(true);
-    wb.save(out);
+    await wb.save(out);
 
-    const wb2 = Workbook.open(out);
+    const wb2 = await Workbook.open(out);
     expect(wb2.isWorkbookProtected()).toBe(true);
   });
 });
@@ -675,7 +675,7 @@ describe('Hyperlinks', () => {
     expect(wb.getCellHyperlink('Sheet1', 'C1')?.linkType).toBe('email');
   });
 
-  it('should roundtrip hyperlinks through save/open', () => {
+  it('should roundtrip hyperlinks through save/open', async () => {
     const wb = new Workbook();
     wb.setCellHyperlink('Sheet1', 'A1', {
       linkType: 'external',
@@ -693,9 +693,9 @@ describe('Hyperlinks', () => {
       target: 'mailto:hello@example.com',
       display: 'Email',
     });
-    wb.save(out);
+    await wb.save(out);
 
-    const wb2 = Workbook.open(out);
+    const wb2 = await Workbook.open(out);
     const a1 = wb2.getCellHyperlink('Sheet1', 'A1');
     expect(a1).not.toBeNull();
     expect(a1?.linkType).toBe('external');
@@ -773,12 +773,12 @@ describe('Freeze Panes', () => {
     expect(wb.getPanes('Sheet1')).toBe('C3');
   });
 
-  it('should roundtrip panes through save/open', () => {
+  it('should roundtrip panes through save/open', async () => {
     const wb = new Workbook();
     wb.setPanes('Sheet1', 'B3');
-    wb.save(out);
+    await wb.save(out);
 
-    const wb2 = Workbook.open(out);
+    const wb2 = await Workbook.open(out);
     expect(wb2.getPanes('Sheet1')).toBe('B3');
   });
 });
@@ -813,15 +813,15 @@ describe('Date CellValue', () => {
     expect(val).toBe(45292);
   });
 
-  it('should roundtrip date values through save/open', () => {
+  it('should roundtrip date values through save/open', async () => {
     const wb = new Workbook();
     // Create a datetime style (numFmtId 22 = m/d/yyyy h:mm)
     const styleId = wb.addStyle({ numFmtId: 22 });
     wb.setCellValue('Sheet1', 'A1', { type: 'date', serial: 45292.5 });
     wb.setCellStyle('Sheet1', 'A1', styleId);
-    wb.save(out);
+    await wb.save(out);
 
-    const wb2 = Workbook.open(out);
+    const wb2 = await Workbook.open(out);
     const val = wb2.getCellValue('Sheet1', 'A1') as { type: string; serial: number; iso?: string };
     expect(val.type).toBe('date');
     expect(val.serial).toBe(45292.5);
@@ -922,14 +922,14 @@ describe('Row/Col Iterators', () => {
     expect(() => wb.getCols('NoSheet')).toThrow();
   });
 
-  it('should roundtrip rows through save/open', () => {
+  it('should roundtrip rows through save/open', async () => {
     const wb = new Workbook();
     wb.setCellValue('Sheet1', 'A1', 'hello');
     wb.setCellValue('Sheet1', 'B1', 99);
     wb.setCellValue('Sheet1', 'A2', true);
-    wb.save(out);
+    await wb.save(out);
 
-    const wb2 = Workbook.open(out);
+    const wb2 = await Workbook.open(out);
     const rows = wb2.getRows('Sheet1');
     expect(rows.length).toBe(2);
     expect(rows[0].cells[0].value).toBe('hello');
@@ -1091,7 +1091,7 @@ describe('Page Layout', () => {
     expect(wb.getPageBreaks('Sheet1')).toEqual([]);
   });
 
-  it('should roundtrip page layout through save/open', () => {
+  it('should roundtrip page layout through save/open', async () => {
     const wb = new Workbook();
     wb.setPageMargins('Sheet1', {
       left: 1.0,
@@ -1109,9 +1109,9 @@ describe('Page Layout', () => {
     wb.setHeaderFooter('Sheet1', '&CTitle', '&RPage &P');
     wb.setPrintOptions('Sheet1', { gridLines: true });
     wb.insertPageBreak('Sheet1', 15);
-    wb.save(out);
+    await wb.save(out);
 
-    const wb2 = Workbook.open(out);
+    const wb2 = await Workbook.open(out);
     const m = wb2.getPageMargins('Sheet1');
     expect(m.left).toBe(1.0);
     expect(m.top).toBe(1.5);
@@ -1152,14 +1152,14 @@ describe('Formula Evaluation', () => {
     expect(result).toBe('HELLO');
   });
 
-  it('should calculate all formulas', () => {
+  it('should calculate all formulas', async () => {
     const wb = new Workbook();
     wb.setCellValue('Sheet1', 'A1', 5);
     wb.setCellValue('Sheet1', 'A2', 10);
     wb.setCellValue('Sheet1', 'A3', 100);
     wb.calculateAll();
-    wb.save(out);
-    const wb2 = Workbook.open(out);
+    await wb.save(out);
+    const wb2 = await Workbook.open(out);
     expect(wb2.getCellValue('Sheet1', 'A1')).toBe(5);
     expect(wb2.getCellValue('Sheet1', 'A2')).toBe(10);
   });
@@ -1223,7 +1223,7 @@ describe('Pivot Tables', () => {
     expect(wb.getPivotTables().length).toBe(0);
   });
 
-  it('should save and open with pivot tables', () => {
+  it('should save and open with pivot tables', async () => {
     const wb = new Workbook();
     wb.setCellValue('Sheet1', 'A1', 'Category');
     wb.setCellValue('Sheet1', 'B1', 'Amount');
@@ -1244,8 +1244,8 @@ describe('Pivot Tables', () => {
       data: [{ name: 'Amount', function: 'sum' }],
     });
 
-    wb.save(out);
-    const wb2 = Workbook.open(out);
+    await wb.save(out);
+    const wb2 = await Workbook.open(out);
     const pivots = wb2.getPivotTables();
     expect(pivots.length).toBe(1);
     expect(pivots[0].name).toBe('PT1');
@@ -1348,10 +1348,7 @@ describe('Rich Text', () => {
 
   it('should set and get rich text', () => {
     const wb = new Workbook();
-    wb.setCellRichText('Sheet1', 'A1', [
-      { text: 'Bold', bold: true },
-      { text: 'Normal' },
-    ]);
+    wb.setCellRichText('Sheet1', 'A1', [{ text: 'Bold', bold: true }, { text: 'Normal' }]);
 
     const runs = wb.getCellRichText('Sheet1', 'A1');
     expect(runs).not.toBeNull();
@@ -1392,15 +1389,15 @@ describe('Rich Text', () => {
     expect(runs![0].color).toBe('#FF0000');
   });
 
-  it('should round-trip rich text through save and open', () => {
+  it('should round-trip rich text through save and open', async () => {
     const wb = new Workbook();
     wb.setCellRichText('Sheet1', 'C3', [
       { text: 'Hello', bold: true, font: 'Arial', size: 14, color: '#FF0000' },
       { text: 'World', italic: true },
     ]);
-    wb.save(out);
+    await wb.save(out);
 
-    const wb2 = Workbook.open(out);
+    const wb2 = await Workbook.open(out);
     const runs = wb2.getCellRichText('Sheet1', 'C3');
     expect(runs).not.toBeNull();
     expect(runs).toHaveLength(2);
@@ -1415,10 +1412,7 @@ describe('Rich Text', () => {
 
   it('should read rich text cell value as concatenated plain text', () => {
     const wb = new Workbook();
-    wb.setCellRichText('Sheet1', 'A1', [
-      { text: 'Hello' },
-      { text: 'World' },
-    ]);
+    wb.setCellRichText('Sheet1', 'A1', [{ text: 'Hello' }, { text: 'World' }]);
 
     const val = wb.getCellValue('Sheet1', 'A1');
     expect(val).toBe('HelloWorld');

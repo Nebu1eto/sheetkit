@@ -460,6 +460,8 @@ wb.addDataValidation("Sheet1", {
 });
 ```
 
+> Node.js에서 `validationType`은 지원되는 값(`list`, `whole`, `decimal`, `date`, `time`, `textLength`, `custom`)만 허용되며, 지원되지 않는 값은 오류를 반환한다.
+
 ### `get_data_validations` / `getDataValidations`
 
 시트의 모든 유효성 검사 규칙을 반환한다.
