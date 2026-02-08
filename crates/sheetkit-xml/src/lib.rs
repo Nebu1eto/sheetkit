@@ -13,7 +13,9 @@
 //! - [`styles`] - `xl/styles.xml` structures
 //! - [`shared_strings`] - `xl/sharedStrings.xml` structures
 
+pub mod chart;
 pub mod content_types;
+pub mod drawing;
 pub mod namespaces;
 pub mod relationships;
 pub mod shared_strings;
