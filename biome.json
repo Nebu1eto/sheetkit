@@ -5,7 +5,8 @@
       "packages/**",
       "examples/**",
       "!packages/sheetkit/index.js",
-      "!packages/sheetkit/index.d.ts"
+      "!packages/sheetkit/index.d.ts",
+      "!packages/sheetkit/npm/**"
     ],
     "ignoreUnknown": true
   },

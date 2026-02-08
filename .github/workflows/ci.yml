@@ -72,7 +72,7 @@ jobs:
         run: pnpm check
 
       - name: Build napi binding
-        run: pnpm --filter sheetkit build
+        run: pnpm --filter @sheetkit/node build
 
       - name: Restore ESM wrapper
         working-directory: packages/sheetkit

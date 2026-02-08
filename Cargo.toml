@@ -12,6 +12,10 @@ members = [
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
+repository = "https://github.com/Nebu1eto/sheetkit"
+homepage = "https://github.com/Nebu1eto/sheetkit"
+keywords = ["excel", "xlsx", "spreadsheet", "ooxml"]
+categories = ["parser-implementations", "encoding"]
 
 [workspace.dependencies]
 sheetkit-xml = { version = "0.1.0", path = "crates/sheetkit-xml" }

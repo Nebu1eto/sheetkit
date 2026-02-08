@@ -9,8 +9,8 @@
 		"format:check": "biome format .",
 		"check": "biome check .",
 		"check:write": "biome check --write .",
-		"test": "pnpm --filter sheetkit test",
-		"test:watch": "pnpm --filter sheetkit test:watch"
+		"test": "pnpm --filter @sheetkit/node test",
+		"test:watch": "pnpm --filter @sheetkit/node test:watch"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.3.14",

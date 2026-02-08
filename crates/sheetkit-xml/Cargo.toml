@@ -3,6 +3,12 @@ name = "sheetkit-xml"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "Serde-based OOXML schema types for Excel (.xlsx) files"
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../../README.md"
 
 [dependencies]
 quick-xml = { workspace = true }

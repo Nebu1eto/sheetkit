@@ -3,6 +3,12 @@ name = "sheetkit-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "Core library for reading and writing Excel (.xlsx) files"
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../../README.md"
 
 [dependencies]
 sheetkit-xml = { workspace = true }

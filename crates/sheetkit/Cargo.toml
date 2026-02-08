@@ -3,6 +3,12 @@ name = "sheetkit"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "A Rust library for reading and writing Excel (.xlsx) files"
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../../README.md"
 
 [dependencies]
 sheetkit-core = { workspace = true }

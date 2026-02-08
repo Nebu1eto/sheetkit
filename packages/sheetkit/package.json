@@ -1,5 +1,5 @@
 {
-  "name": "sheetkit",
+  "name": "@sheetkit/node",
   "version": "0.1.0",
   "license": "MIT OR Apache-2.0",
   "type": "module",
@@ -7,19 +7,33 @@
   "types": "./index.d.ts",
   "napi": {
     "binaryName": "sheetkit",
-    "targets": []
+    "targets": [
+      "x86_64-apple-darwin",
+      "aarch64-apple-darwin",
+      "x86_64-pc-windows-msvc",
+      "aarch64-pc-windows-msvc",
+      "x86_64-unknown-linux-gnu",
+      "aarch64-unknown-linux-gnu",
+      "x86_64-unknown-linux-musl",
+      "aarch64-unknown-linux-musl"
+    ]
   },
   "files": [
-    "binding.cjs",
     "index.js",
     "index.d.ts"
   ],
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  },
   "scripts": {
     "artifacts": "napi artifacts",
     "build": "napi build --platform --release --esm",
     "build:debug": "napi build --platform",
+    "prepublishOnly": "napi prepublish -t npm",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "version": "napi version"
   },
   "devDependencies": {
     "@napi-rs/cli": "^3.5.1"

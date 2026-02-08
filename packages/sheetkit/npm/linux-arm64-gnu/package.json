@@ -1,0 +1,22 @@
+{
+  "name": "@sheetkit/node-linux-arm64-gnu",
+  "version": "0.1.0",
+  "cpu": [
+    "arm64"
+  ],
+  "main": "sheetkit.linux-arm64-gnu.node",
+  "files": [
+    "sheetkit.linux-arm64-gnu.node"
+  ],
+  "license": "MIT OR Apache-2.0",
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  },
+  "os": [
+    "linux"
+  ],
+  "libc": [
+    "glibc"
+  ]
+}

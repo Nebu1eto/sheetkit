@@ -1,0 +1,141 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/sheetkit
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: >-
+            x86_64-apple-darwin,
+            aarch64-apple-darwin,
+            x86_64-pc-windows-msvc,
+            aarch64-pc-windows-msvc,
+            x86_64-unknown-linux-gnu,
+            aarch64-unknown-linux-gnu,
+            x86_64-unknown-linux-musl,
+            aarch64-unknown-linux-musl
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+        working-directory: .
+
+      - name: Build all targets
+        run: |
+          pnpm build --target x86_64-apple-darwin -x
+          pnpm build --target aarch64-apple-darwin -x
+          pnpm build --target x86_64-pc-windows-msvc -x
+          pnpm build --target aarch64-pc-windows-msvc -x
+          pnpm build --target x86_64-unknown-linux-gnu --use-napi-cross
+          pnpm build --target aarch64-unknown-linux-gnu --use-napi-cross
+          pnpm build --target x86_64-unknown-linux-musl -x
+          pnpm build --target aarch64-unknown-linux-musl -x
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: bindings
+          path: packages/sheetkit/sheetkit.*.node
+          if-no-files-found: error
+
+  publish:
+    name: Publish
+    needs:
+      - build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Publish sheetkit-xml to crates.io
+        run: cargo publish -p sheetkit-xml
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Publish sheetkit-core to crates.io
+        run: cargo publish -p sheetkit-core
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Publish sheetkit to crates.io
+        run: cargo publish -p sheetkit
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: bindings
+          path: packages/sheetkit/artifacts
+
+      - name: Create npm dirs
+        working-directory: packages/sheetkit
+        run: pnpm napi create-npm-dirs
+
+      - name: Move artifacts
+        working-directory: packages/sheetkit
+        run: pnpm artifacts
+
+      - name: List packages
+        working-directory: packages/sheetkit
+        run: ls -R npm
+
+      - name: Publish platform packages to npm
+        working-directory: packages/sheetkit
+        run: |
+          for dir in npm/*/; do
+            if [ -f "$dir/package.json" ]; then
+              npm publish "$dir" --access public --provenance
+            fi
+          done
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish main package to npm
+        working-directory: packages/sheetkit
+        run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
