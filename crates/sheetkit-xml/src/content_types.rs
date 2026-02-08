@@ -115,6 +115,14 @@ pub mod mime_types {
     pub const COMMENTS: &str =
         "application/vnd.openxmlformats-officedocument.spreadsheetml.comments+xml";
 
+    // Pivot tables
+    pub const PIVOT_TABLE: &str =
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.pivotTable+xml";
+    pub const PIVOT_CACHE_DEFINITION: &str =
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.pivotCacheDefinition+xml";
+    pub const PIVOT_CACHE_RECORDS: &str =
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.pivotCacheRecords+xml";
+
     // Document properties
     pub const CORE_PROPERTIES: &str = "application/vnd.openxmlformats-package.core-properties+xml";
     pub const EXTENDED_PROPERTIES: &str =

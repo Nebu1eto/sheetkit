@@ -127,8 +127,11 @@ fn main() -> sheetkit::Result<()> {
                 name: "Revenue".into(),
                 categories: "Sales!$A$2:$A$5".into(),
                 values: "Sales!$B$2:$B$5".into(),
+                x_values: None,
+                bubble_sizes: None,
             }],
             show_legend: true,
+            view_3d: None,
         },
     )?;
     println!("[Phase 7] Chart added (Sales sheet)");

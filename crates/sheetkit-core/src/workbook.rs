@@ -1329,6 +1329,175 @@ impl Workbook {
         self.workbook_xml.workbook_protection.is_some()
     }
 
+    /// Return `(col, row)` pairs for all occupied cells on the named sheet.
+    pub fn get_occupied_cells(&self, sheet: &str) -> Result<Vec<(u32, u32)>> {
+        let ws = self
+            .worksheets
+            .iter()
+            .find(|(name, _)| name == sheet)
+            .map(|(_, ws)| ws)
+            .ok_or_else(|| Error::SheetNotFound {
+                name: sheet.to_string(),
+            })?;
+        let mut cells = Vec::new();
+        for row in &ws.sheet_data.rows {
+            for cell in &row.cells {
+                if let Ok((c, r)) = cell_name_to_coordinates(&cell.r) {
+                    cells.push((c, r));
+                }
+            }
+        }
+        Ok(cells)
+    }
+
+    /// Evaluate a single formula string in the context of `sheet`.
+    ///
+    /// A [`CellSnapshot`] is built from the current workbook state so
+    /// that cell references within the formula can be resolved.
+    pub fn evaluate_formula(&self, sheet: &str, formula: &str) -> Result<CellValue> {
+        // Validate the sheet exists.
+        let _ = self.sheet_index(sheet)?;
+        let parsed = crate::formula::parser::parse_formula(formula)?;
+        let snapshot = self.build_cell_snapshot(sheet)?;
+        crate::formula::eval::evaluate(&parsed, &snapshot)
+    }
+
+    /// Recalculate every formula cell across all sheets and store the
+    /// computed result back into each cell.
+    pub fn calculate_all(&mut self) -> Result<()> {
+        // Collect formula cells and current-sheet context.
+        let sheet_names: Vec<String> = self.sheet_names().iter().map(|s| s.to_string()).collect();
+
+        // Build a single snapshot of all cell data.
+        let first_sheet = sheet_names.first().cloned().unwrap_or_default();
+        let mut snapshot = crate::formula::eval::CellSnapshot::new(first_sheet);
+        for sn in &sheet_names {
+            let ws = self
+                .worksheets
+                .iter()
+                .find(|(name, _)| name == sn)
+                .map(|(_, ws)| ws)
+                .ok_or_else(|| Error::SheetNotFound {
+                    name: sn.to_string(),
+                })?;
+            for row in &ws.sheet_data.rows {
+                for cell in &row.cells {
+                    if let Ok((c, r)) = cell_name_to_coordinates(&cell.r) {
+                        let cv = self.xml_cell_to_value(cell)?;
+                        snapshot.set_cell(sn, c, r, cv);
+                    }
+                }
+            }
+        }
+
+        // Collect all (sheet, col, row, formula_string) tuples.
+        let mut formulas: Vec<(String, u32, u32, String)> = Vec::new();
+        for sn in &sheet_names {
+            let ws = self
+                .worksheets
+                .iter()
+                .find(|(name, _)| name == sn)
+                .map(|(_, ws)| ws)
+                .ok_or_else(|| Error::SheetNotFound {
+                    name: sn.to_string(),
+                })?;
+            for row in &ws.sheet_data.rows {
+                for cell in &row.cells {
+                    if cell.f.is_some() {
+                        if let Ok((c, r)) = cell_name_to_coordinates(&cell.r) {
+                            let formula_str = cell
+                                .f
+                                .as_ref()
+                                .and_then(|f| f.value.clone())
+                                .unwrap_or_default();
+                            if !formula_str.is_empty() {
+                                formulas.push((sn.clone(), c, r, formula_str));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Evaluate each formula and collect results.
+        let mut results: Vec<(String, String, CellValue)> = Vec::new();
+        for (sn, col, row, formula_str) in &formulas {
+            // Build a per-sheet evaluator context.
+            let mut sheet_snapshot = crate::formula::eval::CellSnapshot::new(sn.clone());
+            // Copy all data from the main snapshot.
+            for other_sn in &sheet_names {
+                let ws = self
+                    .worksheets
+                    .iter()
+                    .find(|(name, _)| name == other_sn)
+                    .map(|(_, ws)| ws)
+                    .unwrap();
+                for r in &ws.sheet_data.rows {
+                    for c in &r.cells {
+                        if let Ok((cc, rr)) = cell_name_to_coordinates(&c.r) {
+                            let cv = self.xml_cell_to_value(c)?;
+                            sheet_snapshot.set_cell(other_sn, cc, rr, cv);
+                        }
+                    }
+                }
+            }
+            let parsed = crate::formula::parser::parse_formula(formula_str)?;
+            let result = crate::formula::eval::evaluate(&parsed, &sheet_snapshot)?;
+            let cell_name = crate::utils::cell_ref::coordinates_to_cell_name(*col, *row)?;
+            results.push((sn.clone(), cell_name, result));
+        }
+
+        // Write results back. Formula cells retain their formula expression
+        // and gain a cached result.
+        for (sn, cell_name, result) in results {
+            let cv = CellValue::Formula {
+                expr: {
+                    // Re-read the formula expression from the cell.
+                    let ws = self
+                        .worksheets
+                        .iter()
+                        .find(|(name, _)| name == &sn)
+                        .map(|(_, ws)| ws)
+                        .unwrap();
+                    let (col, row) = cell_name_to_coordinates(&cell_name)?;
+                    let cell_ref = crate::utils::cell_ref::coordinates_to_cell_name(col, row)?;
+                    ws.sheet_data
+                        .rows
+                        .iter()
+                        .find(|r| r.r == row)
+                        .and_then(|r| r.cells.iter().find(|c| c.r == cell_ref))
+                        .and_then(|c| c.f.as_ref())
+                        .and_then(|f| f.value.clone())
+                        .unwrap_or_default()
+                },
+                result: Some(Box::new(result)),
+            };
+            self.set_cell_value(&sn, &cell_name, cv)?;
+        }
+
+        Ok(())
+    }
+
+    /// Build a [`CellSnapshot`] for formula evaluation, with the given
+    /// sheet as the current-sheet context.
+    fn build_cell_snapshot(
+        &self,
+        current_sheet: &str,
+    ) -> Result<crate::formula::eval::CellSnapshot> {
+        let mut snapshot = crate::formula::eval::CellSnapshot::new(current_sheet.to_string());
+        for (sn, ws) in &self.worksheets {
+            for row in &ws.sheet_data.rows {
+                for cell in &row.cells {
+                    if let Ok((c, r)) = cell_name_to_coordinates(&cell.r) {
+                        let cv = self.xml_cell_to_value(cell)?;
+                        snapshot.set_cell(sn, c, r, cv);
+                    }
+                }
+            }
+        }
+        Ok(snapshot)
+    }
+
     /// Ensure a drawing exists for the given sheet index, creating one if needed.
     /// Returns the drawing index.
     fn ensure_drawing_for_sheet(&mut self, sheet_idx: usize) -> usize {
@@ -2925,8 +3094,11 @@ mod tests {
                 name: "Sales".to_string(),
                 categories: "Sheet1!$A$1:$A$5".to_string(),
                 values: "Sheet1!$B$1:$B$5".to_string(),
+                x_values: None,
+                bubble_sizes: None,
             }],
             show_legend: true,
+            view_3d: None,
         };
         wb.add_chart("Sheet1", "E1", "L15", &config).unwrap();
 
@@ -2948,8 +3120,11 @@ mod tests {
                 name: String::new(),
                 categories: "Sheet1!$A$1:$A$5".to_string(),
                 values: "Sheet1!$B$1:$B$5".to_string(),
+                x_values: None,
+                bubble_sizes: None,
             }],
             show_legend: false,
+            view_3d: None,
         };
         let result = wb.add_chart("NoSheet", "A1", "H10", &config);
         assert!(matches!(result.unwrap_err(), Error::SheetNotFound { .. }));
@@ -2966,8 +3141,11 @@ mod tests {
                 name: "S1".to_string(),
                 categories: "Sheet1!$A$1:$A$3".to_string(),
                 values: "Sheet1!$B$1:$B$3".to_string(),
+                x_values: None,
+                bubble_sizes: None,
             }],
             show_legend: true,
+            view_3d: None,
         };
         let config2 = ChartConfig {
             chart_type: ChartType::Line,
@@ -2976,8 +3154,11 @@ mod tests {
                 name: "S2".to_string(),
                 categories: "Sheet1!$A$1:$A$3".to_string(),
                 values: "Sheet1!$C$1:$C$3".to_string(),
+                x_values: None,
+                bubble_sizes: None,
             }],
             show_legend: false,
+            view_3d: None,
         };
         wb.add_chart("Sheet1", "A1", "F10", &config1).unwrap();
         wb.add_chart("Sheet1", "A12", "F22", &config2).unwrap();
@@ -3000,8 +3181,11 @@ mod tests {
                 name: String::new(),
                 categories: "Sheet1!$A$1:$A$3".to_string(),
                 values: "Sheet1!$B$1:$B$3".to_string(),
+                x_values: None,
+                bubble_sizes: None,
             }],
             show_legend: true,
+            view_3d: None,
         };
         wb.add_chart("Sheet1", "A1", "F10", &config).unwrap();
         wb.add_chart("Sheet2", "A1", "F10", &config).unwrap();
@@ -3024,8 +3208,11 @@ mod tests {
                 name: "Data".to_string(),
                 categories: "Sheet1!$A$1:$A$3".to_string(),
                 values: "Sheet1!$B$1:$B$3".to_string(),
+                x_values: None,
+                bubble_sizes: None,
             }],
             show_legend: true,
+            view_3d: None,
         };
         wb.add_chart("Sheet1", "E2", "L15", &config).unwrap();
         wb.save(&path).unwrap();
@@ -3166,8 +3353,11 @@ mod tests {
                 name: "Series 1".to_string(),
                 categories: "Sheet1!$A$1:$A$3".to_string(),
                 values: "Sheet1!$B$1:$B$3".to_string(),
+                x_values: None,
+                bubble_sizes: None,
             }],
             show_legend: true,
+            view_3d: None,
         };
         wb.add_chart("Sheet1", "E1", "L10", &chart_config).unwrap();
 
@@ -3201,8 +3391,11 @@ mod tests {
                 name: "Series 1".to_string(),
                 categories: "Sheet1!$A$1:$A$3".to_string(),
                 values: "Sheet1!$B$1:$B$3".to_string(),
+                x_values: None,
+                bubble_sizes: None,
             }],
             show_legend: false,
+            view_3d: None,
         };
         wb.add_chart("Sheet1", "A1", "F10", &config).unwrap();
         wb.save(&path).unwrap();
