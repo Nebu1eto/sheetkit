@@ -1,6 +1,6 @@
 import { readFile, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
-import { describe, expect, it, afterEach } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { Workbook } from '../index.js';
 
 const TEST_DIR = import.meta.dirname;
@@ -46,11 +46,11 @@ describe('VML Comment Compatibility', () => {
     const c1 = comments.find((c: { cell: string }) => c.cell === 'B3');
     const c2 = comments.find((c: { cell: string }) => c.cell === 'D7');
     expect(c1).toBeDefined();
-    expect(c1!.author).toBe('Alice');
-    expect(c1!.text).toBe('Comment 1');
+    expect(c1?.author).toBe('Alice');
+    expect(c1?.text).toBe('Comment 1');
     expect(c2).toBeDefined();
-    expect(c2!.author).toBe('Bob');
-    expect(c2!.text).toBe('Comment 2');
+    expect(c2?.author).toBe('Bob');
+    expect(c2?.text).toBe('Comment 2');
   });
 
   it('should preserve comments through double save/open roundtrip', async () => {

@@ -1353,10 +1353,10 @@ describe('Rich Text', () => {
     const runs = wb.getCellRichText('Sheet1', 'A1');
     expect(runs).not.toBeNull();
     expect(runs).toHaveLength(2);
-    expect(runs![0].text).toBe('Bold');
-    expect(runs![0].bold).toBe(true);
-    expect(runs![1].text).toBe('Normal');
-    expect(runs![1].bold).toBeUndefined();
+    expect(runs?.[0].text).toBe('Bold');
+    expect(runs?.[0].bold).toBe(true);
+    expect(runs?.[1].text).toBe('Normal');
+    expect(runs?.[1].bold).toBeUndefined();
   });
 
   it('should return null for non-rich-text cells', () => {
@@ -1382,11 +1382,11 @@ describe('Rich Text', () => {
     const runs = wb.getCellRichText('Sheet1', 'B2');
     expect(runs).not.toBeNull();
     expect(runs).toHaveLength(1);
-    expect(runs![0].font).toBe('Arial');
-    expect(runs![0].size).toBe(14);
-    expect(runs![0].bold).toBe(true);
-    expect(runs![0].italic).toBe(true);
-    expect(runs![0].color).toBe('#FF0000');
+    expect(runs?.[0].font).toBe('Arial');
+    expect(runs?.[0].size).toBe(14);
+    expect(runs?.[0].bold).toBe(true);
+    expect(runs?.[0].italic).toBe(true);
+    expect(runs?.[0].color).toBe('#FF0000');
   });
 
   it('should round-trip rich text through save and open', async () => {
@@ -1401,13 +1401,13 @@ describe('Rich Text', () => {
     const runs = wb2.getCellRichText('Sheet1', 'C3');
     expect(runs).not.toBeNull();
     expect(runs).toHaveLength(2);
-    expect(runs![0].text).toBe('Hello');
-    expect(runs![0].bold).toBe(true);
-    expect(runs![0].font).toBe('Arial');
-    expect(runs![0].size).toBe(14);
-    expect(runs![0].color).toBe('#FF0000');
-    expect(runs![1].text).toBe('World');
-    expect(runs![1].italic).toBe(true);
+    expect(runs?.[0].text).toBe('Hello');
+    expect(runs?.[0].bold).toBe(true);
+    expect(runs?.[0].font).toBe('Arial');
+    expect(runs?.[0].size).toBe(14);
+    expect(runs?.[0].color).toBe('#FF0000');
+    expect(runs?.[1].text).toBe('World');
+    expect(runs?.[1].italic).toBe(true);
   });
 
   it('should read rich text cell value as concatenated plain text', () => {
