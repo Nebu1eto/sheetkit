@@ -41,7 +41,11 @@ pub struct Si {
 /// Text element with optional space preservation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct T {
-    #[serde(rename = "@xml:space", alias = "@space", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "@xml:space",
+        alias = "@space",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub xml_space: Option<String>,
 
     #[serde(rename = "$value", default)]

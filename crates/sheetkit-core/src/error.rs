@@ -130,7 +130,10 @@ mod tests {
     #[test]
     fn test_error_display_xml_deserialize() {
         let err = Error::XmlDeserialize("missing attribute".to_string());
-        assert_eq!(err.to_string(), "XML deserialization error: missing attribute");
+        assert_eq!(
+            err.to_string(),
+            "XML deserialization error: missing attribute"
+        );
     }
 
     #[test]
