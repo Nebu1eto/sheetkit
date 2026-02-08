@@ -27,6 +27,9 @@ pub use sheetkit_core::conditional::{
 pub use sheetkit_core::hyperlink::{HyperlinkInfo, HyperlinkType};
 pub use sheetkit_core::image::{ImageConfig, ImageFormat};
 pub use sheetkit_core::page_layout::{Orientation, PageMarginsConfig, PaperSize};
+pub use sheetkit_core::pivot::{
+    AggregateFunction, PivotDataField, PivotField, PivotTableConfig, PivotTableInfo,
+};
 pub use sheetkit_core::style::{
     AlignmentStyle, BorderLineStyle, BorderSideStyle, BorderStyle, FillStyle, FontStyle,
     HorizontalAlign, NumFmtStyle, PatternType, ProtectionStyle, Style, StyleColor, VerticalAlign,
