@@ -36,6 +36,9 @@ pub struct WorkbookXml {
 
     #[serde(rename = "calcPr", skip_serializing_if = "Option::is_none")]
     pub calc_pr: Option<CalcPr>,
+
+    #[serde(rename = "pivotCaches", skip_serializing_if = "Option::is_none")]
+    pub pivot_caches: Option<PivotCaches>,
 }
 
 /// File version information.
@@ -271,6 +274,23 @@ pub struct CalcPr {
     pub force_full_calc: Option<bool>,
 }
 
+/// Container for pivot cache references in the workbook.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PivotCaches {
+    #[serde(rename = "pivotCache", default)]
+    pub caches: Vec<PivotCacheEntry>,
+}
+
+/// Individual pivot cache entry linking a cache ID to a relationship.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PivotCacheEntry {
+    #[serde(rename = "@cacheId")]
+    pub cache_id: u32,
+
+    #[serde(rename = "@r:id")]
+    pub r_id: String,
+}
+
 impl Default for WorkbookXml {
     fn default() -> Self {
         Self {
@@ -290,6 +310,7 @@ impl Default for WorkbookXml {
             },
             defined_names: None,
             calc_pr: None,
+            pivot_caches: None,
         }
     }
 }
@@ -314,6 +335,7 @@ mod tests {
         assert!(wb.book_views.is_none());
         assert!(wb.defined_names.is_none());
         assert!(wb.calc_pr.is_none());
+        assert!(wb.pivot_caches.is_none());
     }
 
     #[test]
@@ -353,6 +375,7 @@ mod tests {
         assert!(!xml.contains("bookViews"));
         assert!(!xml.contains("definedNames"));
         assert!(!xml.contains("calcPr"));
+        assert!(!xml.contains("pivotCaches"));
     }
 
     #[test]
@@ -419,6 +442,7 @@ mod tests {
                 concurrent_manual_count: None,
                 force_full_calc: None,
             }),
+            pivot_caches: None,
         };
 
         let xml = quick_xml::se::to_string(&wb).unwrap();

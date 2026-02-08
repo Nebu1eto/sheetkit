@@ -19,6 +19,8 @@ pub mod content_types;
 pub mod doc_props;
 pub mod drawing;
 pub mod namespaces;
+pub mod pivot_cache;
+pub mod pivot_table;
 pub mod relationships;
 pub mod shared_strings;
 pub mod styles;

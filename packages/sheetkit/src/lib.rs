@@ -5,7 +5,7 @@ use napi::{Env, JsUnknown, ValueType};
 use napi_derive::napi;
 
 use sheetkit_core::cell::CellValue;
-use sheetkit_core::chart::{ChartConfig, ChartSeries, ChartType};
+use sheetkit_core::chart::{ChartConfig, ChartSeries, ChartType, View3DConfig};
 use sheetkit_core::comment::CommentConfig;
 use sheetkit_core::conditional::{
     CfOperator, CfValueType, ConditionalFormatRule, ConditionalFormatType, ConditionalStyle,
@@ -89,6 +89,8 @@ pub struct JsChartSeries {
     pub name: String,
     pub categories: String,
     pub values: String,
+    pub x_values: Option<String>,
+    pub bubble_sizes: Option<String>,
 }
 
 #[napi(object)]
@@ -97,6 +99,16 @@ pub struct JsChartConfig {
     pub title: Option<String>,
     pub series: Vec<JsChartSeries>,
     pub show_legend: Option<bool>,
+    pub view_3d: Option<JsView3DConfig>,
+}
+
+#[napi(object)]
+pub struct JsView3DConfig {
+    pub rot_x: Option<i32>,
+    pub rot_y: Option<i32>,
+    pub depth_percent: Option<u32>,
+    pub right_angle_axes: Option<bool>,
+    pub perspective: Option<u32>,
 }
 
 #[napi(object)]
@@ -670,11 +682,46 @@ fn parse_chart_type(s: &str) -> ChartType {
         "col" => ChartType::Col,
         "colstacked" => ChartType::ColStacked,
         "colpercentstacked" => ChartType::ColPercentStacked,
+        "col3d" => ChartType::Col3D,
+        "col3dstacked" => ChartType::Col3DStacked,
+        "col3dpercentstacked" => ChartType::Col3DPercentStacked,
         "bar" => ChartType::Bar,
         "barstacked" => ChartType::BarStacked,
         "barpercentstacked" => ChartType::BarPercentStacked,
+        "bar3d" => ChartType::Bar3D,
+        "bar3dstacked" => ChartType::Bar3DStacked,
+        "bar3dpercentstacked" => ChartType::Bar3DPercentStacked,
         "line" => ChartType::Line,
+        "linestacked" => ChartType::LineStacked,
+        "linepercentstacked" => ChartType::LinePercentStacked,
+        "line3d" => ChartType::Line3D,
         "pie" => ChartType::Pie,
+        "pie3d" => ChartType::Pie3D,
+        "doughnut" => ChartType::Doughnut,
+        "area" => ChartType::Area,
+        "areastacked" => ChartType::AreaStacked,
+        "areapercentstacked" => ChartType::AreaPercentStacked,
+        "area3d" => ChartType::Area3D,
+        "area3dstacked" => ChartType::Area3DStacked,
+        "area3dpercentstacked" => ChartType::Area3DPercentStacked,
+        "scatter" => ChartType::Scatter,
+        "scattersmooth" => ChartType::ScatterSmooth,
+        "scatterstraight" | "scatterline" => ChartType::ScatterLine,
+        "radar" => ChartType::Radar,
+        "radarfilled" => ChartType::RadarFilled,
+        "radarmarker" => ChartType::RadarMarker,
+        "stockhlc" => ChartType::StockHLC,
+        "stockohlc" => ChartType::StockOHLC,
+        "stockvhlc" => ChartType::StockVHLC,
+        "stockvohlc" => ChartType::StockVOHLC,
+        "bubble" => ChartType::Bubble,
+        "surface" => ChartType::Surface,
+        "surfacetop" | "surface3d" => ChartType::Surface3D,
+        "surfacewireframe" => ChartType::SurfaceWireframe,
+        "surfacetopwireframe" | "surfacewireframe3d" => ChartType::SurfaceWireframe3D,
+        "colline" => ChartType::ColLine,
+        "collinestacked" => ChartType::ColLineStacked,
+        "collinepercentstacked" => ChartType::ColLinePercentStacked,
         _ => ChartType::Col,
     }
 }
@@ -1687,9 +1734,18 @@ impl Workbook {
                     name: s.name.clone(),
                     categories: s.categories.clone(),
                     values: s.values.clone(),
+                    x_values: s.x_values.clone(),
+                    bubble_sizes: s.bubble_sizes.clone(),
                 })
                 .collect(),
             show_legend: config.show_legend.unwrap_or(true),
+            view_3d: config.view_3d.map(|v| View3DConfig {
+                rot_x: v.rot_x,
+                rot_y: v.rot_y,
+                depth_percent: v.depth_percent,
+                right_angle_axes: v.right_angle_axes,
+                perspective: v.perspective,
+            }),
         };
         self.inner
             .add_chart(&sheet, &from_cell, &to_cell, &core_config)

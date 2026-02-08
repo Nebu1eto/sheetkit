@@ -119,6 +119,10 @@ pub mod rel_types {
         "http://schemas.openxmlformats.org/officeDocument/2006/relationships/externalLink";
     pub const PIVOT_CACHE_DEF: &str =
         "http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotCacheDefinition";
+    pub const PIVOT_TABLE: &str =
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotTable";
+    pub const PIVOT_CACHE_RECORDS: &str =
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/pivotCacheRecords";
 
     // Worksheet level
     pub const COMMENTS: &str =

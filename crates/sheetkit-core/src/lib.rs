@@ -13,6 +13,7 @@ pub mod hyperlink;
 pub mod image;
 pub mod merge;
 pub mod page_layout;
+pub mod pivot;
 pub mod protection;
 pub mod row;
 pub mod sheet;

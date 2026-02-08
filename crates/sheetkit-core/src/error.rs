@@ -96,6 +96,38 @@ pub enum Error {
     #[error("defined name '{name}' not found")]
     DefinedNameNotFound { name: String },
 
+    /// A circular reference was detected during formula evaluation.
+    #[error("circular reference detected at {cell}")]
+    CircularReference { cell: String },
+
+    /// The formula references an unknown function.
+    #[error("unknown function: {name}")]
+    UnknownFunction { name: String },
+
+    /// A function received the wrong number of arguments.
+    #[error("function {name} expects {expected} arguments, got {got}")]
+    WrongArgCount {
+        name: String,
+        expected: String,
+        got: usize,
+    },
+
+    /// A general formula evaluation error.
+    #[error("formula evaluation error: {0}")]
+    FormulaError(String),
+
+    /// The specified pivot table was not found.
+    #[error("pivot table '{name}' not found")]
+    PivotTableNotFound { name: String },
+
+    /// A pivot table with the given name already exists.
+    #[error("pivot table '{name}' already exists")]
+    PivotTableAlreadyExists { name: String },
+
+    /// The source data range for a pivot table is invalid.
+    #[error("invalid source range: {0}")]
+    InvalidSourceRange(String),
+
     /// An internal or otherwise unclassified error.
     #[error("internal error: {0}")]
     Internal(String),
