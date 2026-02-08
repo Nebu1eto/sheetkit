@@ -88,13 +88,38 @@ pub struct SheetView {
     #[serde(rename = "@workbookViewId")]
     pub workbook_view_id: u32,
 
+    #[serde(rename = "pane", skip_serializing_if = "Option::is_none")]
+    pub pane: Option<Pane>,
+
     #[serde(rename = "selection", default)]
     pub selection: Vec<Selection>,
+}
+
+/// Pane definition for split or frozen panes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Pane {
+    #[serde(rename = "@xSplit", skip_serializing_if = "Option::is_none")]
+    pub x_split: Option<u32>,
+
+    #[serde(rename = "@ySplit", skip_serializing_if = "Option::is_none")]
+    pub y_split: Option<u32>,
+
+    #[serde(rename = "@topLeftCell", skip_serializing_if = "Option::is_none")]
+    pub top_left_cell: Option<String>,
+
+    #[serde(rename = "@activePane", skip_serializing_if = "Option::is_none")]
+    pub active_pane: Option<String>,
+
+    #[serde(rename = "@state", skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
 }
 
 /// Cell selection.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Selection {
+    #[serde(rename = "@pane", skip_serializing_if = "Option::is_none")]
+    pub pane: Option<String>,
+
     #[serde(rename = "@activeCell", skip_serializing_if = "Option::is_none")]
     pub active_cell: Option<String>,
 

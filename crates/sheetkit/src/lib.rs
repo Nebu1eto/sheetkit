@@ -15,7 +15,10 @@ pub use sheetkit_core::protection::WorkbookProtectionConfig;
 pub use sheetkit_core::stream::StreamWriter;
 pub use sheetkit_core::workbook::Workbook;
 
-pub use sheetkit_core::cell::CellValue;
+pub use sheetkit_core::cell::{
+    date_to_serial, datetime_to_serial, is_date_format_code, is_date_num_fmt, serial_to_date,
+    serial_to_datetime, CellValue,
+};
 pub use sheetkit_core::chart::{ChartConfig, ChartSeries, ChartType};
 pub use sheetkit_core::comment::CommentConfig;
 pub use sheetkit_core::hyperlink::{HyperlinkInfo, HyperlinkType};

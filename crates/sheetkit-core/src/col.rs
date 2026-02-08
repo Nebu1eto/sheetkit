@@ -4,13 +4,49 @@
 //! business logic decoupled from the [`Workbook`](crate::workbook::Workbook)
 //! wrapper.
 
+use std::collections::BTreeMap;
+
 use sheetkit_xml::worksheet::{Col, Cols, WorksheetXml};
 
+use crate::cell::CellValue;
 use crate::error::{Error, Result};
+use crate::row::get_rows;
+use crate::sst::SharedStringTable;
 use crate::utils::cell_ref::{
     cell_name_to_coordinates, column_name_to_number, coordinates_to_cell_name,
 };
 use crate::utils::constants::{MAX_COLUMNS, MAX_COLUMN_WIDTH};
+
+/// Get all columns with their data from a worksheet.
+///
+/// Returns a Vec of `(column_name, Vec<(row_number, CellValue)>)` tuples.
+/// Only columns that have data are included (sparse). The columns are sorted
+/// alphabetically (A, B, C, ... Z, AA, AB, ...).
+#[allow(clippy::type_complexity)]
+pub fn get_cols(
+    ws: &WorksheetXml,
+    sst: &SharedStringTable,
+) -> Result<Vec<(String, Vec<(u32, CellValue)>)>> {
+    let rows = get_rows(ws, sst)?;
+
+    // Transpose row-based data into column-based data using a BTreeMap
+    // to keep columns in sorted order.
+    let mut col_map: BTreeMap<String, Vec<(u32, CellValue)>> = BTreeMap::new();
+
+    for (row_num, cells) in rows {
+        for (col_name, value) in cells {
+            col_map.entry(col_name).or_default().push((row_num, value));
+        }
+    }
+
+    // BTreeMap sorts by String, but column names need a special sort:
+    // "A" < "B" < ... < "Z" < "AA" < "AB" etc.
+    // We sort by (length, name) to get the correct order.
+    let mut result: Vec<(String, Vec<(u32, CellValue)>)> = col_map.into_iter().collect();
+    result.sort_by(|(a, _), (b, _)| a.len().cmp(&b.len()).then_with(|| a.cmp(b)));
+
+    Ok(result)
+}
 
 /// Set the width of a column. Creates the `Cols` container and/or a `Col`
 /// entry if they do not yet exist.
@@ -614,5 +650,186 @@ mod tests {
         let ws = WorksheetXml::default();
         let result = get_col_outline_level(&ws, "XFE");
         assert!(result.is_err());
+    }
+
+    // -- get_cols tests --
+
+    #[test]
+    fn test_get_cols_empty_sheet() {
+        let ws = WorksheetXml::default();
+        let sst = SharedStringTable::new();
+        let cols = get_cols(&ws, &sst).unwrap();
+        assert!(cols.is_empty());
+    }
+
+    #[test]
+    fn test_get_cols_transposes_row_data() {
+        let ws = sample_ws();
+        let sst = SharedStringTable::new();
+        let cols = get_cols(&ws, &sst).unwrap();
+
+        // sample_ws has:
+        //   Row 1: A1=10, B1=20, D1=40
+        //   Row 2: A2=100, C2=300
+        // Columns should be: A, B, C, D
+
+        assert_eq!(cols.len(), 4);
+
+        // Column A: (1, 10.0), (2, 100.0)
+        assert_eq!(cols[0].0, "A");
+        assert_eq!(cols[0].1.len(), 2);
+        assert_eq!(cols[0].1[0], (1, CellValue::Number(10.0)));
+        assert_eq!(cols[0].1[1], (2, CellValue::Number(100.0)));
+
+        // Column B: (1, 20.0)
+        assert_eq!(cols[1].0, "B");
+        assert_eq!(cols[1].1.len(), 1);
+        assert_eq!(cols[1].1[0], (1, CellValue::Number(20.0)));
+
+        // Column C: (2, 300.0)
+        assert_eq!(cols[2].0, "C");
+        assert_eq!(cols[2].1.len(), 1);
+        assert_eq!(cols[2].1[0], (2, CellValue::Number(300.0)));
+
+        // Column D: (1, 40.0)
+        assert_eq!(cols[3].0, "D");
+        assert_eq!(cols[3].1.len(), 1);
+        assert_eq!(cols[3].1[0], (1, CellValue::Number(40.0)));
+    }
+
+    #[test]
+    fn test_get_cols_with_shared_strings() {
+        let mut sst = SharedStringTable::new();
+        sst.add("Name");
+        sst.add("Age");
+        sst.add("Alice");
+
+        let mut ws = WorksheetXml::default();
+        ws.sheet_data = SheetData {
+            rows: vec![
+                Row {
+                    r: 1,
+                    spans: None,
+                    s: None,
+                    custom_format: None,
+                    ht: None,
+                    hidden: None,
+                    custom_height: None,
+                    outline_level: None,
+                    cells: vec![
+                        Cell {
+                            r: "A1".to_string(),
+                            s: None,
+                            t: Some("s".to_string()),
+                            v: Some("0".to_string()),
+                            f: None,
+                            is: None,
+                        },
+                        Cell {
+                            r: "B1".to_string(),
+                            s: None,
+                            t: Some("s".to_string()),
+                            v: Some("1".to_string()),
+                            f: None,
+                            is: None,
+                        },
+                    ],
+                },
+                Row {
+                    r: 2,
+                    spans: None,
+                    s: None,
+                    custom_format: None,
+                    ht: None,
+                    hidden: None,
+                    custom_height: None,
+                    outline_level: None,
+                    cells: vec![
+                        Cell {
+                            r: "A2".to_string(),
+                            s: None,
+                            t: Some("s".to_string()),
+                            v: Some("2".to_string()),
+                            f: None,
+                            is: None,
+                        },
+                        Cell {
+                            r: "B2".to_string(),
+                            s: None,
+                            t: None,
+                            v: Some("30".to_string()),
+                            f: None,
+                            is: None,
+                        },
+                    ],
+                },
+            ],
+        };
+
+        let cols = get_cols(&ws, &sst).unwrap();
+        assert_eq!(cols.len(), 2);
+
+        // Column A: "Name", "Alice"
+        assert_eq!(cols[0].0, "A");
+        assert_eq!(cols[0].1[0].1, CellValue::String("Name".to_string()));
+        assert_eq!(cols[0].1[1].1, CellValue::String("Alice".to_string()));
+
+        // Column B: "Age", 30
+        assert_eq!(cols[1].0, "B");
+        assert_eq!(cols[1].1[0].1, CellValue::String("Age".to_string()));
+        assert_eq!(cols[1].1[1].1, CellValue::Number(30.0));
+    }
+
+    #[test]
+    fn test_get_cols_sorted_correctly() {
+        // Verify that columns are sorted by length then alphabetically:
+        // A, B, ..., Z, AA, AB, ...
+        let mut ws = WorksheetXml::default();
+        ws.sheet_data = SheetData {
+            rows: vec![Row {
+                r: 1,
+                spans: None,
+                s: None,
+                custom_format: None,
+                ht: None,
+                hidden: None,
+                custom_height: None,
+                outline_level: None,
+                cells: vec![
+                    Cell {
+                        r: "AA1".to_string(),
+                        s: None,
+                        t: None,
+                        v: Some("1".to_string()),
+                        f: None,
+                        is: None,
+                    },
+                    Cell {
+                        r: "B1".to_string(),
+                        s: None,
+                        t: None,
+                        v: Some("2".to_string()),
+                        f: None,
+                        is: None,
+                    },
+                    Cell {
+                        r: "A1".to_string(),
+                        s: None,
+                        t: None,
+                        v: Some("3".to_string()),
+                        f: None,
+                        is: None,
+                    },
+                ],
+            }],
+        };
+
+        let sst = SharedStringTable::new();
+        let cols = get_cols(&ws, &sst).unwrap();
+
+        assert_eq!(cols.len(), 3);
+        assert_eq!(cols[0].0, "A");
+        assert_eq!(cols[1].0, "B");
+        assert_eq!(cols[2].0, "AA");
     }
 }

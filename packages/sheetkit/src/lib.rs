@@ -185,6 +185,97 @@ pub struct JsHyperlinkInfo {
     pub tooltip: Option<String>,
 }
 
+/// A single cell entry with its column name and value.
+#[napi(object)]
+pub struct JsRowCell {
+    /// Column name (e.g., "A", "B", "AA").
+    pub column: String,
+    /// Cell value type: "string", "number", "boolean", "date", "empty", "error", "formula".
+    pub value_type: String,
+    /// String representation of the cell value.
+    pub value: Option<String>,
+    /// Numeric value (only set when value_type is "number").
+    pub number_value: Option<f64>,
+    /// Boolean value (only set when value_type is "boolean").
+    pub bool_value: Option<bool>,
+}
+
+/// A row with its 1-based row number and cell data.
+#[napi(object)]
+pub struct JsRowData {
+    /// 1-based row number.
+    pub row: u32,
+    /// Cells with data in this row.
+    pub cells: Vec<JsRowCell>,
+}
+
+/// A single cell entry with its row number and value.
+#[napi(object)]
+pub struct JsColCell {
+    /// 1-based row number.
+    pub row: u32,
+    /// Cell value type: "string", "number", "boolean", "date", "empty", "error", "formula".
+    pub value_type: String,
+    /// String representation of the cell value.
+    pub value: Option<String>,
+    /// Numeric value (only set when value_type is "number").
+    pub number_value: Option<f64>,
+    /// Boolean value (only set when value_type is "boolean").
+    pub bool_value: Option<bool>,
+}
+
+/// A column with its name and cell data.
+#[napi(object)]
+pub struct JsColData {
+    /// Column name (e.g., "A", "B", "AA").
+    pub column: String,
+    /// Cells with data in this column.
+    pub cells: Vec<JsColCell>,
+}
+
+fn cell_value_to_row_cell(column: String, value: CellValue) -> JsRowCell {
+    let (value_type, str_val, num_val, bool_val) = cell_value_to_parts(&value);
+    JsRowCell {
+        column,
+        value_type,
+        value: str_val,
+        number_value: num_val,
+        bool_value: bool_val,
+    }
+}
+
+fn cell_value_to_col_cell(row: u32, value: CellValue) -> JsColCell {
+    let (value_type, str_val, num_val, bool_val) = cell_value_to_parts(&value);
+    JsColCell {
+        row,
+        value_type,
+        value: str_val,
+        number_value: num_val,
+        bool_value: bool_val,
+    }
+}
+
+fn cell_value_to_parts(value: &CellValue) -> (String, Option<String>, Option<f64>, Option<bool>) {
+    match value {
+        CellValue::Empty => ("empty".to_string(), None, None, None),
+        CellValue::String(s) => ("string".to_string(), Some(s.clone()), None, None),
+        CellValue::Number(n) => ("number".to_string(), None, Some(*n), None),
+        CellValue::Bool(b) => ("boolean".to_string(), None, None, Some(*b)),
+        CellValue::Error(e) => ("error".to_string(), Some(e.clone()), None, None),
+        CellValue::Formula { expr, .. } => ("formula".to_string(), Some(expr.clone()), None, None),
+        CellValue::Date(serial) => {
+            let iso = sheetkit_core::cell::serial_to_datetime(*serial).map(|dt| {
+                if serial.fract() == 0.0 {
+                    dt.format("%Y-%m-%d").to_string()
+                } else {
+                    dt.format("%Y-%m-%dT%H:%M:%S").to_string()
+                }
+            });
+            ("date".to_string(), iso, Some(*serial), None)
+        }
+    }
+}
+
 fn parse_hyperlink_type(opts: &JsHyperlinkOptions) -> Result<HyperlinkType> {
     match opts.link_type.to_lowercase().as_str() {
         "external" => Ok(HyperlinkType::External(opts.target.clone())),
@@ -226,6 +317,24 @@ fn js_to_cell_value(value: JsUnknown) -> Result<CellValue> {
             let s = value.coerce_to_string()?.into_utf8()?.as_str()?.to_string();
             Ok(CellValue::String(s))
         }
+        ValueType::Object => {
+            // Accept { type: "date", serial: number } objects for date values.
+            let obj = value.coerce_to_object()?;
+            let type_prop: JsUnknown = obj.get_named_property("type")?;
+            if type_prop.get_type()? == ValueType::String {
+                let type_str = type_prop
+                    .coerce_to_string()?
+                    .into_utf8()?
+                    .as_str()?
+                    .to_string();
+                if type_str == "date" {
+                    let serial_prop: JsUnknown = obj.get_named_property("serial")?;
+                    let serial = serial_prop.coerce_to_number()?.get_double()?;
+                    return Ok(CellValue::Date(serial));
+                }
+            }
+            Err(Error::from_reason("unsupported cell value type"))
+        }
         _ => Err(Error::from_reason("unsupported cell value type")),
     }
 }
@@ -235,6 +344,23 @@ fn cell_value_to_js(env: Env, value: CellValue) -> Result<JsUnknown> {
         CellValue::Empty => env.get_null().map(|v| v.into_unknown()),
         CellValue::Bool(b) => env.get_boolean(b).map(|v| v.into_unknown()),
         CellValue::Number(n) => env.create_double(n).map(|v| v.into_unknown()),
+        CellValue::Date(serial) => {
+            // Return dates as an object with type and serial number so JS
+            // callers can distinguish dates from plain numbers.
+            let mut obj = env.create_object()?;
+            obj.set("type", env.create_string("date")?)?;
+            obj.set("serial", env.create_double(serial)?)?;
+            // Also provide an ISO string when possible.
+            if let Some(dt) = sheetkit_core::cell::serial_to_datetime(serial) {
+                let iso = if serial.fract() == 0.0 {
+                    dt.format("%Y-%m-%d").to_string()
+                } else {
+                    dt.format("%Y-%m-%dT%H:%M:%S").to_string()
+                };
+                obj.set("iso", env.create_string(&iso)?)?;
+            }
+            Ok(obj.into_unknown())
+        }
         CellValue::String(s) => env.create_string(&s).map(|v| v.into_unknown()),
         CellValue::Formula { expr, .. } => env.create_string(&expr).map(|v| v.into_unknown()),
         CellValue::Error(e) => env.create_string(&e).map(|v| v.into_unknown()),
@@ -578,8 +704,8 @@ impl Workbook {
             .collect()
     }
 
-    /// Get the value of a cell. Returns string, number, boolean, or null.
-    #[napi(ts_return_type = "string | number | boolean | null")]
+    /// Get the value of a cell. Returns string, number, boolean, DateValue, or null.
+    #[napi(ts_return_type = "string | number | boolean | DateValue | null")]
     pub fn get_cell_value(&self, env: Env, sheet: String, cell: String) -> Result<JsUnknown> {
         let value = self
             .inner
@@ -588,8 +714,10 @@ impl Workbook {
         cell_value_to_js(env, value)
     }
 
-    /// Set the value of a cell. Pass string, number, boolean, or null to clear.
-    #[napi(ts_args_type = "sheet: string, cell: string, value: string | number | boolean | null")]
+    /// Set the value of a cell. Pass string, number, boolean, DateValue, or null to clear.
+    #[napi(
+        ts_args_type = "sheet: string, cell: string, value: string | number | boolean | { type: 'date', serial: number } | null"
+    )]
     pub fn set_cell_value(&mut self, sheet: String, cell: String, value: JsUnknown) -> Result<()> {
         let cell_value = js_to_cell_value(value)?;
         self.inner
@@ -1109,6 +1237,32 @@ impl Workbook {
         self.inner.is_workbook_protected()
     }
 
+    /// Set freeze panes on a sheet.
+    /// The cell reference indicates the top-left cell of the scrollable area.
+    /// For example, "A2" freezes row 1, "B1" freezes column A.
+    #[napi]
+    pub fn set_panes(&mut self, sheet: String, cell: String) -> Result<()> {
+        self.inner
+            .set_panes(&sheet, &cell)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Remove any freeze or split panes from a sheet.
+    #[napi]
+    pub fn unset_panes(&mut self, sheet: String) -> Result<()> {
+        self.inner
+            .unset_panes(&sheet)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Get the current freeze pane cell reference for a sheet, or null if none.
+    #[napi]
+    pub fn get_panes(&self, sheet: String) -> Result<Option<String>> {
+        self.inner
+            .get_panes(&sheet)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
     /// Set a hyperlink on a cell.
     #[napi]
     pub fn set_cell_hyperlink(
@@ -1149,6 +1303,48 @@ impl Workbook {
         self.inner
             .delete_cell_hyperlink(&sheet, &cell)
             .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Get all rows with their data from a sheet.
+    /// Only rows that contain at least one cell are included.
+    #[napi]
+    pub fn get_rows(&self, sheet: String) -> Result<Vec<JsRowData>> {
+        let rows = self
+            .inner
+            .get_rows(&sheet)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+
+        Ok(rows
+            .into_iter()
+            .map(|(row_num, cells)| JsRowData {
+                row: row_num,
+                cells: cells
+                    .into_iter()
+                    .map(|(col, val)| cell_value_to_row_cell(col, val))
+                    .collect(),
+            })
+            .collect())
+    }
+
+    /// Get all columns with their data from a sheet.
+    /// Only columns that have data are included.
+    #[napi]
+    pub fn get_cols(&self, sheet: String) -> Result<Vec<JsColData>> {
+        let cols = self
+            .inner
+            .get_cols(&sheet)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+
+        Ok(cols
+            .into_iter()
+            .map(|(col_name, cells)| JsColData {
+                column: col_name,
+                cells: cells
+                    .into_iter()
+                    .map(|(row, val)| cell_value_to_col_cell(row, val))
+                    .collect(),
+            })
+            .collect())
     }
 }
 

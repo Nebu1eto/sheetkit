@@ -4,11 +4,98 @@
 //! business logic decoupled from the [`Workbook`](crate::workbook::Workbook)
 //! wrapper.
 
-use sheetkit_xml::worksheet::{Row, WorksheetXml};
+use sheetkit_xml::worksheet::{cell_types, Row, WorksheetXml};
 
+use crate::cell::CellValue;
 use crate::error::{Error, Result};
-use crate::utils::cell_ref::{cell_name_to_coordinates, coordinates_to_cell_name};
+use crate::sst::SharedStringTable;
+use crate::utils::cell_ref::{
+    cell_name_to_coordinates, column_number_to_name, coordinates_to_cell_name,
+};
 use crate::utils::constants::{MAX_ROWS, MAX_ROW_HEIGHT};
+
+/// Get all rows with their data from a worksheet.
+///
+/// Returns a Vec of `(row_number, Vec<(column_name, CellValue)>)` tuples.
+/// Only rows that contain at least one cell are included (sparse).
+/// The SST is used to resolve shared string references.
+#[allow(clippy::type_complexity)]
+pub fn get_rows(
+    ws: &WorksheetXml,
+    sst: &SharedStringTable,
+) -> Result<Vec<(u32, Vec<(String, CellValue)>)>> {
+    let mut result = Vec::new();
+
+    for row in &ws.sheet_data.rows {
+        if row.cells.is_empty() {
+            continue;
+        }
+
+        let mut cells = Vec::new();
+        for cell in &row.cells {
+            let (col_num, _) = cell_name_to_coordinates(&cell.r)?;
+            let col_name = column_number_to_name(col_num)?;
+            let value = resolve_cell_value(cell, sst);
+            cells.push((col_name, value));
+        }
+
+        result.push((row.r, cells));
+    }
+
+    Ok(result)
+}
+
+/// Resolve the value of an XML cell to a [`CellValue`], using the SST for
+/// shared string lookups.
+fn resolve_cell_value(cell: &sheetkit_xml::worksheet::Cell, sst: &SharedStringTable) -> CellValue {
+    // Check for formula first.
+    if let Some(ref formula) = cell.f {
+        let expr = formula.value.clone().unwrap_or_default();
+        let cached = match (cell.t.as_deref(), &cell.v) {
+            (Some("b"), Some(v)) => Some(Box::new(CellValue::Bool(v == "1"))),
+            (Some("e"), Some(v)) => Some(Box::new(CellValue::Error(v.clone()))),
+            (_, Some(v)) => v
+                .parse::<f64>()
+                .ok()
+                .map(|n| Box::new(CellValue::Number(n))),
+            _ => None,
+        };
+        return CellValue::Formula {
+            expr,
+            result: cached,
+        };
+    }
+
+    let cell_type = cell.t.as_deref();
+    let cell_value = cell.v.as_deref();
+
+    match (cell_type, cell_value) {
+        (Some(cell_types::SHARED_STRING), Some(v)) => {
+            let idx: usize = match v.parse() {
+                Ok(i) => i,
+                Err(_) => return CellValue::Empty,
+            };
+            let s = sst.get(idx).unwrap_or("").to_string();
+            CellValue::String(s)
+        }
+        (Some(cell_types::BOOLEAN), Some(v)) => CellValue::Bool(v == "1"),
+        (Some(cell_types::ERROR), Some(v)) => CellValue::Error(v.to_string()),
+        (Some(cell_types::INLINE_STRING), _) => {
+            let s = cell
+                .is
+                .as_ref()
+                .and_then(|is| is.t.clone())
+                .unwrap_or_default();
+            CellValue::String(s)
+        }
+        (Some(cell_types::FORMULA_STRING), Some(v)) => CellValue::String(v.to_string()),
+        (None | Some(cell_types::NUMBER), Some(v)) => match v.parse::<f64>() {
+            Ok(n) => CellValue::Number(n),
+            Err(_) => CellValue::Empty,
+        },
+        _ => CellValue::Empty,
+    }
+}
 
 /// Insert `count` empty rows starting at `start_row`, shifting existing rows
 /// at and below `start_row` downward.
@@ -662,5 +749,286 @@ mod tests {
         set_row_outline_level(&mut ws, 1, 3).unwrap();
         set_row_outline_level(&mut ws, 1, 0).unwrap();
         assert_eq!(get_row_outline_level(&ws, 1), 0);
+    }
+
+    // -- get_rows tests --
+
+    #[test]
+    fn test_get_rows_empty_sheet() {
+        let ws = WorksheetXml::default();
+        let sst = SharedStringTable::new();
+        let rows = get_rows(&ws, &sst).unwrap();
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn test_get_rows_returns_numeric_values() {
+        let ws = sample_ws();
+        let sst = SharedStringTable::new();
+        let rows = get_rows(&ws, &sst).unwrap();
+
+        assert_eq!(rows.len(), 3);
+
+        // Row 1: A1=10, B1=20
+        assert_eq!(rows[0].0, 1);
+        assert_eq!(rows[0].1.len(), 2);
+        assert_eq!(rows[0].1[0].0, "A");
+        assert_eq!(rows[0].1[0].1, CellValue::Number(10.0));
+        assert_eq!(rows[0].1[1].0, "B");
+        assert_eq!(rows[0].1[1].1, CellValue::Number(20.0));
+
+        // Row 2: A2=30
+        assert_eq!(rows[1].0, 2);
+        assert_eq!(rows[1].1.len(), 1);
+        assert_eq!(rows[1].1[0].0, "A");
+        assert_eq!(rows[1].1[0].1, CellValue::Number(30.0));
+
+        // Row 5: C5=50 (sparse -- rows 3 and 4 skipped)
+        assert_eq!(rows[2].0, 5);
+        assert_eq!(rows[2].1.len(), 1);
+        assert_eq!(rows[2].1[0].0, "C");
+        assert_eq!(rows[2].1[0].1, CellValue::Number(50.0));
+    }
+
+    #[test]
+    fn test_get_rows_shared_strings() {
+        let mut sst = SharedStringTable::new();
+        sst.add("hello");
+        sst.add("world");
+
+        let mut ws = WorksheetXml::default();
+        ws.sheet_data = SheetData {
+            rows: vec![Row {
+                r: 1,
+                spans: None,
+                s: None,
+                custom_format: None,
+                ht: None,
+                hidden: None,
+                custom_height: None,
+                outline_level: None,
+                cells: vec![
+                    Cell {
+                        r: "A1".to_string(),
+                        s: None,
+                        t: Some("s".to_string()),
+                        v: Some("0".to_string()),
+                        f: None,
+                        is: None,
+                    },
+                    Cell {
+                        r: "B1".to_string(),
+                        s: None,
+                        t: Some("s".to_string()),
+                        v: Some("1".to_string()),
+                        f: None,
+                        is: None,
+                    },
+                ],
+            }],
+        };
+
+        let rows = get_rows(&ws, &sst).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].1[0].1, CellValue::String("hello".to_string()));
+        assert_eq!(rows[0].1[1].1, CellValue::String("world".to_string()));
+    }
+
+    #[test]
+    fn test_get_rows_mixed_types() {
+        let mut sst = SharedStringTable::new();
+        sst.add("text");
+
+        let mut ws = WorksheetXml::default();
+        ws.sheet_data = SheetData {
+            rows: vec![Row {
+                r: 1,
+                spans: None,
+                s: None,
+                custom_format: None,
+                ht: None,
+                hidden: None,
+                custom_height: None,
+                outline_level: None,
+                cells: vec![
+                    Cell {
+                        r: "A1".to_string(),
+                        s: None,
+                        t: Some("s".to_string()),
+                        v: Some("0".to_string()),
+                        f: None,
+                        is: None,
+                    },
+                    Cell {
+                        r: "B1".to_string(),
+                        s: None,
+                        t: None,
+                        v: Some("42.5".to_string()),
+                        f: None,
+                        is: None,
+                    },
+                    Cell {
+                        r: "C1".to_string(),
+                        s: None,
+                        t: Some("b".to_string()),
+                        v: Some("1".to_string()),
+                        f: None,
+                        is: None,
+                    },
+                    Cell {
+                        r: "D1".to_string(),
+                        s: None,
+                        t: Some("e".to_string()),
+                        v: Some("#DIV/0!".to_string()),
+                        f: None,
+                        is: None,
+                    },
+                ],
+            }],
+        };
+
+        let rows = get_rows(&ws, &sst).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].1[0].1, CellValue::String("text".to_string()));
+        assert_eq!(rows[0].1[1].1, CellValue::Number(42.5));
+        assert_eq!(rows[0].1[2].1, CellValue::Bool(true));
+        assert_eq!(rows[0].1[3].1, CellValue::Error("#DIV/0!".to_string()));
+    }
+
+    #[test]
+    fn test_get_rows_skips_rows_with_no_cells() {
+        let mut ws = WorksheetXml::default();
+        ws.sheet_data = SheetData {
+            rows: vec![
+                Row {
+                    r: 1,
+                    spans: None,
+                    s: None,
+                    custom_format: None,
+                    ht: None,
+                    hidden: None,
+                    custom_height: None,
+                    outline_level: None,
+                    cells: vec![Cell {
+                        r: "A1".to_string(),
+                        s: None,
+                        t: None,
+                        v: Some("1".to_string()),
+                        f: None,
+                        is: None,
+                    }],
+                },
+                // Row 2 exists but has no cells (e.g., only has row height set).
+                Row {
+                    r: 2,
+                    spans: None,
+                    s: None,
+                    custom_format: None,
+                    ht: Some(30.0),
+                    hidden: None,
+                    custom_height: Some(true),
+                    outline_level: None,
+                    cells: vec![],
+                },
+                Row {
+                    r: 3,
+                    spans: None,
+                    s: None,
+                    custom_format: None,
+                    ht: None,
+                    hidden: None,
+                    custom_height: None,
+                    outline_level: None,
+                    cells: vec![Cell {
+                        r: "A3".to_string(),
+                        s: None,
+                        t: None,
+                        v: Some("3".to_string()),
+                        f: None,
+                        is: None,
+                    }],
+                },
+            ],
+        };
+
+        let sst = SharedStringTable::new();
+        let rows = get_rows(&ws, &sst).unwrap();
+        // Only rows 1 and 3 should be returned (row 2 has no cells).
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].0, 1);
+        assert_eq!(rows[1].0, 3);
+    }
+
+    #[test]
+    fn test_get_rows_with_formula() {
+        let mut ws = WorksheetXml::default();
+        ws.sheet_data = SheetData {
+            rows: vec![Row {
+                r: 1,
+                spans: None,
+                s: None,
+                custom_format: None,
+                ht: None,
+                hidden: None,
+                custom_height: None,
+                outline_level: None,
+                cells: vec![Cell {
+                    r: "A1".to_string(),
+                    s: None,
+                    t: None,
+                    v: Some("42".to_string()),
+                    f: Some(sheetkit_xml::worksheet::CellFormula {
+                        t: None,
+                        reference: None,
+                        si: None,
+                        value: Some("B1+C1".to_string()),
+                    }),
+                    is: None,
+                }],
+            }],
+        };
+
+        let sst = SharedStringTable::new();
+        let rows = get_rows(&ws, &sst).unwrap();
+        assert_eq!(rows.len(), 1);
+        match &rows[0].1[0].1 {
+            CellValue::Formula { expr, result } => {
+                assert_eq!(expr, "B1+C1");
+                assert_eq!(*result, Some(Box::new(CellValue::Number(42.0))));
+            }
+            _ => panic!("expected Formula"),
+        }
+    }
+
+    #[test]
+    fn test_get_rows_with_inline_string() {
+        let mut ws = WorksheetXml::default();
+        ws.sheet_data = SheetData {
+            rows: vec![Row {
+                r: 1,
+                spans: None,
+                s: None,
+                custom_format: None,
+                ht: None,
+                hidden: None,
+                custom_height: None,
+                outline_level: None,
+                cells: vec![Cell {
+                    r: "A1".to_string(),
+                    s: None,
+                    t: Some("inlineStr".to_string()),
+                    v: None,
+                    f: None,
+                    is: Some(sheetkit_xml::worksheet::InlineString {
+                        t: Some("inline text".to_string()),
+                    }),
+                }],
+            }],
+        };
+
+        let sst = SharedStringTable::new();
+        let rows = get_rows(&ws, &sst).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].1[0].1, CellValue::String("inline text".to_string()));
     }
 }
