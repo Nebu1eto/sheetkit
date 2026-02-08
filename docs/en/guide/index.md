@@ -34,6 +34,9 @@ SheetKit is a Rust library for reading and writing Excel (.xlsx) files, with fir
   - StreamWriter
   - Document Properties
   - Workbook Protection
+  - Sparklines
+  - Defined Names
+  - Sheet Protection
   - Examples
   - Utility Functions
 

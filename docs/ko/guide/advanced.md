@@ -713,6 +713,214 @@ await wb3.saveWithPassword('encrypted_copy.xlsx', 'newpassword');
 
 ---
 
+### 스파크라인
+
+스파크라인은 개별 셀 안에 렌더링되는 미니 차트입니다. 라인, 컬럼, 승패 세 가지 유형을 지원합니다. 스타일 프리셋(0-35)은 Excel 기본 제공 스파크라인 스타일에 대응합니다.
+
+#### Rust
+
+```rust
+use sheetkit::{SparklineConfig, SparklineType, Workbook};
+
+let mut wb = Workbook::new();
+
+// 데이터 입력
+for i in 1..=10 {
+    wb.set_cell_value("Sheet1", &format!("A{i}"), CellValue::from(i as f64 * 1.5))?;
+}
+
+// B1 셀에 컬럼 스파크라인 추가
+let mut config = SparklineConfig::new("Sheet1!A1:A10", "B1");
+config.sparkline_type = SparklineType::Column;
+config.high_point = true;
+config.low_point = true;
+config.style = Some(5);
+
+wb.add_sparkline("Sheet1", &config)?;
+
+// 스파크라인 조회
+let sparklines = wb.get_sparklines("Sheet1")?;
+
+// 위치 기준으로 스파크라인 삭제
+wb.remove_sparkline("Sheet1", "B1")?;
+```
+
+#### TypeScript
+
+```typescript
+const wb = new Workbook();
+
+// 데이터 입력
+for (let i = 1; i <= 10; i++) {
+    wb.setCellValue('Sheet1', `A${i}`, i * 1.5);
+}
+
+// B1 셀에 컬럼 스파크라인 추가
+wb.addSparkline('Sheet1', {
+    dataRange: 'Sheet1!A1:A10',
+    location: 'B1',
+    sparklineType: 'column',
+    highPoint: true,
+    lowPoint: true,
+    style: 5,
+});
+
+// 스파크라인 조회
+const sparklines = wb.getSparklines('Sheet1');
+
+// 위치 기준으로 스파크라인 삭제
+wb.removeSparkline('Sheet1', 'B1');
+```
+
+#### SparklineConfig 필드
+
+| 필드 | Rust 타입 | TS 타입 | 설명 |
+|------|-----------|---------|------|
+| `data_range` / `dataRange` | `String` | `string` | 데이터 소스 범위 (예: `"Sheet1!A1:A10"`) |
+| `location` | `String` | `string` | 스파크라인이 렌더링되는 셀 |
+| `sparkline_type` / `sparklineType` | `SparklineType` | `string?` | `"line"`, `"column"`, `"stacked"` (승패) |
+| `markers` | `bool` | `boolean?` | 데이터 마커 표시 |
+| `high_point` / `highPoint` | `bool` | `boolean?` | 최고점 강조 |
+| `low_point` / `lowPoint` | `bool` | `boolean?` | 최저점 강조 |
+| `first_point` / `firstPoint` | `bool` | `boolean?` | 첫 번째 포인트 강조 |
+| `last_point` / `lastPoint` | `bool` | `boolean?` | 마지막 포인트 강조 |
+| `negative_points` / `negativePoints` | `bool` | `boolean?` | 음수 값 강조 |
+| `show_axis` / `showAxis` | `bool` | `boolean?` | 가로축 표시 |
+| `line_weight` / `lineWeight` | `Option<f64>` | `number?` | 선 두께 (포인트) |
+| `style` | `Option<u32>` | `number?` | 스타일 프리셋 인덱스 (0-35) |
+
+---
+
+### 정의된 이름
+
+정의된 이름은 셀 범위나 수식에 사람이 읽기 쉬운 이름을 부여합니다. 워크북 범위(모든 곳에서 사용 가능)와 시트 범위(해당 시트에서만 사용 가능)를 지원합니다.
+
+#### Rust
+
+```rust
+use sheetkit::Workbook;
+
+let mut wb = Workbook::new();
+
+// 워크북 범위 이름
+wb.set_defined_name("SalesTotal", "Sheet1!$B$10", None, None)?;
+
+// 시트 범위 이름 (주석 포함)
+wb.set_defined_name(
+    "LocalRange", "Sheet1!$A$1:$D$10",
+    Some("Sheet1"), Some("Local data range"),
+)?;
+
+// 정의된 이름 조회
+if let Some(info) = wb.get_defined_name("SalesTotal", None)? {
+    println!("Value: {}", info.value);
+}
+
+// 모든 정의된 이름 목록
+let names = wb.get_all_defined_names();
+
+// 정의된 이름 삭제
+wb.delete_defined_name("SalesTotal", None)?;
+```
+
+#### TypeScript
+
+```typescript
+const wb = new Workbook();
+
+// 워크북 범위 이름
+wb.setDefinedName({
+    name: 'SalesTotal',
+    value: 'Sheet1!$B$10',
+});
+
+// 시트 범위 이름 (주석 포함)
+wb.setDefinedName({
+    name: 'LocalRange',
+    value: 'Sheet1!$A$1:$D$10',
+    scope: 'Sheet1',
+    comment: 'Local data range',
+});
+
+// 정의된 이름 조회 (null = 워크북 범위)
+const info = wb.getDefinedName('SalesTotal', null);
+
+// 모든 정의된 이름 목록
+const names = wb.getDefinedNames();
+
+// 정의된 이름 삭제
+wb.deleteDefinedName('SalesTotal', null);
+```
+
+---
+
+### 시트 보호
+
+시트 보호는 개별 워크시트의 편집 작업을 제한합니다. 워크북 보호(구조적 변경 방지)와 달리, 시트 보호는 서식 지정, 삽입, 삭제, 정렬, 필터링 등 셀 수준 작업을 제어합니다. 선택적으로 비밀번호를 설정할 수 있습니다.
+
+#### Rust
+
+```rust
+use sheetkit::Workbook;
+use sheetkit::sheet::SheetProtectionConfig;
+
+let mut wb = Workbook::new();
+
+// 비밀번호로 시트 보호 (정렬 허용)
+wb.protect_sheet("Sheet1", SheetProtectionConfig {
+    password: Some("secret".into()),
+    sort: true,
+    auto_filter: true,
+    ..Default::default()
+})?;
+
+// 시트 보호 여부 확인
+let is_protected: bool = wb.is_sheet_protected("Sheet1")?;
+
+// 보호 해제
+wb.unprotect_sheet("Sheet1")?;
+```
+
+#### TypeScript
+
+```typescript
+const wb = new Workbook();
+
+// 비밀번호로 시트 보호 (정렬 허용)
+wb.protectSheet('Sheet1', {
+    password: 'secret',
+    sort: true,
+    autoFilter: true,
+});
+
+// 시트 보호 여부 확인
+const isProtected: boolean = wb.isSheetProtected('Sheet1');
+
+// 보호 해제
+wb.unprotectSheet('Sheet1');
+```
+
+#### SheetProtectionConfig 필드
+
+| 필드 | Rust 타입 | TS 타입 | 설명 |
+|------|-----------|---------|------|
+| `password` | `Option<String>` | `string?` | 선택적 비밀번호 (레거시 Excel 해시) |
+| `select_locked_cells` / `selectLockedCells` | `bool` | `boolean?` | 잠긴 셀 선택 허용 |
+| `select_unlocked_cells` / `selectUnlockedCells` | `bool` | `boolean?` | 잠기지 않은 셀 선택 허용 |
+| `format_cells` / `formatCells` | `bool` | `boolean?` | 셀 서식 지정 허용 |
+| `format_columns` / `formatColumns` | `bool` | `boolean?` | 열 서식 지정 허용 |
+| `format_rows` / `formatRows` | `bool` | `boolean?` | 행 서식 지정 허용 |
+| `insert_columns` / `insertColumns` | `bool` | `boolean?` | 열 삽입 허용 |
+| `insert_rows` / `insertRows` | `bool` | `boolean?` | 행 삽입 허용 |
+| `insert_hyperlinks` / `insertHyperlinks` | `bool` | `boolean?` | 하이퍼링크 삽입 허용 |
+| `delete_columns` / `deleteColumns` | `bool` | `boolean?` | 열 삭제 허용 |
+| `delete_rows` / `deleteRows` | `bool` | `boolean?` | 행 삭제 허용 |
+| `sort` | `bool` | `boolean?` | 정렬 허용 |
+| `auto_filter` / `autoFilter` | `bool` | `boolean?` | 자동 필터 사용 허용 |
+| `pivot_tables` / `pivotTables` | `bool` | `boolean?` | 피벗 테이블 사용 허용 |
+
+---
+
 ## 예제 프로젝트
 
 모든 기능을 보여주는 완전한 예제 프로젝트가 저장소에 포함되어 있습니다:
@@ -720,7 +928,7 @@ await wb3.saveWithPassword('encrypted_copy.xlsx', 'newpassword');
 - **Rust**: `examples/rust/` -- 독립된 Cargo 프로젝트 (해당 디렉토리에서 `cargo run` 실행)
 - **Node.js**: `examples/node/` -- TypeScript 프로젝트 (네이티브 모듈을 먼저 빌드한 후 `npx tsx index.ts`로 실행)
 
-각 예제는 워크북 생성, 셀 값 설정, 시트 관리, 스타일 적용, 차트와 이미지 추가, 데이터 유효성 검사, 코멘트, 자동 필터, 대용량 데이터 스트리밍, 문서 속성, 워크북 보호, 셀 병합, 하이퍼링크, 조건부 서식, 틀 고정, 페이지 레이아웃, 수식 계산, 피벗 테이블, 파일 암호화 등 모든 기능을 순서대로 시연합니다.
+각 예제는 워크북 생성, 셀 값 설정, 시트 관리, 스타일 적용, 차트와 이미지 추가, 데이터 유효성 검사, 코멘트, 자동 필터, 대용량 데이터 스트리밍, 문서 속성, 워크북 보호, 셀 병합, 하이퍼링크, 조건부 서식, 틀 고정, 페이지 레이아웃, 수식 계산, 피벗 테이블, 파일 암호화, 스파크라인, 정의된 이름, 시트 보호 등 모든 기능을 순서대로 시연합니다.
 
 ---
 
