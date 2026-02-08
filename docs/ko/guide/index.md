@@ -64,7 +64,7 @@ sheetkit = "0.1"
 ### Node.js
 
 ```bash
-npm install sheetkit
+npm install @sheetkit/node
 ```
 
 > Node.js 패키지는 napi-rs로 빌드된 네이티브 애드온입니다. 설치 중에 네이티브 모듈을 컴파일하려면 Rust 빌드 도구 체인(rustc, cargo)이 필요합니다.
@@ -89,7 +89,7 @@ fn main() -> sheetkit::Result<()> {
 ### TypeScript / Node.js
 
 ```typescript
-import { Workbook } from 'sheetkit';
+import { Workbook } from '@sheetkit/node';
 
 const wb = new Workbook();
 wb.setCellValue('Sheet1', 'A1', 'Hello');

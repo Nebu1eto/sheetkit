@@ -45,7 +45,7 @@ fn main() -> sheetkit::Result<()> {
 **TypeScript:**
 
 ```typescript
-import { Workbook } from "sheetkit";
+import { Workbook } from "@sheetkit/node";
 
 const wb = new Workbook();
 wb.setCellValue("Sheet1", "A1", "Hello");
@@ -65,7 +65,7 @@ sheetkit = "0.1"
 **Node.js:**
 
 ```bash
-npm install sheetkit
+npm install @sheetkit/node
 ```
 
 ## 문서

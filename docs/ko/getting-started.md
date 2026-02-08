@@ -19,7 +19,7 @@ sheetkit = "0.1"
 npm으로 설치합니다. 네이티브 컴파일을 위해 Rust 툴체인이 필요합니다.
 
 ```bash
-npm install sheetkit
+npm install @sheetkit/node
 ```
 
 ## 빠른 시작
@@ -53,7 +53,7 @@ fn main() -> sheetkit::Result<()> {
 **TypeScript**
 
 ```typescript
-import { Workbook } from "sheetkit";
+import { Workbook } from "@sheetkit/node";
 
 const wb = new Workbook();
 
@@ -96,7 +96,7 @@ fn main() -> sheetkit::Result<()> {
 **TypeScript**
 
 ```typescript
-import { Workbook } from "sheetkit";
+import { Workbook } from "@sheetkit/node";
 
 const wb = await Workbook.open("input.xlsx");
 
@@ -387,7 +387,7 @@ let wb2 = Workbook::open_with_password("encrypted.xlsx", "secret")?;
 **TypeScript**
 
 ```typescript
-import { Workbook } from "sheetkit";
+import { Workbook } from "@sheetkit/node";
 
 // 비밀번호로 저장
 const wb = new Workbook();

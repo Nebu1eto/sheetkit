@@ -19,7 +19,7 @@ sheetkit = "0.1"
 Install via npm. A Rust toolchain is required for native compilation.
 
 ```bash
-npm install sheetkit
+npm install @sheetkit/node
 ```
 
 ## Quick Start
@@ -53,7 +53,7 @@ fn main() -> sheetkit::Result<()> {
 **TypeScript**
 
 ```typescript
-import { Workbook } from "sheetkit";
+import { Workbook } from "@sheetkit/node";
 
 const wb = new Workbook();
 
@@ -96,7 +96,7 @@ fn main() -> sheetkit::Result<()> {
 **TypeScript**
 
 ```typescript
-import { Workbook } from "sheetkit";
+import { Workbook } from "@sheetkit/node";
 
 const wb = await Workbook.open("input.xlsx");
 
@@ -387,7 +387,7 @@ let wb2 = Workbook::open_with_password("encrypted.xlsx", "secret")?;
 **TypeScript**
 
 ```typescript
-import { Workbook } from "sheetkit";
+import { Workbook } from "@sheetkit/node";
 
 // Save with password
 const wb = new Workbook();

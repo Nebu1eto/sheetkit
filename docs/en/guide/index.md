@@ -64,7 +64,7 @@ sheetkit = "0.1"
 ### Node.js
 
 ```bash
-npm install sheetkit
+npm install @sheetkit/node
 ```
 
 > The Node.js package is a native addon built with napi-rs. A Rust build toolchain (rustc, cargo) is required to compile the native module during installation.
@@ -89,7 +89,7 @@ fn main() -> sheetkit::Result<()> {
 ### TypeScript / Node.js
 
 ```typescript
-import { Workbook } from 'sheetkit';
+import { Workbook } from '@sheetkit/node';
 
 const wb = new Workbook();
 wb.setCellValue('Sheet1', 'A1', 'Hello');

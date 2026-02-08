@@ -692,7 +692,7 @@ match Workbook::open("encrypted.xlsx") {
 #### TypeScript
 
 ```typescript
-import { Workbook } from 'sheetkit';
+import { Workbook } from '@sheetkit/node';
 
 const wb = new Workbook();
 wb.setCellValue('Sheet1', 'A1', 'Confidential');

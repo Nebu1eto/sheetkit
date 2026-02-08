@@ -17,7 +17,7 @@ let wb = Workbook::new();
 **TypeScript:**
 
 ```typescript
-import { Workbook } from "sheetkit";
+import { Workbook } from "@sheetkit/node";
 
 const wb = new Workbook();
 ```

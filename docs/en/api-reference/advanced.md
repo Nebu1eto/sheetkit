@@ -1236,7 +1236,7 @@ wb.add_sparkline("Sheet1", &config).unwrap();
 **TypeScript:**
 
 ```typescript
-import { Workbook } from 'sheetkit';
+import { Workbook } from '@sheetkit/node';
 
 const wb = new Workbook();
 wb.addSparkline('Sheet1', {
