@@ -29,10 +29,10 @@ describe('Defined Names', () => {
     });
     const info = wb.getDefinedName('SalesData');
     expect(info).not.toBeNull();
-    expect(info!.name).toBe('SalesData');
-    expect(info!.value).toBe('Sheet1!$A$1:$D$10');
-    expect(info!.scope).toBeUndefined();
-    expect(info!.comment).toBeUndefined();
+    expect(info?.name).toBe('SalesData');
+    expect(info?.value).toBe('Sheet1!$A$1:$D$10');
+    expect(info?.scope).toBeUndefined();
+    expect(info?.comment).toBeUndefined();
   });
 
   it('should set and get a sheet-scoped defined name', () => {
@@ -45,10 +45,10 @@ describe('Defined Names', () => {
     });
     const info = wb.getDefinedName('LocalRange', 'Sheet1');
     expect(info).not.toBeNull();
-    expect(info!.name).toBe('LocalRange');
-    expect(info!.value).toBe('Sheet1!$B$2:$C$5');
-    expect(info!.scope).toBe('Sheet1');
-    expect(info!.comment).toBe('A local range');
+    expect(info?.name).toBe('LocalRange');
+    expect(info?.value).toBe('Sheet1!$B$2:$C$5');
+    expect(info?.scope).toBe('Sheet1');
+    expect(info?.comment).toBe('A local range');
   });
 
   it('should return null for non-existent defined name', () => {
@@ -108,10 +108,10 @@ describe('Defined Names', () => {
     expect(all.length).toBe(2);
 
     const wbScoped = wb.getDefinedName('Total');
-    expect(wbScoped!.value).toBe('Sheet1!$A$1');
+    expect(wbScoped?.value).toBe('Sheet1!$A$1');
 
     const sheetScoped = wb.getDefinedName('Total', 'Sheet1');
-    expect(sheetScoped!.value).toBe('Sheet1!$B$1');
+    expect(sheetScoped?.value).toBe('Sheet1!$B$1');
   });
 
   it('should preserve defined names across save/open roundtrip', async () => {
@@ -134,13 +134,13 @@ describe('Defined Names', () => {
 
     const revenue = wb2.getDefinedName('Revenue');
     expect(revenue).not.toBeNull();
-    expect(revenue!.value).toBe('Sheet1!$E$1:$E$100');
-    expect(revenue!.comment).toBe('Revenue column');
+    expect(revenue?.value).toBe('Sheet1!$E$1:$E$100');
+    expect(revenue?.comment).toBe('Revenue column');
 
     const local = wb2.getDefinedName('Local', 'Sheet1');
     expect(local).not.toBeNull();
-    expect(local!.value).toBe('Sheet1!$A$1');
-    expect(local!.scope).toBe('Sheet1');
+    expect(local?.value).toBe('Sheet1!$A$1');
+    expect(local?.scope).toBe('Sheet1');
   });
 });
 
