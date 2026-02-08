@@ -443,6 +443,113 @@ impl Workbook {
     }
 
     // -----------------------------------------------------------------------
+    // Style operations
+    // -----------------------------------------------------------------------
+
+    /// Register a new style and return its ID.
+    ///
+    /// The style is deduplicated: if an identical style already exists in
+    /// the stylesheet, the existing ID is returned.
+    pub fn add_style(&mut self, style: &crate::style::Style) -> Result<u32> {
+        crate::style::add_style(&mut self.stylesheet, style)
+    }
+
+    /// Get the style ID applied to a cell.
+    ///
+    /// Returns `None` if the cell does not exist or has no explicit style
+    /// (i.e. uses the default style 0).
+    pub fn get_cell_style(&self, sheet: &str, cell: &str) -> Result<Option<u32>> {
+        let ws = self.worksheet_ref(sheet)?;
+
+        let (col, row) = cell_name_to_coordinates(cell)?;
+        let cell_ref = crate::utils::cell_ref::coordinates_to_cell_name(col, row)?;
+
+        // Find the row.
+        let xml_row = match ws.sheet_data.rows.iter().find(|r| r.r == row) {
+            Some(r) => r,
+            None => return Ok(None),
+        };
+
+        // Find the cell.
+        let xml_cell = match xml_row.cells.iter().find(|c| c.r == cell_ref) {
+            Some(c) => c,
+            None => return Ok(None),
+        };
+
+        Ok(xml_cell.s)
+    }
+
+    /// Set the style ID for a cell.
+    ///
+    /// If the cell does not exist, an empty cell with just the style is created.
+    /// The `style_id` must be a valid index in cellXfs.
+    pub fn set_cell_style(&mut self, sheet: &str, cell: &str, style_id: u32) -> Result<()> {
+        // Validate the style_id.
+        if style_id as usize >= self.stylesheet.cell_xfs.xfs.len() {
+            return Err(Error::StyleNotFound { id: style_id });
+        }
+
+        let ws = self
+            .worksheets
+            .iter_mut()
+            .find(|(name, _)| name == sheet)
+            .map(|(_, ws)| ws)
+            .ok_or_else(|| Error::SheetNotFound {
+                name: sheet.to_string(),
+            })?;
+
+        let (col, row_num) = cell_name_to_coordinates(cell)?;
+        let cell_ref = crate::utils::cell_ref::coordinates_to_cell_name(col, row_num)?;
+
+        // Find or create the row (keep rows sorted by row number).
+        let row_idx = match ws.sheet_data.rows.iter().position(|r| r.r >= row_num) {
+            Some(idx) if ws.sheet_data.rows[idx].r == row_num => idx,
+            Some(idx) => {
+                ws.sheet_data.rows.insert(idx, new_row(row_num));
+                idx
+            }
+            None => {
+                ws.sheet_data.rows.push(new_row(row_num));
+                ws.sheet_data.rows.len() - 1
+            }
+        };
+
+        let row = &mut ws.sheet_data.rows[row_idx];
+
+        // Find or create the cell.
+        let cell_idx = match row.cells.iter().position(|c| c.r == cell_ref) {
+            Some(idx) => idx,
+            None => {
+                // Insert in column order.
+                let insert_pos = row
+                    .cells
+                    .iter()
+                    .position(|c| {
+                        cell_name_to_coordinates(&c.r)
+                            .map(|(c_col, _)| c_col > col)
+                            .unwrap_or(false)
+                    })
+                    .unwrap_or(row.cells.len());
+                row.cells.insert(
+                    insert_pos,
+                    Cell {
+                        r: cell_ref,
+                        s: None,
+                        t: None,
+                        v: None,
+                        f: None,
+                        is: None,
+                    },
+                );
+                insert_pos
+            }
+        };
+
+        row.cells[cell_idx].s = Some(style_id);
+        Ok(())
+    }
+
+    // -----------------------------------------------------------------------
     // Private helpers
     // -----------------------------------------------------------------------
 
@@ -1077,6 +1184,196 @@ mod tests {
 
         let wb2 = Workbook::open(&path).unwrap();
         assert_eq!(wb2.sheet_names(), vec!["Overview", "Data", "Summary"]);
+    }
+
+    // -----------------------------------------------------------------------
+    // Style operation tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_add_style_returns_id() {
+        use crate::style::{FontStyle, Style};
+
+        let mut wb = Workbook::new();
+        let style = Style {
+            font: Some(FontStyle {
+                bold: true,
+                ..FontStyle::default()
+            }),
+            ..Style::default()
+        };
+        let id = wb.add_style(&style).unwrap();
+        assert!(id > 0);
+    }
+
+    #[test]
+    fn test_get_cell_style_unstyled_cell_returns_none() {
+        let wb = Workbook::new();
+        let result = wb.get_cell_style("Sheet1", "A1").unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_set_cell_style_on_existing_value() {
+        use crate::style::{FontStyle, Style};
+
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", "Hello").unwrap();
+
+        let style = Style {
+            font: Some(FontStyle {
+                bold: true,
+                ..FontStyle::default()
+            }),
+            ..Style::default()
+        };
+        let style_id = wb.add_style(&style).unwrap();
+        wb.set_cell_style("Sheet1", "A1", style_id).unwrap();
+
+        let retrieved_id = wb.get_cell_style("Sheet1", "A1").unwrap();
+        assert_eq!(retrieved_id, Some(style_id));
+
+        // The value should still be there.
+        let val = wb.get_cell_value("Sheet1", "A1").unwrap();
+        assert_eq!(val, CellValue::String("Hello".to_string()));
+    }
+
+    #[test]
+    fn test_set_cell_style_on_empty_cell_creates_cell() {
+        use crate::style::{FontStyle, Style};
+
+        let mut wb = Workbook::new();
+        let style = Style {
+            font: Some(FontStyle {
+                bold: true,
+                ..FontStyle::default()
+            }),
+            ..Style::default()
+        };
+        let style_id = wb.add_style(&style).unwrap();
+
+        // Set style on a cell that doesn't exist yet.
+        wb.set_cell_style("Sheet1", "B5", style_id).unwrap();
+
+        let retrieved_id = wb.get_cell_style("Sheet1", "B5").unwrap();
+        assert_eq!(retrieved_id, Some(style_id));
+
+        // The cell value should be empty.
+        let val = wb.get_cell_value("Sheet1", "B5").unwrap();
+        assert_eq!(val, CellValue::Empty);
+    }
+
+    #[test]
+    fn test_set_cell_style_invalid_id() {
+        let mut wb = Workbook::new();
+        let result = wb.set_cell_style("Sheet1", "A1", 999);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::StyleNotFound { .. }));
+    }
+
+    #[test]
+    fn test_set_cell_style_sheet_not_found() {
+        let mut wb = Workbook::new();
+        let style = crate::style::Style::default();
+        let style_id = wb.add_style(&style).unwrap();
+        let result = wb.set_cell_style("NoSuchSheet", "A1", style_id);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::SheetNotFound { .. }));
+    }
+
+    #[test]
+    fn test_get_cell_style_sheet_not_found() {
+        let wb = Workbook::new();
+        let result = wb.get_cell_style("NoSuchSheet", "A1");
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::SheetNotFound { .. }));
+    }
+
+    #[test]
+    fn test_style_roundtrip_save_open() {
+        use crate::style::{
+            AlignmentStyle, BorderLineStyle, BorderSideStyle, BorderStyle, FillStyle, FontStyle,
+            HorizontalAlign, NumFmtStyle, PatternType, Style, StyleColor, VerticalAlign,
+        };
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("style_roundtrip.xlsx");
+
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", "Styled").unwrap();
+
+        let style = Style {
+            font: Some(FontStyle {
+                name: Some("Arial".to_string()),
+                size: Some(14.0),
+                bold: true,
+                italic: true,
+                color: Some(StyleColor::Rgb("FFFF0000".to_string())),
+                ..FontStyle::default()
+            }),
+            fill: Some(FillStyle {
+                pattern: PatternType::Solid,
+                fg_color: Some(StyleColor::Rgb("FFFFFF00".to_string())),
+                bg_color: None,
+            }),
+            border: Some(BorderStyle {
+                left: Some(BorderSideStyle {
+                    style: BorderLineStyle::Thin,
+                    color: None,
+                }),
+                right: Some(BorderSideStyle {
+                    style: BorderLineStyle::Thin,
+                    color: None,
+                }),
+                top: Some(BorderSideStyle {
+                    style: BorderLineStyle::Thin,
+                    color: None,
+                }),
+                bottom: Some(BorderSideStyle {
+                    style: BorderLineStyle::Thin,
+                    color: None,
+                }),
+                diagonal: None,
+            }),
+            alignment: Some(AlignmentStyle {
+                horizontal: Some(HorizontalAlign::Center),
+                vertical: Some(VerticalAlign::Center),
+                wrap_text: true,
+                ..AlignmentStyle::default()
+            }),
+            num_fmt: Some(NumFmtStyle::Custom("#,##0.00".to_string())),
+            protection: None,
+        };
+        let style_id = wb.add_style(&style).unwrap();
+        wb.set_cell_style("Sheet1", "A1", style_id).unwrap();
+        wb.save(&path).unwrap();
+
+        // Re-open and verify.
+        let wb2 = Workbook::open(&path).unwrap();
+        let retrieved_id = wb2.get_cell_style("Sheet1", "A1").unwrap();
+        assert_eq!(retrieved_id, Some(style_id));
+
+        // Verify the value is still there.
+        let val = wb2.get_cell_value("Sheet1", "A1").unwrap();
+        assert_eq!(val, CellValue::String("Styled".to_string()));
+
+        // Reverse-lookup the style to verify components survived the roundtrip.
+        let retrieved_style = crate::style::get_style(&wb2.stylesheet, style_id).unwrap();
+        assert!(retrieved_style.font.is_some());
+        let font = retrieved_style.font.unwrap();
+        assert!(font.bold);
+        assert!(font.italic);
+        assert_eq!(font.name, Some("Arial".to_string()));
+
+        assert!(retrieved_style.fill.is_some());
+        let fill = retrieved_style.fill.unwrap();
+        assert_eq!(fill.pattern, PatternType::Solid);
+
+        assert!(retrieved_style.alignment.is_some());
+        let align = retrieved_style.alignment.unwrap();
+        assert_eq!(align.horizontal, Some(HorizontalAlign::Center));
+        assert_eq!(align.vertical, Some(VerticalAlign::Center));
+        assert!(align.wrap_text);
     }
 
     // -----------------------------------------------------------------------
