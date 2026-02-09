@@ -399,8 +399,7 @@ impl Workbook {
                     },
                 )?
             };
-            let cell_ref =
-                crate::utils::cell_ref::coordinates_to_cell_name(start_col, row)?;
+            let cell_ref = crate::utils::cell_ref::coordinates_to_cell_name(start_col, row)?;
             self.set_cell_formula(sheet, &cell_ref, &adjusted)?;
         }
         Ok(())

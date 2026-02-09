@@ -1028,12 +1028,7 @@ impl Workbook {
 
     /// Set a formula on a cell.
     #[napi]
-    pub fn set_cell_formula(
-        &mut self,
-        sheet: String,
-        cell: String,
-        formula: String,
-    ) -> Result<()> {
+    pub fn set_cell_formula(&mut self, sheet: String, cell: String, formula: String) -> Result<()> {
         self.inner
             .set_cell_formula(&sheet, &cell, &formula)
             .map_err(|e| Error::from_reason(e.to_string()))
@@ -1042,12 +1037,7 @@ impl Workbook {
     /// Fill a single-column range with a formula, adjusting row references
     /// for each row relative to the first cell.
     #[napi]
-    pub fn fill_formula(
-        &mut self,
-        sheet: String,
-        range: String,
-        formula: String,
-    ) -> Result<()> {
+    pub fn fill_formula(&mut self, sheet: String, range: String, formula: String) -> Result<()> {
         self.inner
             .fill_formula(&sheet, &range, &formula)
             .map_err(|e| Error::from_reason(e.to_string()))
