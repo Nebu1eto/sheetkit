@@ -1045,3 +1045,96 @@ const wb3 = await Workbook.openWithPassword('encrypted.xlsx', 'secret');
 ```
 
 For full details including error types and encryption specs, see the [API Reference](../api-reference/advanced.md#29-file-encryption).
+---
+
+### Performance Optimization
+
+When reading large sheets in Node.js, SheetKit provides multiple APIs with different memory and performance tradeoffs. The underlying binary buffer transfer eliminates the FFI bottleneck of per-cell napi object creation, but you can choose how much decoding to do on the JavaScript side.
+
+#### Choosing the right read API
+
+**`getRows(sheet)`** is the default and the simplest. It returns the familiar `JsRowData[]` format with named columns. Use this when you need to iterate over all cells and want backward-compatible output. The buffer is decoded fully into JS objects.
+
+```typescript
+const rows = wb.getRows('Sheet1');
+for (const { row, cells } of rows) {
+  for (const cell of cells) {
+    if (cell.valueType === 'number') {
+      total += cell.numberValue;
+    }
+  }
+}
+```
+
+**`getRowsBuffer(sheet)` + `SheetData`** is best for large sheets where you only need specific cells or rows. The raw buffer stays in memory as a single allocation, and cells are decoded on demand. This has the lowest memory footprint for partial reads.
+
+```typescript
+import { SheetData } from '@sheetkit/node/sheet-data';
+
+const sheet = new SheetData(wb.getRowsBuffer('Sheet1'));
+
+// Read only the header row
+const headers = sheet.getRow(1);
+
+// Read a specific cell (O(1) in dense mode)
+const revenue = sheet.getCell(1000, 5);
+
+// Check type before reading
+if (sheet.getCellType(1000, 5) === 'number') {
+  console.log('Revenue:', revenue);
+}
+
+// Iterate all rows lazily
+for (const { row, values } of sheet.rows()) {
+  process(values);
+}
+```
+
+**`getRowsBuffer(sheet)`** alone returns the raw `Buffer`. Use this when you want to cache the data, send it over the network, or write a custom decoder.
+
+```typescript
+const buf = wb.getRowsBuffer('Sheet1');
+// Store for later decoding
+cache.set(sheetName, buf);
+// Or pass to SheetData when ready
+const sheet = new SheetData(cache.get(sheetName));
+```
+
+#### Memory comparison
+
+The table below shows approximate memory usage for reading a 50,000-row by 20-column sheet with mixed data types.
+
+| API | Approximate memory | Notes |
+|-----|-------------------|-------|
+| `getRows()` (before buffer transfer) | ~400 MB | 1M napi objects + Rust data |
+| `getRows()` (with buffer transfer) | ~80 MB | Buffer decoded to JS objects |
+| `getRowsBuffer()` + `SheetData` (full `toArray()`) | ~60 MB | Buffer + decoded arrays |
+| `getRowsBuffer()` + `SheetData` (random access) | ~15 MB | Buffer only, on-demand decode |
+| `getRowsBuffer()` (raw, no decode) | ~10 MB | Binary buffer only |
+
+The buffer transfer reduces the FFI boundary to a single call regardless of cell count. The remaining memory cost comes from the JS-side representation. Using `SheetData` for random access avoids creating JS objects for cells you never read.
+
+#### Write performance
+
+For writing large amounts of data, `setSheetData()` accepts a 2D array and transfers it as a single buffer internally.
+
+```typescript
+const data = [];
+for (let i = 0; i < 50000; i++) {
+  data.push([`Name ${i}`, i * 1.5, i % 2 === 0, `Region ${i % 4}`]);
+}
+wb.setSheetData('Sheet1', data, 'A1');
+```
+
+For streaming writes where you generate rows incrementally, use the `StreamWriter` API, which avoids holding the full sheet in memory on either side.
+
+```typescript
+const sw = wb.newStreamWriter('LargeSheet');
+sw.setColWidth(1, 20);
+for (let i = 1; i <= 100000; i++) {
+  sw.writeRow(i, [`Row ${i}`, i * 0.5]);
+}
+wb.applyStreamWriter(sw);
+```
+
+For full API details on the buffer transfer methods, see the [API Reference](../api-reference/advanced.md#30-bulk-data-transfer).
