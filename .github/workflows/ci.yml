@@ -71,11 +71,8 @@ jobs:
       - name: Biome check
         run: pnpm check
 
-      - name: Build napi binding
+      - name: Build (napi + typecheck + transpile + declarations)
         run: pnpm --filter @sheetkit/node build
-
-      - name: Typecheck
-        run: pnpm --filter @sheetkit/node typecheck
 
       - name: Test
         run: pnpm test
