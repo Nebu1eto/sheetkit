@@ -33,7 +33,12 @@ pub fn get_rows(
 
         let mut cells = Vec::new();
         for cell in &row.cells {
-            let (col_num, _) = cell_name_to_coordinates(&cell.r)?;
+            // Use cached column number when available; fall back to parsing.
+            let col_num = if cell.col > 0 {
+                cell.col
+            } else {
+                cell_name_to_coordinates(&cell.r)?.0
+            };
             let col_name = column_number_to_name(col_num)?;
             let value = resolve_cell_value(cell, sst);
             cells.push((col_name, value));
@@ -135,8 +140,10 @@ pub fn remove_row(ws: &mut WorksheetXml, row: u32) -> Result<()> {
         return Err(Error::InvalidRowNumber(0));
     }
 
-    // Remove the target row.
-    ws.sheet_data.rows.retain(|r| r.r != row);
+    // Remove the target row via binary search.
+    if let Ok(idx) = ws.sheet_data.rows.binary_search_by_key(&row, |r| r.r) {
+        ws.sheet_data.rows.remove(idx);
+    }
 
     // Shift rows above `row` upward.
     for r in ws.sheet_data.rows.iter_mut() {
@@ -168,13 +175,13 @@ pub fn duplicate_row_to(ws: &mut WorksheetXml, row: u32, target: u32) -> Result<
         return Err(Error::InvalidRowNumber(target));
     }
 
-    // Find and clone the source row.
+    // Find and clone the source row via binary search.
     let source = ws
         .sheet_data
         .rows
-        .iter()
-        .find(|r| r.r == row)
-        .cloned()
+        .binary_search_by_key(&row, |r| r.r)
+        .ok()
+        .map(|idx| ws.sheet_data.rows[idx].clone())
         .ok_or(Error::InvalidRowNumber(row))?;
 
     // Shift existing rows at target downward.
@@ -185,18 +192,10 @@ pub fn duplicate_row_to(ws: &mut WorksheetXml, row: u32, target: u32) -> Result<
     shift_row_cells(&mut new_row, target)?;
     new_row.r = target;
 
-    // Insert the new row in sorted position.
-    let pos = ws
-        .sheet_data
-        .rows
-        .iter()
-        .position(|r| r.r > target)
-        .unwrap_or(ws.sheet_data.rows.len());
-    // Check if there's already a row at target (shouldn't be, but be safe).
-    if let Some(existing) = ws.sheet_data.rows.iter().position(|r| r.r == target) {
-        ws.sheet_data.rows[existing] = new_row;
-    } else {
-        ws.sheet_data.rows.insert(pos, new_row);
+    // Insert the new row in sorted position via binary search.
+    match ws.sheet_data.rows.binary_search_by_key(&target, |r| r.r) {
+        Ok(idx) => ws.sheet_data.rows[idx] = new_row,
+        Err(pos) => ws.sheet_data.rows.insert(pos, new_row),
     }
 
     Ok(())
@@ -227,9 +226,9 @@ pub fn set_row_height(ws: &mut WorksheetXml, row: u32, height: f64) -> Result<()
 pub fn get_row_height(ws: &WorksheetXml, row: u32) -> Option<f64> {
     ws.sheet_data
         .rows
-        .iter()
-        .find(|r| r.r == row)
-        .and_then(|r| r.ht)
+        .binary_search_by_key(&row, |r| r.r)
+        .ok()
+        .and_then(|idx| ws.sheet_data.rows[idx].ht)
 }
 
 /// Set the visibility of a row. Creates the row if it does not exist.
@@ -250,9 +249,9 @@ pub fn set_row_visible(ws: &mut WorksheetXml, row: u32, visible: bool) -> Result
 pub fn get_row_visible(ws: &WorksheetXml, row: u32) -> bool {
     ws.sheet_data
         .rows
-        .iter()
-        .find(|r| r.r == row)
-        .and_then(|r| r.hidden)
+        .binary_search_by_key(&row, |r| r.r)
+        .ok()
+        .and_then(|idx| ws.sheet_data.rows[idx].hidden)
         .map(|h| !h)
         .unwrap_or(true)
 }
@@ -261,9 +260,9 @@ pub fn get_row_visible(ws: &WorksheetXml, row: u32) -> bool {
 pub fn get_row_outline_level(ws: &WorksheetXml, row: u32) -> u8 {
     ws.sheet_data
         .rows
-        .iter()
-        .find(|r| r.r == row)
-        .and_then(|r| r.outline_level)
+        .binary_search_by_key(&row, |r| r.r)
+        .ok()
+        .and_then(|idx| ws.sheet_data.rows[idx].outline_level)
         .unwrap_or(0)
 }
 
@@ -308,9 +307,9 @@ pub fn set_row_style(ws: &mut WorksheetXml, row: u32, style_id: u32) -> Result<(
 pub fn get_row_style(ws: &WorksheetXml, row: u32) -> u32 {
     ws.sheet_data
         .rows
-        .iter()
-        .find(|r| r.r == row)
-        .and_then(|r| r.s)
+        .binary_search_by_key(&row, |r| r.r)
+        .ok()
+        .and_then(|idx| ws.sheet_data.rows[idx].s)
         .unwrap_or(0)
 }
 
@@ -319,40 +318,34 @@ fn shift_row_cells(row: &mut Row, new_row_num: u32) -> Result<()> {
     for cell in row.cells.iter_mut() {
         let (col, _) = cell_name_to_coordinates(&cell.r)?;
         cell.r = coordinates_to_cell_name(col, new_row_num)?;
+        cell.col = col;
     }
     Ok(())
 }
 
 /// Find an existing row or create a new empty one, keeping rows sorted.
+/// Uses binary search for O(log n) lookup instead of linear scan.
 fn find_or_create_row(ws: &mut WorksheetXml, row: u32) -> &mut Row {
-    // Check if row exists already.
-    let exists = ws.sheet_data.rows.iter().position(|r| r.r == row);
-    if let Some(idx) = exists {
-        return &mut ws.sheet_data.rows[idx];
+    match ws.sheet_data.rows.binary_search_by_key(&row, |r| r.r) {
+        Ok(idx) => &mut ws.sheet_data.rows[idx],
+        Err(pos) => {
+            ws.sheet_data.rows.insert(
+                pos,
+                Row {
+                    r: row,
+                    spans: None,
+                    s: None,
+                    custom_format: None,
+                    ht: None,
+                    hidden: None,
+                    custom_height: None,
+                    outline_level: None,
+                    cells: vec![],
+                },
+            );
+            &mut ws.sheet_data.rows[pos]
+        }
     }
-
-    // Insert in sorted order.
-    let pos = ws
-        .sheet_data
-        .rows
-        .iter()
-        .position(|r| r.r > row)
-        .unwrap_or(ws.sheet_data.rows.len());
-    ws.sheet_data.rows.insert(
-        pos,
-        Row {
-            r: row,
-            spans: None,
-            s: None,
-            custom_format: None,
-            ht: None,
-            hidden: None,
-            custom_height: None,
-            outline_level: None,
-            cells: vec![],
-        },
-    );
-    &mut ws.sheet_data.rows[pos]
 }
 
 #[cfg(test)]
@@ -377,6 +370,7 @@ mod tests {
                     cells: vec![
                         Cell {
                             r: "A1".to_string(),
+                            col: 1,
                             s: None,
                             t: None,
                             v: Some("10".to_string()),
@@ -385,6 +379,7 @@ mod tests {
                         },
                         Cell {
                             r: "B1".to_string(),
+                            col: 2,
                             s: None,
                             t: None,
                             v: Some("20".to_string()),
@@ -404,6 +399,7 @@ mod tests {
                     outline_level: None,
                     cells: vec![Cell {
                         r: "A2".to_string(),
+                        col: 1,
                         s: None,
                         t: None,
                         v: Some("30".to_string()),
@@ -422,6 +418,7 @@ mod tests {
                     outline_level: None,
                     cells: vec![Cell {
                         r: "C5".to_string(),
+                        col: 3,
                         s: None,
                         t: None,
                         v: Some("50".to_string()),
@@ -839,6 +836,7 @@ mod tests {
                 cells: vec![
                     Cell {
                         r: "A1".to_string(),
+                        col: 1,
                         s: None,
                         t: Some("s".to_string()),
                         v: Some("0".to_string()),
@@ -847,6 +845,7 @@ mod tests {
                     },
                     Cell {
                         r: "B1".to_string(),
+                        col: 2,
                         s: None,
                         t: Some("s".to_string()),
                         v: Some("1".to_string()),
@@ -882,6 +881,7 @@ mod tests {
                 cells: vec![
                     Cell {
                         r: "A1".to_string(),
+                        col: 1,
                         s: None,
                         t: Some("s".to_string()),
                         v: Some("0".to_string()),
@@ -890,6 +890,7 @@ mod tests {
                     },
                     Cell {
                         r: "B1".to_string(),
+                        col: 2,
                         s: None,
                         t: None,
                         v: Some("42.5".to_string()),
@@ -898,6 +899,7 @@ mod tests {
                     },
                     Cell {
                         r: "C1".to_string(),
+                        col: 3,
                         s: None,
                         t: Some("b".to_string()),
                         v: Some("1".to_string()),
@@ -906,6 +908,7 @@ mod tests {
                     },
                     Cell {
                         r: "D1".to_string(),
+                        col: 4,
                         s: None,
                         t: Some("e".to_string()),
                         v: Some("#DIV/0!".to_string()),
@@ -940,6 +943,7 @@ mod tests {
                     outline_level: None,
                     cells: vec![Cell {
                         r: "A1".to_string(),
+                        col: 1,
                         s: None,
                         t: None,
                         v: Some("1".to_string()),
@@ -970,6 +974,7 @@ mod tests {
                     outline_level: None,
                     cells: vec![Cell {
                         r: "A3".to_string(),
+                        col: 1,
                         s: None,
                         t: None,
                         v: Some("3".to_string()),
@@ -1003,6 +1008,7 @@ mod tests {
                 outline_level: None,
                 cells: vec![Cell {
                     r: "A1".to_string(),
+                    col: 1,
                     s: None,
                     t: None,
                     v: Some("42".to_string()),
@@ -1044,6 +1050,7 @@ mod tests {
                 outline_level: None,
                 cells: vec![Cell {
                     r: "A1".to_string(),
+                    col: 1,
                     s: None,
                     t: Some("inlineStr".to_string()),
                     v: None,

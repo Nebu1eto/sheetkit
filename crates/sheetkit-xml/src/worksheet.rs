@@ -340,6 +340,11 @@ pub struct Cell {
     #[serde(rename = "@r")]
     pub r: String,
 
+    /// Cached 1-based column number parsed from `r`. Populated at load time
+    /// or at creation time to avoid repeated string parsing.
+    #[serde(skip)]
+    pub col: u32,
+
     /// Style index.
     #[serde(rename = "@s", skip_serializing_if = "Option::is_none")]
     pub s: Option<u32>,
@@ -857,6 +862,7 @@ mod tests {
                     cells: vec![
                         Cell {
                             r: "A1".to_string(),
+                            col: 1,
                             s: None,
                             t: Some(cell_types::SHARED_STRING.to_string()),
                             v: Some("0".to_string()),
@@ -865,6 +871,7 @@ mod tests {
                         },
                         Cell {
                             r: "B1".to_string(),
+                            col: 2,
                             s: None,
                             t: None,
                             v: Some("42".to_string()),
@@ -893,6 +900,7 @@ mod tests {
     fn test_cell_with_formula() {
         let cell = Cell {
             r: "C1".to_string(),
+            col: 3,
             s: None,
             t: None,
             v: Some("84".to_string()),
@@ -915,6 +923,7 @@ mod tests {
     fn test_cell_with_inline_string() {
         let cell = Cell {
             r: "A1".to_string(),
+            col: 1,
             s: None,
             t: Some(cell_types::INLINE_STRING.to_string()),
             v: None,

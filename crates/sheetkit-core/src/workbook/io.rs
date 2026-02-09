@@ -5,6 +5,8 @@ impl Workbook {
     pub fn new() -> Self {
         let shared_strings = Sst::default();
         let sst_runtime = SharedStringTable::from_sst(&shared_strings);
+        let mut sheet_name_index = HashMap::new();
+        sheet_name_index.insert("Sheet1".to_string(), 0);
         Self {
             content_types: ContentTypes::default(),
             package_rels: relationships::package_rels(),
@@ -32,6 +34,7 @@ impl Workbook {
             theme_colors: crate::theme::default_theme_colors(),
             sheet_sparklines: vec![vec![]],
             sheet_vml: vec![None],
+            sheet_name_index,
         }
     }
 
@@ -309,6 +312,23 @@ impl Workbook {
             }
         }
 
+        // Build sheet name -> index lookup.
+        let mut sheet_name_index = HashMap::with_capacity(worksheets.len());
+        for (i, (name, _)) in worksheets.iter().enumerate() {
+            sheet_name_index.insert(name.clone(), i);
+        }
+
+        // Populate cached column numbers on all cells.
+        for (_name, ws) in &mut worksheets {
+            for row in &mut ws.sheet_data.rows {
+                for cell in &mut row.cells {
+                    if let Ok((c, _)) = cell_name_to_coordinates(&cell.r) {
+                        cell.col = c;
+                    }
+                }
+            }
+        }
+
         Ok(Self {
             content_types,
             package_rels,
@@ -336,6 +356,7 @@ impl Workbook {
             theme_colors,
             sheet_sparklines,
             sheet_vml,
+            sheet_name_index,
         })
     }
 

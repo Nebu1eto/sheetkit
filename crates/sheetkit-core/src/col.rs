@@ -169,7 +169,9 @@ pub fn insert_cols(ws: &mut WorksheetXml, col: &str, count: u32) -> Result<()> {
         for cell in row.cells.iter_mut() {
             let (c, r) = cell_name_to_coordinates(&cell.r)?;
             if c >= start_col {
-                cell.r = coordinates_to_cell_name(c + count, r)?;
+                let new_col = c + count;
+                cell.r = coordinates_to_cell_name(new_col, r)?;
+                cell.col = new_col;
             }
         }
     }
@@ -206,7 +208,9 @@ pub fn remove_col(ws: &mut WorksheetXml, col: &str) -> Result<()> {
         for cell in row.cells.iter_mut() {
             let (c, r) = cell_name_to_coordinates(&cell.r)?;
             if c > col_num {
-                cell.r = coordinates_to_cell_name(c - 1, r)?;
+                let new_col = c - 1;
+                cell.r = coordinates_to_cell_name(new_col, r)?;
+                cell.col = new_col;
             }
         }
     }
@@ -316,6 +320,7 @@ mod tests {
                     cells: vec![
                         Cell {
                             r: "A1".to_string(),
+                            col: 1,
                             s: None,
                             t: None,
                             v: Some("10".to_string()),
@@ -324,6 +329,7 @@ mod tests {
                         },
                         Cell {
                             r: "B1".to_string(),
+                            col: 2,
                             s: None,
                             t: None,
                             v: Some("20".to_string()),
@@ -332,6 +338,7 @@ mod tests {
                         },
                         Cell {
                             r: "D1".to_string(),
+                            col: 4,
                             s: None,
                             t: None,
                             v: Some("40".to_string()),
@@ -352,6 +359,7 @@ mod tests {
                     cells: vec![
                         Cell {
                             r: "A2".to_string(),
+                            col: 1,
                             s: None,
                             t: None,
                             v: Some("100".to_string()),
@@ -360,6 +368,7 @@ mod tests {
                         },
                         Cell {
                             r: "C2".to_string(),
+                            col: 3,
                             s: None,
                             t: None,
                             v: Some("300".to_string()),
@@ -592,6 +601,7 @@ mod tests {
         let mut ws = sample_ws();
         ws.sheet_data.rows[0].cells.push(Cell {
             r: "INVALID".to_string(),
+            col: 0,
             s: None,
             t: None,
             v: Some("1".to_string()),
@@ -780,6 +790,7 @@ mod tests {
                     cells: vec![
                         Cell {
                             r: "A1".to_string(),
+                            col: 1,
                             s: None,
                             t: Some("s".to_string()),
                             v: Some("0".to_string()),
@@ -788,6 +799,7 @@ mod tests {
                         },
                         Cell {
                             r: "B1".to_string(),
+                            col: 2,
                             s: None,
                             t: Some("s".to_string()),
                             v: Some("1".to_string()),
@@ -808,6 +820,7 @@ mod tests {
                     cells: vec![
                         Cell {
                             r: "A2".to_string(),
+                            col: 1,
                             s: None,
                             t: Some("s".to_string()),
                             v: Some("2".to_string()),
@@ -816,6 +829,7 @@ mod tests {
                         },
                         Cell {
                             r: "B2".to_string(),
+                            col: 2,
                             s: None,
                             t: None,
                             v: Some("30".to_string()),
@@ -859,6 +873,7 @@ mod tests {
                 cells: vec![
                     Cell {
                         r: "AA1".to_string(),
+                        col: 27,
                         s: None,
                         t: None,
                         v: Some("1".to_string()),
@@ -867,6 +882,7 @@ mod tests {
                     },
                     Cell {
                         r: "B1".to_string(),
+                        col: 2,
                         s: None,
                         t: None,
                         v: Some("2".to_string()),
@@ -875,6 +891,7 @@ mod tests {
                     },
                     Cell {
                         r: "A1".to_string(),
+                        col: 1,
                         s: None,
                         t: None,
                         v: Some("3".to_string()),
