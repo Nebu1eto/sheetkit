@@ -920,8 +920,8 @@ mod tests {
     #[test]
     fn coerce_string_to_number_success() {
         assert_eq!(
-            coerce_to_number(&CellValue::String("3.14".to_string())).unwrap(),
-            3.14
+            coerce_to_number(&CellValue::String("3.15".to_string())).unwrap(),
+            3.15
         );
     }
 
@@ -933,7 +933,7 @@ mod tests {
     #[test]
     fn coerce_number_to_string() {
         assert_eq!(coerce_to_string(&CellValue::Number(42.0)), "42");
-        assert_eq!(coerce_to_string(&CellValue::Number(3.14)), "3.14");
+        assert_eq!(coerce_to_string(&CellValue::Number(3.15)), "3.15");
     }
 
     #[test]

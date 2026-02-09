@@ -261,8 +261,8 @@ mod tests {
 
     #[test]
     fn test_cell_value_from_f64() {
-        let v: CellValue = 3.14.into();
-        assert_eq!(v, CellValue::Number(3.14));
+        let v: CellValue = 3.15.into();
+        assert_eq!(v, CellValue::Number(3.15));
     }
 
     #[test]
@@ -292,7 +292,7 @@ mod tests {
         assert_eq!(CellValue::Bool(true).to_string(), "TRUE");
         assert_eq!(CellValue::Bool(false).to_string(), "FALSE");
         assert_eq!(CellValue::Number(42.0).to_string(), "42");
-        assert_eq!(CellValue::Number(3.14).to_string(), "3.14");
+        assert_eq!(CellValue::Number(3.15).to_string(), "3.15");
         assert_eq!(CellValue::String("hello".to_string()).to_string(), "hello");
         assert_eq!(
             CellValue::Error("#DIV/0!".to_string()).to_string(),

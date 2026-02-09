@@ -1411,7 +1411,7 @@ mod tests {
         wb.set_custom_property("IntProp", crate::doc_props::CustomPropertyValue::Int(-7));
         wb.set_custom_property(
             "FloatProp",
-            crate::doc_props::CustomPropertyValue::Float(3.14),
+            crate::doc_props::CustomPropertyValue::Float(3.15),
         );
         wb.set_custom_property(
             "BoolProp",
@@ -1434,7 +1434,7 @@ mod tests {
         );
         assert_eq!(
             wb.get_custom_property("FloatProp"),
-            Some(crate::doc_props::CustomPropertyValue::Float(3.14))
+            Some(crate::doc_props::CustomPropertyValue::Float(3.15))
         );
         assert_eq!(
             wb.get_custom_property("BoolProp"),

@@ -758,7 +758,7 @@ mod tests {
             indexed: None,
             rgb: None,
             theme: Some(4),
-            tint: Some(0.39997558519241921),
+            tint: Some(0.399_975_585_192_419_2),
         };
         let xml = quick_xml::se::to_string(&color).unwrap();
         let parsed: Color = quick_xml::de::from_str(&xml).unwrap();

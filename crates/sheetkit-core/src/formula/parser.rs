@@ -405,8 +405,8 @@ mod tests {
 
     #[test]
     fn test_parse_decimal() {
-        let result = parse_formula("3.14").unwrap();
-        assert_eq!(result, Expr::Number(3.14));
+        let result = parse_formula("3.15").unwrap();
+        assert_eq!(result, Expr::Number(3.15));
     }
 
     #[test]
