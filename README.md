@@ -14,9 +14,9 @@ A Rust library for reading and writing Excel (.xlsx) files, with Node.js binding
 - Sheet management (create, delete, rename, copy, active sheet)
 - Row/column operations (insert, delete, resize, hide, outline)
 - Style system (font, fill, border, alignment, number format, protection)
-- 41 chart types with 3D support
-- Images (PNG, JPEG, GIF)
-- Conditional formatting (18 rule types)
+- 43 chart types with 3D support
+- Images (11 formats: PNG, JPEG, GIF, BMP, ICO, TIFF, SVG, EMF, EMZ, WMF, WMZ)
+- Conditional formatting (17 rule types)
 - Data validation, comments, auto-filter
 - Formula evaluation (110+ functions)
 - Streaming writer for large datasets

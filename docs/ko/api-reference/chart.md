@@ -1,6 +1,6 @@
 ## 10. 차트
 
-41가지 차트 유형을 지원한다. `add_chart`로 시트에 차트를 추가하며, 셀 범위로 위치와 크기를 지정한다.
+43가지 차트 유형을 지원한다. `add_chart`로 시트에 차트를 추가하며, 셀 범위로 위치와 크기를 지정한다.
 
 ### `add_chart(sheet, from_cell, to_cell, config)` / `addChart(sheet, fromCell, toCell, config)`
 
