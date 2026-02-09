@@ -24,6 +24,14 @@ Thumbs.db
 *.xlsx
 !fixtures/**/*.xlsx
 
+# Generated from TypeScript (packages/sheetkit)
+packages/sheetkit/index.js
+packages/sheetkit/index.d.ts
+packages/sheetkit/buffer-codec.js
+packages/sheetkit/buffer-codec.d.ts
+packages/sheetkit/sheet-data.js
+packages/sheetkit/sheet-data.d.ts
+
 # Environment
 .env
 .env.local

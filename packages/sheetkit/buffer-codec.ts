@@ -1,3 +1,5 @@
+import type { JsRowCell, JsRowData } from './binding.js';
+
 const CELL_STRIDE = 9;
 const TYPE_EMPTY = 0x00;
 const TYPE_NUMBER = 0x01;
@@ -15,7 +17,21 @@ const EMPTY_ROW_OFFSET = 0xffffffff;
 
 const decoder = new TextDecoder();
 
-function columnNumberToName(n) {
+interface BufferHeader {
+  version: number;
+  rowCount: number;
+  colCount: number;
+  flags: number;
+  minCol: number;
+  isSparse: boolean;
+}
+
+interface RowIndexEntry {
+  rowNum: number;
+  cellOffset: number;
+}
+
+function columnNumberToName(n: number): string {
   let name = '';
   while (n > 0) {
     n--;
@@ -25,7 +41,7 @@ function columnNumberToName(n) {
   return name;
 }
 
-function readHeader(view) {
+function readHeader(view: DataView): BufferHeader {
   const magic = view.getUint32(0, true);
   if (magic !== MAGIC) {
     throw new Error(`Invalid buffer: bad magic 0x${magic.toString(16)}`);
@@ -39,8 +55,11 @@ function readHeader(view) {
   return { version, rowCount, colCount, flags, minCol, isSparse };
 }
 
-function readRowIndex(view, rowCount) {
-  const entries = new Array(rowCount);
+function readRowIndex(
+  view: DataView,
+  rowCount: number,
+): { entries: RowIndexEntry[]; endOffset: number } {
+  const entries = new Array<RowIndexEntry>(rowCount);
   let offset = HEADER_SIZE;
   for (let i = 0; i < rowCount; i++) {
     entries[i] = {
@@ -52,7 +71,11 @@ function readRowIndex(view, rowCount) {
   return { entries, endOffset: offset };
 }
 
-function readStringTable(buf, view, startOffset) {
+function readStringTable(
+  buf: Buffer,
+  view: DataView,
+  startOffset: number,
+): { strings: string[]; endOffset: number } {
   const count = view.getUint32(startOffset, true);
   const blobSize = view.getUint32(startOffset + 4, true);
   if (count === 0) {
@@ -60,7 +83,7 @@ function readStringTable(buf, view, startOffset) {
   }
   const offsetsStart = startOffset + 8;
   const blobStart = offsetsStart + count * 4;
-  const strings = new Array(count);
+  const strings = new Array<string>(count);
   for (let i = 0; i < count; i++) {
     const strOffset = view.getUint32(offsetsStart + i * 4, true);
     const strEnd = i + 1 < count ? view.getUint32(offsetsStart + (i + 1) * 4, true) : blobSize;
@@ -75,7 +98,13 @@ function readStringTable(buf, view, startOffset) {
   return { strings, endOffset: startOffset + totalSize };
 }
 
-function decodeCellToRowCell(view, offset, type, strings, colName) {
+function decodeCellToRowCell(
+  view: DataView,
+  offset: number,
+  type: number,
+  strings: string[],
+  colName: string,
+): JsRowCell | null {
   switch (type) {
     case TYPE_NUMBER: {
       const n = view.getFloat64(offset + 1, true);
@@ -110,7 +139,7 @@ function decodeCellToRowCell(view, offset, type, strings, colName) {
   }
 }
 
-export function decodeRowsBuffer(buf) {
+export function decodeRowsBuffer(buf: Buffer | null): JsRowData[] {
   if (!buf || buf.length < HEADER_SIZE) {
     return [];
   }
@@ -125,7 +154,7 @@ export function decodeRowsBuffer(buf) {
   const cellDataStart = stEnd;
   const minCol = header.minCol || 1;
 
-  const rows = [];
+  const rows: JsRowData[] = [];
 
   for (let ri = 0; ri < rowIndex.length; ri++) {
     const { rowNum, cellOffset } = rowIndex[ri];
@@ -133,7 +162,7 @@ export function decodeRowsBuffer(buf) {
       continue;
     }
 
-    const cells = [];
+    const cells: JsRowCell[] = [];
 
     if (header.isSparse) {
       const absOffset = cellDataStart + cellOffset;
