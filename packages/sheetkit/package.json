@@ -1,6 +1,6 @@
 {
   "name": "@sheetkit/node",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "license": "MIT OR Apache-2.0",
   "type": "module",
   "main": "./index.js",
@@ -47,13 +47,13 @@
     "@napi-rs/cli": "^3.5.1"
   },
   "optionalDependencies": {
-    "@sheetkit/node-darwin-x64": "0.1.2",
-    "@sheetkit/node-darwin-arm64": "0.1.2",
-    "@sheetkit/node-win32-x64-msvc": "0.1.2",
-    "@sheetkit/node-win32-arm64-msvc": "0.1.2",
-    "@sheetkit/node-linux-x64-gnu": "0.1.2",
-    "@sheetkit/node-linux-arm64-gnu": "0.1.2",
-    "@sheetkit/node-linux-x64-musl": "0.1.2",
-    "@sheetkit/node-linux-arm64-musl": "0.1.2"
+    "@sheetkit/node-darwin-x64": "0.2.0",
+    "@sheetkit/node-darwin-arm64": "0.2.0",
+    "@sheetkit/node-win32-x64-msvc": "0.2.0",
+    "@sheetkit/node-win32-arm64-msvc": "0.2.0",
+    "@sheetkit/node-linux-x64-gnu": "0.2.0",
+    "@sheetkit/node-linux-arm64-gnu": "0.2.0",
+    "@sheetkit/node-linux-x64-musl": "0.2.0",
+    "@sheetkit/node-linux-arm64-musl": "0.2.0"
   }
 }
