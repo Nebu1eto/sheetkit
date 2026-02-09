@@ -22,6 +22,14 @@
     "index.js",
     "index.d.ts"
   ],
+  "author": {
+    "name": "Haze Lee",
+    "url": "https://github.com/Nebu1eto"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Nebu1eto/sheetkit"
+  },
   "publishConfig": {
     "registry": "https://registry.npmjs.org/",
     "access": "public"
