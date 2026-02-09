@@ -26,10 +26,18 @@ export declare class Workbook {
   saveSync(path: string): void
   /** Save the workbook to a .xlsx file asynchronously. */
   save(path: string): Promise<void>
+  /** Open a workbook from an in-memory Buffer. */
+  static openBufferSync(data: Buffer): Workbook
+  /** Open a workbook from an in-memory Buffer asynchronously. */
+  static openBuffer(data: Buffer): Promise<Workbook>
   /** Open an encrypted .xlsx file using a password. */
   static openWithPasswordSync(path: string, password: string): Workbook
   /** Open an encrypted .xlsx file using a password asynchronously. */
   static openWithPassword(path: string, password: string): Promise<Workbook>
+  /** Serialize the workbook to an in-memory Buffer. */
+  writeBufferSync(): Buffer
+  /** Serialize the workbook to an in-memory Buffer asynchronously. */
+  writeBuffer(): Promise<Buffer>
   /** Save the workbook as an encrypted .xlsx file. */
   saveWithPasswordSync(path: string, password: string): void
   /** Save the workbook as an encrypted .xlsx file asynchronously. */
@@ -209,6 +217,13 @@ export declare class Workbook {
    * Only columns that have data are included.
    */
   getCols(sheet: string): Array<JsColData>
+  /** Set a formula on a cell. */
+  setCellFormula(sheet: string, cell: string, formula: string): void
+  /**
+   * Fill a single-column range with a formula, adjusting row references
+   * for each row relative to the first cell.
+   */
+  fillFormula(sheet: string, range: string, formula: string): void
   /** Evaluate a formula string against the current workbook data. */
   evaluateFormula(sheet: string, formula: string): null | boolean | number | string | DateValue
   /** Recalculate all formula cells in the workbook. */

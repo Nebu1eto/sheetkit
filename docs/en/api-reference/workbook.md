@@ -58,6 +58,53 @@ await wb.save("output.xlsx");
 
 > Note (Node.js): `wb.save(path)` is async and returns `Promise<void>`. Use `wb.saveSync(path)` for synchronous behavior.
 
+### `Workbook::open_from_buffer(data)` / `Workbook.openBufferSync(data)`
+
+Open a workbook from an in-memory byte buffer instead of a file path. Useful for processing uploaded files or data received over the network.
+
+**Rust:**
+
+```rust
+let data: Vec<u8> = std::fs::read("report.xlsx")?;
+let wb = Workbook::open_from_buffer(&data)?;
+```
+
+**TypeScript:**
+
+```typescript
+// Sync
+const data: Buffer = fs.readFileSync("report.xlsx");
+const wb = Workbook.openBufferSync(data);
+
+// Async
+const wb2 = await Workbook.openBuffer(data);
+```
+
+> Note (Node.js): `Workbook.openBuffer(data)` is async and returns `Promise<Workbook>`. Use `Workbook.openBufferSync(data)` for synchronous behavior.
+
+### `wb.save_to_buffer()` / `wb.writeBufferSync()`
+
+Serialize the workbook to an in-memory byte buffer without writing to disk. Useful for sending files as HTTP responses or passing data between services.
+
+**Rust:**
+
+```rust
+let buf: Vec<u8> = wb.save_to_buffer()?;
+// buf contains valid .xlsx data
+```
+
+**TypeScript:**
+
+```typescript
+// Sync
+const buf: Buffer = wb.writeBufferSync();
+
+// Async
+const buf2: Buffer = await wb.writeBuffer();
+```
+
+> Note (Node.js): `wb.writeBuffer()` is async and returns `Promise<Buffer>`. Use `wb.writeBufferSync()` for synchronous behavior.
+
 ### `wb.sheet_names()` / `wb.sheetNames`
 
 Return the names of all sheets in workbook order.

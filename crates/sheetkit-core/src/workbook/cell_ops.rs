@@ -345,6 +345,66 @@ impl Workbook {
         Ok(crate::merge::get_merge_cells(ws))
     }
 
+    /// Set a formula on a cell.
+    ///
+    /// This is a convenience wrapper around [`set_cell_value`] with
+    /// [`CellValue::Formula`].
+    pub fn set_cell_formula(&mut self, sheet: &str, cell: &str, formula: &str) -> Result<()> {
+        self.set_cell_value(
+            sheet,
+            cell,
+            CellValue::Formula {
+                expr: formula.to_string(),
+                result: None,
+            },
+        )
+    }
+
+    /// Fill a range of cells with a formula, adjusting row references for each
+    /// row relative to the first cell in the range.
+    ///
+    /// `range` is an A1-style range like `"D2:D10"`. The `formula` is the base
+    /// formula for the first cell of the range. For each subsequent row, the
+    /// row references in the formula are shifted by the row offset. Absolute
+    /// row references (`$1`) are left unchanged.
+    pub fn fill_formula(&mut self, sheet: &str, range: &str, formula: &str) -> Result<()> {
+        let parts: Vec<&str> = range.split(':').collect();
+        if parts.len() != 2 {
+            return Err(Error::InvalidCellReference(format!(
+                "invalid range: {range}"
+            )));
+        }
+        let (start_col, start_row) = cell_name_to_coordinates(parts[0])?;
+        let (end_col, end_row) = cell_name_to_coordinates(parts[1])?;
+
+        if start_col != end_col {
+            return Err(Error::InvalidCellReference(
+                "fill_formula only supports single-column ranges".to_string(),
+            ));
+        }
+
+        for row in start_row..=end_row {
+            let row_offset = row as i32 - start_row as i32;
+            let adjusted = if row_offset == 0 {
+                formula.to_string()
+            } else {
+                crate::cell_ref_shift::shift_cell_references_with_abs(
+                    formula,
+                    |col, r, _abs_col, abs_row| {
+                        if abs_row {
+                            (col, r)
+                        } else {
+                            (col, (r as i32 + row_offset) as u32)
+                        }
+                    },
+                )?
+            };
+            let cell_ref = crate::utils::cell_ref::coordinates_to_cell_name(start_col, row)?;
+            self.set_cell_formula(sheet, &cell_ref, &adjusted)?;
+        }
+        Ok(())
+    }
+
     /// Set a cell to a rich text value (multiple formatted runs).
     pub fn set_cell_rich_text(
         &mut self,
@@ -1057,5 +1117,84 @@ mod tests {
         assert_eq!(got_runs[1].text, "World");
         assert!(got_runs[1].italic);
         assert!(!got_runs[1].bold);
+    }
+
+    #[test]
+    fn test_set_cell_formula() {
+        let mut wb = Workbook::new();
+        wb.set_cell_formula("Sheet1", "A1", "SUM(B1:B10)").unwrap();
+        let val = wb.get_cell_value("Sheet1", "A1").unwrap();
+        match val {
+            CellValue::Formula { expr, .. } => assert_eq!(expr, "SUM(B1:B10)"),
+            other => panic!("expected Formula, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_fill_formula_basic() {
+        let mut wb = Workbook::new();
+        wb.fill_formula("Sheet1", "D2:D5", "SUM(A2:C2)").unwrap();
+
+        // D2 should have the base formula unchanged
+        match wb.get_cell_value("Sheet1", "D2").unwrap() {
+            CellValue::Formula { expr, .. } => assert_eq!(expr, "SUM(A2:C2)"),
+            other => panic!("D2: expected Formula, got {:?}", other),
+        }
+        // D3 should have row shifted by 1
+        match wb.get_cell_value("Sheet1", "D3").unwrap() {
+            CellValue::Formula { expr, .. } => assert_eq!(expr, "SUM(A3:C3)"),
+            other => panic!("D3: expected Formula, got {:?}", other),
+        }
+        // D4 should have row shifted by 2
+        match wb.get_cell_value("Sheet1", "D4").unwrap() {
+            CellValue::Formula { expr, .. } => assert_eq!(expr, "SUM(A4:C4)"),
+            other => panic!("D4: expected Formula, got {:?}", other),
+        }
+        // D5 should have row shifted by 3
+        match wb.get_cell_value("Sheet1", "D5").unwrap() {
+            CellValue::Formula { expr, .. } => assert_eq!(expr, "SUM(A5:C5)"),
+            other => panic!("D5: expected Formula, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_fill_formula_preserves_absolute_refs() {
+        let mut wb = Workbook::new();
+        wb.fill_formula("Sheet1", "B1:B3", "$A$1*A1").unwrap();
+
+        match wb.get_cell_value("Sheet1", "B1").unwrap() {
+            CellValue::Formula { expr, .. } => assert_eq!(expr, "$A$1*A1"),
+            other => panic!("B1: expected Formula, got {:?}", other),
+        }
+        match wb.get_cell_value("Sheet1", "B2").unwrap() {
+            CellValue::Formula { expr, .. } => assert_eq!(expr, "$A$1*A2"),
+            other => panic!("B2: expected Formula, got {:?}", other),
+        }
+        match wb.get_cell_value("Sheet1", "B3").unwrap() {
+            CellValue::Formula { expr, .. } => assert_eq!(expr, "$A$1*A3"),
+            other => panic!("B3: expected Formula, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_fill_formula_single_cell() {
+        let mut wb = Workbook::new();
+        wb.fill_formula("Sheet1", "A1:A1", "B1+C1").unwrap();
+        match wb.get_cell_value("Sheet1", "A1").unwrap() {
+            CellValue::Formula { expr, .. } => assert_eq!(expr, "B1+C1"),
+            other => panic!("expected Formula, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_fill_formula_invalid_range() {
+        let mut wb = Workbook::new();
+        assert!(wb.fill_formula("Sheet1", "INVALID", "A1").is_err());
+    }
+
+    #[test]
+    fn test_fill_formula_multi_column_range_rejected() {
+        let mut wb = Workbook::new();
+        assert!(wb.fill_formula("Sheet1", "A1:B5", "C1").is_err());
     }
 }

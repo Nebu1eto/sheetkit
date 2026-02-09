@@ -349,6 +349,37 @@ impl Workbook {
         Ok(())
     }
 
+    /// Serialize the workbook to an in-memory `.xlsx` buffer.
+    pub fn save_to_buffer(&self) -> Result<Vec<u8>> {
+        let mut buf = Vec::new();
+        {
+            let cursor = std::io::Cursor::new(&mut buf);
+            let mut zip = zip::ZipWriter::new(cursor);
+            let options =
+                SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+            self.write_zip_contents(&mut zip, options)?;
+            zip.finish().map_err(|e| Error::Zip(e.to_string()))?;
+        }
+        Ok(buf)
+    }
+
+    /// Open a workbook from an in-memory `.xlsx` buffer.
+    pub fn open_from_buffer(data: &[u8]) -> Result<Self> {
+        // Detect encrypted files (CFB container)
+        #[cfg(feature = "encryption")]
+        if data.len() >= 8 {
+            if let Ok(crate::crypt::ContainerFormat::Cfb) =
+                crate::crypt::detect_container_format(data)
+            {
+                return Err(Error::FileEncrypted);
+            }
+        }
+
+        let cursor = std::io::Cursor::new(data);
+        let mut archive = zip::ZipArchive::new(cursor).map_err(|e| Error::Zip(e.to_string()))?;
+        Self::from_archive(&mut archive)
+    }
+
     /// Open an encrypted `.xlsx` file using a password.
     ///
     /// The file must be in OLE/CFB container format. Supports both Standard
@@ -994,6 +1025,58 @@ mod tests {
         let xml = serialize_xml(&ct).unwrap();
         assert!(xml.starts_with("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"));
         assert!(xml.contains("<Types"));
+    }
+
+    #[test]
+    fn test_save_to_buffer_and_open_from_buffer_roundtrip() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", CellValue::String("Hello".to_string()))
+            .unwrap();
+        wb.set_cell_value("Sheet1", "B2", CellValue::Number(42.0))
+            .unwrap();
+
+        let buf = wb.save_to_buffer().unwrap();
+        assert!(!buf.is_empty());
+
+        let wb2 = Workbook::open_from_buffer(&buf).unwrap();
+        assert_eq!(wb2.sheet_names(), vec!["Sheet1"]);
+        assert_eq!(
+            wb2.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("Hello".to_string())
+        );
+        assert_eq!(
+            wb2.get_cell_value("Sheet1", "B2").unwrap(),
+            CellValue::Number(42.0)
+        );
+    }
+
+    #[test]
+    fn test_save_to_buffer_produces_valid_zip() {
+        let wb = Workbook::new();
+        let buf = wb.save_to_buffer().unwrap();
+
+        let cursor = std::io::Cursor::new(buf);
+        let mut archive = zip::ZipArchive::new(cursor).unwrap();
+
+        let expected_files = [
+            "[Content_Types].xml",
+            "_rels/.rels",
+            "xl/workbook.xml",
+            "xl/_rels/workbook.xml.rels",
+            "xl/worksheets/sheet1.xml",
+            "xl/styles.xml",
+            "xl/sharedStrings.xml",
+        ];
+
+        for name in &expected_files {
+            assert!(archive.by_name(name).is_ok(), "Missing ZIP entry: {}", name);
+        }
+    }
+
+    #[test]
+    fn test_open_from_buffer_invalid_data() {
+        let result = Workbook::open_from_buffer(b"not a zip file");
+        assert!(result.is_err());
     }
 
     #[cfg(feature = "encryption")]

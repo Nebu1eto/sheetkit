@@ -612,7 +612,7 @@ mod tests {
                     fmtid: CUSTOM_PROPERTY_FMTID.to_string(),
                     pid: 4,
                     name: "FloatProp".to_string(),
-                    value: CustomPropertyValue::Float(3.14),
+                    value: CustomPropertyValue::Float(3.15),
                 },
                 CustomProperty {
                     fmtid: CUSTOM_PROPERTY_FMTID.to_string(),

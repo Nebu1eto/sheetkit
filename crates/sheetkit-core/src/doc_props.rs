@@ -419,7 +419,7 @@ mod tests {
         let vals = vec![
             CustomPropertyValue::String("hello".to_string()),
             CustomPropertyValue::Int(42),
-            CustomPropertyValue::Float(3.14),
+            CustomPropertyValue::Float(3.15),
             CustomPropertyValue::Bool(true),
             CustomPropertyValue::DateTime("2024-01-01T00:00:00Z".to_string()),
         ];

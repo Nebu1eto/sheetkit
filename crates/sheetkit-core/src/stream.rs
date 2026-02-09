@@ -632,11 +632,11 @@ mod tests {
     #[test]
     fn test_number_value() {
         let mut sw = StreamWriter::new("Sheet1");
-        sw.write_row(1, &[CellValue::from(3.14)]).unwrap();
+        sw.write_row(1, &[CellValue::from(3.15)]).unwrap();
         let xml_bytes = sw.finish().unwrap();
         let xml = String::from_utf8(xml_bytes).unwrap();
 
-        assert!(xml.contains("<v>3.14</v>"));
+        assert!(xml.contains("<v>3.15</v>"));
     }
 
     #[test]
@@ -1046,7 +1046,7 @@ mod tests {
             &[
                 CellValue::from("text"),
                 CellValue::from(42),
-                CellValue::from(3.14),
+                CellValue::from(3.15),
                 CellValue::from(true),
                 CellValue::from(false),
                 CellValue::Formula {

@@ -92,6 +92,43 @@ fn format_shifted_ref(col: u32, row: u32, abs_col: bool, abs_row: bool) -> Resul
     ))
 }
 
+/// Shift cell references, respecting absolute markers.
+///
+/// The callback receives `(col, row, abs_col, abs_row)` and must return the
+/// new `(col, row)` values.  This allows callers to skip shifting when a
+/// reference is absolute.
+pub(crate) fn shift_cell_references_with_abs<F>(text: &str, shift_cell: F) -> Result<String>
+where
+    F: Fn(u32, u32, bool, bool) -> (u32, u32) + Copy,
+{
+    if !text.is_ascii() {
+        return Ok(text.to_string());
+    }
+
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0usize;
+    let bytes = text.as_bytes();
+
+    while i < bytes.len() {
+        if let Some(parsed) = parse_cell_ref_at(text, i) {
+            let (new_col, new_row) =
+                shift_cell(parsed.col, parsed.row, parsed.abs_col, parsed.abs_row);
+            out.push_str(&format_shifted_ref(
+                new_col,
+                new_row,
+                parsed.abs_col,
+                parsed.abs_row,
+            )?);
+            i = parsed.end;
+        } else {
+            out.push(bytes[i] as char);
+            i += 1;
+        }
+    }
+
+    Ok(out)
+}
+
 pub(crate) fn shift_cell_references_in_text<F>(text: &str, shift_cell: F) -> Result<String>
 where
     F: Fn(u32, u32) -> (u32, u32) + Copy,
