@@ -45,7 +45,7 @@
     "build:napi": "napi build --platform --release --esm --js binding.js --dts binding.d.ts",
     "build:js": "swc index.ts buffer-codec.ts sheet-data.ts -d .",
     "build:types": "tsc --project tsconfig.build.json",
-    "build": "pnpm build:napi && pnpm build:js && pnpm build:types",
+    "build": "pnpm build:napi && pnpm typecheck && pnpm build:js && pnpm build:types",
     "build:debug": "napi build --platform --js binding.js --dts binding.d.ts",
     "typecheck": "tsc --noEmit",
     "prepublishOnly": "napi prepublish -t npm",
