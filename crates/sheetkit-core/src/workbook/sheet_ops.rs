@@ -176,6 +176,19 @@ impl Workbook {
             }
         }
 
+        // Populate cached column numbers and sort rows/cells so that binary
+        // search lookups work correctly. Cell.col is #[serde(skip)] so all
+        // deserialized cells have col = 0 without this step.
+        ws.sheet_data.rows.sort_unstable_by_key(|r| r.r);
+        for row in &mut ws.sheet_data.rows {
+            for cell in &mut row.cells {
+                if let Ok((c, _)) = cell_name_to_coordinates(&cell.r) {
+                    cell.col = c;
+                }
+            }
+            row.cells.sort_unstable_by_key(|c| c.col);
+        }
+
         // Add the sheet
         let idx = crate::sheet::add_sheet(
             &mut self.workbook_xml,
@@ -1126,6 +1139,36 @@ mod tests {
     fn test_workbook_get_cols_sheet_not_found() {
         let wb = Workbook::new();
         assert!(wb.get_cols("NoSheet").is_err());
+    }
+
+    #[test]
+    fn test_apply_stream_writer_cells_readable_without_reopen() {
+        let mut wb = Workbook::new();
+        let mut sw = wb.new_stream_writer("Streamed").unwrap();
+        sw.write_row(1, &[CellValue::from("Name"), CellValue::from("Age")])
+            .unwrap();
+        sw.write_row(2, &[CellValue::from("Alice"), CellValue::from(30)])
+            .unwrap();
+        wb.apply_stream_writer(sw).unwrap();
+
+        // Reading cells directly (without save/reopen) must work because
+        // apply_stream_writer should populate cell.col and sort cells.
+        assert_eq!(
+            wb.get_cell_value("Streamed", "A1").unwrap(),
+            CellValue::String("Name".to_string())
+        );
+        assert_eq!(
+            wb.get_cell_value("Streamed", "B1").unwrap(),
+            CellValue::String("Age".to_string())
+        );
+        assert_eq!(
+            wb.get_cell_value("Streamed", "A2").unwrap(),
+            CellValue::String("Alice".to_string())
+        );
+        assert_eq!(
+            wb.get_cell_value("Streamed", "B2").unwrap(),
+            CellValue::Number(30.0)
+        );
     }
 
     #[test]
