@@ -59,8 +59,6 @@ pub struct Workbook {
     workbook_rels: Relationships,
     worksheets: Vec<(String, WorksheetXml)>,
     stylesheet: StyleSheet,
-    #[allow(dead_code)]
-    shared_strings: Sst,
     sst_runtime: SharedStringTable,
     /// Per-sheet comments, parallel to the `worksheets` vector.
     sheet_comments: Vec<Option<Comments>>,
