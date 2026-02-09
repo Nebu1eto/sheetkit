@@ -890,3 +890,158 @@ let num = cell_ref::column_name_to_number("AA")?;  // 27
 // Convert column number to name
 let name = cell_ref::column_number_to_name(27)?;  // "AA"
 ```
+
+---
+
+### Theme Colors
+
+Resolve theme color slots (dk1, lt1, dk2, lt2, accent1-6, hlink, folHlink) with an optional tint value.
+
+#### Rust
+
+```rust
+use sheetkit::Workbook;
+
+let wb = Workbook::new();
+
+// Get accent1 color (no tint)
+let color = wb.get_theme_color(4, None); // Some("FF4472C4")
+
+// Lighten black (index 0) by 50%
+let lightened = wb.get_theme_color(0, Some(0.5)); // Some("FF7F7F7F")
+
+// Out of range returns None
+let invalid = wb.get_theme_color(99, None); // None
+```
+
+#### TypeScript
+
+```typescript
+const wb = new Workbook();
+
+// Get accent1 color (no tint)
+const color = wb.getThemeColor(4, null); // "FF4472C4"
+
+// Lighten black by 50%
+const lightened = wb.getThemeColor(0, 0.5); // "FF7F7F7F"
+
+// Darken white by 50%
+const darkened = wb.getThemeColor(1, -0.5); // "FF7F7F7F"
+
+// Out of range returns null
+const invalid = wb.getThemeColor(99, null); // null
+```
+
+Theme color indices: 0 (dk1), 1 (lt1), 2 (dk2), 3 (lt2), 4-9 (accent1-6), 10 (hlink), 11 (folHlink).
+
+For full details including gradient fills, see the [API Reference](../api-reference/advanced.md#27-theme-colors).
+
+---
+
+### Rich Text
+
+Rich text allows a single cell to contain multiple text segments (runs), each with independent formatting.
+
+#### Rust
+
+```rust
+use sheetkit::{Workbook, RichTextRun};
+
+let mut wb = Workbook::new();
+
+// Set rich text with multiple formatted runs
+wb.set_cell_rich_text("Sheet1", "A1", vec![
+    RichTextRun {
+        text: "Bold red".to_string(),
+        font: Some("Arial".to_string()),
+        size: Some(14.0),
+        bold: true,
+        italic: false,
+        color: Some("#FF0000".to_string()),
+    },
+    RichTextRun {
+        text: " normal text".to_string(),
+        font: None,
+        size: None,
+        bold: false,
+        italic: false,
+        color: None,
+    },
+])?;
+
+// Read rich text back
+if let Some(runs) = wb.get_cell_rich_text("Sheet1", "A1")? {
+    for run in &runs {
+        println!("Text: {:?}, Bold: {}", run.text, run.bold);
+    }
+}
+```
+
+#### TypeScript
+
+```typescript
+const wb = new Workbook();
+
+// Set rich text with multiple formatted runs
+wb.setCellRichText('Sheet1', 'A1', [
+  { text: 'Bold red', font: 'Arial', size: 14, bold: true, color: '#FF0000' },
+  { text: ' normal text' },
+]);
+
+// Read rich text back
+const runs = wb.getCellRichText('Sheet1', 'A1');
+if (runs) {
+  for (const run of runs) {
+    console.log(`Text: ${run.text}, Bold: ${run.bold ?? false}`);
+  }
+}
+```
+
+For full details including `RichTextRun` fields and `rich_text_to_plain`, see the [API Reference](../api-reference/advanced.md#28-rich-text).
+
+---
+
+### File Encryption
+
+Protect entire .xlsx files with a password. Encrypted files use OLE/CFB containers instead of plain ZIP.
+
+> Rust requires the `encryption` feature: `sheetkit = { features = ["encryption"] }`. Node.js bindings always include encryption support.
+
+#### Rust
+
+```rust
+use sheetkit::Workbook;
+
+// Save with password (Agile Encryption, AES-256-CBC)
+let mut wb = Workbook::new();
+wb.save_with_password("encrypted.xlsx", "secret")?;
+
+// Open with password
+let wb2 = Workbook::open_with_password("encrypted.xlsx", "secret")?;
+
+// Detect encrypted files
+match Workbook::open("file.xlsx") {
+    Ok(wb) => { /* unencrypted */ }
+    Err(sheetkit::Error::FileEncrypted) => {
+        let wb = Workbook::open_with_password("file.xlsx", "password")?;
+    }
+    Err(e) => return Err(e),
+}
+```
+
+#### TypeScript
+
+```typescript
+const wb = new Workbook();
+
+// Save with password
+wb.saveWithPassword('encrypted.xlsx', 'secret');
+
+// Open with password (sync)
+const wb2 = Workbook.openWithPasswordSync('encrypted.xlsx', 'secret');
+
+// Open with password (async)
+const wb3 = await Workbook.openWithPassword('encrypted.xlsx', 'secret');
+```
+
+For full details including error types and encryption specs, see the [API Reference](../api-reference/advanced.md#29-file-encryption).

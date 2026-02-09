@@ -234,5 +234,5 @@ zip::ZipWriter::finish() -> .xlsx file
 
 - **Unit tests**: Co-located with their modules using `#[cfg(test)]` inline test blocks. Each module tests its own functionality in isolation.
 - **Node.js tests**: Located at `packages/sheetkit/__test__/index.spec.ts`. Uses vitest to test the napi bindings end-to-end.
-- **Test coverage**: The project maintains over 1,100 Rust tests and over 100 Node.js tests across all modules.
+- **Test coverage**: The project maintains over 1,300 Rust tests and 200 Node.js tests across all modules.
 - **Test output files**: Any `.xlsx` files generated during tests are gitignored to keep the repository clean.

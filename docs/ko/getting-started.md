@@ -399,6 +399,6 @@ const wb2 = Workbook.openWithPasswordSync("encrypted.xlsx", "secret");
 
 ## 다음 단계
 
-- [API 레퍼런스](api-reference.md) -- 모든 메서드와 타입에 대한 전체 문서.
-- [아키텍처](architecture.md) -- 내부 설계 및 크레이트 구조.
-- [기여 가이드](contributing.md) -- 개발 환경 설정 및 기여 가이드라인.
+- [API 레퍼런스](./api-reference/index.md) -- 모든 메서드와 타입에 대한 전체 문서.
+- [아키텍처](./architecture.md) -- 내부 설계 및 크레이트 구조.
+- [기여 가이드](./contributing.md) -- 개발 환경 설정 및 기여 가이드라인.

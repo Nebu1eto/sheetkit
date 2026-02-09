@@ -951,3 +951,158 @@ let num = cell_ref::column_name_to_number("AA")?;  // 27
 // 열 번호를 이름으로 변환
 let name = cell_ref::column_number_to_name(27)?;  // "AA"
 ```
+
+---
+
+### 테마 색상
+
+테마 색상 슬롯(dk1, lt1, dk2, lt2, accent1-6, hlink, folHlink)을 선택적 틴트 값과 함께 조회합니다.
+
+#### Rust
+
+```rust
+use sheetkit::Workbook;
+
+let wb = Workbook::new();
+
+// accent1 색상 가져오기 (틴트 없음)
+let color = wb.get_theme_color(4, None); // Some("FF4472C4")
+
+// 검정(인덱스 0)을 50% 밝게
+let lightened = wb.get_theme_color(0, Some(0.5)); // Some("FF7F7F7F")
+
+// 범위 밖이면 None 반환
+let invalid = wb.get_theme_color(99, None); // None
+```
+
+#### TypeScript
+
+```typescript
+const wb = new Workbook();
+
+// accent1 색상 가져오기 (틴트 없음)
+const color = wb.getThemeColor(4, null); // "FF4472C4"
+
+// 검정을 50% 밝게
+const lightened = wb.getThemeColor(0, 0.5); // "FF7F7F7F"
+
+// 흰색을 50% 어둡게
+const darkened = wb.getThemeColor(1, -0.5); // "FF7F7F7F"
+
+// 범위 밖이면 null 반환
+const invalid = wb.getThemeColor(99, null); // null
+```
+
+테마 색상 인덱스: 0 (dk1), 1 (lt1), 2 (dk2), 3 (lt2), 4-9 (accent1-6), 10 (hlink), 11 (folHlink).
+
+그래디언트 채우기를 포함한 자세한 내용은 [API 레퍼런스](../api-reference/advanced.md#27-theme-colors)를 참조하세요.
+
+---
+
+### 서식 있는 텍스트
+
+서식 있는 텍스트(Rich Text)를 사용하면 하나의 셀에 각각 독립적인 서식을 가진 여러 텍스트 조각(run)을 넣을 수 있습니다.
+
+#### Rust
+
+```rust
+use sheetkit::{Workbook, RichTextRun};
+
+let mut wb = Workbook::new();
+
+// 여러 서식 run으로 서식 있는 텍스트 설정
+wb.set_cell_rich_text("Sheet1", "A1", vec![
+    RichTextRun {
+        text: "Bold red".to_string(),
+        font: Some("Arial".to_string()),
+        size: Some(14.0),
+        bold: true,
+        italic: false,
+        color: Some("#FF0000".to_string()),
+    },
+    RichTextRun {
+        text: " normal text".to_string(),
+        font: None,
+        size: None,
+        bold: false,
+        italic: false,
+        color: None,
+    },
+])?;
+
+// 서식 있는 텍스트 읽기
+if let Some(runs) = wb.get_cell_rich_text("Sheet1", "A1")? {
+    for run in &runs {
+        println!("Text: {:?}, Bold: {}", run.text, run.bold);
+    }
+}
+```
+
+#### TypeScript
+
+```typescript
+const wb = new Workbook();
+
+// 여러 서식 run으로 서식 있는 텍스트 설정
+wb.setCellRichText('Sheet1', 'A1', [
+  { text: 'Bold red', font: 'Arial', size: 14, bold: true, color: '#FF0000' },
+  { text: ' normal text' },
+]);
+
+// 서식 있는 텍스트 읽기
+const runs = wb.getCellRichText('Sheet1', 'A1');
+if (runs) {
+  for (const run of runs) {
+    console.log(`Text: ${run.text}, Bold: ${run.bold ?? false}`);
+  }
+}
+```
+
+`RichTextRun` 필드 및 `rich_text_to_plain`을 포함한 자세한 내용은 [API 레퍼런스](../api-reference/advanced.md#28-서식-있는-텍스트)를 참조하세요.
+
+---
+
+### 파일 암호화
+
+전체 .xlsx 파일을 비밀번호로 보호합니다. 암호화된 파일은 일반 ZIP 대신 OLE/CFB 컨테이너를 사용합니다.
+
+> Rust에서는 `encryption` feature가 필요합니다: `sheetkit = { features = ["encryption"] }`. Node.js 바인딩에는 항상 암호화 지원이 포함됩니다.
+
+#### Rust
+
+```rust
+use sheetkit::Workbook;
+
+// 비밀번호로 저장 (Agile Encryption, AES-256-CBC)
+let mut wb = Workbook::new();
+wb.save_with_password("encrypted.xlsx", "secret")?;
+
+// 비밀번호로 열기
+let wb2 = Workbook::open_with_password("encrypted.xlsx", "secret")?;
+
+// 암호화된 파일 감지
+match Workbook::open("file.xlsx") {
+    Ok(wb) => { /* 암호화되지 않은 파일 */ }
+    Err(sheetkit::Error::FileEncrypted) => {
+        let wb = Workbook::open_with_password("file.xlsx", "password")?;
+    }
+    Err(e) => return Err(e),
+}
+```
+
+#### TypeScript
+
+```typescript
+const wb = new Workbook();
+
+// 비밀번호로 저장
+wb.saveWithPassword('encrypted.xlsx', 'secret');
+
+// 비밀번호로 열기 (동기)
+const wb2 = Workbook.openWithPasswordSync('encrypted.xlsx', 'secret');
+
+// 비밀번호로 열기 (비동기)
+const wb3 = await Workbook.openWithPassword('encrypted.xlsx', 'secret');
+```
+
+에러 타입 및 암호화 사양을 포함한 자세한 내용은 [API 레퍼런스](../api-reference/advanced.md#29-파일-암호화)를 참조하세요.
