@@ -1,0 +1,20 @@
+{
+  "name": "sheetkit-benchmark",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "generate": "tsx generate-fixtures.ts",
+    "bench": "tsx benchmark.ts",
+    "bench:all": "tsx benchmark.ts && tsx benchmark.ts --format=markdown"
+  },
+  "dependencies": {
+    "@sheetkit/node": "workspace:*",
+    "exceljs": "^4.4.0",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.9.0"
+  }
+}
