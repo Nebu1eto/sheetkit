@@ -75,8 +75,9 @@ impl Workbook {
         let workbook_rels: Relationships = read_xml_part(archive, "xl/_rels/workbook.xml.rels")?;
 
         // Parse each worksheet referenced in the workbook.
-        let mut worksheets = Vec::new();
-        let mut worksheet_paths = Vec::new();
+        let sheet_count = workbook_xml.sheets.sheets.len();
+        let mut worksheets = Vec::with_capacity(sheet_count);
+        let mut worksheet_paths = Vec::with_capacity(sheet_count);
         for sheet_entry in &workbook_xml.sheets.sheets {
             // Find the relationship target for this sheet's rId.
             let rel = workbook_rels
@@ -316,14 +317,17 @@ impl Workbook {
             sheet_name_index.insert(name.clone(), i);
         }
 
-        // Populate cached column numbers on all cells.
+        // Populate cached column numbers on all cells and ensure sorted order
+        // for binary search correctness.
         for (_name, ws) in &mut worksheets {
+            // Ensure rows are sorted by row number (some writers output unsorted data).
+            ws.sheet_data.rows.sort_unstable_by_key(|r| r.r);
             for row in &mut ws.sheet_data.rows {
                 for cell in &mut row.cells {
-                    if let Ok((c, _)) = cell_name_to_coordinates(&cell.r) {
-                        cell.col = c;
-                    }
+                    cell.col = fast_col_number(&cell.r);
                 }
+                // Ensure cells within a row are sorted by column number.
+                row.cells.sort_unstable_by_key(|c| c.col);
             }
         }
 
@@ -957,10 +961,38 @@ pub(crate) fn write_xml_part<T: Serialize, W: std::io::Write + std::io::Seek>(
     Ok(())
 }
 
+/// Fast column number extraction from a cell reference string like "A1", "BC42".
+///
+/// Parses only the alphabetic prefix (column letters) and converts to a
+/// 1-based column number. Much faster than [`cell_name_to_coordinates`] because
+/// it skips row parsing and avoids error handling overhead.
+fn fast_col_number(cell_ref: &str) -> u32 {
+    let mut col: u32 = 0;
+    for b in cell_ref.bytes() {
+        if b.is_ascii_alphabetic() {
+            col = col * 26 + (b.to_ascii_uppercase() - b'A') as u32 + 1;
+        } else {
+            break;
+        }
+    }
+    col
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn test_fast_col_number() {
+        assert_eq!(fast_col_number("A1"), 1);
+        assert_eq!(fast_col_number("B1"), 2);
+        assert_eq!(fast_col_number("Z1"), 26);
+        assert_eq!(fast_col_number("AA1"), 27);
+        assert_eq!(fast_col_number("AZ1"), 52);
+        assert_eq!(fast_col_number("BA1"), 53);
+        assert_eq!(fast_col_number("XFD1"), 16384);
+    }
 
     #[test]
     fn test_new_workbook_has_sheet1() {
