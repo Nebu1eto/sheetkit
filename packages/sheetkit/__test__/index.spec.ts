@@ -1,7 +1,9 @@
 import { access, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { decodeRowsBuffer } from '../buffer-codec.js';
 import { Workbook } from '../index.js';
+import { SheetData } from '../sheet-data.js';
 
 const TEST_DIR = import.meta.dirname;
 
@@ -2028,5 +2030,483 @@ describe('Batch APIs', () => {
     expect(wb.getCellValue('Sheet1', 'B2')).toBeNull();
     expect(wb.getCellValue('Sheet1', 'A3')).toBe('e');
     expect(wb.getCellValue('Sheet1', 'B3')).toBe('f');
+  });
+});
+
+// getRowsBuffer API
+describe('getRowsBuffer', () => {
+  it('should return a Buffer with valid SKRD magic', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'test');
+    const buf = wb.getRowsBuffer('Sheet1');
+    expect(buf).toBeInstanceOf(Buffer);
+    expect(buf.readUInt32LE(0)).toBe(0x534b5244);
+  });
+
+  it('should return a small header-only buffer for an empty sheet', () => {
+    const wb = new Workbook();
+    const buf = wb.getRowsBuffer('Sheet1');
+    expect(buf).toBeInstanceOf(Buffer);
+    expect(buf.length).toBe(16);
+    const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+    expect(view.getUint32(6, true)).toBe(0);
+    expect(view.getUint16(10, true)).toBe(0);
+  });
+
+  it('should contain correct row and col counts', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'r1c1');
+    wb.setCellValue('Sheet1', 'C1', 'r1c3');
+    wb.setCellValue('Sheet1', 'A2', 'r2c1');
+    const buf = wb.getRowsBuffer('Sheet1');
+    const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+    expect(view.getUint32(6, true)).toBe(2);
+    expect(view.getUint16(10, true)).toBe(3);
+  });
+
+  it('should throw on non-existent sheet', () => {
+    const wb = new Workbook();
+    expect(() => wb.getRowsBuffer('NoSheet')).toThrow();
+  });
+});
+
+// setSheetDataBuffer API
+describe('setSheetDataBuffer', () => {
+  it('should round-trip data through getRowsBuffer and setSheetDataBuffer', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'Name');
+    wb.setCellValue('Sheet1', 'B1', 100);
+    wb.setCellValue('Sheet1', 'C1', true);
+    wb.setCellValue('Sheet1', 'A2', 'Alice');
+    wb.setCellValue('Sheet1', 'B2', 42.5);
+    const buf = wb.getRowsBuffer('Sheet1');
+
+    const wb2 = new Workbook();
+    wb2.newSheet('Target');
+    wb2.setSheetDataBuffer('Target', buf);
+    expect(wb2.getCellValue('Target', 'A1')).toBe('Name');
+    expect(wb2.getCellValue('Target', 'B1')).toBe(100);
+    expect(wb2.getCellValue('Target', 'C1')).toBe(true);
+    expect(wb2.getCellValue('Target', 'A2')).toBe('Alice');
+    expect(wb2.getCellValue('Target', 'B2')).toBe(42.5);
+  });
+
+  it('should use default startCell A1', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'hello');
+    const buf = wb.getRowsBuffer('Sheet1');
+
+    const wb2 = new Workbook();
+    wb2.setSheetDataBuffer('Sheet1', buf);
+    expect(wb2.getCellValue('Sheet1', 'A1')).toBe('hello');
+  });
+
+  it('should apply data at a custom startCell offset', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'val1');
+    wb.setCellValue('Sheet1', 'B1', 'val2');
+    wb.setCellValue('Sheet1', 'A2', 'val3');
+    const buf = wb.getRowsBuffer('Sheet1');
+
+    const wb2 = new Workbook();
+    wb2.setSheetDataBuffer('Sheet1', buf, 'C3');
+    expect(wb2.getCellValue('Sheet1', 'C3')).toBe('val1');
+    expect(wb2.getCellValue('Sheet1', 'D3')).toBe('val2');
+    expect(wb2.getCellValue('Sheet1', 'C4')).toBe('val3');
+    expect(wb2.getCellValue('Sheet1', 'A1')).toBeNull();
+  });
+
+  it('should handle empty buffer without error', () => {
+    const wb = new Workbook();
+    const emptyBuf = wb.getRowsBuffer('Sheet1');
+    const wb2 = new Workbook();
+    wb2.setSheetDataBuffer('Sheet1', emptyBuf);
+    expect(wb2.getCellValue('Sheet1', 'A1')).toBeNull();
+  });
+});
+
+// Buffer round-trip with all cell types
+describe('Buffer round-trip cell types', () => {
+  it('should transfer string cells', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'hello world');
+    const buf = wb.getRowsBuffer('Sheet1');
+    const sd = new SheetData(buf);
+    expect(sd.getCell(1, 1)).toBe('hello world');
+    expect(sd.getCellType(1, 1)).toBe('string');
+  });
+
+  it('should transfer integer and float number cells', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 42);
+    wb.setCellValue('Sheet1', 'B1', 3.14);
+    wb.setCellValue('Sheet1', 'C1', -100.5);
+    wb.setCellValue('Sheet1', 'D1', 0);
+    const buf = wb.getRowsBuffer('Sheet1');
+    const sd = new SheetData(buf);
+    expect(sd.getCell(1, 1)).toBe(42);
+    expect(sd.getCell(1, 2)).toBe(3.14);
+    expect(sd.getCell(1, 3)).toBe(-100.5);
+    expect(sd.getCell(1, 4)).toBe(0);
+  });
+
+  it('should transfer boolean cells', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', true);
+    wb.setCellValue('Sheet1', 'B1', false);
+    const buf = wb.getRowsBuffer('Sheet1');
+    const sd = new SheetData(buf);
+    expect(sd.getCell(1, 1)).toBe(true);
+    expect(sd.getCell(1, 2)).toBe(false);
+    expect(sd.getCellType(1, 1)).toBe('boolean');
+    expect(sd.getCellType(1, 2)).toBe('boolean');
+  });
+
+  it('should transfer date cells as numbers', () => {
+    const wb = new Workbook();
+    const styleId = wb.addStyle({ numFmtId: 14 });
+    wb.setCellValue('Sheet1', 'A1', { type: 'date', serial: 45292 });
+    wb.setCellStyle('Sheet1', 'A1', styleId);
+    const buf = wb.getRowsBuffer('Sheet1');
+    const sd = new SheetData(buf);
+    expect(sd.getCell(1, 1)).toBe(45292);
+  });
+
+  it('should transfer formula cells with formula text', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 10);
+    wb.setCellValue('Sheet1', 'A2', 20);
+    wb.setCellFormula('Sheet1', 'A3', 'SUM(A1:A2)');
+    wb.calculateAll();
+    const buf = wb.getRowsBuffer('Sheet1');
+    const sd = new SheetData(buf);
+    expect(sd.getCellType(3, 1)).toBe('formula');
+    expect(sd.getCell(3, 1)).toBe('SUM(A1:A2)');
+  });
+
+  it('should transfer rich text cells as concatenated strings', () => {
+    const wb = new Workbook();
+    wb.setCellRichText('Sheet1', 'A1', [{ text: 'Bold', bold: true }, { text: 'Normal' }]);
+    const buf = wb.getRowsBuffer('Sheet1');
+    const sd = new SheetData(buf);
+    expect(sd.getCellType(1, 1)).toBe('string');
+    expect(sd.getCell(1, 1)).toBe('BoldNormal');
+  });
+});
+
+// SheetData class
+describe('SheetData', () => {
+  it('should construct from a valid getRowsBuffer result', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'test');
+    wb.setCellValue('Sheet1', 'B1', 42);
+    const buf = wb.getRowsBuffer('Sheet1');
+    const sd = new SheetData(buf);
+    expect(sd.rowCount).toBe(1);
+    expect(sd.colCount).toBe(2);
+  });
+
+  it('should handle null buffer without crashing', () => {
+    const sd = new SheetData(null);
+    expect(sd.rowCount).toBe(0);
+    expect(sd.colCount).toBe(0);
+  });
+
+  it('should handle empty buffer without crashing', () => {
+    const sd = new SheetData(Buffer.alloc(0));
+    expect(sd.rowCount).toBe(0);
+    expect(sd.colCount).toBe(0);
+  });
+
+  it('should return correct rowCount and colCount', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'a');
+    wb.setCellValue('Sheet1', 'C2', 'c');
+    wb.setCellValue('Sheet1', 'D3', 'd');
+    const buf = wb.getRowsBuffer('Sheet1');
+    const sd = new SheetData(buf);
+    expect(sd.rowCount).toBe(3);
+    expect(sd.colCount).toBe(4);
+  });
+
+  it('should return correct values from getCell for all types', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'text');
+    wb.setCellValue('Sheet1', 'B1', 99);
+    wb.setCellValue('Sheet1', 'C1', true);
+    wb.setCellValue('Sheet1', 'D1', false);
+    const buf = wb.getRowsBuffer('Sheet1');
+    const sd = new SheetData(buf);
+    expect(sd.getCell(1, 1)).toBe('text');
+    expect(sd.getCell(1, 2)).toBe(99);
+    expect(sd.getCell(1, 3)).toBe(true);
+    expect(sd.getCell(1, 4)).toBe(false);
+  });
+
+  it('should return null from getCell for non-existent row/col', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'x');
+    const buf = wb.getRowsBuffer('Sheet1');
+    const sd = new SheetData(buf);
+    expect(sd.getCell(99, 1)).toBeNull();
+    expect(sd.getCell(1, 99)).toBeNull();
+  });
+
+  it('should return correct type strings from getCellType', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'text');
+    wb.setCellValue('Sheet1', 'B1', 42);
+    wb.setCellValue('Sheet1', 'C1', true);
+    wb.setCellValue('Sheet1', 'D1', false);
+    const buf = wb.getRowsBuffer('Sheet1');
+    const sd = new SheetData(buf);
+    expect(sd.getCellType(1, 1)).toBe('string');
+    expect(sd.getCellType(1, 2)).toBe('number');
+    expect(sd.getCellType(1, 3)).toBe('boolean');
+    expect(sd.getCellType(1, 4)).toBe('boolean');
+    expect(sd.getCellType(99, 1)).toBe('empty');
+  });
+
+  it('should return correct array from getRow', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'Name');
+    wb.setCellValue('Sheet1', 'B1', 100);
+    wb.setCellValue('Sheet1', 'C1', true);
+    const buf = wb.getRowsBuffer('Sheet1');
+    const sd = new SheetData(buf);
+    const row = sd.getRow(1);
+    expect(row).toEqual(['Name', 100, true]);
+  });
+
+  it('should return empty array from getRow for non-existent row', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'x');
+    const buf = wb.getRowsBuffer('Sheet1');
+    const sd = new SheetData(buf);
+    expect(sd.getRow(99)).toEqual([]);
+  });
+
+  it('should return full 2D array from toArray', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'r1');
+    wb.setCellValue('Sheet1', 'B1', 10);
+    wb.setCellValue('Sheet1', 'A2', 'r2');
+    wb.setCellValue('Sheet1', 'B2', 20);
+    const buf = wb.getRowsBuffer('Sheet1');
+    const sd = new SheetData(buf);
+    const arr = sd.toArray();
+    expect(arr).toEqual([
+      ['r1', 10],
+      ['r2', 20],
+    ]);
+  });
+
+  it('should yield row objects from rows() generator', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'first');
+    wb.setCellValue('Sheet1', 'A2', 'second');
+    const buf = wb.getRowsBuffer('Sheet1');
+    const sd = new SheetData(buf);
+    const collected = [];
+    for (const r of sd.rows()) {
+      collected.push(r);
+    }
+    expect(collected.length).toBe(2);
+    expect(collected[0].row).toBe(1);
+    expect(collected[0].values).toEqual(['first']);
+    expect(collected[1].row).toBe(2);
+    expect(collected[1].values).toEqual(['second']);
+  });
+
+  it('should convert column indices to names with columnName', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'x');
+    const buf = wb.getRowsBuffer('Sheet1');
+    const sd = new SheetData(buf);
+    expect(sd.columnName(0)).toBe('A');
+    expect(sd.columnName(25)).toBe('Z');
+    expect(sd.columnName(26)).toBe('AA');
+  });
+});
+
+// decodeRowsBuffer function
+describe('decodeRowsBuffer', () => {
+  it('should decode buffer to JsRowData array matching getRows output', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'Name');
+    wb.setCellValue('Sheet1', 'B1', 100);
+    wb.setCellValue('Sheet1', 'A2', 'Alice');
+    wb.setCellValue('Sheet1', 'B2', true);
+    const buf = wb.getRowsBuffer('Sheet1');
+    const decoded = decodeRowsBuffer(buf);
+    const rows = wb.getRows('Sheet1');
+    expect(decoded).toEqual(rows);
+  });
+
+  it('should include correct row number and cell properties', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'hello');
+    wb.setCellValue('Sheet1', 'B1', 42);
+    wb.setCellValue('Sheet1', 'C1', true);
+    const buf = wb.getRowsBuffer('Sheet1');
+    const decoded = decodeRowsBuffer(buf);
+    expect(decoded.length).toBe(1);
+    expect(decoded[0].row).toBe(1);
+    expect(decoded[0].cells.length).toBe(3);
+    expect(decoded[0].cells[0]).toEqual({ column: 'A', valueType: 'string', value: 'hello' });
+    expect(decoded[0].cells[1]).toEqual({ column: 'B', valueType: 'number', numberValue: 42 });
+    expect(decoded[0].cells[2]).toEqual({ column: 'C', valueType: 'boolean', boolValue: true });
+  });
+
+  it('should return empty array for null or empty buffer', () => {
+    expect(decodeRowsBuffer(null)).toEqual([]);
+    expect(decodeRowsBuffer(Buffer.alloc(0))).toEqual([]);
+    expect(decodeRowsBuffer(Buffer.alloc(5))).toEqual([]);
+  });
+
+  it('should return correct valueType strings', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'text');
+    wb.setCellValue('Sheet1', 'B1', 42);
+    wb.setCellValue('Sheet1', 'C1', true);
+    wb.setCellFormula('Sheet1', 'D1', 'A1');
+    wb.calculateAll();
+    const buf = wb.getRowsBuffer('Sheet1');
+    const decoded = decodeRowsBuffer(buf);
+    expect(decoded[0].cells[0].valueType).toBe('string');
+    expect(decoded[0].cells[1].valueType).toBe('number');
+    expect(decoded[0].cells[2].valueType).toBe('boolean');
+    expect(decoded[0].cells[3].valueType).toBe('formula');
+  });
+});
+
+// Sparse data handling
+describe('Buffer sparse data', () => {
+  it('should handle cells at A1 and Z50', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'first');
+    wb.setCellValue('Sheet1', 'Z50', 'last');
+    const buf = wb.getRowsBuffer('Sheet1');
+    const sd = new SheetData(buf);
+    expect(sd.getCell(1, 1)).toBe('first');
+    expect(sd.getCell(50, 26)).toBe('last');
+    expect(sd.getCell(1, 2)).toBeNull();
+    expect(sd.getCell(25, 1)).toBeNull();
+  });
+
+  it('should decode sparse cells correctly with getRows', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'first');
+    wb.setCellValue('Sheet1', 'Z50', 'last');
+    const rows = wb.getRows('Sheet1');
+    expect(rows.length).toBe(2);
+    expect(rows[0].row).toBe(1);
+    expect(rows[0].cells[0].column).toBe('A');
+    expect(rows[0].cells[0].value).toBe('first');
+    expect(rows[1].row).toBe(50);
+    expect(rows[1].cells[0].column).toBe('Z');
+    expect(rows[1].cells[0].value).toBe('last');
+  });
+
+  it('should decode sparse cells correctly with decodeRowsBuffer', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'first');
+    wb.setCellValue('Sheet1', 'Z50', 'last');
+    const buf = wb.getRowsBuffer('Sheet1');
+    const decoded = decodeRowsBuffer(buf);
+    expect(decoded.length).toBe(2);
+    expect(decoded[0].cells[0].column).toBe('A');
+    expect(decoded[0].cells[0].value).toBe('first');
+    expect(decoded[1].cells[0].column).toBe('Z');
+    expect(decoded[1].cells[0].value).toBe('last');
+  });
+});
+
+// Save/open round-trip with buffer
+describe('Buffer save/open round-trip', () => {
+  const out = tmpFile('test-buffer-roundtrip.xlsx');
+  afterEach(async () => cleanup(out));
+
+  it('should preserve values through save, open, and buffer read', async () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'Name');
+    wb.setCellValue('Sheet1', 'B1', 100);
+    wb.setCellValue('Sheet1', 'C1', true);
+    wb.setCellValue('Sheet1', 'A2', 'Bob');
+    wb.setCellValue('Sheet1', 'B2', 55.5);
+    await wb.save(out);
+
+    const wb2 = await Workbook.open(out);
+    const buf = wb2.getRowsBuffer('Sheet1');
+    const sd = new SheetData(buf);
+    expect(sd.getCell(1, 1)).toBe('Name');
+    expect(sd.getCell(1, 2)).toBe(100);
+    expect(sd.getCell(1, 3)).toBe(true);
+    expect(sd.getCell(2, 1)).toBe('Bob');
+    expect(sd.getCell(2, 2)).toBe(55.5);
+  });
+
+  it('should preserve values through setSheetData, save, open, and buffer verify', async () => {
+    const wb = new Workbook();
+    wb.setSheetData('Sheet1', [
+      ['Header', 'Value'],
+      ['Row1', 10],
+      ['Row2', 20],
+    ]);
+    await wb.save(out);
+
+    const wb2 = await Workbook.open(out);
+    const buf = wb2.getRowsBuffer('Sheet1');
+    const sd = new SheetData(buf);
+    expect(sd.toArray()).toEqual([
+      ['Header', 'Value'],
+      ['Row1', 10],
+      ['Row2', 20],
+    ]);
+  });
+});
+
+// Large dataset
+describe('Buffer large dataset', () => {
+  it('should handle 1000 rows x 20 cols via SheetData', () => {
+    const wb = new Workbook();
+    const data: number[][] = [];
+    for (let r = 0; r < 1000; r++) {
+      const row: number[] = [];
+      for (let c = 0; c < 20; c++) {
+        row.push(r * 20 + c);
+      }
+      data.push(row);
+    }
+    wb.setSheetData('Sheet1', data);
+
+    const buf = wb.getRowsBuffer('Sheet1');
+    const sd = new SheetData(buf);
+    expect(sd.rowCount).toBe(1000);
+    expect(sd.colCount).toBe(20);
+    expect(sd.getCell(1, 1)).toBe(0);
+    expect(sd.getCell(1, 20)).toBe(19);
+    expect(sd.getCell(500, 1)).toBe(499 * 20);
+    expect(sd.getCell(500, 10)).toBe(499 * 20 + 9);
+    expect(sd.getCell(1000, 1)).toBe(999 * 20);
+    expect(sd.getCell(1000, 20)).toBe(999 * 20 + 19);
+  });
+
+  it('should produce consistent results between getRows and decodeRowsBuffer for large data', () => {
+    const wb = new Workbook();
+    const data: (string | number)[][] = [];
+    for (let r = 0; r < 100; r++) {
+      const row: (string | number)[] = [];
+      for (let c = 0; c < 10; c++) {
+        row.push(r % 2 === 0 ? r * 10 + c : `val_${r}_${c}`);
+      }
+      data.push(row);
+    }
+    wb.setSheetData('Sheet1', data);
+
+    const rows = wb.getRows('Sheet1');
+    const buf = wb.getRowsBuffer('Sheet1');
+    const decoded = decodeRowsBuffer(buf);
+    expect(decoded).toEqual(rows);
   });
 });
