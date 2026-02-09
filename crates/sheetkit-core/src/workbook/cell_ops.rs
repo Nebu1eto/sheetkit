@@ -401,6 +401,183 @@ impl Workbook {
         }
         Ok(None)
     }
+
+    /// Set multiple cell values at once. Each entry is a (cell_ref, value) pair.
+    ///
+    /// This is more efficient than calling `set_cell_value` repeatedly from
+    /// FFI because it crosses the language boundary only once.
+    pub fn set_cell_values(
+        &mut self,
+        sheet: &str,
+        entries: Vec<(String, CellValue)>,
+    ) -> Result<()> {
+        let sheet_idx = self.sheet_index(sheet)?;
+
+        for (cell, value) in entries {
+            if let CellValue::String(ref s) = value {
+                if s.len() > MAX_CELL_CHARS {
+                    return Err(Error::CellValueTooLong {
+                        length: s.len(),
+                        max: MAX_CELL_CHARS,
+                    });
+                }
+            }
+
+            let (col, row_num) = cell_name_to_coordinates(&cell)?;
+            let cell_ref = crate::utils::cell_ref::coordinates_to_cell_name(col, row_num)?;
+
+            let row_idx = {
+                let ws = &mut self.worksheets[sheet_idx].1;
+                match ws.sheet_data.rows.binary_search_by_key(&row_num, |r| r.r) {
+                    Ok(idx) => idx,
+                    Err(idx) => {
+                        ws.sheet_data.rows.insert(idx, new_row(row_num));
+                        idx
+                    }
+                }
+            };
+
+            if value == CellValue::Empty {
+                let row = &mut self.worksheets[sheet_idx].1.sheet_data.rows[row_idx];
+                if let Ok(idx) = row.cells.binary_search_by_key(&col, |c| c.col) {
+                    row.cells.remove(idx);
+                }
+                continue;
+            }
+
+            let cell_idx = {
+                let row = &mut self.worksheets[sheet_idx].1.sheet_data.rows[row_idx];
+                match row.cells.binary_search_by_key(&col, |c| c.col) {
+                    Ok(idx) => idx,
+                    Err(pos) => {
+                        row.cells.insert(
+                            pos,
+                            Cell {
+                                r: cell_ref,
+                                col,
+                                s: None,
+                                t: None,
+                                v: None,
+                                f: None,
+                                is: None,
+                            },
+                        );
+                        pos
+                    }
+                }
+            };
+
+            let xml_cell =
+                &mut self.worksheets[sheet_idx].1.sheet_data.rows[row_idx].cells[cell_idx];
+            value_to_xml_cell(&mut self.sst_runtime, xml_cell, value);
+        }
+
+        Ok(())
+    }
+
+    /// Set a contiguous block of cell values from a 2D array.
+    ///
+    /// `data` is a row-major 2D array of values. `start_row` and `start_col`
+    /// are 1-based. The first value in `data[0][0]` maps to the cell at
+    /// `(start_col, start_row)`.
+    ///
+    /// This is the fastest way to populate a sheet from JS because it crosses
+    /// the FFI boundary only once for the entire dataset.
+    pub fn set_sheet_data(
+        &mut self,
+        sheet: &str,
+        data: Vec<Vec<CellValue>>,
+        start_row: u32,
+        start_col: u32,
+    ) -> Result<()> {
+        let sheet_idx = self.sheet_index(sheet)?;
+
+        // Pre-compute column names for the widest row.
+        let max_cols = data.iter().map(|r| r.len()).max().unwrap_or(0) as u32;
+        let col_names: Vec<String> = (0..max_cols)
+            .map(|i| crate::utils::cell_ref::column_number_to_name(start_col + i))
+            .collect::<Result<Vec<_>>>()?;
+
+        for (row_offset, row_values) in data.into_iter().enumerate() {
+            let row_num = start_row + row_offset as u32;
+
+            let row_idx = {
+                let ws = &mut self.worksheets[sheet_idx].1;
+                match ws.sheet_data.rows.binary_search_by_key(&row_num, |r| r.r) {
+                    Ok(idx) => idx,
+                    Err(idx) => {
+                        ws.sheet_data.rows.insert(idx, new_row(row_num));
+                        idx
+                    }
+                }
+            };
+
+            for (col_offset, value) in row_values.into_iter().enumerate() {
+                let col = start_col + col_offset as u32;
+
+                if let CellValue::String(ref s) = value {
+                    if s.len() > MAX_CELL_CHARS {
+                        return Err(Error::CellValueTooLong {
+                            length: s.len(),
+                            max: MAX_CELL_CHARS,
+                        });
+                    }
+                }
+
+                if value == CellValue::Empty {
+                    let row = &mut self.worksheets[sheet_idx].1.sheet_data.rows[row_idx];
+                    if let Ok(idx) = row.cells.binary_search_by_key(&col, |c| c.col) {
+                        row.cells.remove(idx);
+                    }
+                    continue;
+                }
+
+                let cell_ref = format!("{}{}", col_names[col_offset], row_num);
+
+                let cell_idx = {
+                    let row = &mut self.worksheets[sheet_idx].1.sheet_data.rows[row_idx];
+                    match row.cells.binary_search_by_key(&col, |c| c.col) {
+                        Ok(idx) => idx,
+                        Err(pos) => {
+                            row.cells.insert(
+                                pos,
+                                Cell {
+                                    r: cell_ref,
+                                    col,
+                                    s: None,
+                                    t: None,
+                                    v: None,
+                                    f: None,
+                                    is: None,
+                                },
+                            );
+                            pos
+                        }
+                    }
+                };
+
+                let xml_cell =
+                    &mut self.worksheets[sheet_idx].1.sheet_data.rows[row_idx].cells[cell_idx];
+                value_to_xml_cell(&mut self.sst_runtime, xml_cell, value);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Set values in a single row starting from the given column.
+    ///
+    /// `row_num` is 1-based. `start_col` is 1-based.
+    /// Values are placed left-to-right starting at `start_col`.
+    pub fn set_row_values(
+        &mut self,
+        sheet: &str,
+        row_num: u32,
+        start_col: u32,
+        values: Vec<CellValue>,
+    ) -> Result<()> {
+        self.set_sheet_data(sheet, vec![values], row_num, start_col)
+    }
 }
 
 /// Write a CellValue into an XML Cell (mutating it in place).
@@ -1144,5 +1321,243 @@ mod tests {
     fn test_fill_formula_multi_column_range_rejected() {
         let mut wb = Workbook::new();
         assert!(wb.fill_formula("Sheet1", "A1:B5", "C1").is_err());
+    }
+
+    #[test]
+    fn test_set_cell_values_batch() {
+        let mut wb = Workbook::new();
+        wb.set_cell_values(
+            "Sheet1",
+            vec![
+                ("A1".to_string(), CellValue::String("hello".to_string())),
+                ("B1".to_string(), CellValue::Number(42.0)),
+                ("C1".to_string(), CellValue::Bool(true)),
+                ("A2".to_string(), CellValue::String("world".to_string())),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("hello".to_string())
+        );
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "B1").unwrap(),
+            CellValue::Number(42.0)
+        );
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "C1").unwrap(),
+            CellValue::Bool(true)
+        );
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "A2").unwrap(),
+            CellValue::String("world".to_string())
+        );
+    }
+
+    #[test]
+    fn test_set_cell_values_empty_removes_cell() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", "existing").unwrap();
+        wb.set_cell_values("Sheet1", vec![("A1".to_string(), CellValue::Empty)])
+            .unwrap();
+        assert_eq!(wb.get_cell_value("Sheet1", "A1").unwrap(), CellValue::Empty);
+    }
+
+    #[test]
+    fn test_set_sheet_data_basic() {
+        let mut wb = Workbook::new();
+        wb.set_sheet_data(
+            "Sheet1",
+            vec![
+                vec![
+                    CellValue::String("Name".to_string()),
+                    CellValue::String("Age".to_string()),
+                ],
+                vec![
+                    CellValue::String("Alice".to_string()),
+                    CellValue::Number(30.0),
+                ],
+                vec![
+                    CellValue::String("Bob".to_string()),
+                    CellValue::Number(25.0),
+                ],
+            ],
+            1,
+            1,
+        )
+        .unwrap();
+
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("Name".to_string())
+        );
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "B1").unwrap(),
+            CellValue::String("Age".to_string())
+        );
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "A2").unwrap(),
+            CellValue::String("Alice".to_string())
+        );
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "B2").unwrap(),
+            CellValue::Number(30.0)
+        );
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "A3").unwrap(),
+            CellValue::String("Bob".to_string())
+        );
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "B3").unwrap(),
+            CellValue::Number(25.0)
+        );
+    }
+
+    #[test]
+    fn test_set_sheet_data_with_offset() {
+        let mut wb = Workbook::new();
+        // Start at C3 (col=3, row=3)
+        wb.set_sheet_data(
+            "Sheet1",
+            vec![
+                vec![CellValue::Number(1.0), CellValue::Number(2.0)],
+                vec![CellValue::Number(3.0), CellValue::Number(4.0)],
+            ],
+            3,
+            3,
+        )
+        .unwrap();
+
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "C3").unwrap(),
+            CellValue::Number(1.0)
+        );
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "D3").unwrap(),
+            CellValue::Number(2.0)
+        );
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "C4").unwrap(),
+            CellValue::Number(3.0)
+        );
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "D4").unwrap(),
+            CellValue::Number(4.0)
+        );
+        // A1 should still be empty
+        assert_eq!(wb.get_cell_value("Sheet1", "A1").unwrap(), CellValue::Empty);
+    }
+
+    #[test]
+    fn test_set_sheet_data_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("batch_roundtrip.xlsx");
+
+        let mut wb = Workbook::new();
+        wb.set_sheet_data(
+            "Sheet1",
+            vec![
+                vec![
+                    CellValue::String("Header1".to_string()),
+                    CellValue::String("Header2".to_string()),
+                ],
+                vec![CellValue::Number(100.0), CellValue::Bool(true)],
+            ],
+            1,
+            1,
+        )
+        .unwrap();
+        wb.save(&path).unwrap();
+
+        let wb2 = Workbook::open(&path).unwrap();
+        assert_eq!(
+            wb2.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("Header1".to_string())
+        );
+        assert_eq!(
+            wb2.get_cell_value("Sheet1", "B1").unwrap(),
+            CellValue::String("Header2".to_string())
+        );
+        assert_eq!(
+            wb2.get_cell_value("Sheet1", "A2").unwrap(),
+            CellValue::Number(100.0)
+        );
+        assert_eq!(
+            wb2.get_cell_value("Sheet1", "B2").unwrap(),
+            CellValue::Bool(true)
+        );
+    }
+
+    #[test]
+    fn test_set_row_values() {
+        let mut wb = Workbook::new();
+        wb.set_row_values(
+            "Sheet1",
+            1,
+            1,
+            vec![
+                CellValue::String("A".to_string()),
+                CellValue::String("B".to_string()),
+                CellValue::String("C".to_string()),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("A".to_string())
+        );
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "B1").unwrap(),
+            CellValue::String("B".to_string())
+        );
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "C1").unwrap(),
+            CellValue::String("C".to_string())
+        );
+    }
+
+    #[test]
+    fn test_set_row_values_with_offset() {
+        let mut wb = Workbook::new();
+        // Start at column D (col=4)
+        wb.set_row_values(
+            "Sheet1",
+            2,
+            4,
+            vec![CellValue::Number(10.0), CellValue::Number(20.0)],
+        )
+        .unwrap();
+
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "D2").unwrap(),
+            CellValue::Number(10.0)
+        );
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "E2").unwrap(),
+            CellValue::Number(20.0)
+        );
+    }
+
+    #[test]
+    fn test_set_sheet_data_merges_with_existing() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", "existing").unwrap();
+        wb.set_sheet_data(
+            "Sheet1",
+            vec![vec![CellValue::Empty, CellValue::String("new".to_string())]],
+            1,
+            1,
+        )
+        .unwrap();
+
+        // A1 was cleared by Empty
+        assert_eq!(wb.get_cell_value("Sheet1", "A1").unwrap(), CellValue::Empty);
+        // B1 was added
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "B1").unwrap(),
+            CellValue::String("new".to_string())
+        );
     }
 }
