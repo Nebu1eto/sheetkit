@@ -20,6 +20,29 @@ use sheetkit_core::validation::{
 
 use crate::types::*;
 
+pub(crate) fn js_value_to_cell_value(
+    v: napi::bindgen_prelude::Either5<
+        String,
+        f64,
+        bool,
+        crate::types::DateValue,
+        napi::bindgen_prelude::Null,
+    >,
+) -> CellValue {
+    match v {
+        napi::bindgen_prelude::Either5::A(s) => CellValue::String(s),
+        napi::bindgen_prelude::Either5::B(n) => CellValue::Number(n),
+        napi::bindgen_prelude::Either5::C(b) => CellValue::Bool(b),
+        napi::bindgen_prelude::Either5::D(d) => CellValue::Date(d.serial),
+        napi::bindgen_prelude::Either5::E(_) => CellValue::Empty,
+    }
+}
+
+pub(crate) fn parse_column_name(col: &str) -> napi::Result<u32> {
+    sheetkit_core::utils::cell_ref::column_name_to_number(col)
+        .map_err(|e| napi::Error::from_reason(e.to_string()))
+}
+
 pub(crate) fn parse_paper_size(s: &str) -> Option<PaperSize> {
     match s.to_lowercase().as_str() {
         "letter" => Some(PaperSize::Letter),

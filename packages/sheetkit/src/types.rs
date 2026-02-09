@@ -468,6 +468,16 @@ pub struct JsSheetProtectionConfig {
     pub pivot_tables: Option<bool>,
 }
 
+/// A cell reference and value pair for batch operations.
+#[napi(object)]
+pub struct JsCellEntry {
+    /// Cell reference (e.g., "A1", "B2").
+    pub cell: String,
+    /// Cell value: string, number, boolean, DateValue, or null.
+    pub value:
+        napi::bindgen_prelude::Either5<String, f64, bool, DateValue, napi::bindgen_prelude::Null>,
+}
+
 /// A single formatted text segment within a rich text cell.
 #[napi(object)]
 pub struct JsRichTextRun {

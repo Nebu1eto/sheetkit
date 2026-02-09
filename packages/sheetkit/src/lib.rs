@@ -174,6 +174,63 @@ impl Workbook {
             .map_err(|e| Error::from_reason(e.to_string()))
     }
 
+    /// Set multiple cell values at once. More efficient than calling
+    /// setCellValue repeatedly because it crosses the FFI boundary only once.
+    #[napi]
+    pub fn set_cell_values(&mut self, sheet: String, cells: Vec<JsCellEntry>) -> Result<()> {
+        let entries: Vec<(String, CellValue)> = cells
+            .into_iter()
+            .map(|entry| (entry.cell, js_value_to_cell_value(entry.value)))
+            .collect();
+        self.inner
+            .set_cell_values(&sheet, entries)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Set values in a single row starting from the given column.
+    /// Values are placed left-to-right starting at startCol (e.g., "A").
+    #[napi]
+    #[allow(clippy::type_complexity)]
+    pub fn set_row_values(
+        &mut self,
+        sheet: String,
+        row: u32,
+        start_col: String,
+        values: Vec<Either5<String, f64, bool, DateValue, Null>>,
+    ) -> Result<()> {
+        let col_num = crate::conversions::parse_column_name(&start_col)?;
+        let cell_values: Vec<CellValue> = values.into_iter().map(js_value_to_cell_value).collect();
+        self.inner
+            .set_row_values(&sheet, row, col_num, cell_values)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Set a block of cell values from a 2D array.
+    /// Each inner array is a row, each element is a cell value.
+    /// Optionally specify a start cell (default "A1").
+    #[napi]
+    #[allow(clippy::type_complexity)]
+    pub fn set_sheet_data(
+        &mut self,
+        sheet: String,
+        data: Vec<Vec<Either5<String, f64, bool, DateValue, Null>>>,
+        start_cell: Option<String>,
+    ) -> Result<()> {
+        let (start_col, start_row) = if let Some(ref cell) = start_cell {
+            sheetkit_core::utils::cell_ref::cell_name_to_coordinates(cell)
+                .map_err(|e| Error::from_reason(e.to_string()))?
+        } else {
+            (1, 1)
+        };
+        let cell_data: Vec<Vec<CellValue>> = data
+            .into_iter()
+            .map(|row| row.into_iter().map(js_value_to_cell_value).collect())
+            .collect();
+        self.inner
+            .set_sheet_data(&sheet, cell_data, start_row, start_col)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
     /// Create a new empty sheet. Returns the 0-based sheet index.
     #[napi]
     pub fn new_sheet(&mut self, name: String) -> Result<u32> {
