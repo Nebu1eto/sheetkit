@@ -2010,9 +2010,7 @@ describe('Batch APIs', () => {
 
   it('should handle mixed types in setSheetData', () => {
     const wb = new Workbook();
-    wb.setSheetData('Sheet1', [
-      ['text', 42, true, null],
-    ]);
+    wb.setSheetData('Sheet1', [['text', 42, true, null]]);
 
     expect(wb.getCellValue('Sheet1', 'A1')).toBe('text');
     expect(wb.getCellValue('Sheet1', 'B1')).toBe(42);
@@ -2022,11 +2020,7 @@ describe('Batch APIs', () => {
 
   it('should handle ragged rows in setSheetData', () => {
     const wb = new Workbook();
-    wb.setSheetData('Sheet1', [
-      ['a', 'b', 'c'],
-      ['d'],
-      ['e', 'f'],
-    ]);
+    wb.setSheetData('Sheet1', [['a', 'b', 'c'], ['d'], ['e', 'f']]);
 
     expect(wb.getCellValue('Sheet1', 'A1')).toBe('a');
     expect(wb.getCellValue('Sheet1', 'C1')).toBe('c');
