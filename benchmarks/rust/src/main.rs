@@ -85,6 +85,76 @@ fn current_rss_bytes() -> usize {
     0
 }
 
+fn detect_cpu() -> String {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("sysctl")
+            .args(["-n", "machdep.cpu.brand_string"])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.trim().to_string())
+            .unwrap_or_else(|| "Unknown".to_string())
+    }
+    #[cfg(target_os = "linux")]
+    {
+        fs::read_to_string("/proc/cpuinfo")
+            .ok()
+            .and_then(|s| {
+                s.lines()
+                    .find(|l| l.starts_with("model name"))
+                    .and_then(|l| l.split(':').nth(1))
+                    .map(|s| s.trim().to_string())
+            })
+            .unwrap_or_else(|| "Unknown".to_string())
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        "Unknown".to_string()
+    }
+}
+
+fn detect_ram() -> String {
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("sysctl")
+            .args(["-n", "hw.memsize"])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .and_then(|s| s.trim().parse::<u64>().ok())
+            .map(|bytes| format!("{} GB", bytes / (1024 * 1024 * 1024)))
+            .unwrap_or_else(|| "Unknown".to_string())
+    }
+    #[cfg(target_os = "linux")]
+    {
+        fs::read_to_string("/proc/meminfo")
+            .ok()
+            .and_then(|s| {
+                s.lines()
+                    .find(|l| l.starts_with("MemTotal"))
+                    .and_then(|l| l.split_whitespace().nth(1))
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .map(|kb| format!("{} GB", kb / (1024 * 1024)))
+            })
+            .unwrap_or_else(|| "Unknown".to_string())
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        "Unknown".to_string()
+    }
+}
+
+fn detect_rustc_version() -> String {
+    std::process::Command::new("rustc")
+        .arg("--version")
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_else(|| "Unknown".to_string())
+}
+
 #[derive(Clone)]
 struct BenchResult {
     scenario: String,
@@ -959,14 +1029,22 @@ fn generate_markdown_report(results: &[BenchResult]) -> String {
     lines.push("# SheetKit Rust Native Benchmark".to_string());
     lines.push(String::new());
     lines.push(format!("Benchmark run: {}", chrono_free_timestamp()));
+    lines.push(String::new());
+    lines.push("## Environment".to_string());
+    lines.push(String::new());
+    lines.push("| Item | Value |".to_string());
+    lines.push("|------|-------|".to_string());
+    lines.push(format!("| CPU | {} |", detect_cpu()));
+    lines.push(format!("| RAM | {} |", detect_ram()));
     lines.push(format!(
-        "Platform: {} {}",
+        "| OS | {} {} |",
         std::env::consts::OS,
         std::env::consts::ARCH
     ));
-    lines.push("Profile: release".to_string());
+    lines.push(format!("| Rust | {} |", detect_rustc_version()));
+    lines.push("| Profile | release (opt-level=3, LTO=fat) |".to_string());
     lines.push(format!(
-        "Iterations: {BENCH_RUNS} runs per scenario, {WARMUP_RUNS} warmup"
+        "| Iterations | {BENCH_RUNS} runs per scenario, {WARMUP_RUNS} warmup |"
     ));
     lines.push(String::new());
 
