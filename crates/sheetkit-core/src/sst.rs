@@ -13,13 +13,16 @@ use crate::rich_text::{xml_to_run, RichTextRun};
 /// Runtime shared string table for efficient string lookup and insertion.
 ///
 /// Maintains both an ordered list of strings (for index-based lookup) and a
-/// reverse hash map (for deduplication when inserting). Also preserves rich
-/// text formatting information for round-tripping.
+/// reverse hash map (for deduplication when inserting). Original [`Si`] items
+/// loaded from file are preserved so that `to_sst()` can reuse them without
+/// cloning the string data a second time.
 #[derive(Debug)]
 pub struct SharedStringTable {
     strings: Vec<String>,
     index_map: HashMap<String, usize>,
-    rich_items: HashMap<usize, Si>,
+    /// Original or constructed Si items, parallel to `strings`.
+    /// `None` for plain-text items added via `add()` / `add_owned()`.
+    si_items: Vec<Option<Si>>,
 }
 
 impl SharedStringTable {
@@ -28,48 +31,58 @@ impl SharedStringTable {
         Self {
             strings: Vec::new(),
             index_map: HashMap::new(),
-            rich_items: HashMap::new(),
+            si_items: Vec::new(),
         }
     }
 
-    /// Build from an XML [`Sst`] struct.
+    /// Build from an XML [`Sst`], taking ownership to avoid cloning items.
     ///
     /// Plain-text items use the `t` field directly. Rich-text items
-    /// concatenate all run texts.
-    pub fn from_sst(sst: &Sst) -> Self {
-        let mut table = Self::new();
+    /// concatenate all run texts. Pre-sizes internal containers.
+    pub fn from_sst(sst: Sst) -> Self {
+        let cap = sst.items.len();
+        let mut strings = Vec::with_capacity(cap);
+        let mut index_map = HashMap::with_capacity(cap);
+        let mut si_items: Vec<Option<Si>> = Vec::with_capacity(cap);
 
-        for si in &sst.items {
-            let text = si_to_string(si);
-            let idx = table.strings.len();
-            table.index_map.entry(text.clone()).or_insert(idx);
-            if si.t.is_none() && !si.r.is_empty() {
-                table.rich_items.insert(idx, si.clone());
+        for si in sst.items {
+            let text = si_to_string(&si);
+            let idx = strings.len();
+            index_map.entry(text.clone()).or_insert(idx);
+            // Preserve the original Si for rich text or items with xml:space.
+            let is_rich = si.t.is_none() && !si.r.is_empty();
+            let has_space_attr = si.t.as_ref().is_some_and(|t| t.xml_space.is_some());
+            if is_rich || has_space_attr {
+                si_items.push(Some(si));
+            } else {
+                si_items.push(None);
             }
-            table.strings.push(text);
+            strings.push(text);
         }
 
-        table
+        Self {
+            strings,
+            index_map,
+            si_items,
+        }
     }
 
-    /// Convert back to an XML [`Sst`] struct.
+    /// Convert back to an XML [`Sst`] struct for serialization.
+    ///
+    /// Reuses stored [`Si`] items for entries loaded from file. Builds new
+    /// `Si` items only for strings added at runtime.
     pub fn to_sst(&self) -> Sst {
         let items: Vec<Si> = self
             .strings
             .iter()
             .enumerate()
             .map(|(idx, s)| {
-                if let Some(rich_si) = self.rich_items.get(&idx) {
-                    rich_si.clone()
+                if let Some(ref si) = self.si_items[idx] {
+                    si.clone()
                 } else {
                     Si {
                         t: Some(T {
-                            xml_space: if s.starts_with(' ')
-                                || s.ends_with(' ')
-                                || s.contains("  ")
-                                || s.contains('\n')
-                                || s.contains('\t')
-                            {
+                            xml_space: if needs_space_preserve(s) {
                                 Some("preserve".to_string())
                             } else {
                                 None
@@ -96,7 +109,7 @@ impl SharedStringTable {
         self.strings.get(index).map(|s| s.as_str())
     }
 
-    /// Add a string, returning its index.
+    /// Add a string by reference, returning its index.
     ///
     /// If the string already exists, the existing index is returned (dedup).
     pub fn add(&mut self, s: &str) -> usize {
@@ -106,6 +119,22 @@ impl SharedStringTable {
         let idx = self.strings.len();
         self.strings.push(s.to_string());
         self.index_map.insert(s.to_string(), idx);
+        self.si_items.push(None);
+        idx
+    }
+
+    /// Add a string by value, returning its index.
+    ///
+    /// Avoids one allocation compared to `add()` when the caller already
+    /// owns a `String`.
+    pub fn add_owned(&mut self, s: String) -> usize {
+        if let Some(&idx) = self.index_map.get(&s) {
+            return idx;
+        }
+        let idx = self.strings.len();
+        self.index_map.insert(s.clone(), idx);
+        self.strings.push(s);
+        self.si_items.push(None);
         idx
     }
 
@@ -118,10 +147,10 @@ impl SharedStringTable {
             return idx;
         }
         let idx = self.strings.len();
-        self.strings.push(plain.clone());
-        self.index_map.insert(plain, idx);
+        self.index_map.insert(plain.clone(), idx);
+        self.strings.push(plain);
         let si = crate::rich_text::runs_to_si(runs);
-        self.rich_items.insert(idx, si);
+        self.si_items.push(Some(si));
         idx
     }
 
@@ -129,8 +158,10 @@ impl SharedStringTable {
     ///
     /// Returns `None` for plain-text entries.
     pub fn get_rich_text(&self, index: usize) -> Option<Vec<RichTextRun>> {
-        self.rich_items
-            .get(&index)
+        self.si_items
+            .get(index)
+            .and_then(|opt| opt.as_ref())
+            .filter(|si| !si.r.is_empty())
             .map(|si| si.r.iter().map(xml_to_run).collect())
     }
 
@@ -149,6 +180,15 @@ impl Default for SharedStringTable {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Check whether a string needs `xml:space="preserve"`.
+fn needs_space_preserve(s: &str) -> bool {
+    s.starts_with(' ')
+        || s.ends_with(' ')
+        || s.contains("  ")
+        || s.contains('\n')
+        || s.contains('\t')
 }
 
 /// Extract the plain-text content of a shared string item.
@@ -195,6 +235,17 @@ mod tests {
     }
 
     #[test]
+    fn test_sst_add_owned() {
+        let mut table = SharedStringTable::new();
+        assert_eq!(table.add_owned("hello".to_string()), 0);
+        assert_eq!(table.add_owned("world".to_string()), 1);
+        assert_eq!(table.add_owned("hello".to_string()), 0); // dedup
+        assert_eq!(table.len(), 2);
+        assert_eq!(table.get(0), Some("hello"));
+        assert_eq!(table.get(1), Some("world"));
+    }
+
+    #[test]
     fn test_sst_get() {
         let mut table = SharedStringTable::new();
         table.add("alpha");
@@ -236,7 +287,7 @@ mod tests {
             ],
         };
 
-        let table = SharedStringTable::from_sst(&xml_sst);
+        let table = SharedStringTable::from_sst(xml_sst);
         assert_eq!(table.len(), 3);
         assert_eq!(table.get(0), Some("Name"));
         assert_eq!(table.get(1), Some("Age"));
@@ -279,7 +330,7 @@ mod tests {
             }],
         };
 
-        let table = SharedStringTable::from_sst(&xml_sst);
+        let table = SharedStringTable::from_sst(xml_sst);
         assert_eq!(table.len(), 1);
         assert_eq!(table.get(0), Some("Bold Normal"));
     }
@@ -350,9 +401,40 @@ mod tests {
                 ],
             }],
         };
-        let table = SharedStringTable::from_sst(&xml_sst);
+        let table = SharedStringTable::from_sst(xml_sst);
         let back = table.to_sst();
         assert!(back.items[0].t.is_none());
         assert_eq!(back.items[0].r.len(), 2);
+    }
+
+    #[test]
+    fn test_space_preserve_roundtrip() {
+        let xml_sst = Sst {
+            xmlns: sheetkit_xml::namespaces::SPREADSHEET_ML.to_string(),
+            count: Some(1),
+            unique_count: Some(1),
+            items: vec![Si {
+                t: Some(T {
+                    xml_space: Some("preserve".to_string()),
+                    value: " leading space".to_string(),
+                }),
+                r: vec![],
+            }],
+        };
+        let table = SharedStringTable::from_sst(xml_sst);
+        let back = table.to_sst();
+        assert_eq!(
+            back.items[0].t.as_ref().unwrap().xml_space,
+            Some("preserve".to_string())
+        );
+    }
+
+    #[test]
+    fn test_add_owned_then_to_sst() {
+        let mut table = SharedStringTable::new();
+        table.add_owned("test".to_string());
+        let sst = table.to_sst();
+        assert_eq!(sst.items.len(), 1);
+        assert_eq!(sst.items[0].t.as_ref().unwrap().value, "test");
     }
 }

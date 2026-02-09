@@ -594,7 +594,7 @@ pub(crate) fn value_to_xml_cell(
 
     match value {
         CellValue::String(s) => {
-            let idx = sst.add(&s);
+            let idx = sst.add_owned(s);
             xml_cell.t = Some("s".to_string());
             xml_cell.v = Some(idx.to_string());
         }

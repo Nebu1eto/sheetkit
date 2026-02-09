@@ -3,8 +3,7 @@ use super::*;
 impl Workbook {
     /// Create a new empty workbook containing a single empty sheet named "Sheet1".
     pub fn new() -> Self {
-        let shared_strings = Sst::default();
-        let sst_runtime = SharedStringTable::from_sst(&shared_strings);
+        let sst_runtime = SharedStringTable::new();
         let mut sheet_name_index = HashMap::new();
         sheet_name_index.insert("Sheet1".to_string(), 0);
         Self {
@@ -14,7 +13,6 @@ impl Workbook {
             workbook_rels: relationships::workbook_rels(),
             worksheets: vec![("Sheet1".to_string(), WorksheetXml::default())],
             stylesheet: StyleSheet::default(),
-            shared_strings,
             sst_runtime,
             sheet_comments: vec![None],
             charts: vec![],
@@ -106,7 +104,7 @@ impl Workbook {
         let shared_strings: Sst =
             read_xml_part(archive, "xl/sharedStrings.xml").unwrap_or_default();
 
-        let sst_runtime = SharedStringTable::from_sst(&shared_strings);
+        let sst_runtime = SharedStringTable::from_sst(shared_strings);
 
         // Parse xl/theme/theme1.xml (optional -- preserved as raw bytes for round-trip).
         let (theme_xml, theme_colors) = match read_bytes_part(archive, "xl/theme/theme1.xml") {
@@ -336,7 +334,6 @@ impl Workbook {
             workbook_rels,
             worksheets,
             stylesheet,
-            shared_strings,
             sst_runtime,
             sheet_comments,
             charts,
