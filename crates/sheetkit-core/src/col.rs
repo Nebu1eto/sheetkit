@@ -13,7 +13,8 @@ use crate::error::{Error, Result};
 use crate::row::get_rows;
 use crate::sst::SharedStringTable;
 use crate::utils::cell_ref::{
-    cell_name_to_coordinates, column_name_to_number, coordinates_to_cell_name,
+    cell_name_to_coordinates, column_name_to_number, column_number_to_name,
+    coordinates_to_cell_name,
 };
 use crate::utils::constants::{MAX_COLUMNS, MAX_COLUMN_WIDTH};
 
@@ -21,7 +22,7 @@ use crate::utils::constants::{MAX_COLUMNS, MAX_COLUMN_WIDTH};
 ///
 /// Returns a Vec of `(column_name, Vec<(row_number, CellValue)>)` tuples.
 /// Only columns that have data are included (sparse). The columns are sorted
-/// alphabetically (A, B, C, ... Z, AA, AB, ...).
+/// by column order (A, B, ..., Z, AA, AB, ...).
 #[allow(clippy::type_complexity)]
 pub fn get_cols(
     ws: &WorksheetXml,
@@ -30,20 +31,21 @@ pub fn get_cols(
     let rows = get_rows(ws, sst)?;
 
     // Transpose row-based data into column-based data using a BTreeMap
-    // to keep columns in sorted order.
-    let mut col_map: BTreeMap<String, Vec<(u32, CellValue)>> = BTreeMap::new();
+    // keyed by column number so columns are naturally sorted.
+    let mut col_map: BTreeMap<u32, Vec<(u32, CellValue)>> = BTreeMap::new();
 
     for (row_num, cells) in rows {
-        for (col_name, value) in cells {
-            col_map.entry(col_name).or_default().push((row_num, value));
+        for (col_num, value) in cells {
+            col_map.entry(col_num).or_default().push((row_num, value));
         }
     }
 
-    // BTreeMap sorts by String, but column names need a special sort:
-    // "A" < "B" < ... < "Z" < "AA" < "AB" etc.
-    // We sort by (length, name) to get the correct order.
-    let mut result: Vec<(String, Vec<(u32, CellValue)>)> = col_map.into_iter().collect();
-    result.sort_by(|(a, _), (b, _)| a.len().cmp(&b.len()).then_with(|| a.cmp(b)));
+    // Convert column numbers to names for the public API.
+    let mut result = Vec::with_capacity(col_map.len());
+    for (col_num, cells) in col_map {
+        let col_name = column_number_to_name(col_num)?;
+        result.push((col_name, cells));
+    }
 
     Ok(result)
 }

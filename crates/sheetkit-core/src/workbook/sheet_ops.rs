@@ -301,10 +301,11 @@ impl Workbook {
 
     /// Get all rows with their data from a sheet.
     ///
-    /// Returns a Vec of `(row_number, Vec<(column_name, CellValue)>)` tuples.
-    /// Only rows that contain at least one cell are included (sparse).
+    /// Returns a Vec of `(row_number, Vec<(column_number, CellValue)>)` tuples.
+    /// Column numbers are 1-based (A=1, B=2, ...). Only rows that contain at
+    /// least one cell are included (sparse).
     #[allow(clippy::type_complexity)]
-    pub fn get_rows(&self, sheet: &str) -> Result<Vec<(u32, Vec<(String, CellValue)>)>> {
+    pub fn get_rows(&self, sheet: &str) -> Result<Vec<(u32, Vec<(u32, CellValue)>)>> {
         let ws = self.worksheet_ref(sheet)?;
         crate::row::get_rows(ws, &self.sst_runtime)
     }
@@ -1094,9 +1095,9 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].0, 1);
         assert_eq!(rows[0].1.len(), 2);
-        assert_eq!(rows[0].1[0].0, "A");
+        assert_eq!(rows[0].1[0].0, 1);
         assert_eq!(rows[0].1[0].1, CellValue::String("Name".to_string()));
-        assert_eq!(rows[0].1[1].0, "B");
+        assert_eq!(rows[0].1[1].0, 2);
         assert_eq!(rows[0].1[1].1, CellValue::Number(42.0));
         assert_eq!(rows[1].0, 2);
         assert_eq!(rows[1].1[0].1, CellValue::String("Alice".to_string()));
