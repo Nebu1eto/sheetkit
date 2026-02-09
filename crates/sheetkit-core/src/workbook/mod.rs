@@ -126,6 +126,16 @@ impl Workbook {
         Ok(&self.worksheets[idx].1)
     }
 
+    /// Public immutable reference to a worksheet's XML by sheet name.
+    pub fn worksheet_xml_ref(&self, sheet: &str) -> Result<&WorksheetXml> {
+        self.worksheet_ref(sheet)
+    }
+
+    /// Public immutable reference to the shared string table.
+    pub fn sst_ref(&self) -> &SharedStringTable {
+        &self.sst_runtime
+    }
+
     /// Rebuild the sheet name -> index lookup after any structural change
     /// to the worksheets vector.
     pub(crate) fn rebuild_sheet_index(&mut self) {

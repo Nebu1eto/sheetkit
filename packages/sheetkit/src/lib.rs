@@ -1067,6 +1067,55 @@ impl Workbook {
             .collect())
     }
 
+    /// Serialize a sheet's cell data into a compact binary buffer.
+    /// Returns the raw bytes suitable for efficient JS-side decoding.
+    #[napi]
+    pub fn get_rows_buffer(&self, sheet: String) -> Result<Buffer> {
+        let ws = self
+            .inner
+            .worksheet_xml_ref(&sheet)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        let sst = self.inner.sst_ref();
+        let buf = sheetkit_core::raw_transfer::sheet_to_raw_buffer(ws, sst)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        Ok(Buffer::from(buf))
+    }
+
+    /// Apply cell data from a binary buffer to a sheet.
+    /// The buffer must follow the raw transfer binary format.
+    /// Optionally specify a start cell (default "A1").
+    #[napi]
+    pub fn set_sheet_data_buffer(
+        &mut self,
+        sheet: String,
+        buf: Buffer,
+        start_cell: Option<String>,
+    ) -> Result<()> {
+        let (start_col, start_row) = if let Some(ref cell) = start_cell {
+            sheetkit_core::utils::cell_ref::cell_name_to_coordinates(cell)
+                .map_err(|e| Error::from_reason(e.to_string()))?
+        } else {
+            (1, 1)
+        };
+        let rows = sheetkit_core::raw_transfer_write::raw_buffer_to_cells(&buf)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+
+        for (row_num, cells) in rows {
+            let target_row = start_row + row_num - 1;
+            for (col_num, value) in cells {
+                let target_col = start_col + col_num - 1;
+                let cell_name = sheetkit_core::utils::cell_ref::coordinates_to_cell_name(
+                    target_col, target_row,
+                )
+                .map_err(|e| Error::from_reason(e.to_string()))?;
+                self.inner
+                    .set_cell_value(&sheet, &cell_name, value)
+                    .map_err(|e| Error::from_reason(e.to_string()))?;
+            }
+        }
+        Ok(())
+    }
+
     /// Get all columns with their data from a sheet.
     /// Only columns that have data are included.
     #[napi]
