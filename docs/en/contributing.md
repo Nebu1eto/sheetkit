@@ -55,14 +55,14 @@ cargo fmt --check              # Verify formatting
 ```bash
 cd packages/sheetkit
 
-# Full build: napi (Rust cdylib) -> typecheck -> SWC transpile -> tsc declarations
+# Full build: napi (Rust cdylib) -> typecheck -> tsdown (transpile + declarations)
 pnpm build
 
 # Run the Node.js test suite
 pnpm test
 ```
 
-The `pnpm build` pipeline runs four steps in order: `build:napi` (compiles Rust and generates `binding.js`/`binding.d.ts`), `typecheck` (tsc --noEmit), `build:js` (SWC transpiles `.ts` to `.js`), and `build:types` (tsc emits `.d.ts` declarations). The generated `.js` and `.d.ts` files are gitignored -- only TypeScript sources are committed.
+The `pnpm build` pipeline runs three steps in order: `build:napi` (compiles Rust and generates `binding.js`/`binding.d.ts`), `typecheck` (tsc --noEmit), and `build:ts` (tsdown transpiles `.ts` to `.js` and generates `.d.ts` declarations). The generated `.js` and `.d.ts` files are gitignored -- only TypeScript sources are committed.
 
 ## 5. Development Workflow
 
@@ -192,7 +192,7 @@ SimpleFileOptions::default().compression_method(CompressionMethod::Deflated)
 
 ### Build pipeline
 
-`pnpm build` runs four steps: `build:napi` (Rust + napi codegen producing `binding.js`/`binding.d.ts`) -> `typecheck` (tsc --noEmit) -> `build:js` (SWC transpiles `.ts` to `.js`) -> `build:types` (tsc emits `.d.ts`). The TypeScript sources (`index.ts`, `buffer-codec.ts`, `sheet-data.ts`) are committed; the generated `.js` and `.d.ts` outputs are gitignored.
+`pnpm build` runs three steps: `build:napi` (Rust + napi codegen producing `binding.js`/`binding.d.ts`) -> `typecheck` (tsc --noEmit) -> `build:ts` (tsdown transpiles `.ts` to `.js` and generates `.d.ts`). The TypeScript sources (`index.ts`, `buffer-codec.ts`, `sheet-data.ts`) are committed; the generated `.js` and `.d.ts` outputs are gitignored.
 
 ### File organization
 

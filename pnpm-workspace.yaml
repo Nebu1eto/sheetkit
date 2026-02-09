@@ -6,5 +6,4 @@ packages:
 ignoredOptionalDependencies:
   - '@sheetkit/node-*'
 
-onlyBuiltDependencies:
-  - '@swc/core'
+onlyBuiltDependencies: []

@@ -106,7 +106,7 @@ napi-rs (v3, compat-mode 없음)를 통한 Node.js 바인딩.
 - `index.ts` -- 네이티브 바인딩에 위임하는 공개 `Workbook` 래퍼 클래스를 제공하는 TypeScript 소스. 모든 타입도 재내보내기한다.
 - `buffer-codec.ts` -- Rust에서 JS로의 효율적 행 데이터 전송을 위한 바이너리 버퍼 디코더.
 - `sheet-data.ts` -- 바이너리 버퍼에서 시트 셀 데이터에 지연 접근하는 `SheetData` 클래스.
-- 생성된 `.js`와 `.d.ts` 파일은 gitignore 처리. SWC가 TS를 JS로 트랜스파일하고, tsc가 선언 파일을 생성한다.
+- 생성된 `.js`와 `.d.ts` 파일은 gitignore 처리. tsdown이 트랜스파일과 선언 파일 생성을 모두 처리한다.
 
 ## 3. 주요 설계 결정
 

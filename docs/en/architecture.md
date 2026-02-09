@@ -106,7 +106,7 @@ Node.js bindings via napi-rs (v3, no compat-mode).
 - `index.ts` -- TypeScript source providing the public `Workbook` wrapper class that delegates to the native binding. Also re-exports all types.
 - `buffer-codec.ts` -- Binary buffer decoder for efficient row data transfer from Rust to JS.
 - `sheet-data.ts` -- `SheetData` class for lazy, zero-copy access to sheet cell data from a binary buffer.
-- Generated `.js` and `.d.ts` files are gitignored; SWC transpiles TS to JS, tsc emits declarations.
+- Generated `.js` and `.d.ts` files are gitignored; tsdown handles both transpilation and declaration generation.
 
 ## 3. Key Design Decisions
 
