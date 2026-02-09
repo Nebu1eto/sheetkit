@@ -52,9 +52,9 @@ All business logic lives here. The central type is `Workbook` in `workbook.rs`, 
 | `row.rs` | Row operations: insert, delete, duplicate, set height, visibility, outline level, row style, iterators |
 | `col.rs` | Column operations: set width, visibility, insert, delete, outline level, column style |
 | `style.rs` | Style system: font, fill, border, alignment, number format, cell protection. StyleBuilder API with automatic XF deduplication |
-| `conditional.rs` | Conditional formatting: 18 rule types (cell value, color scale, data bar, icon set, top/bottom, etc.) using DXF records |
-| `chart.rs` | Chart creation for 41 chart types (bar, line, pie, area, scatter, radar, stock, surface, doughnut, combo, 3D variants). Manages DrawingML anchors and relationships |
-| `image.rs` | Image embedding (PNG, JPEG, GIF) with two-cell anchors in DrawingML |
+| `conditional.rs` | Conditional formatting: 17 rule types (cell value, color scale, data bar, top/bottom, above/below average, duplicates, blanks, errors, text matching, etc.) using DXF records |
+| `chart.rs` | Chart creation for 43 chart types (bar, line, pie, area, scatter, radar, stock, surface, doughnut, combo, 3D variants). Manages DrawingML anchors and relationships |
+| `image.rs` | Image embedding (11 formats: PNG, JPEG, GIF, BMP, ICO, TIFF, SVG, EMF, EMZ, WMF, WMZ) with two-cell anchors in DrawingML |
 | `validation.rs` | Data validation rules (dropdown, whole number, decimal, text length, date, time, custom formula) |
 | `comment.rs` | Cell comments using VML drawing format |
 | `table.rs` | Table and auto-filter support |
@@ -146,7 +146,7 @@ The formula system has two independent parts:
 
 ### Conditional Formatting
 
-Conditional formatting rules reference DXF (Differential Formatting) records in styles.xml rather than full XF records. DXF records contain only the formatting properties that differ from the cell's base style. SheetKit supports 18 rule types including cell value comparisons, color scales, data bars, icon sets, top/bottom N, above/below average, duplicates, blanks, errors, and formula-based rules.
+Conditional formatting rules reference DXF (Differential Formatting) records in styles.xml rather than full XF records. DXF records contain only the formatting properties that differ from the cell's base style. SheetKit supports 17 rule types including cell value comparisons, color scales, data bars, top/bottom N, above/below average, duplicates, unique values, blanks, errors, text matching, and formula-based rules.
 
 ### Pivot Tables
 
@@ -234,5 +234,5 @@ zip::ZipWriter::finish() -> .xlsx file
 
 - **Unit tests**: Co-located with their modules using `#[cfg(test)]` inline test blocks. Each module tests its own functionality in isolation.
 - **Node.js tests**: Located at `packages/sheetkit/__test__/index.spec.ts`. Uses vitest to test the napi bindings end-to-end.
-- **Test coverage**: The project maintains over 1,100 Rust tests and over 100 Node.js tests across all modules.
+- **Test coverage**: The project maintains over 1,300 Rust tests and 200 Node.js tests across all modules.
 - **Test output files**: Any `.xlsx` files generated during tests are gitignored to keep the repository clean.

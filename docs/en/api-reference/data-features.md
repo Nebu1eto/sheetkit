@@ -216,7 +216,7 @@ wb.addChart("Sheet1", "D1", "K15", {
 | `x_values` | `Option<String>` | `string?` | X-axis values (scatter/bubble charts only) |
 | `bubble_sizes` | `Option<String>` | `string?` | Bubble sizes (bubble charts only) |
 
-### Supported Chart Types (41 types)
+### Supported Chart Types (43 types)
 
 **Column charts:**
 
@@ -330,7 +330,7 @@ wb.addChart("Sheet1", "D1", "K15", {
 
 ## 11. Images
 
-Embed images into worksheets. Supported formats: PNG, JPEG, and GIF.
+Embed images into worksheets. Supports 11 formats: PNG, JPEG, GIF, BMP, ICO, TIFF, SVG, EMF, EMZ, WMF, WMZ.
 
 ### `add_image` / `addImage`
 
@@ -360,7 +360,7 @@ import { readFileSync } from "fs";
 const imageData = readFileSync("logo.png");
 wb.addImage("Sheet1", {
     data: imageData,
-    format: "png",   // "png" | "jpeg" | "gif"
+    format: "png",   // "png" | "jpeg" | "jpg" | "gif" | "bmp" | "ico" | "tiff" | "tif" | "svg" | "emf" | "emz" | "wmf" | "wmz"
     fromCell: "B2",
     widthPx: 200,
     heightPx: 100,
@@ -372,7 +372,7 @@ wb.addImage("Sheet1", {
 | Field | Rust Type | TS Type | Description |
 |---|---|---|---|
 | `data` | `Vec<u8>` | `Buffer` | Raw image bytes |
-| `format` | `ImageFormat` | `string` | `Png`/`"png"`, `Jpeg`/`"jpeg"`, `Gif`/`"gif"` |
+| `format` | `ImageFormat` | `string` | 11 formats supported (see [Images](./image.md#supported-formats)) |
 | `from_cell` | `String` | `string` | Anchor cell (top-left corner) |
 | `width_px` | `u32` | `number` | Image width in pixels |
 | `height_px` | `u32` | `number` | Image height in pixels |
@@ -712,7 +712,7 @@ wb.delete_conditional_format("Sheet1", "A1:A100")?;
 wb.deleteConditionalFormat("Sheet1", "A1:A100");
 ```
 
-### Rule Types (18 types)
+### Rule Types (17 types)
 
 | Rule Type | Description | Key Fields |
 |---|---|---|

@@ -168,7 +168,7 @@ wb.deleteCellHyperlink("Sheet1", "A1");
 
 ## 10. 차트
 
-41가지 차트 유형을 지원한다. `add_chart`로 시트에 차트를 추가하며, 셀 범위로 위치와 크기를 지정한다.
+43가지 차트 유형을 지원한다. `add_chart`로 시트에 차트를 추가하며, 셀 범위로 위치와 크기를 지정한다.
 
 ### `add_chart(sheet, from_cell, to_cell, config)` / `addChart(sheet, fromCell, toCell, config)`
 
@@ -334,7 +334,7 @@ wb.addChart("Sheet1", "E1", "L15", {
 
 ## 11. 이미지
 
-시트에 이미지를 삽입하는 기능을 다룬다. PNG, JPEG, GIF 형식을 지원한다.
+시트에 이미지를 삽입하는 기능을 다룬다. 11가지 형식을 지원한다: PNG, JPEG, GIF, BMP, ICO, TIFF, SVG, EMF, EMZ, WMF, WMZ.
 
 ### `add_image(sheet, config)` / `addImage(sheet, config)`
 
@@ -375,7 +375,7 @@ wb.addImage("Sheet1", {
 | 속성 | 타입 | 설명 |
 |------|------|------|
 | `data` | `Vec<u8>` / `Buffer` | 이미지 바이너리 데이터 |
-| `format` | `ImageFormat` / `string` | `"png"`, `"jpeg"` (`"jpg"`), `"gif"` |
+| `format` | `ImageFormat` / `string` | 11가지 형식 지원 ([이미지](./image.md#지원-형식) 참조) |
 | `from_cell` / `fromCell` | `string` | 이미지 시작 위치 셀 |
 | `width_px` / `widthPx` | `u32` / `number` | 너비 (픽셀) |
 | `height_px` / `heightPx` | `u32` / `number` | 높이 (픽셀) |
@@ -658,7 +658,7 @@ wb.removeAutoFilter("Sheet1");
 
 ## 15. 조건부 서식
 
-셀 값이나 수식에 따라 자동으로 서식을 적용하는 18가지 규칙 유형을 지원한다.
+셀 값이나 수식에 따라 자동으로 서식을 적용하는 17가지 규칙 유형을 지원한다.
 
 ### `set_conditional_format` / `setConditionalFormat`
 

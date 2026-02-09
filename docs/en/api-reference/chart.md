@@ -64,7 +64,7 @@ wb.addChart("Sheet1", "D1", "K15", {
 | `x_values` | `Option<String>` | `string?` | X-axis values (scatter/bubble charts only) |
 | `bubble_sizes` | `Option<String>` | `string?` | Bubble sizes (bubble charts only) |
 
-### Supported Chart Types (41 types)
+### Supported Chart Types (43 types)
 
 **Column charts:**
 

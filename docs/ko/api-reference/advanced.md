@@ -1372,9 +1372,9 @@ let config = SparklineConfig::new("Sheet1!A1:A10", "B1");
 validate_sparkline_config(&config).unwrap(); // Ok
 ```
 
-## 27. Theme Colors
+## 27. 테마 색상
 
-Theme color slot (dk1, lt1, dk2, lt2, accent1-6, hlink, folHlink) resolve with optional tint.
+테마 색상 슬롯(dk1, lt1, dk2, lt2, accent1-6, hlink, folHlink)을 선택적 틴트 값과 함께 조회한다.
 
 ### Workbook.getThemeColor (Node.js) / Workbook::get_theme_color (Rust)
 

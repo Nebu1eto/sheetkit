@@ -52,9 +52,9 @@ OOXML 스키마에 매핑되는 저수준 XML 데이터 구조체. 각 파일은
 | `row.rs` | 행 작업: 삽입, 삭제, 복제, 높이 설정, 가시성, 아웃라인 수준, 행 스타일, 반복자 |
 | `col.rs` | 열 작업: 너비 설정, 가시성, 삽입, 삭제, 아웃라인 수준, 열 스타일 |
 | `style.rs` | 스타일 시스템: 글꼴, 채우기, 테두리, 정렬, 숫자 형식, 셀 보호. 자동 XF 중복 제거를 포함한 StyleBuilder API |
-| `conditional.rs` | 조건부 서식: DXF 레코드를 사용하는 18가지 규칙 유형 (셀 값, 색상 스케일, 데이터 막대, 아이콘 집합, 상위/하위 등) |
-| `chart.rs` | 41가지 차트 유형 생성 (bar, line, pie, area, scatter, radar, stock, surface, doughnut, combo, 3D 변형). DrawingML 앵커 및 관계 관리 |
-| `image.rs` | 이미지 삽입 (PNG, JPEG, GIF), DrawingML의 두 셀 앵커 사용 |
+| `conditional.rs` | 조건부 서식: DXF 레코드를 사용하는 17가지 규칙 유형 (셀 값, 색상 스케일, 데이터 막대, 상위/하위, 평균 이상/이하, 중복, 빈 셀, 에러, 텍스트 매칭 등) |
+| `chart.rs` | 43가지 차트 유형 생성 (bar, line, pie, area, scatter, radar, stock, surface, doughnut, combo, 3D 변형). DrawingML 앵커 및 관계 관리 |
+| `image.rs` | 이미지 삽입 (11가지 형식: PNG, JPEG, GIF, BMP, ICO, TIFF, SVG, EMF, EMZ, WMF, WMZ), DrawingML의 두 셀 앵커 사용 |
 | `validation.rs` | 데이터 유효성 검사 규칙 (드롭다운, 정수, 소수, 텍스트 길이, 날짜, 시간, 사용자 정의 수식) |
 | `comment.rs` | VML 드로잉 형식을 사용하는 셀 코멘트 |
 | `table.rs` | 테이블 및 자동 필터 지원 |
@@ -146,7 +146,7 @@ XML 선언 `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`은 ZIP에 �
 
 ### 조건부 서식
 
-조건부 서식 규칙은 전체 XF 레코드가 아닌 styles.xml의 DXF (Differential Formatting) 레코드를 참조한다. DXF 레코드는 셀의 기본 스타일과 다른 서식 속성만 포함한다. SheetKit은 셀 값 비교, 색상 스케일, 데이터 막대, 아이콘 집합, 상위/하위 N, 평균 이상/이하, 중복, 빈 셀, 에러, 수식 기반 규칙을 포함하는 18가지 규칙 유형을 지원한다.
+조건부 서식 규칙은 전체 XF 레코드가 아닌 styles.xml의 DXF (Differential Formatting) 레코드를 참조한다. DXF 레코드는 셀의 기본 스타일과 다른 서식 속성만 포함한다. SheetKit은 셀 값 비교, 색상 스케일, 데이터 막대, 상위/하위 N, 평균 이상/이하, 중복, 고유 값, 빈 셀, 에러, 텍스트 매칭, 수식 기반 규칙을 포함하는 17가지 규칙 유형을 지원한다.
 
 ### 피벗 테이블
 
@@ -234,5 +234,5 @@ zip::ZipWriter::finish() -> .xlsx file
 
 - **단위 테스트**: `#[cfg(test)]` 인라인 테스트 블록을 사용하여 모듈과 함께 배치. 각 모듈은 자체 기능을 독립적으로 테스트한다.
 - **Node.js 테스트**: `packages/sheetkit/__test__/index.spec.ts`에 위치. vitest를 사용하여 napi 바인딩을 엔드투엔드로 테스트한다.
-- **테스트 커버리지**: 프로젝트는 모든 모듈에 걸쳐 1,100개 이상의 Rust 테스트와 100개 이상의 Node.js 테스트를 유지한다.
+- **테스트 커버리지**: 프로젝트는 모든 모듈에 걸쳐 1,300개 이상의 Rust 테스트와 200개의 Node.js 테스트를 유지한다.
 - **테스트 출력 파일**: 테스트 중 생성된 `.xlsx` 파일은 저장소를 깨끗하게 유지하기 위해 gitignore 처리된다.

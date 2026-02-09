@@ -364,7 +364,7 @@ In TypeScript, use `numFmtId` (built-in format ID) or `customNumFmt` (custom for
 
 Add charts to worksheets. Charts are anchored between two cells (top-left and bottom-right) and render data from specified cell ranges.
 
-#### Supported Chart Types (41 types)
+#### Supported Chart Types (43 types)
 
 **Column charts:**
 
@@ -515,7 +515,7 @@ wb.addChart('Sheet1', 'D1', 'K15', {
 
 ### Images
 
-Embed images (PNG, JPEG, GIF) into worksheets. Images are anchored to a cell and sized by pixel dimensions.
+Embed images into worksheets. Supports 11 formats: PNG, JPEG, GIF, BMP, ICO, TIFF, SVG, EMF, EMZ, WMF, WMZ. Images are anchored to a cell and sized by pixel dimensions.
 
 #### Rust
 
@@ -547,7 +547,7 @@ const imageData = readFileSync('logo.png');
 
 wb.addImage('Sheet1', {
     data: imageData,
-    format: 'png',        // "png" | "jpeg" | "gif"
+    format: 'png',        // "png" | "jpeg" | "jpg" | "gif" | "bmp" | "ico" | "tiff" | "tif" | "svg" | "emf" | "emz" | "wmf" | "wmz"
     fromCell: 'B2',
     widthPx: 200,
     heightPx: 100,
@@ -740,7 +740,7 @@ wb.deleteCellHyperlink('Sheet1', 'A1');
 
 ### Conditional Formatting
 
-Change cell appearance based on rules applied to their values. Supports 18 rule types including cell value comparisons, color scales, data bars, and text matching.
+Change cell appearance based on rules applied to their values. Supports 17 rule types including cell value comparisons, color scales, data bars, and text matching.
 
 #### Rust
 
