@@ -29,6 +29,8 @@ import type {
 } from './binding.js';
 import { JsStreamWriter, Workbook as NativeWorkbook } from './binding.js';
 import { decodeRowsBuffer } from './buffer-codec.js';
+import type { CellTypeName, CellValue } from './sheet-data.js';
+import { SheetData } from './sheet-data.js';
 
 export type {
   DateValue,
@@ -73,24 +75,20 @@ export type {
   JsWorkbookProtectionConfig,
 } from './binding.js';
 
-const NATIVE_KEY = Symbol('native');
-
 type CellValueInput = string | number | boolean | DateValue | null;
 
 /** Excel workbook for reading and writing .xlsx files. */
 class Workbook {
   #native: NativeWorkbook;
 
-  constructor(nativeInstance?: { [key: symbol]: NativeWorkbook }) {
-    if (nativeInstance?.[NATIVE_KEY]) {
-      this.#native = nativeInstance[NATIVE_KEY];
-    } else {
-      this.#native = new NativeWorkbook();
-    }
+  constructor() {
+    this.#native = new NativeWorkbook();
   }
 
   static #wrap(native: NativeWorkbook): Workbook {
-    return new Workbook({ [NATIVE_KEY]: native });
+    const wb = new Workbook();
+    wb.#native = native;
+    return wb;
   }
 
   /** Open an existing .xlsx file from disk. */
@@ -693,4 +691,5 @@ class Workbook {
   }
 }
 
-export { JsStreamWriter, Workbook };
+export { JsStreamWriter, SheetData, Workbook };
+export type { CellTypeName, CellValue };
