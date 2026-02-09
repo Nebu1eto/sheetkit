@@ -55,14 +55,14 @@ cargo fmt --check              # 포매팅 확인
 ```bash
 cd packages/sheetkit
 
-# 네이티브 애드온 빌드 (Rust cdylib 컴파일, index.js와 index.d.ts 생성)
+# 전체 빌드: napi (Rust cdylib) -> typecheck -> SWC 트랜스파일 -> tsc 선언 생성
 pnpm build
 
 # Node.js 테스트 스위트 실행
 pnpm test
 ```
 
-`pnpm build` 명령은 `napi build --platform --release --esm`을 실행하며, ESM 출력을 직접 생성한다. 수동 파일 이름 변경이 필요 없다.
+`pnpm build` 파이프라인은 네 단계를 순서대로 실행한다: `build:napi` (Rust 컴파일 및 `binding.js`/`binding.d.ts` 생성), `typecheck` (tsc --noEmit), `build:js` (SWC로 `.ts`를 `.js`로 트랜스파일), `build:types` (tsc로 `.d.ts` 선언 생성). 생성된 `.js`와 `.d.ts` 파일은 gitignore 처리되며, TypeScript 소스만 커밋된다.
 
 ## 5. 개발 워크플로우
 
@@ -129,6 +129,12 @@ SheetKit은 TDD (테스트 주도 개발) 접근 방식을 따른다:
 - 새로운 설정이나 결과 타입에 대해 `#[napi(object)]` 구조체를 정의한다.
 - 다형 매개변수나 반환 값에 `Either` 타입을 사용한다.
 
+그런 다음 `packages/sheetkit/index.ts`의 TypeScript 래퍼를 업데이트한다:
+
+- `this.#native`에 위임하는 해당 메서드를 `Workbook` 클래스에 추가한다.
+- napi 생성 `binding.d.ts` 시그니처와 일치하는 타입 어노테이션을 추가한다.
+- 새로운 타입을 `binding.js`에서 재내보내기한다.
+
 ### 5단계: Node.js 테스트
 
 `packages/sheetkit/__test__/index.spec.ts`에 새 바인딩을 다루는 테스트 케이스를 추가한다.
@@ -184,9 +190,9 @@ ZIP 항목을 쓸 때 항상 다음을 사용한다:
 SimpleFileOptions::default().compression_method(CompressionMethod::Deflated)
 ```
 
-### napi 빌드 출력
+### 빌드 파이프라인
 
-napi v3와 `--esm` 플래그를 사용하면 ESM 출력이 직접 생성된다. `packages/sheetkit`에서 `pnpm build`를 실행하면 `index.js`와 `index.d.ts`가 바로 사용 가능하다.
+`pnpm build`는 네 단계를 실행한다: `build:napi` (Rust + napi 코드 생성으로 `binding.js`/`binding.d.ts` 출력) -> `typecheck` (tsc --noEmit) -> `build:js` (SWC로 `.ts`를 `.js`로 트랜스파일) -> `build:types` (tsc로 `.d.ts` 생성). TypeScript 소스(`index.ts`, `buffer-codec.ts`, `sheet-data.ts`)가 커밋되고, 생성된 `.js`와 `.d.ts` 출력은 gitignore 처리된다.
 
 ### 파일 구성
 
