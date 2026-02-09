@@ -38,7 +38,6 @@ export class SheetData {
   #cellDataStart;
 
   constructor(buffer) {
-    this.#buf = buffer;
     if (!buffer || buffer.length < HEADER_SIZE) {
       this.#rowCount = 0;
       this.#colCount = 0;
