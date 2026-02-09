@@ -146,11 +146,6 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Publish to crates.io
-        run: cargo publish --workspace
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -168,3 +163,8 @@ jobs:
       - name: Publish packages to npm
         working-directory: packages/sheetkit
         run: pnpm publish --access public --provenance --no-git-checks --recursive
+
+      - name: Publish to crates.io
+        run: cargo publish --workspace --allow-dirty
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
