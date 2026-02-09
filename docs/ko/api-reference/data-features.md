@@ -375,7 +375,7 @@ wb.addImage("Sheet1", {
 | 속성 | 타입 | 설명 |
 |------|------|------|
 | `data` | `Vec<u8>` / `Buffer` | 이미지 바이너리 데이터 |
-| `format` | `ImageFormat` / `string` | `"png"`, `"jpeg"` (`"jpg"`), `"gif"` |
+| `format` | `ImageFormat` / `string` | 11가지 형식 지원 ([이미지](./image.md#지원-형식) 참조) |
 | `from_cell` / `fromCell` | `string` | 이미지 시작 위치 셀 |
 | `width_px` / `widthPx` | `u32` / `number` | 너비 (픽셀) |
 | `height_px` / `heightPx` | `u32` / `number` | 높이 (픽셀) |

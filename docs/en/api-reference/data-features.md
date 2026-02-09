@@ -360,7 +360,7 @@ import { readFileSync } from "fs";
 const imageData = readFileSync("logo.png");
 wb.addImage("Sheet1", {
     data: imageData,
-    format: "png",   // "png" | "jpeg" | "gif"
+    format: "png",   // "png" | "jpeg" | "jpg" | "gif" | "bmp" | "ico" | "tiff" | "tif" | "svg" | "emf" | "emz" | "wmf" | "wmz"
     fromCell: "B2",
     widthPx: 200,
     heightPx: 100,
@@ -372,7 +372,7 @@ wb.addImage("Sheet1", {
 | Field | Rust Type | TS Type | Description |
 |---|---|---|---|
 | `data` | `Vec<u8>` | `Buffer` | Raw image bytes |
-| `format` | `ImageFormat` | `string` | `Png`/`"png"`, `Jpeg`/`"jpeg"`, `Gif`/`"gif"` |
+| `format` | `ImageFormat` | `string` | 11 formats supported (see [Images](./image.md#supported-formats)) |
 | `from_cell` | `String` | `string` | Anchor cell (top-left corner) |
 | `width_px` | `u32` | `number` | Image width in pixels |
 | `height_px` | `u32` | `number` | Image height in pixels |

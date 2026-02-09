@@ -460,7 +460,7 @@ const imageData = readFileSync('logo.png');
 
 wb.addImage('Sheet1', {
     data: imageData,
-    format: 'png',        // "png" | "jpeg" | "gif"
+    format: 'png',        // "png" | "jpeg" | "jpg" | "gif" | "bmp" | "ico" | "tiff" | "tif" | "svg" | "emf" | "emz" | "wmf" | "wmz"
     fromCell: 'B2',
     widthPx: 200,
     heightPx: 100,
