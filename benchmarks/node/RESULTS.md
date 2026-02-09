@@ -1,8 +1,8 @@
 # Excel Library Benchmark: SheetKit vs ExcelJS vs SheetJS
 
-Benchmark run: 2026-02-09T10:32:03.077Z
-Platform: linux x64
-Node.js: v22.22.0
+Benchmark run: 2026-02-09T12:19:15.384Z
+Platform: darwin arm64
+Node.js: v25.3.0
 
 ## Libraries
 
@@ -33,84 +33,84 @@ Node.js: v22.22.0
 
 | Scenario | SheetKit | ExcelJS | SheetJS | Winner |
 |----------|----------|---------|---------|--------|
-| Read Large Data (50k rows x 20 cols) | 4.03s | 3.13s | 4.20s | ExcelJS |
-| Read Heavy Styles (5k rows, formatted) | 96ms | 404ms | 219ms | SheetKit |
-| Read Multi-Sheet (10 sheets x 5k rows) | 1.04s | 1.40s | 1.75s | SheetKit |
-| Read Formulas (10k rows) | 121ms | 210ms | 216ms | SheetKit |
-| Read Strings (20k rows text-heavy) | 456ms | 754ms | 720ms | SheetKit |
-| Read Data Validation (5k rows, 8 rules) | 75ms | 133ms | 120ms | SheetKit |
-| Read Comments (2k rows with comments) | 23ms | 163ms | 63ms | SheetKit |
-| Read Merged Cells (500 regions) | 6ms | 31ms | 9ms | SheetKit |
-| Read Mixed Workload (ERP document) | 102ms | 181ms | 180ms | SheetKit |
+| Read Large Data (50k rows x 20 cols) | 1.28s | 1.81s | 2.12s | SheetKit |
+| Read Heavy Styles (5k rows, formatted) | 60ms | 136ms | 124ms | SheetKit |
+| Read Multi-Sheet (10 sheets x 5k rows) | 566ms | 845ms | 899ms | SheetKit |
+| Read Formulas (10k rows) | 78ms | 108ms | 161ms | SheetKit |
+| Read Strings (20k rows text-heavy) | 236ms | 334ms | 331ms | SheetKit |
+| Read Data Validation (5k rows, 8 rules) | 43ms | 70ms | 67ms | SheetKit |
+| Read Comments (2k rows with comments) | 17ms | 48ms | 30ms | SheetKit |
+| Read Merged Cells (500 regions) | 4ms | 16ms | 5ms | SheetKit |
+| Read Mixed Workload (ERP document) | 56ms | 100ms | 93ms | SheetKit |
 
 ### Read (Scale)
 
 | Scenario | SheetKit | ExcelJS | SheetJS | Winner |
 |----------|----------|---------|---------|--------|
-| Read Scale 1k rows | 20ms | 30ms | 36ms | SheetKit |
-| Read Scale 10k rows | 193ms | 274ms | 386ms | SheetKit |
-| Read Scale 100k rows | 2.68s | 3.16s | 4.52s | SheetKit |
+| Read Scale 1k rows | 12ms | 20ms | 16ms | SheetKit |
+| Read Scale 10k rows | 105ms | 160ms | 174ms | SheetKit |
+| Read Scale 100k rows | 1.18s | 1.81s | 2.09s | SheetKit |
 
 ### Write
 
 | Scenario | SheetKit | ExcelJS | SheetJS | Winner |
 |----------|----------|---------|---------|--------|
-| Write 50000 rows x 20 cols | 49.74s | 7.29s | 2.73s | SheetJS |
-| Write 5000 styled rows | 478ms | 431ms | 139ms | SheetJS |
-| Write 10 sheets x 5000 rows | 2.00s | 3.45s | 1.07s | SheetJS |
-| Write 10000 rows with formulas | 226ms | 371ms | 196ms | SheetJS |
-| Write 20000 text-heavy rows | 1.39s | 1.28s | 657ms | SheetJS |
+| Write 50000 rows x 20 cols | 695ms | 3.66s | 1.51s | SheetKit |
+| Write 5000 styled rows | 99ms | 231ms | 89ms | SheetJS |
+| Write 10 sheets x 5000 rows | 363ms | 1.81s | 526ms | SheetKit |
+| Write 10000 rows with formulas | 43ms | 200ms | 91ms | SheetKit |
+| Write 20000 text-heavy rows | 131ms | 657ms | 339ms | SheetKit |
 
 ### Write (DV)
 
 | Scenario | SheetKit | ExcelJS | SheetJS | Winner |
 |----------|----------|---------|---------|--------|
-| Write 5000 rows + 8 validation rules | 64ms | 232ms | N/A | SheetKit |
+| Write 5000 rows + 8 validation rules | 14ms | 123ms | N/A | SheetKit |
 
 ### Write (Comments)
 
 | Scenario | SheetKit | ExcelJS | SheetJS | Winner |
 |----------|----------|---------|---------|--------|
-| Write 2000 rows with comments | 28ms | 151ms | 352ms | SheetKit |
+| Write 2000 rows with comments | 12ms | 76ms | 101ms | SheetKit |
 
 ### Write (Merge)
 
 | Scenario | SheetKit | ExcelJS | SheetJS | Winner |
 |----------|----------|---------|---------|--------|
-| Write 500 merged regions | 19ms | 63ms | 8ms | SheetJS |
+| Write 500 merged regions | 15ms | 24ms | 4ms | SheetJS |
 
 ### Write (Scale)
 
 | Scenario | SheetKit | ExcelJS | SheetJS | Winner |
 |----------|----------|---------|---------|--------|
-| Write 1k rows x 10 cols | 29ms | 83ms | 30ms | SheetKit |
-| Write 10k rows x 10 cols | 475ms | 706ms | 304ms | SheetJS |
-| Write 50k rows x 10 cols | 29.10s | 4.23s | 1.67s | SheetJS |
-| Write 100k rows x 10 cols | 143.60s | 8.16s | 2.83s | SheetJS |
+| Write 1k rows x 10 cols | 7ms | 40ms | 11ms | SheetKit |
+| Write 10k rows x 10 cols | 66ms | 347ms | 130ms | SheetKit |
+| Write 50k rows x 10 cols | 343ms | 1.92s | 671ms | SheetKit |
+| Write 100k rows x 10 cols | 680ms | 3.86s | 1.52s | SheetKit |
 
 ### Round-Trip
 
 | Scenario | SheetKit | ExcelJS | SheetJS | Winner |
 |----------|----------|---------|---------|--------|
-| Buffer round-trip (10000 rows) | 789ms | 862ms | 518ms | SheetJS |
+| Buffer round-trip (10000 rows) | 268ms | 506ms | 245ms | SheetJS |
 
 ### Streaming
 
 | Scenario | SheetKit | ExcelJS | SheetJS | Winner |
 |----------|----------|---------|---------|--------|
-| Streaming write (50000 rows) | 3.28s | 1.54s | N/A | ExcelJS |
+| Streaming write (50000 rows) | 1.11s | 796ms | N/A | ExcelJS |
 
 ### Random Access
 
 | Scenario | SheetKit | ExcelJS | SheetJS | Winner |
 |----------|----------|---------|---------|--------|
-| Random-access read (1000 cells from 50k-row file) | 1.45s | 3.25s | 3.53s | SheetKit |
+| Random-access read (1000 cells from 50k-row file) | 512ms | 1.76s | 1.72s | SheetKit |
 
 ### Mixed Write
 
 | Scenario | SheetKit | ExcelJS | SheetJS | Winner |
 |----------|----------|---------|---------|--------|
-| Mixed workload write (ERP-style) | 121ms | 254ms | N/A | SheetKit |
+| Mixed workload write (ERP-style) | 31ms | 161ms | N/A | SheetKit |
 
 ## Summary
 
@@ -118,6 +118,6 @@ Total scenarios: 28
 
 | Library | Wins |
 |---------|------|
-| SheetKit | 16/28 |
-| SheetJS | 10/28 |
-| ExcelJS | 2/28 |
+| SheetKit | 24/28 |
+| SheetJS | 3/28 |
+| ExcelJS | 1/28 |

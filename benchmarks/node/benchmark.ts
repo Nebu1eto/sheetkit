@@ -186,14 +186,17 @@ async function benchWriteLargeData() {
   await bench('SheetKit', label, 'Write', () => {
     const wb = new SheetKitWorkbook();
     const sheet = 'Sheet1';
+    const data: (string | number | boolean | null)[][] = [];
     for (let r = 1; r <= ROWS; r++) {
+      const row: (string | number | boolean | null)[] = [];
       for (let c = 0; c < COLS; c++) {
-        const cell = `${colLetter(c)}${r}`;
-        if (c % 3 === 0) wb.setCellValue(sheet, cell, r * (c + 1));
-        else if (c % 3 === 1) wb.setCellValue(sheet, cell, `R${r}C${c}`);
-        else wb.setCellValue(sheet, cell, (r * c) / 100);
+        if (c % 3 === 0) row.push(r * (c + 1));
+        else if (c % 3 === 1) row.push(`R${r}C${c}`);
+        else row.push((r * c) / 100);
       }
+      data.push(row);
     }
+    wb.setSheetData(sheet, data);
     wb.saveSync(outSk);
   }, outSk);
 
@@ -258,23 +261,27 @@ async function benchWriteWithStyles() {
     const numId = wb.addStyle({ numFmtId: 4, font: { name: 'Calibri', size: 11 } });
     const pctId = wb.addStyle({ numFmtId: 10, font: { italic: true } });
 
+    wb.setRowValues(sheet, 1, 'A', Array.from({ length: 10 }, (_, c) => `Header${c + 1}`));
     for (let c = 0; c < 10; c++) {
-      wb.setCellValue(sheet, `${colLetter(c)}1`, `Header${c + 1}`);
       wb.setCellStyle(sheet, `${colLetter(c)}1`, boldId);
     }
 
+    const data: (string | number | boolean | null)[][] = [];
+    for (let r = 2; r <= ROWS + 1; r++) {
+      const row: (string | number | boolean | null)[] = [];
+      for (let c = 0; c < 10; c++) {
+        if (c % 3 === 0) row.push(r * c);
+        else if (c % 3 === 1) row.push(`Data_${r}_${c}`);
+        else row.push((r % 100) / 100);
+      }
+      data.push(row);
+    }
+    wb.setSheetData(sheet, data, 'A2');
+
     for (let r = 2; r <= ROWS + 1; r++) {
       for (let c = 0; c < 10; c++) {
-        const cell = `${colLetter(c)}${r}`;
-        if (c % 3 === 0) {
-          wb.setCellValue(sheet, cell, r * c);
-          wb.setCellStyle(sheet, cell, numId);
-        } else if (c % 3 === 1) {
-          wb.setCellValue(sheet, cell, `Data_${r}_${c}`);
-        } else {
-          wb.setCellValue(sheet, cell, (r % 100) / 100);
-          wb.setCellStyle(sheet, cell, pctId);
-        }
+        if (c % 3 === 0) wb.setCellStyle(sheet, `${colLetter(c)}${r}`, numId);
+        else if (c % 3 === 2) wb.setCellStyle(sheet, `${colLetter(c)}${r}`, pctId);
       }
     }
     wb.saveSync(outSk);
@@ -354,13 +361,16 @@ async function benchWriteMultiSheet() {
     for (let s = 0; s < SHEETS; s++) {
       const name = s === 0 ? 'Sheet1' : `Sheet${s + 1}`;
       if (s > 0) wb.newSheet(name);
+      const data: (string | number | boolean | null)[][] = [];
       for (let r = 1; r <= ROWS; r++) {
+        const row: (string | number | boolean | null)[] = [];
         for (let c = 0; c < COLS; c++) {
-          const cell = `${colLetter(c)}${r}`;
-          if (c % 2 === 0) wb.setCellValue(name, cell, r * (c + 1));
-          else wb.setCellValue(name, cell, `S${s}R${r}C${c}`);
+          if (c % 2 === 0) row.push(r * (c + 1));
+          else row.push(`S${s}R${r}C${c}`);
         }
+        data.push(row);
       }
+      wb.setSheetData(name, data);
     }
     wb.saveSync(outSk);
   }, outSk);
@@ -414,9 +424,12 @@ async function benchWriteFormulas() {
   await bench('SheetKit', label, 'Write', () => {
     const wb = new SheetKitWorkbook();
     const sheet = 'Sheet1';
+    const data: (string | number | boolean | null)[][] = [];
     for (let r = 1; r <= ROWS; r++) {
-      wb.setCellValue(sheet, `A${r}`, r * 1.5);
-      wb.setCellValue(sheet, `B${r}`, (r % 100) + 0.5);
+      data.push([r * 1.5, (r % 100) + 0.5]);
+    }
+    wb.setSheetData(sheet, data);
+    for (let r = 1; r <= ROWS; r++) {
       wb.setCellFormula(sheet, `C${r}`, `A${r}+B${r}`);
       wb.setCellFormula(sheet, `D${r}`, `A${r}*B${r}`);
       wb.setCellFormula(sheet, `E${r}`, `IF(A${r}>B${r},"A","B")`);
@@ -481,12 +494,11 @@ async function benchWriteStrings() {
   await bench('SheetKit', label, 'Write', () => {
     const wb = new SheetKitWorkbook();
     const sheet = 'Sheet1';
+    const data: (string | number | boolean | null)[][] = [];
     for (let r = 1; r <= ROWS; r++) {
-      const row = makeRow(r);
-      for (let c = 0; c < COLS; c++) {
-        wb.setCellValue(sheet, `${colLetter(c)}${r}`, row[c]);
-      }
+      data.push(makeRow(r));
     }
+    wb.setSheetData(sheet, data);
     wb.saveSync(outSk);
   }, outSk);
 
@@ -544,12 +556,11 @@ async function benchWriteDataValidation() {
     });
 
     const statuses = ['Active', 'Inactive', 'Pending', 'Closed'];
+    const data: (string | number | boolean | null)[][] = [];
     for (let r = 2; r <= ROWS + 1; r++) {
-      wb.setCellValue(sheet, `A${r}`, statuses[r % 4]);
-      wb.setCellValue(sheet, `B${r}`, r % 101);
-      wb.setCellValue(sheet, `C${r}`, (r % 100) / 100);
-      wb.setCellValue(sheet, `D${r}`, `Item_${r}`);
+      data.push([statuses[r % 4], r % 101, (r % 100) / 100, `Item_${r}`]);
     }
+    wb.setSheetData(sheet, data, 'A2');
     wb.saveSync(outSk);
   }, outSk);
 
@@ -599,9 +610,12 @@ async function benchWriteComments() {
   await bench('SheetKit', label, 'Write (Comments)', () => {
     const wb = new SheetKitWorkbook();
     const sheet = 'Sheet1';
+    const data: (string | number | boolean | null)[][] = [];
     for (let r = 1; r <= ROWS; r++) {
-      wb.setCellValue(sheet, `A${r}`, r);
-      wb.setCellValue(sheet, `B${r}`, `Name_${r}`);
+      data.push([r, `Name_${r}`]);
+    }
+    wb.setSheetData(sheet, data);
+    for (let r = 1; r <= ROWS; r++) {
       wb.addComment(sheet, {
         cell: `A${r}`, author: 'Reviewer',
         text: `Comment for row ${r}: review completed.`,
@@ -652,12 +666,17 @@ async function benchWriteMergedCells() {
   await bench('SheetKit', label, 'Write (Merge)', () => {
     const wb = new SheetKitWorkbook();
     const sheet = 'Sheet1';
+    const cells: { cell: string; value: string | number | boolean | null }[] = [];
     for (let i = 0; i < REGIONS; i++) {
       const row = i * 3 + 1;
-      wb.setCellValue(sheet, `A${row}`, `Section ${i + 1}`);
+      cells.push({ cell: `A${row}`, value: `Section ${i + 1}` });
+      cells.push({ cell: `A${row + 1}`, value: i * 100 });
+      cells.push({ cell: `B${row + 1}`, value: `Data_${i}` });
+    }
+    wb.setCellValues(sheet, cells);
+    for (let i = 0; i < REGIONS; i++) {
+      const row = i * 3 + 1;
       wb.mergeCells(sheet, `A${row}`, `D${row}`);
-      wb.setCellValue(sheet, `A${row + 1}`, i * 100);
-      wb.setCellValue(sheet, `B${row + 1}`, `Data_${i}`);
     }
     wb.saveSync(outSk);
   }, outSk);
@@ -712,14 +731,17 @@ async function benchWriteScale(rows: number) {
   await bench('SheetKit', label, 'Write (Scale)', () => {
     const wb = new SheetKitWorkbook();
     const sheet = 'Sheet1';
+    const data: (string | number | boolean | null)[][] = [];
     for (let r = 1; r <= rows; r++) {
+      const row: (string | number | boolean | null)[] = [];
       for (let c = 0; c < COLS; c++) {
-        const cell = `${colLetter(c)}${r}`;
-        if (c % 3 === 0) wb.setCellValue(sheet, cell, r * (c + 1));
-        else if (c % 3 === 1) wb.setCellValue(sheet, cell, `R${r}C${c}`);
-        else wb.setCellValue(sheet, cell, (r * c) / 100);
+        if (c % 3 === 0) row.push(r * (c + 1));
+        else if (c % 3 === 1) row.push(`R${r}C${c}`);
+        else row.push((r * c) / 100);
       }
+      data.push(row);
     }
+    wb.setSheetData(sheet, data);
     wb.saveSync(outSk);
   }, outSk);
 
@@ -771,11 +793,15 @@ async function benchBufferRoundTrip() {
   await bench('SheetKit', label, 'Round-Trip', () => {
     const wb = new SheetKitWorkbook();
     const sheet = 'Sheet1';
+    const data: (string | number | boolean | null)[][] = [];
     for (let r = 1; r <= ROWS; r++) {
+      const row: (string | number | boolean | null)[] = [];
       for (let c = 0; c < COLS; c++) {
-        wb.setCellValue(sheet, `${colLetter(c)}${r}`, r * (c + 1));
+        row.push(r * (c + 1));
       }
+      data.push(row);
     }
+    wb.setSheetData(sheet, data);
     const buf = wb.writeBufferSync();
     const wb2 = SheetKitWorkbook.openBufferSync(buf);
     wb2.getRows('Sheet1');
@@ -948,8 +974,8 @@ async function benchMixedWorkloadWrite() {
 
     // Headers
     const headers = ['Order_ID', 'Product', 'Quantity', 'Unit_Price', 'Total', 'Region'];
+    wb.setRowValues(sheet, 2, 'A', headers);
     for (let c = 0; c < headers.length; c++) {
-      wb.setCellValue(sheet, `${colLetter(c)}2`, headers[c]);
       wb.setCellStyle(sheet, `${colLetter(c)}2`, boldId);
     }
 
@@ -965,16 +991,23 @@ async function benchMixedWorkloadWrite() {
 
     const regions = ['North', 'South', 'East', 'West'];
     const products = ['Widget A', 'Widget B', 'Gadget X', 'Gadget Y', 'Service Z'];
+    const data: (string | number | boolean | null)[][] = [];
+    for (let i = 1; i <= 5000; i++) {
+      data.push([
+        `ORD-${String(i).padStart(5, '0')}`,
+        products[i % products.length],
+        (i % 50) + 1,
+        ((i * 19) % 500) + 10,
+        null,
+        regions[i % regions.length],
+      ]);
+    }
+    wb.setSheetData(sheet, data, 'A3');
     for (let r = 3; r <= 5002; r++) {
       const i = r - 2;
-      wb.setCellValue(sheet, `A${r}`, `ORD-${String(i).padStart(5, '0')}`);
-      wb.setCellValue(sheet, `B${r}`, products[i % products.length]);
-      wb.setCellValue(sheet, `C${r}`, (i % 50) + 1);
-      wb.setCellValue(sheet, `D${r}`, ((i * 19) % 500) + 10);
       wb.setCellStyle(sheet, `D${r}`, numId);
       wb.setCellFormula(sheet, `E${r}`, `C${r}*D${r}`);
       wb.setCellStyle(sheet, `E${r}`, numId);
-      wb.setCellValue(sheet, `F${r}`, regions[i % regions.length]);
 
       if (i % 50 === 0) {
         wb.addComment(sheet, {
