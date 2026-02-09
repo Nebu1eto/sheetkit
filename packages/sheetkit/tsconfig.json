@@ -1,7 +1,7 @@
 {
   "extends": "../../tsconfig.json",
   "compilerOptions": {
-    "outDir": "dist"
+    "noEmit": true
   },
-  "include": ["__test__"]
+  "include": ["index.ts", "buffer-codec.ts", "sheet-data.ts", "__test__"]
 }

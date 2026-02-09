@@ -74,5 +74,8 @@ jobs:
       - name: Build napi binding
         run: pnpm --filter @sheetkit/node build
 
+      - name: Typecheck
+        run: pnpm --filter @sheetkit/node typecheck
+
       - name: Test
         run: pnpm test

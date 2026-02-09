@@ -1,3 +1,6 @@
+export type CellValue = string | number | boolean | null;
+export type CellTypeName = 'empty' | 'number' | 'string' | 'boolean' | 'date' | 'error' | 'formula';
+
 const CELL_STRIDE = 9;
 const TYPE_EMPTY = 0x00;
 const TYPE_NUMBER = 0x01;
@@ -15,9 +18,23 @@ const EMPTY_ROW_OFFSET = 0xffffffff;
 
 const decoder = new TextDecoder();
 
-const TYPE_NAMES = ['empty', 'number', 'string', 'boolean', 'date', 'error', 'formula', 'string'];
+const TYPE_NAMES: CellTypeName[] = [
+  'empty',
+  'number',
+  'string',
+  'boolean',
+  'date',
+  'error',
+  'formula',
+  'string',
+];
 
-function columnNumberToName(n) {
+interface RowIndexEntry {
+  rowNum: number;
+  cellOffset: number;
+}
+
+function columnNumberToName(n: number): string {
   let name = '';
   while (n > 0) {
     n--;
@@ -27,17 +44,19 @@ function columnNumberToName(n) {
   return name;
 }
 
-export class SheetData {
-  #view;
-  #strings;
-  #rowCount;
-  #colCount;
-  #minCol;
-  #isSparse;
-  #rowIndex;
-  #cellDataStart;
+const EMPTY_VIEW = new DataView(new ArrayBuffer(0));
 
-  constructor(buffer) {
+export class SheetData {
+  #view: DataView;
+  #strings: string[];
+  #rowCount: number;
+  #colCount: number;
+  #minCol: number;
+  #isSparse: boolean;
+  #rowIndex: RowIndexEntry[];
+  #cellDataStart: number;
+
+  constructor(buffer: Buffer | null) {
     if (!buffer || buffer.length < HEADER_SIZE) {
       this.#rowCount = 0;
       this.#colCount = 0;
@@ -46,7 +65,7 @@ export class SheetData {
       this.#rowIndex = [];
       this.#strings = [];
       this.#cellDataStart = 0;
-      this.#view = null;
+      this.#view = EMPTY_VIEW;
       return;
     }
 
@@ -70,7 +89,7 @@ export class SheetData {
     }
 
     let offset = HEADER_SIZE;
-    this.#rowIndex = new Array(this.#rowCount);
+    this.#rowIndex = new Array<RowIndexEntry>(this.#rowCount);
     for (let i = 0; i < this.#rowCount; i++) {
       this.#rowIndex[i] = {
         rowNum: this.#view.getUint32(offset, true),
@@ -87,7 +106,7 @@ export class SheetData {
     } else {
       const offsetsStart = offset + 8;
       const blobStart = offsetsStart + strCount * 4;
-      this.#strings = new Array(strCount);
+      this.#strings = new Array<string>(strCount);
       for (let i = 0; i < strCount; i++) {
         const sOff = this.#view.getUint32(offsetsStart + i * 4, true);
         const sEnd =
@@ -103,15 +122,15 @@ export class SheetData {
     }
   }
 
-  get rowCount() {
+  get rowCount(): number {
     return this.#rowCount;
   }
 
-  get colCount() {
+  get colCount(): number {
     return this.#colCount;
   }
 
-  #decodeCellValue(type, payloadOffset) {
+  #decodeCellValue(type: number, payloadOffset: number): CellValue {
     switch (type) {
       case TYPE_NUMBER:
       case TYPE_DATE:
@@ -136,7 +155,7 @@ export class SheetData {
     }
   }
 
-  #findRowIndex(rowNum) {
+  #findRowIndex(rowNum: number): number {
     for (let i = 0; i < this.#rowIndex.length; i++) {
       if (this.#rowIndex[i].rowNum === rowNum) {
         return i;
@@ -145,7 +164,7 @@ export class SheetData {
     return -1;
   }
 
-  getCell(row, col) {
+  getCell(row: number, col: number): CellValue {
     if (this.#rowCount === 0) return null;
     const ri = this.#findRowIndex(row);
     if (ri === -1) return null;
@@ -176,7 +195,7 @@ export class SheetData {
     return this.#decodeCellValue(type, cellPos + 1);
   }
 
-  getCellType(row, col) {
+  getCellType(row: number, col: number): CellTypeName {
     if (this.#rowCount === 0) return 'empty';
     const ri = this.#findRowIndex(row);
     if (ri === -1) return 'empty';
@@ -205,14 +224,14 @@ export class SheetData {
     return TYPE_NAMES[type] ?? 'empty';
   }
 
-  getRow(rowNum) {
+  getRow(rowNum: number): CellValue[] {
     if (this.#rowCount === 0) return [];
     const ri = this.#findRowIndex(rowNum);
     if (ri === -1) return [];
     const { cellOffset } = this.#rowIndex[ri];
     if (cellOffset === EMPTY_ROW_OFFSET) return [];
 
-    const result = [];
+    const result: CellValue[] = [];
 
     if (this.#isSparse) {
       const absOff = this.#cellDataStart + cellOffset;
@@ -248,8 +267,8 @@ export class SheetData {
     return result;
   }
 
-  toArray() {
-    const result = [];
+  toArray(): CellValue[][] {
+    const result: CellValue[][] = [];
     for (const { rowNum, cellOffset } of this.#rowIndex) {
       if (cellOffset === EMPTY_ROW_OFFSET) {
         result.push([]);
@@ -260,7 +279,7 @@ export class SheetData {
     return result;
   }
 
-  *rows() {
+  *rows(): Generator<{ row: number; values: CellValue[] }> {
     for (const { rowNum, cellOffset } of this.#rowIndex) {
       if (cellOffset === EMPTY_ROW_OFFSET) {
         yield { row: rowNum, values: [] };
@@ -270,7 +289,7 @@ export class SheetData {
     }
   }
 
-  columnName(colIndex) {
+  columnName(colIndex: number): string {
     return columnNumberToName(this.#minCol + colIndex);
   }
 }

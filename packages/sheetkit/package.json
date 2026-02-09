@@ -24,7 +24,9 @@
     "binding.js",
     "binding.d.ts",
     "buffer-codec.js",
-    "sheet-data.js"
+    "buffer-codec.d.ts",
+    "sheet-data.js",
+    "sheet-data.d.ts"
   ],
   "author": {
     "name": "Haze Lee",
@@ -40,24 +42,31 @@
   },
   "scripts": {
     "artifacts": "napi artifacts",
-    "build": "napi build --platform --release --esm --js binding.js --dts binding.d.ts",
+    "build:napi": "napi build --platform --release --esm --js binding.js --dts binding.d.ts",
+    "build:js": "swc index.ts buffer-codec.ts sheet-data.ts -d .",
+    "build:types": "tsc --project tsconfig.build.json",
+    "build": "pnpm build:napi && pnpm build:js && pnpm build:types",
     "build:debug": "napi build --platform --js binding.js --dts binding.d.ts",
+    "typecheck": "tsc --noEmit",
     "prepublishOnly": "napi prepublish -t npm",
     "test": "vitest run",
     "test:watch": "vitest",
     "version": "napi version"
   },
   "devDependencies": {
-    "@napi-rs/cli": "^3.5.1"
+    "@napi-rs/cli": "^3.5.1",
+    "@swc/cli": "^0.8.0",
+    "@swc/core": "^1.15.11",
+    "@types/node": "^25.2.2"
   },
   "optionalDependencies": {
-    "@sheetkit/node-darwin-x64": "0.2.0",
     "@sheetkit/node-darwin-arm64": "0.2.0",
-    "@sheetkit/node-win32-x64-msvc": "0.2.0",
-    "@sheetkit/node-win32-arm64-msvc": "0.2.0",
-    "@sheetkit/node-linux-x64-gnu": "0.2.0",
+    "@sheetkit/node-darwin-x64": "0.2.0",
     "@sheetkit/node-linux-arm64-gnu": "0.2.0",
+    "@sheetkit/node-linux-arm64-musl": "0.2.0",
+    "@sheetkit/node-linux-x64-gnu": "0.2.0",
     "@sheetkit/node-linux-x64-musl": "0.2.0",
-    "@sheetkit/node-linux-arm64-musl": "0.2.0"
+    "@sheetkit/node-win32-arm64-msvc": "0.2.0",
+    "@sheetkit/node-win32-x64-msvc": "0.2.0"
   }
 }

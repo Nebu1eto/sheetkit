@@ -514,7 +514,7 @@ describe('Phase 8 - Data Validation', () => {
     });
     const v = wb.getDataValidations('Sheet1');
     expect(v.length).toBe(2);
-    const styles = v.map((x: { errorStyle: string }) => x.errorStyle).sort();
+    const styles = v.map((x) => x.errorStyle).sort();
     expect(styles).toEqual(['information', 'warning']);
   });
 
