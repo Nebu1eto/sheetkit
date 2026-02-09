@@ -117,7 +117,7 @@ impl Workbook {
         };
 
         // Parse per-sheet worksheet relationship files (optional).
-        let mut worksheet_rels: HashMap<usize, Relationships> = HashMap::new();
+        let mut worksheet_rels: HashMap<usize, Relationships> = HashMap::with_capacity(sheet_count);
         for (i, sheet_path) in worksheet_paths.iter().enumerate() {
             let rels_path = relationship_part_path(sheet_path);
             if let Ok(rels) = read_xml_part::<Relationships, _>(archive, &rels_path) {
@@ -375,7 +375,12 @@ impl Workbook {
 
     /// Serialize the workbook to an in-memory `.xlsx` buffer.
     pub fn save_to_buffer(&self) -> Result<Vec<u8>> {
-        let mut buf = Vec::new();
+        // Estimate compressed output size to reduce reallocations.
+        let estimated = self.worksheets.len() * 4000
+            + self.sst_runtime.len() * 60
+            + self.images.iter().map(|(_, d)| d.len()).sum::<usize>()
+            + 32_000;
+        let mut buf = Vec::with_capacity(estimated);
         {
             let cursor = std::io::Cursor::new(&mut buf);
             let mut zip = zip::ZipWriter::new(cursor);
@@ -449,10 +454,12 @@ impl Workbook {
         let mut worksheet_rels = self.worksheet_rels.clone();
 
         // Synchronize comment and VML parts with worksheet relationships/content types.
+        let comment_count = self.sheet_comments.iter().filter(|c| c.is_some()).count();
         // Per-sheet VML bytes to write: (sheet_idx, zip_path, bytes).
-        let mut vml_parts_to_write: Vec<(usize, String, Vec<u8>)> = Vec::new();
+        let mut vml_parts_to_write: Vec<(usize, String, Vec<u8>)> =
+            Vec::with_capacity(comment_count);
         // Per-sheet legacy drawing relationship IDs for worksheet XML serialization.
-        let mut legacy_drawing_rids: HashMap<usize, String> = HashMap::new();
+        let mut legacy_drawing_rids: HashMap<usize, String> = HashMap::with_capacity(comment_count);
 
         // Ensure the vml extension default content type is present if any VML exists.
         let mut has_any_vml = false;
@@ -572,24 +579,17 @@ impl Workbook {
             let entry_name = self.sheet_part_path(i);
             let empty_sparklines: Vec<crate::sparkline::SparklineConfig> = vec![];
             let sparklines = self.sheet_sparklines.get(i).unwrap_or(&empty_sparklines);
-            let needs_legacy_drawing = legacy_drawing_rids.contains_key(&i);
+            let legacy_rid = legacy_drawing_rids.get(&i).map(|s| s.as_str());
 
-            if !needs_legacy_drawing && sparklines.is_empty() {
+            if legacy_rid.is_none() && sparklines.is_empty() {
                 write_xml_part(zip, &entry_name, ws, options)?;
             } else {
-                let mut ws_clone = ws.clone();
-                if let Some(rid) = legacy_drawing_rids.get(&i) {
-                    ws_clone.legacy_drawing =
-                        Some(sheetkit_xml::worksheet::LegacyDrawingRef { r_id: rid.clone() });
-                }
-                if sparklines.is_empty() {
-                    write_xml_part(zip, &entry_name, &ws_clone, options)?;
-                } else {
-                    let xml = serialize_worksheet_with_sparklines(&ws_clone, sparklines)?;
-                    zip.start_file(&entry_name, options)
-                        .map_err(|e| Error::Zip(e.to_string()))?;
-                    zip.write_all(xml.as_bytes())?;
-                }
+                // Serialize worksheet to XML and inject extras via string manipulation,
+                // avoiding a full WorksheetXml clone.
+                let xml = serialize_worksheet_with_extras(ws, sparklines, legacy_rid)?;
+                zip.start_file(&entry_name, options)
+                    .map_err(|e| Error::Zip(e.to_string()))?;
+                zip.write_all(xml.as_bytes())?;
             }
         }
 
@@ -744,7 +744,8 @@ pub(crate) fn read_string_part<R: std::io::Read + std::io::Seek>(
     let mut entry = archive
         .by_name(name)
         .map_err(|e| Error::Zip(e.to_string()))?;
-    let mut content = String::new();
+    let size_hint = entry.size() as usize;
+    let mut content = String::with_capacity(size_hint);
     entry
         .read_to_string(&mut content)
         .map_err(|e| Error::Zip(e.to_string()))?;
@@ -767,21 +768,54 @@ pub(crate) fn read_bytes_part<R: std::io::Read + std::io::Seek>(
     Ok(content)
 }
 
-/// Serialize a worksheet with sparkline extension list appended.
-pub(crate) fn serialize_worksheet_with_sparklines(
+/// Serialize a worksheet with optional sparklines and legacy drawing injected
+/// via string manipulation, avoiding a full WorksheetXml clone.
+pub(crate) fn serialize_worksheet_with_extras(
     ws: &WorksheetXml,
     sparklines: &[crate::sparkline::SparklineConfig],
+    legacy_drawing_rid: Option<&str>,
 ) -> Result<String> {
     let body = quick_xml::se::to_string(ws).map_err(|e| Error::XmlParse(e.to_string()))?;
 
     let closing = "</worksheet>";
-    let ext_xml = build_sparkline_ext_xml(sparklines);
+    let ext_xml = if sparklines.is_empty() {
+        String::new()
+    } else {
+        build_sparkline_ext_xml(sparklines)
+    };
+    let legacy_xml = if let Some(rid) = legacy_drawing_rid {
+        format!("<legacyDrawing r:id=\"{rid}\"/>")
+    } else {
+        String::new()
+    };
+
     if let Some(pos) = body.rfind(closing) {
-        let mut result =
-            String::with_capacity(XML_DECLARATION.len() + 1 + body.len() + ext_xml.len());
+        // If injecting a legacy drawing, strip any existing one from the serde output
+        // to avoid duplicates (the original ws.legacy_drawing may already be set).
+        let body_prefix = &body[..pos];
+        let stripped;
+        let prefix = if !legacy_xml.is_empty() {
+            if let Some(ld_start) = body_prefix.find("<legacyDrawing ") {
+                // Find the end of the self-closing element.
+                let ld_end = body_prefix[ld_start..]
+                    .find("/>")
+                    .map(|e| ld_start + e + 2)
+                    .unwrap_or(ld_start);
+                stripped = format!("{}{}", &body_prefix[..ld_start], &body_prefix[ld_end..]);
+                stripped.as_str()
+            } else {
+                body_prefix
+            }
+        } else {
+            body_prefix
+        };
+
+        let extra_len = ext_xml.len() + legacy_xml.len();
+        let mut result = String::with_capacity(XML_DECLARATION.len() + 1 + body.len() + extra_len);
         result.push_str(XML_DECLARATION);
         result.push('\n');
-        result.push_str(&body[..pos]);
+        result.push_str(prefix);
+        result.push_str(&legacy_xml);
         result.push_str(&ext_xml);
         result.push_str(closing);
         Ok(result)
@@ -915,16 +949,27 @@ pub(crate) fn parse_sparklines_from_xml(xml: &str) -> Vec<crate::sparkline::Spar
 }
 
 /// Extract an XML attribute value from an element's opening tag.
+///
+/// Uses manual search to avoid allocating format strings for patterns.
 pub(crate) fn extract_xml_attr(xml: &str, attr: &str) -> Option<String> {
-    // Look for attr="value" or attr='value' patterns.
-    let patterns = [format!(" {attr}=\""), format!(" {attr}='")];
-    for pat in &patterns {
-        if let Some(start) = xml.find(pat.as_str()) {
-            let val_start = start + pat.len();
-            let quote = pat.chars().last().unwrap();
-            if let Some(end) = xml[val_start..].find(quote) {
-                return Some(xml[val_start..val_start + end].to_string());
+    // Search for ` attr="` or ` attr='` without allocating pattern strings.
+    for quote in ['"', '\''] {
+        // Build the search target: " attr=" (space + attr name + = + quote)
+        let haystack = xml.as_bytes();
+        let attr_bytes = attr.as_bytes();
+        let mut pos = 0;
+        while pos + 1 + attr_bytes.len() + 2 <= haystack.len() {
+            if haystack[pos] == b' '
+                && haystack[pos + 1..pos + 1 + attr_bytes.len()] == *attr_bytes
+                && haystack[pos + 1 + attr_bytes.len()] == b'='
+                && haystack[pos + 1 + attr_bytes.len() + 1] == quote as u8
+            {
+                let val_start = pos + 1 + attr_bytes.len() + 2;
+                if let Some(end) = xml[val_start..].find(quote) {
+                    return Some(xml[val_start..val_start + end].to_string());
+                }
             }
+            pos += 1;
         }
     }
     None
@@ -992,6 +1037,27 @@ mod tests {
         assert_eq!(fast_col_number("AZ1"), 52);
         assert_eq!(fast_col_number("BA1"), 53);
         assert_eq!(fast_col_number("XFD1"), 16384);
+    }
+
+    #[test]
+    fn test_extract_xml_attr() {
+        let xml = r#"<tag type="column" markers="1" weight="2.5">"#;
+        assert_eq!(extract_xml_attr(xml, "type"), Some("column".to_string()));
+        assert_eq!(extract_xml_attr(xml, "markers"), Some("1".to_string()));
+        assert_eq!(extract_xml_attr(xml, "weight"), Some("2.5".to_string()));
+        assert_eq!(extract_xml_attr(xml, "missing"), None);
+        // Single-quoted attributes
+        let xml2 = "<tag name='hello'>";
+        assert_eq!(extract_xml_attr(xml2, "name"), Some("hello".to_string()));
+    }
+
+    #[test]
+    fn test_extract_xml_bool_attr() {
+        let xml = r#"<tag markers="1" hidden="0" visible="true">"#;
+        assert!(extract_xml_bool_attr(xml, "markers"));
+        assert!(!extract_xml_bool_attr(xml, "hidden"));
+        assert!(extract_xml_bool_attr(xml, "visible"));
+        assert!(!extract_xml_bool_attr(xml, "missing"));
     }
 
     #[test]
