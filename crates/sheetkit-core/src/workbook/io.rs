@@ -361,7 +361,9 @@ impl Workbook {
     pub fn save<P: AsRef<Path>>(&self, path: P) -> Result<()> {
         let file = std::fs::File::create(path)?;
         let mut zip = zip::ZipWriter::new(file);
-        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+        let options = SimpleFileOptions::default()
+            .compression_method(CompressionMethod::Deflated)
+            .compression_level(Some(1));
         self.write_zip_contents(&mut zip, options)?;
         zip.finish().map_err(|e| Error::Zip(e.to_string()))?;
         Ok(())
@@ -564,7 +566,8 @@ impl Workbook {
         // xl/worksheets/sheet{N}.xml
         for (i, (_name, ws)) in self.worksheets.iter().enumerate() {
             let entry_name = self.sheet_part_path(i);
-            let sparklines = self.sheet_sparklines.get(i).cloned().unwrap_or_default();
+            let empty_sparklines: Vec<crate::sparkline::SparklineConfig> = vec![];
+            let sparklines = self.sheet_sparklines.get(i).unwrap_or(&empty_sparklines);
             let needs_legacy_drawing = legacy_drawing_rids.contains_key(&i);
 
             if !needs_legacy_drawing && sparklines.is_empty() {
@@ -578,7 +581,7 @@ impl Workbook {
                 if sparklines.is_empty() {
                     write_xml_part(zip, &entry_name, &ws_clone, options)?;
                 } else {
-                    let xml = serialize_worksheet_with_sparklines(&ws_clone, &sparklines)?;
+                    let xml = serialize_worksheet_with_sparklines(&ws_clone, sparklines)?;
                     zip.start_file(&entry_name, options)
                         .map_err(|e| Error::Zip(e.to_string()))?;
                     zip.write_all(xml.as_bytes())?;
@@ -706,7 +709,11 @@ impl Default for Workbook {
 /// Serialize a value to XML with the standard XML declaration prepended.
 pub(crate) fn serialize_xml<T: Serialize>(value: &T) -> Result<String> {
     let body = quick_xml::se::to_string(value).map_err(|e| Error::XmlParse(e.to_string()))?;
-    Ok(format!("{XML_DECLARATION}\n{body}"))
+    let mut result = String::with_capacity(XML_DECLARATION.len() + 1 + body.len());
+    result.push_str(XML_DECLARATION);
+    result.push('\n');
+    result.push_str(&body);
+    Ok(result)
 }
 
 /// Read a ZIP entry and deserialize it from XML.
@@ -717,7 +724,8 @@ pub(crate) fn read_xml_part<T: serde::de::DeserializeOwned, R: std::io::Read + s
     let mut entry = archive
         .by_name(name)
         .map_err(|e| Error::Zip(e.to_string()))?;
-    let mut content = String::new();
+    let size_hint = entry.size() as usize;
+    let mut content = String::with_capacity(size_hint);
     entry
         .read_to_string(&mut content)
         .map_err(|e| Error::Zip(e.to_string()))?;
@@ -747,7 +755,8 @@ pub(crate) fn read_bytes_part<R: std::io::Read + std::io::Seek>(
     let mut entry = archive
         .by_name(name)
         .map_err(|e| Error::Zip(e.to_string()))?;
-    let mut content = Vec::new();
+    let size_hint = entry.size() as usize;
+    let mut content = Vec::with_capacity(size_hint);
     entry
         .read_to_end(&mut content)
         .map_err(|e| Error::Zip(e.to_string()))?;
