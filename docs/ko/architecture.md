@@ -102,8 +102,11 @@ napi-rs (v3, compat-mode 없음)를 통한 Node.js 바인딩.
 - `src/lib.rs` -- 모든 바인딩을 포함하는 단일 파일. `#[napi]` `Workbook` 클래스는 `sheetkit_core::workbook::Workbook`을 `inner` 필드로 래핑한다. 메서드는 `inner`에 위임하고 Rust 타입과 napi 호환 타입 간 변환을 수행한다.
 - `#[napi(object)]` 구조체는 JS 친화적 데이터 전송 타입을 정의한다 (예: `JsStyle`, `JsChartConfig`, `JsPivotTableOption`).
 - napi v3의 `Either` 열거형은 다형 값을 처리한다 (예: 문자열, 숫자 또는 불리언이 될 수 있는 셀 값).
-- `index.js` -- `napi build --esm`으로 생성된 ESM 모듈. 네이티브 애드온 바인딩을 직접 내보낸다.
-- `index.d.ts` -- napi-derive가 생성한 TypeScript 타입 정의.
+- `binding.js` / `binding.d.ts` -- `napi build --esm`으로 생성된 저수준 네이티브 애드온 내보내기.
+- `index.ts` -- 네이티브 바인딩에 위임하는 공개 `Workbook` 래퍼 클래스를 제공하는 TypeScript 소스. 모든 타입도 재내보내기한다.
+- `buffer-codec.ts` -- Rust에서 JS로의 효율적 행 데이터 전송을 위한 바이너리 버퍼 디코더.
+- `sheet-data.ts` -- 바이너리 버퍼에서 시트 셀 데이터에 지연 접근하는 `SheetData` 클래스.
+- 생성된 `.js`와 `.d.ts` 파일은 gitignore 처리. SWC가 TS를 JS로 트랜스파일하고, tsc가 선언 파일을 생성한다.
 
 ## 3. 주요 설계 결정
 

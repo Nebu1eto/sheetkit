@@ -55,14 +55,14 @@ cargo fmt --check              # Verify formatting
 ```bash
 cd packages/sheetkit
 
-# Build the native addon (compiles the Rust cdylib, generates index.js and index.d.ts)
+# Full build: napi (Rust cdylib) -> typecheck -> SWC transpile -> tsc declarations
 pnpm build
 
 # Run the Node.js test suite
 pnpm test
 ```
 
-The `pnpm build` command runs `napi build --platform --release --esm`, which produces ESM output directly. No manual file renaming is needed.
+The `pnpm build` pipeline runs four steps in order: `build:napi` (compiles Rust and generates `binding.js`/`binding.d.ts`), `typecheck` (tsc --noEmit), `build:js` (SWC transpiles `.ts` to `.js`), and `build:types` (tsc emits `.d.ts` declarations). The generated `.js` and `.d.ts` files are gitignored -- only TypeScript sources are committed.
 
 ## 5. Development Workflow
 
@@ -129,6 +129,12 @@ Add napi bindings in `packages/sheetkit/src/lib.rs`:
 - Define `#[napi(object)]` structs for any new configuration or result types.
 - Use `Either` types for polymorphic parameters or return values.
 
+Then update the TypeScript wrapper in `packages/sheetkit/index.ts`:
+
+- Add corresponding methods to the `Workbook` class that delegate to `this.#native`.
+- Add type annotations matching the napi-generated `binding.d.ts` signatures.
+- Re-export any new types from `binding.js`.
+
 ### Step 5: Node.js tests
 
 Add test cases in `packages/sheetkit/__test__/index.spec.ts` covering the new bindings.
@@ -184,9 +190,9 @@ When writing ZIP entries, always use:
 SimpleFileOptions::default().compression_method(CompressionMethod::Deflated)
 ```
 
-### napi build output
+### Build pipeline
 
-With napi v3 and the `--esm` flag, the build produces ESM output directly. Run `pnpm build` from `packages/sheetkit` and the generated `index.js` and `index.d.ts` are ready to use.
+`pnpm build` runs four steps: `build:napi` (Rust + napi codegen producing `binding.js`/`binding.d.ts`) -> `typecheck` (tsc --noEmit) -> `build:js` (SWC transpiles `.ts` to `.js`) -> `build:types` (tsc emits `.d.ts`). The TypeScript sources (`index.ts`, `buffer-codec.ts`, `sheet-data.ts`) are committed; the generated `.js` and `.d.ts` outputs are gitignored.
 
 ### File organization
 
