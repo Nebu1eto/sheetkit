@@ -72,6 +72,20 @@ impl Workbook {
         self.save_sync(path)
     }
 
+    /// Open a workbook from an in-memory Buffer.
+    #[napi(factory, js_name = "openBufferSync")]
+    pub fn open_buffer_sync(data: Buffer) -> Result<Self> {
+        let inner = sheetkit_core::workbook::Workbook::open_from_buffer(&data)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        Ok(Self { inner })
+    }
+
+    /// Open a workbook from an in-memory Buffer asynchronously.
+    #[napi(factory)]
+    pub async fn open_buffer(data: Buffer) -> Result<Self> {
+        Self::open_buffer_sync(data)
+    }
+
     /// Open an encrypted .xlsx file using a password.
     #[napi(factory, js_name = "openWithPasswordSync")]
     pub fn open_with_password_sync(path: String, password: String) -> Result<Self> {
@@ -84,6 +98,22 @@ impl Workbook {
     #[napi(factory)]
     pub async fn open_with_password(path: String, password: String) -> Result<Self> {
         Self::open_with_password_sync(path, password)
+    }
+
+    /// Serialize the workbook to an in-memory Buffer.
+    #[napi(js_name = "writeBufferSync")]
+    pub fn write_buffer_sync(&self) -> Result<Buffer> {
+        let buf = self
+            .inner
+            .save_to_buffer()
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        Ok(Buffer::from(buf))
+    }
+
+    /// Serialize the workbook to an in-memory Buffer asynchronously.
+    #[napi]
+    pub async fn write_buffer(&self) -> Result<Buffer> {
+        self.write_buffer_sync()
     }
 
     /// Save the workbook as an encrypted .xlsx file.
@@ -994,6 +1024,33 @@ impl Workbook {
                     .collect(),
             })
             .collect())
+    }
+
+    /// Set a formula on a cell.
+    #[napi]
+    pub fn set_cell_formula(
+        &mut self,
+        sheet: String,
+        cell: String,
+        formula: String,
+    ) -> Result<()> {
+        self.inner
+            .set_cell_formula(&sheet, &cell, &formula)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Fill a single-column range with a formula, adjusting row references
+    /// for each row relative to the first cell.
+    #[napi]
+    pub fn fill_formula(
+        &mut self,
+        sheet: String,
+        range: String,
+        formula: String,
+    ) -> Result<()> {
+        self.inner
+            .fill_formula(&sheet, &range, &formula)
+            .map_err(|e| Error::from_reason(e.to_string()))
     }
 
     /// Evaluate a formula string against the current workbook data.

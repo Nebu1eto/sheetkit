@@ -121,6 +121,34 @@ await wb.save('output.xlsx');
 const names: string[] = wb.sheetNames;
 ```
 
+#### Buffer I/O
+
+Read from and write to in-memory buffers without touching the file system.
+
+**Rust:**
+
+```rust
+// Save to buffer
+let buf: Vec<u8> = wb.save_to_buffer()?;
+
+// Open from buffer
+let wb2 = Workbook::open_from_buffer(&buf)?;
+```
+
+**TypeScript:**
+
+```typescript
+// Save to buffer
+const buf: Buffer = wb.writeBufferSync();
+
+// Open from buffer
+const wb2 = Workbook.openBufferSync(buf);
+
+// Async versions
+const buf2: Buffer = await wb.writeBuffer();
+const wb3 = await Workbook.openBuffer(buf2);
+```
+
 ---
 
 ### Cell Operations

@@ -121,6 +121,34 @@ await wb.save('output.xlsx');
 const names: string[] = wb.sheetNames;
 ```
 
+#### Buffer I/O
+
+파일 시스템을 거치지 않고 메모리 내 버퍼로 읽고 쓸 수 있다.
+
+**Rust:**
+
+```rust
+// 버퍼로 저장
+let buf: Vec<u8> = wb.save_to_buffer()?;
+
+// 버퍼에서 열기
+let wb2 = Workbook::open_from_buffer(&buf)?;
+```
+
+**TypeScript:**
+
+```typescript
+// 버퍼로 저장
+const buf: Buffer = wb.writeBufferSync();
+
+// 버퍼에서 열기
+const wb2 = Workbook.openBufferSync(buf);
+
+// 비동기 버전
+const buf2: Buffer = await wb.writeBuffer();
+const wb3 = await Workbook.openBuffer(buf2);
+```
+
 ---
 
 ### 셀 조작

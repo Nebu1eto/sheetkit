@@ -620,6 +620,46 @@ const isProtected: boolean = wb.isSheetProtected("Sheet1");
 
 셀 수식을 파싱하고 실행하는 기능을 다룬다. nom 파서로 수식을 AST로 변환한 후 평가 엔진이 결과를 계산한다.
 
+### `set_cell_formula` / `setCellFormula`
+
+단일 셀에 수식을 설정한다.
+
+**Rust:**
+
+```rust
+wb.set_cell_formula("Sheet1", "C1", "SUM(A1:B1)")?;
+```
+
+**TypeScript:**
+
+```typescript
+wb.setCellFormula("Sheet1", "C1", "SUM(A1:B1)");
+```
+
+### `fill_formula` / `fillFormula`
+
+단일 열 범위에 수식을 채우며, 각 행에 맞게 행 참조를 자동으로 조정한다. 절대 행 참조(`$1`)는 조정되지 않는다. 범위의 첫 번째 셀은 수식을 그대로 받고, 이후 셀들은 행 오프셋만큼 행 참조가 이동된다.
+
+**Rust:**
+
+```rust
+// D2 = SUM(A2:C2), D3 = SUM(A3:C3), ..., D10 = SUM(A10:C10)으로 설정
+wb.fill_formula("Sheet1", "D2:D10", "SUM(A2:C2)")?;
+
+// 절대 참조는 보존된다:
+// E2 = $A$1*B2, E3 = $A$1*B3, E4 = $A$1*B4
+wb.fill_formula("Sheet1", "E2:E4", "$A$1*B2")?;
+```
+
+**TypeScript:**
+
+```typescript
+wb.fillFormula("Sheet1", "D2:D10", "SUM(A2:C2)");
+wb.fillFormula("Sheet1", "E2:E4", "$A$1*B2");
+```
+
+> 단일 열 범위만 지원된다 (예: `"D2:D10"`). 다중 열 범위는 오류를 반환한다.
+
 ### `evaluate_formula(sheet, formula)` / `evaluateFormula(sheet, formula)`
 
 주어진 시트 컨텍스트에서 수식 문자열을 평가하여 결과를 반환한다. 워크북의 현재 셀 데이터를 참조할 수 있다.

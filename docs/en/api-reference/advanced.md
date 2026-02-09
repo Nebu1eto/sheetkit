@@ -736,6 +736,46 @@ const isProtected: boolean = wb.isSheetProtected("Sheet1");
 
 SheetKit includes a formula evaluator that supports 110 Excel functions. Formulas are parsed using a nom-based parser and evaluated against the current workbook data.
 
+### `set_cell_formula` / `setCellFormula`
+
+Set a formula on a single cell.
+
+**Rust:**
+
+```rust
+wb.set_cell_formula("Sheet1", "C1", "SUM(A1:B1)")?;
+```
+
+**TypeScript:**
+
+```typescript
+wb.setCellFormula("Sheet1", "C1", "SUM(A1:B1)");
+```
+
+### `fill_formula` / `fillFormula`
+
+Fill a single-column range with a formula, automatically adjusting row references for each row. Absolute row references (`$1`) are not adjusted. The first cell in the range gets the formula as-is; subsequent cells have their row references shifted by the row offset.
+
+**Rust:**
+
+```rust
+// Sets D2 = SUM(A2:C2), D3 = SUM(A3:C3), ..., D10 = SUM(A10:C10)
+wb.fill_formula("Sheet1", "D2:D10", "SUM(A2:C2)")?;
+
+// Absolute references are preserved:
+// E2 = $A$1*B2, E3 = $A$1*B3, E4 = $A$1*B4
+wb.fill_formula("Sheet1", "E2:E4", "$A$1*B2")?;
+```
+
+**TypeScript:**
+
+```typescript
+wb.fillFormula("Sheet1", "D2:D10", "SUM(A2:C2)");
+wb.fillFormula("Sheet1", "E2:E4", "$A$1*B2");
+```
+
+> Note: Only single-column ranges are supported (e.g., `"D2:D10"`). Multi-column ranges return an error.
+
 ### `evaluate_formula` / `evaluateFormula`
 
 Evaluate a single formula string in the context of a specific sheet.

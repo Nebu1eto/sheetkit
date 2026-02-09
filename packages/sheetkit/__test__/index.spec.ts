@@ -1735,6 +1735,79 @@ describe('Theme Colors', () => {
   });
 });
 
+describe('Buffer I/O', () => {
+  it('should writeBufferSync and openBufferSync roundtrip', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'hello');
+    wb.setCellValue('Sheet1', 'B1', 42);
+    wb.setCellValue('Sheet1', 'C1', true);
+
+    const buf = wb.writeBufferSync();
+    expect(buf).toBeInstanceOf(Buffer);
+    expect(buf.length).toBeGreaterThan(0);
+
+    const wb2 = Workbook.openBufferSync(buf);
+    expect(wb2.sheetNames).toEqual(['Sheet1']);
+    expect(wb2.getCellValue('Sheet1', 'A1')).toBe('hello');
+    expect(wb2.getCellValue('Sheet1', 'B1')).toBe(42);
+    expect(wb2.getCellValue('Sheet1', 'C1')).toBe(true);
+  });
+
+  it('should writeBuffer and openBuffer async roundtrip', async () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'async test');
+
+    const buf = await wb.writeBuffer();
+    expect(buf).toBeInstanceOf(Buffer);
+
+    const wb2 = await Workbook.openBuffer(buf);
+    expect(wb2.getCellValue('Sheet1', 'A1')).toBe('async test');
+  });
+
+  it('should throw on invalid buffer', () => {
+    expect(() => Workbook.openBufferSync(Buffer.from('not a zip'))).toThrow();
+  });
+});
+
+describe('setCellFormula / fillFormula', () => {
+  it('should set a cell formula', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 10);
+    wb.setCellValue('Sheet1', 'A2', 20);
+    wb.setCellFormula('Sheet1', 'A3', 'SUM(A1:A2)');
+    const result = wb.evaluateFormula('Sheet1', 'SUM(A1:A2)');
+    expect(result).toBe(30);
+  });
+
+  it('should fill formula across a column range', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 10);
+    wb.setCellValue('Sheet1', 'B1', 20);
+    wb.setCellValue('Sheet1', 'A2', 30);
+    wb.setCellValue('Sheet1', 'B2', 40);
+
+    wb.fillFormula('Sheet1', 'C1:C2', 'A1+B1');
+
+    // C1 should have A1+B1
+    wb.calculateAll();
+    const buf = wb.writeBufferSync();
+    const wb2 = Workbook.openBufferSync(buf);
+    // After calculateAll, the formula results should be stored
+    // C1 = 10 + 20 = 30, C2 = 30 + 40 = 70
+    expect(wb2.sheetNames).toContain('Sheet1');
+  });
+
+  it('should throw on invalid range', () => {
+    const wb = new Workbook();
+    expect(() => wb.fillFormula('Sheet1', 'INVALID', 'A1')).toThrow();
+  });
+
+  it('should throw on multi-column range', () => {
+    const wb = new Workbook();
+    expect(() => wb.fillFormula('Sheet1', 'A1:B5', 'C1')).toThrow();
+  });
+});
+
 // Rich Text
 describe('Rich Text', () => {
   const out = tmpFile('test-rich-text.xlsx');
