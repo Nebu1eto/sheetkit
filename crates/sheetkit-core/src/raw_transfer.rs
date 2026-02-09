@@ -88,7 +88,7 @@ pub fn sheet_to_raw_buffer(ws: &WorksheetXml, sst: &SharedStringTable) -> Result
 
     let cell_entries = collect_cell_entries(ws, sst, min_col, &mut string_table)?;
 
-    let flags: u32 = if sparse { FLAG_SPARSE } else { 0 };
+    let flags: u32 = (if sparse { FLAG_SPARSE } else { 0 }) | ((min_col & 0xFFFF) << 16);
 
     let row_index_size = row_count * 8;
     let string_section = string_table.encode();
