@@ -106,7 +106,7 @@ function formatMs(ms: number): string {
 
 function getMemoryMb(): number {
   if (global.gc) global.gc();
-  return process.memoryUsage().heapUsed / 1024 / 1024;
+  return process.memoryUsage().rss / 1024 / 1024;
 }
 
 function fileSizeKb(path: string): number | undefined {
@@ -1295,6 +1295,7 @@ function generateMarkdownReport(): string {
   lines.push('## Methodology');
   lines.push('');
   lines.push(`- **All libraries**: ${WARMUP_RUNS} warmup run(s) + ${BENCH_RUNS} measured runs per scenario. Median time reported.`);
+  lines.push('- **Memory**: Measured as RSS (Resident Set Size) delta before/after each run. RSS includes both V8 heap and native (Rust) heap allocations, providing accurate measurements for napi-rs based libraries.');
   lines.push('');
 
   lines.push('## Libraries');
@@ -1439,7 +1440,12 @@ async function main() {
   console.log('Excel Library Benchmark');
   console.log(`Platform: ${process.platform} ${process.arch} | Node.js: ${process.version}`);
   console.log(`All libraries: ${WARMUP_RUNS} warmup + ${BENCH_RUNS} measured runs per scenario`);
-  console.log(`Run with --expose-gc for accurate memory measurements.\n`);
+  if (!global.gc) {
+    console.log('WARNING: --expose-gc not enabled. Memory measurements may be less accurate.');
+    console.log('Run with: node --expose-gc --import tsx benchmark.ts\n');
+  } else {
+    console.log('GC exposed: memory measurements use RSS (Resident Set Size).\n');
+  }
 
   const { mkdirSync } = await import('node:fs');
   mkdirSync(OUTPUT_DIR, { recursive: true });

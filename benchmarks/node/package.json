@@ -5,8 +5,8 @@
   "private": true,
   "scripts": {
     "generate": "tsx generate-fixtures.ts",
-    "bench": "tsx benchmark.ts",
-    "bench:all": "tsx benchmark.ts && tsx benchmark.ts --format=markdown"
+    "bench": "node --expose-gc --import tsx benchmark.ts",
+    "bench:all": "node --expose-gc --import tsx benchmark.ts && node --expose-gc --import tsx benchmark.ts --format=markdown"
   },
   "dependencies": {
     "@sheetkit/node": "workspace:*",
