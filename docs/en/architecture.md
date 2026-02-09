@@ -236,3 +236,101 @@ zip::ZipWriter::finish() -> .xlsx file
 - **Node.js tests**: Located at `packages/sheetkit/__test__/index.spec.ts`. Uses vitest to test the napi bindings end-to-end.
 - **Test coverage**: The project maintains over 1,300 Rust tests and 200 Node.js tests across all modules.
 - **Test output files**: Any `.xlsx` files generated during tests are gitignored to keep the repository clean.
+
+## 6. Buffer-Based FFI Transfer
+
+### Problem
+
+When reading a 50,000-row by 20-column sheet through the Node.js bindings, the original `getRows()` implementation created over 1,000,000 individual `JsRowCell` napi objects. Each object creation crosses the Rust/JS FFI boundary and allocates V8 heap memory. Combined with the Rust-side workbook data that remains in memory, this led to approximately 400MB of memory usage for a scenario that only requires about 50MB of actual cell data.
+
+The root cause is that napi object creation does not scale: the overhead is proportional to the number of cells, not the size of the data. For a 1M-cell sheet, the napi overhead alone accounts for over 200MB of V8 heap allocations, plus approximately 72MB of Rust-side system allocator overhead from 3M+ individual heap allocations for cell references, type strings, and value strings.
+
+### Solution
+
+SheetKit uses a buffer-based FFI transfer strategy. Instead of creating one JS object per cell, the Rust side serializes the entire sheet's cell data into a single compact binary `Buffer`. This buffer crosses the FFI boundary in one call. On the JavaScript side, a codec layer decodes the buffer into whatever representation the caller needs.
+
+```
+Rust Workbook (native)
+  |
+  sheet_to_raw_buffer()    -- serialize cells to binary
+  |
+  v
+Buffer (single FFI transfer)
+  |
+  v
+JS Workbook wrapper
+  |
+  +-- getRows()         -- decodes buffer into JsRowData[] (backward compatible)
+  +-- getRowsBuffer()   -- returns raw Buffer for advanced use
+  +-- SheetData class   -- wraps buffer for O(1) random access
+```
+
+The decision rule is straightforward: if the payload scales with cell count, use buffer transfer. If the payload is fixed-size or small (single cell value, style config, sheet properties), use direct napi calls.
+
+### Binary Buffer Format
+
+All multi-byte values are little-endian. The buffer has four sections.
+
+**Header** (16 bytes):
+
+| Offset | Size | Field | Description |
+|--------|------|-------|-------------|
+| 0 | 4 | magic | `0x534B5244` ("SKRD") |
+| 4 | 2 | version | Protocol version (currently 1) |
+| 6 | 4 | row_count | Number of rows in the buffer |
+| 10 | 2 | col_count | Number of columns (bounding rectangle width) |
+| 12 | 4 | flags | Bit 0: sparse flag. Bits 16-31: min_col offset |
+
+**Row Index** (row_count * 8 bytes):
+
+Each row entry is 8 bytes: a `u32` row number followed by a `u32` byte offset into the cell data section. Empty rows use the sentinel offset `0xFFFFFFFF`.
+
+**String Table**:
+
+| Field | Size | Description |
+|-------|------|-------------|
+| count | 4 | Number of strings |
+| blob_size | 4 | Total size of the UTF-8 blob in bytes |
+| offsets | count * 4 | Byte offset of each string within the blob |
+| blob | blob_size | Concatenated UTF-8 string data |
+
+Strings are referenced by index from cell payloads. The JavaScript side uses `TextDecoder` to decode UTF-8 slices directly from the buffer without copying.
+
+**Cell Data**:
+
+Each cell is encoded as a 1-byte type tag followed by an 8-byte payload. The type tags are:
+
+| Tag | Type | Payload |
+|-----|------|---------|
+| 0x00 | Empty | unused (8 zero bytes) |
+| 0x01 | Number | f64 IEEE 754 |
+| 0x02 | String | u32 string table index + 4 padding bytes |
+| 0x03 | Bool | u8 (0 or 1) + 7 padding bytes |
+| 0x04 | Date | f64 Excel serial number |
+| 0x05 | Error | u32 string table index + 4 padding bytes |
+| 0x06 | Formula | u32 string table index (cached display value) + 4 padding bytes |
+| 0x07 | RichString | u32 string table index (plain text) + 4 padding bytes |
+
+The fixed 9-byte stride per cell enables O(1) random access in dense mode: the offset of cell at (row, col) is `cell_data_start + row_offset + col * 9`.
+
+### Dense/Sparse Auto-Switch
+
+The buffer encoder automatically selects between dense and sparse layout based on cell density within the bounding rectangle.
+
+**Density threshold**: 30% of cells occupied.
+
+- **Dense layout** (density >= 30%): The cell data section is a flat `row_count * col_count * 9` byte grid. Every position in the bounding rectangle has a 9-byte slot, including empty cells. This enables O(1) direct offset addressing: `offset = row_index_offset + col * 9`.
+
+- **Sparse layout** (density < 30%): Each row stores a `u16` cell count followed by variable-length entries. Each entry is 11 bytes: `u16` column index + `u8` type + 8-byte payload. Only non-empty cells are stored. This avoids wasting space on sheets where data is scattered across a large range with many gaps.
+
+The sparse flag is encoded in bit 0 of the header's flags field. The JavaScript decoder reads this flag and switches decoding strategy accordingly.
+
+### Internal Optimizations
+
+Three optimizations in the Rust XML layer reduce memory allocations during parsing, before buffer serialization even begins.
+
+**CellTypeTag enum**: The XML `t` attribute on `<c>` elements (which indicates cell type: `s` for shared string, `n` for number, `b` for boolean, etc.) was previously stored as `Option<String>`. This allocated a heap `String` for every cell. It is now a 1-byte `CellTypeTag` enum with variants `None`, `SharedString`, `Number`, `Boolean`, `Error`, `Str`, `Date`, and `InlineString`. For 1M cells, this eliminates approximately 24MB of heap allocations.
+
+**CompactCellRef**: The XML `r` attribute on `<c>` elements (the cell reference like "A1", "B2", "AA100") was previously a heap-allocated `String`. It is now a `CompactCellRef` struct containing a `[u8; 10]` inline byte array and a `u8` length field. Since cell references never exceed 10 characters (the maximum is "XFD1048576" at 10 bytes), this fits entirely on the stack or inline within the `Cell` struct, eliminating approximately 28MB of heap allocations per 1M cells.
+
+**Column numbers as u32**: The `get_rows()` internal path previously converted column numbers to column name strings (e.g., 1 to "A", 27 to "AA") inside the Rust layer, allocating a `String` per cell. Column numbers are now returned as `u32` values internally, and name conversion happens only in the JavaScript decoder when needed. This eliminates approximately 5MB of string allocations per 1M cells.

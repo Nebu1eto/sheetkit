@@ -1719,3 +1719,120 @@ try {
 | 세그먼트 크기 | 4,096 bytes |
 | 데이터 무결성 | HMAC-SHA512 |
 | 컨테이너 형식 | OLE/CFB (Compound File Binary) |
+
+---
+
+## 30. 대량 데이터 전송
+
+SheetKit은 Node.js 바인딩에서 시트 데이터를 읽기 위한 세 가지 접근 방식을 제공하며, 각각 메모리와 성능 특성이 다르다. 세 가지 모두 내부적으로 동일한 바이너리 Buffer 프로토콜을 사용한다.
+
+### `getRows(sheet)` (TypeScript 전용)
+
+셀 데이터를 기존 `JsRowData[]` 형식으로 반환한다. 바이너리 Buffer가 투명하게 디코딩되므로 반환 타입은 이전 버전과 하위 호환된다. 각 행은 열 이름, 타입, 값을 가진 셀 객체 배열을 포함한다.
+
+```typescript
+const rows = wb.getRows('Sheet1');
+for (const row of rows) {
+  for (const cell of row.cells) {
+    console.log(`${cell.column}: ${cell.value ?? cell.numberValue ?? cell.boolValue}`);
+  }
+}
+```
+
+가장 단순한 API로 기존 코드를 변경할 필요가 없다. Buffer 전송은 이전의 셀별 napi 객체 생성에 따른 FFI 오버헤드를 제거하지만, 디코더가 여전히 모든 셀에 대해 JS 객체를 생성한다.
+
+### `getRowsBuffer(sheet)` (TypeScript 전용)
+
+Rust에서 생성된 raw 바이너리 `Buffer`를 반환한다. 가장 저수준 API이며, 커스텀 디코더에 데이터를 전달하거나, 네트워크로 전송하거나, `SheetData` 클래스와 함께 지연 접근에 사용할 때 유용하다.
+
+```typescript
+const buf: Buffer = wb.getRowsBuffer('Sheet1');
+```
+
+Buffer는 [아키텍처](../architecture.md#6-buffer-기반-ffi-전송) 문서에 기술된 SKRD 바이너리 형식을 따른다.
+
+### `SheetData` 클래스 (TypeScript 전용)
+
+`SheetData` 클래스는 raw Buffer를 래핑하여 전체 시트를 디코딩하지 않고도 개별 셀이나 행에 O(1) 임의 접근을 제공한다. `@sheetkit/node/sheet-data`에서 임포트한다.
+
+```typescript
+import { SheetData } from '@sheetkit/node/sheet-data';
+
+const buf = wb.getRowsBuffer('Sheet1');
+const sheet = new SheetData(buf);
+```
+
+**속성:**
+
+| 속성 | 타입 | 설명 |
+|------|------|------|
+| `rowCount` | `number` | Buffer 내 행 수 |
+| `colCount` | `number` | 열 수 (경계 사각형 너비) |
+
+**메서드:**
+
+#### `getCell(row, col)`
+
+단일 셀의 디코딩된 값을 반환하며, 비어 있으면 `null`을 반환한다. 행과 열은 1부터 시작한다. 반환 타입은 셀 타입에 따라 달라진다: 숫자 및 날짜 셀은 `number`, 문자열/에러/수식 셀은 `string`, 불리언 셀은 `boolean`.
+
+```typescript
+const value = sheet.getCell(1, 1);   // 1행, 1열 (A1)
+const price = sheet.getCell(5, 3);   // 5행, 3열 (C5)
+```
+
+#### `getCellType(row, col)`
+
+셀의 타입 이름을 문자열로 반환한다: `'empty'`, `'number'`, `'string'`, `'boolean'`, `'date'`, `'error'`, `'formula'`, 또는 `'string'` (서식 있는 텍스트).
+
+```typescript
+const type = sheet.getCellType(1, 1);  // 'string'
+if (type === 'number') {
+  const val = sheet.getCell(1, 1);
+}
+```
+
+#### `getRow(rowNum)`
+
+단일 행의 디코딩된 값 배열을 반환한다. 빈 셀은 `null`이다. 행 번호는 1부터 시작한다.
+
+```typescript
+const row = sheet.getRow(1);  // [value, value, null, value, ...]
+```
+
+#### `toArray()`
+
+모든 행을 디코딩하여 2차원 배열을 반환한다. 각 요소는 빈 행이면 `[]`이고, 그 외에는 빈 셀이 `null`인 값 배열이다.
+
+```typescript
+const data = sheet.toArray();
+for (const row of data) {
+  console.log(row);
+}
+```
+
+#### `rows()` (제너레이터)
+
+빈 행을 포함하여 각 행에 대해 `{ row: number, values: Array }` 객체를 yield한다. 스트리밍 방식의 반복에 유용하다.
+
+```typescript
+for (const { row, values } of sheet.rows()) {
+  console.log(`Row ${row}:`, values);
+}
+```
+
+#### `columnName(colIndex)`
+
+0 기반 열 인덱스 (Buffer의 경계 사각형 기준)를 Excel 열 이름으로 변환한다.
+
+```typescript
+sheet.columnName(0);   // 'A' (데이터가 A열에서 시작하는 경우)
+sheet.columnName(25);  // 'Z'
+```
+
+### API 사용 시기
+
+| API | 메모리 | 지연 시간 | 적합한 경우 |
+|-----|--------|-----------|-------------|
+| `getRows()` | 중간 (모든 셀을 객체로 디코딩) | 전체를 한 번에 | 하위 호환성, 모든 셀 순회 |
+| `getRowsBuffer()` + `SheetData` | 낮음 (Buffer + 필요 시 디코딩) | 접근 시마다 | 대용량 시트, 임의 접근, 셀 일부만 읽기 |
+| `getRowsBuffer()` (raw) | 최소 (Buffer만) | 없음 | 커스텀 디코더, 네트워크 전송, 캐싱 |

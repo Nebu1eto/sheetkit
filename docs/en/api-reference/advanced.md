@@ -1690,3 +1690,120 @@ try {
 | Segment size | 4,096 bytes |
 | Data integrity | HMAC-SHA512 |
 | Container format | OLE/CFB (Compound File Binary) |
+
+---
+
+## 30. Bulk Data Transfer
+
+SheetKit provides three approaches for reading sheet data in the Node.js bindings, each with different memory and performance characteristics. All three use the same underlying binary buffer protocol internally.
+
+### `getRows(sheet)` (TypeScript only)
+
+Returns cell data in the original `JsRowData[]` format. The binary buffer is decoded transparently, so the return type is backward compatible with earlier versions. Each row contains an array of cell objects with column name, type, and value.
+
+```typescript
+const rows = wb.getRows('Sheet1');
+for (const row of rows) {
+  for (const cell of row.cells) {
+    console.log(`${cell.column}: ${cell.value ?? cell.numberValue ?? cell.boolValue}`);
+  }
+}
+```
+
+This is the simplest API and requires no changes to existing code. The buffer transfer eliminates the FFI overhead of the old per-cell napi object creation, but the decoder still creates JS objects for every cell.
+
+### `getRowsBuffer(sheet)` (TypeScript only)
+
+Returns the raw binary `Buffer` produced by Rust. This is the lowest-level API and is useful when you want to pass the data to a custom decoder, send it over the network, or use it with the `SheetData` class for deferred access.
+
+```typescript
+const buf: Buffer = wb.getRowsBuffer('Sheet1');
+```
+
+The buffer follows the SKRD binary format described in the [Architecture](../architecture.md#6-buffer-based-ffi-transfer) documentation.
+
+### `SheetData` class (TypeScript only)
+
+The `SheetData` class wraps a raw buffer and provides O(1) random-access methods for reading individual cells or rows without decoding the entire sheet. Import it from `@sheetkit/node/sheet-data`.
+
+```typescript
+import { SheetData } from '@sheetkit/node/sheet-data';
+
+const buf = wb.getRowsBuffer('Sheet1');
+const sheet = new SheetData(buf);
+```
+
+**Properties:**
+
+| Property | Type | Description |
+|----------|------|-------------|
+| `rowCount` | `number` | Number of rows in the buffer |
+| `colCount` | `number` | Number of columns (bounding rectangle width) |
+
+**Methods:**
+
+#### `getCell(row, col)`
+
+Returns the decoded value for a single cell, or `null` if empty. Row and column are 1-based. The return type depends on the cell type: `number` for numeric and date cells, `string` for string/error/formula cells, `boolean` for boolean cells.
+
+```typescript
+const value = sheet.getCell(1, 1);   // row 1, column 1 (A1)
+const price = sheet.getCell(5, 3);   // row 5, column 3 (C5)
+```
+
+#### `getCellType(row, col)`
+
+Returns the type name of a cell as a string: `'empty'`, `'number'`, `'string'`, `'boolean'`, `'date'`, `'error'`, `'formula'`, or `'string'` (for rich text).
+
+```typescript
+const type = sheet.getCellType(1, 1);  // 'string'
+if (type === 'number') {
+  const val = sheet.getCell(1, 1);
+}
+```
+
+#### `getRow(rowNum)`
+
+Returns an array of decoded values for a single row. Empty cells are `null`. The row number is 1-based.
+
+```typescript
+const row = sheet.getRow(1);  // [value, value, null, value, ...]
+```
+
+#### `toArray()`
+
+Decodes all rows and returns a 2D array. Each element is `[]` for empty rows, or an array of values with `null` for empty cells.
+
+```typescript
+const data = sheet.toArray();
+for (const row of data) {
+  console.log(row);
+}
+```
+
+#### `rows()` (generator)
+
+Yields `{ row: number, values: Array }` objects for each row, including empty rows. Useful for streaming-style iteration.
+
+```typescript
+for (const { row, values } of sheet.rows()) {
+  console.log(`Row ${row}:`, values);
+}
+```
+
+#### `columnName(colIndex)`
+
+Converts a 0-based column index (relative to the buffer's bounding rectangle) to an Excel column name.
+
+```typescript
+sheet.columnName(0);   // 'A' (if data starts at column A)
+sheet.columnName(25);  // 'Z'
+```
+
+### When to use each API
+
+| API | Memory | Latency | Best for |
+|-----|--------|---------|----------|
+| `getRows()` | Moderate (all cells decoded to objects) | All upfront | Backward compatibility, iterating all cells |
+| `getRowsBuffer()` + `SheetData` | Low (buffer + on-demand decode) | Per-access | Large sheets, random access, reading a subset of cells |
+| `getRowsBuffer()` (raw) | Minimal (buffer only) | None | Custom decoders, network transfer, caching |
