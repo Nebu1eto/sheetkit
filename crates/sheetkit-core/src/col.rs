@@ -155,7 +155,7 @@ pub fn insert_cols(ws: &mut WorksheetXml, col: &str, count: u32) -> Result<()> {
         .rows
         .iter()
         .flat_map(|r| r.cells.iter())
-        .filter_map(|c| cell_name_to_coordinates(&c.r).ok())
+        .filter_map(|c| cell_name_to_coordinates(c.r.as_str()).ok())
         .map(|(col_n, _)| col_n)
         .max()
         .unwrap_or(0);
@@ -167,10 +167,10 @@ pub fn insert_cols(ws: &mut WorksheetXml, col: &str, count: u32) -> Result<()> {
     // Shift cell references.
     for row in ws.sheet_data.rows.iter_mut() {
         for cell in row.cells.iter_mut() {
-            let (c, r) = cell_name_to_coordinates(&cell.r)?;
+            let (c, r) = cell_name_to_coordinates(cell.r.as_str())?;
             if c >= start_col {
                 let new_col = c + count;
-                cell.r = coordinates_to_cell_name(new_col, r)?;
+                cell.r = coordinates_to_cell_name(new_col, r)?.into();
                 cell.col = new_col;
             }
         }
@@ -199,17 +199,17 @@ pub fn remove_col(ws: &mut WorksheetXml, col: &str) -> Result<()> {
     for row in ws.sheet_data.rows.iter_mut() {
         // Remove cells at the target column.
         row.cells.retain(|cell| {
-            cell_name_to_coordinates(&cell.r)
+            cell_name_to_coordinates(cell.r.as_str())
                 .map(|(c, _)| c != col_num)
                 .unwrap_or(true)
         });
 
         // Shift cells that are to the right of the removed column.
         for cell in row.cells.iter_mut() {
-            let (c, r) = cell_name_to_coordinates(&cell.r)?;
+            let (c, r) = cell_name_to_coordinates(cell.r.as_str())?;
             if c > col_num {
                 let new_col = c - 1;
-                cell.r = coordinates_to_cell_name(new_col, r)?;
+                cell.r = coordinates_to_cell_name(new_col, r)?.into();
                 cell.col = new_col;
             }
         }
@@ -301,7 +301,7 @@ fn find_or_create_col(ws: &mut WorksheetXml, col_num: u32) -> &mut Col {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sheetkit_xml::worksheet::{Cell, Row, SheetData};
+    use sheetkit_xml::worksheet::{Cell, CellTypeTag, Row, SheetData};
 
     /// Helper: build a worksheet with some cells for column tests.
     fn sample_ws() -> WorksheetXml {
@@ -319,28 +319,28 @@ mod tests {
                     outline_level: None,
                     cells: vec![
                         Cell {
-                            r: "A1".to_string(),
+                            r: "A1".into(),
                             col: 1,
                             s: None,
-                            t: None,
+                            t: CellTypeTag::None,
                             v: Some("10".to_string()),
                             f: None,
                             is: None,
                         },
                         Cell {
-                            r: "B1".to_string(),
+                            r: "B1".into(),
                             col: 2,
                             s: None,
-                            t: None,
+                            t: CellTypeTag::None,
                             v: Some("20".to_string()),
                             f: None,
                             is: None,
                         },
                         Cell {
-                            r: "D1".to_string(),
+                            r: "D1".into(),
                             col: 4,
                             s: None,
-                            t: None,
+                            t: CellTypeTag::None,
                             v: Some("40".to_string()),
                             f: None,
                             is: None,
@@ -358,19 +358,19 @@ mod tests {
                     outline_level: None,
                     cells: vec![
                         Cell {
-                            r: "A2".to_string(),
+                            r: "A2".into(),
                             col: 1,
                             s: None,
-                            t: None,
+                            t: CellTypeTag::None,
                             v: Some("100".to_string()),
                             f: None,
                             is: None,
                         },
                         Cell {
-                            r: "C2".to_string(),
+                            r: "C2".into(),
                             col: 3,
                             s: None,
-                            t: None,
+                            t: CellTypeTag::None,
                             v: Some("300".to_string()),
                             f: None,
                             is: None,
@@ -600,10 +600,10 @@ mod tests {
     fn test_remove_col_invalid_cell_reference_returns_error() {
         let mut ws = sample_ws();
         ws.sheet_data.rows[0].cells.push(Cell {
-            r: "INVALID".to_string(),
+            r: "INVALID".into(),
             col: 0,
             s: None,
-            t: None,
+            t: CellTypeTag::None,
             v: Some("1".to_string()),
             f: None,
             is: None,
@@ -789,19 +789,19 @@ mod tests {
                     outline_level: None,
                     cells: vec![
                         Cell {
-                            r: "A1".to_string(),
+                            r: "A1".into(),
                             col: 1,
                             s: None,
-                            t: Some("s".to_string()),
+                            t: CellTypeTag::SharedString,
                             v: Some("0".to_string()),
                             f: None,
                             is: None,
                         },
                         Cell {
-                            r: "B1".to_string(),
+                            r: "B1".into(),
                             col: 2,
                             s: None,
-                            t: Some("s".to_string()),
+                            t: CellTypeTag::SharedString,
                             v: Some("1".to_string()),
                             f: None,
                             is: None,
@@ -819,19 +819,19 @@ mod tests {
                     outline_level: None,
                     cells: vec![
                         Cell {
-                            r: "A2".to_string(),
+                            r: "A2".into(),
                             col: 1,
                             s: None,
-                            t: Some("s".to_string()),
+                            t: CellTypeTag::SharedString,
                             v: Some("2".to_string()),
                             f: None,
                             is: None,
                         },
                         Cell {
-                            r: "B2".to_string(),
+                            r: "B2".into(),
                             col: 2,
                             s: None,
-                            t: None,
+                            t: CellTypeTag::None,
                             v: Some("30".to_string()),
                             f: None,
                             is: None,
@@ -872,28 +872,28 @@ mod tests {
                 outline_level: None,
                 cells: vec![
                     Cell {
-                        r: "AA1".to_string(),
+                        r: "AA1".into(),
                         col: 27,
                         s: None,
-                        t: None,
+                        t: CellTypeTag::None,
                         v: Some("1".to_string()),
                         f: None,
                         is: None,
                     },
                     Cell {
-                        r: "B1".to_string(),
+                        r: "B1".into(),
                         col: 2,
                         s: None,
-                        t: None,
+                        t: CellTypeTag::None,
                         v: Some("2".to_string()),
                         f: None,
                         is: None,
                     },
                     Cell {
-                        r: "A1".to_string(),
+                        r: "A1".into(),
                         col: 1,
                         s: None,
-                        t: None,
+                        t: CellTypeTag::None,
                         v: Some("3".to_string()),
                         f: None,
                         is: None,

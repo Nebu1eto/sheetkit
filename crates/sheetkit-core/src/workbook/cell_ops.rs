@@ -81,10 +81,10 @@ impl Workbook {
                 row.cells.insert(
                     insert_pos,
                     Cell {
-                        r: cell_ref,
+                        r: cell_ref.into(),
                         col,
                         s: None,
-                        t: None,
+                        t: CellTypeTag::None,
                         v: None,
                         f: None,
                         is: None,
@@ -105,9 +105,9 @@ impl Workbook {
         // Check for formula first.
         if let Some(ref formula) = xml_cell.f {
             let expr = formula.value.clone().unwrap_or_default();
-            let result = match (&xml_cell.t, &xml_cell.v) {
-                (Some(t), Some(v)) if t == "b" => Some(Box::new(CellValue::Bool(v == "1"))),
-                (Some(t), Some(v)) if t == "e" => Some(Box::new(CellValue::Error(v.clone()))),
+            let result = match (xml_cell.t, &xml_cell.v) {
+                (CellTypeTag::Boolean, Some(v)) => Some(Box::new(CellValue::Bool(v == "1"))),
+                (CellTypeTag::Error, Some(v)) => Some(Box::new(CellValue::Error(v.clone()))),
                 (_, Some(v)) => v
                     .parse::<f64>()
                     .ok()
@@ -117,12 +117,11 @@ impl Workbook {
             return Ok(CellValue::Formula { expr, result });
         }
 
-        let cell_type = xml_cell.t.as_deref();
         let cell_value = xml_cell.v.as_deref();
 
-        match (cell_type, cell_value) {
+        match (xml_cell.t, cell_value) {
             // Shared string
-            (Some("s"), Some(v)) => {
+            (CellTypeTag::SharedString, Some(v)) => {
                 let idx: usize = v
                     .parse()
                     .map_err(|_| Error::Internal(format!("invalid SST index: {v}")))?;
@@ -130,11 +129,11 @@ impl Workbook {
                 Ok(CellValue::String(s))
             }
             // Boolean
-            (Some("b"), Some(v)) => Ok(CellValue::Bool(v == "1")),
+            (CellTypeTag::Boolean, Some(v)) => Ok(CellValue::Bool(v == "1")),
             // Error
-            (Some("e"), Some(v)) => Ok(CellValue::Error(v.to_string())),
+            (CellTypeTag::Error, Some(v)) => Ok(CellValue::Error(v.to_string())),
             // Inline string
-            (Some("inlineStr"), _) => {
+            (CellTypeTag::InlineString, _) => {
                 let s = xml_cell
                     .is
                     .as_ref()
@@ -143,9 +142,9 @@ impl Workbook {
                 Ok(CellValue::String(s))
             }
             // Formula string (cached string result)
-            (Some("str"), Some(v)) => Ok(CellValue::String(v.to_string())),
+            (CellTypeTag::FormulaString, Some(v)) => Ok(CellValue::String(v.to_string())),
             // Number (explicit or default type) -- may be a date if styled.
-            (None | Some("n"), Some(v)) => {
+            (CellTypeTag::None | CellTypeTag::Number, Some(v)) => {
                 let n: f64 = v
                     .parse()
                     .map_err(|_| Error::Internal(format!("invalid number: {v}")))?;
@@ -256,10 +255,10 @@ impl Workbook {
                 row.cells.insert(
                     insert_pos,
                     Cell {
-                        r: cell_ref,
+                        r: cell_ref.into(),
                         col,
                         s: None,
-                        t: None,
+                        t: CellTypeTag::None,
                         v: None,
                         f: None,
                         is: None,
@@ -392,7 +391,7 @@ impl Workbook {
             Err(_) => return Ok(None),
         };
 
-        if xml_cell.t.as_deref() == Some("s") {
+        if xml_cell.t == CellTypeTag::SharedString {
             if let Some(ref v) = xml_cell.v {
                 if let Ok(idx) = v.parse::<usize>() {
                     return Ok(self.sst_runtime.get_rich_text(idx));
@@ -453,10 +452,10 @@ impl Workbook {
                         row.cells.insert(
                             pos,
                             Cell {
-                                r: cell_ref,
+                                r: cell_ref.into(),
                                 col,
                                 s: None,
-                                t: None,
+                                t: CellTypeTag::None,
                                 v: None,
                                 f: None,
                                 is: None,
@@ -542,10 +541,10 @@ impl Workbook {
                             row.cells.insert(
                                 pos,
                                 Cell {
-                                    r: cell_ref,
+                                    r: cell_ref.into(),
                                     col,
                                     s: None,
-                                    t: None,
+                                    t: CellTypeTag::None,
                                     v: None,
                                     f: None,
                                     is: None,
@@ -587,7 +586,7 @@ pub(crate) fn value_to_xml_cell(
     value: CellValue,
 ) {
     // Clear previous values.
-    xml_cell.t = None;
+    xml_cell.t = CellTypeTag::None;
     xml_cell.v = None;
     xml_cell.f = None;
     xml_cell.is = None;
@@ -595,7 +594,7 @@ pub(crate) fn value_to_xml_cell(
     match value {
         CellValue::String(s) => {
             let idx = sst.add_owned(s);
-            xml_cell.t = Some("s".to_string());
+            xml_cell.t = CellTypeTag::SharedString;
             xml_cell.v = Some(idx.to_string());
         }
         CellValue::Number(n) => {
@@ -607,7 +606,7 @@ pub(crate) fn value_to_xml_cell(
             xml_cell.v = Some(serial.to_string());
         }
         CellValue::Bool(b) => {
-            xml_cell.t = Some("b".to_string());
+            xml_cell.t = CellTypeTag::Boolean;
             xml_cell.v = Some(if b { "1" } else { "0" }.to_string());
         }
         CellValue::Formula { expr, .. } => {
@@ -619,7 +618,7 @@ pub(crate) fn value_to_xml_cell(
             });
         }
         CellValue::Error(e) => {
-            xml_cell.t = Some("e".to_string());
+            xml_cell.t = CellTypeTag::Error;
             xml_cell.v = Some(e);
         }
         CellValue::Empty => {
@@ -627,7 +626,7 @@ pub(crate) fn value_to_xml_cell(
         }
         CellValue::RichString(runs) => {
             let idx = sst.add_rich_text(&runs);
-            xml_cell.t = Some("s".to_string());
+            xml_cell.t = CellTypeTag::SharedString;
             xml_cell.v = Some(idx.to_string());
         }
     }

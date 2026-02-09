@@ -2,6 +2,10 @@
 //!
 //! Represents `xl/worksheets/sheet*.xml` in the OOXML package.
 
+use std::fmt;
+
+use serde::de::Deserializer;
+use serde::ser::Serializer;
 use serde::{Deserialize, Serialize};
 
 use crate::namespaces;
@@ -333,12 +337,98 @@ pub struct Row {
     pub cells: Vec<Cell>,
 }
 
+/// Inline cell reference (e.g., "A1", "XFD1048576") stored without heap allocation.
+/// Max Excel cell ref is "XFD1048576" = 10 chars, so [u8; 10] + u8 length suffices.
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub struct CompactCellRef {
+    buf: [u8; 10],
+    len: u8,
+}
+
+impl CompactCellRef {
+    /// Create a new CompactCellRef from a string slice. Panics if the input exceeds 10 bytes.
+    pub fn new(s: &str) -> Self {
+        assert!(
+            s.len() <= 10,
+            "cell reference too long ({} bytes): {s}",
+            s.len()
+        );
+        let mut buf = [0u8; 10];
+        buf[..s.len()].copy_from_slice(s.as_bytes());
+        Self {
+            buf,
+            len: s.len() as u8,
+        }
+    }
+
+    /// Return the cell reference as a string slice.
+    pub fn as_str(&self) -> &str {
+        // Safety: we only ever store valid UTF-8 (ASCII cell refs).
+        unsafe { std::str::from_utf8_unchecked(&self.buf[..self.len as usize]) }
+    }
+}
+
+impl fmt::Display for CompactCellRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl fmt::Debug for CompactCellRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "CompactCellRef(\"{}\")", self.as_str())
+    }
+}
+
+impl From<&str> for CompactCellRef {
+    fn from(s: &str) -> Self {
+        Self::new(s)
+    }
+}
+
+impl From<String> for CompactCellRef {
+    fn from(s: String) -> Self {
+        Self::new(&s)
+    }
+}
+
+impl AsRef<str> for CompactCellRef {
+    fn as_ref(&self) -> &str {
+        self.as_str()
+    }
+}
+
+impl PartialEq<&str> for CompactCellRef {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+
+impl PartialEq<str> for CompactCellRef {
+    fn eq(&self, other: &str) -> bool {
+        self.as_str() == other
+    }
+}
+
+impl Serialize for CompactCellRef {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for CompactCellRef {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        Ok(CompactCellRef::new(&s))
+    }
+}
+
 /// A single cell.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Cell {
     /// Cell reference (e.g., "A1").
     #[serde(rename = "@r")]
-    pub r: String,
+    pub r: CompactCellRef,
 
     /// Cached 1-based column number parsed from `r`. Populated at load time
     /// or at creation time to avoid repeated string parsing.
@@ -349,9 +439,9 @@ pub struct Cell {
     #[serde(rename = "@s", skip_serializing_if = "Option::is_none")]
     pub s: Option<u32>,
 
-    /// Cell type: "b", "d", "e", "inlineStr", "n", "s", "str".
-    #[serde(rename = "@t", skip_serializing_if = "Option::is_none")]
-    pub t: Option<String>,
+    /// Cell data type.
+    #[serde(rename = "@t", default, skip_serializing_if = "CellTypeTag::is_none")]
+    pub t: CellTypeTag,
 
     /// Cell value.
     #[serde(rename = "v", skip_serializing_if = "Option::is_none")]
@@ -366,15 +456,72 @@ pub struct Cell {
     pub is: Option<InlineString>,
 }
 
-/// Cell type constants.
-pub mod cell_types {
-    pub const BOOLEAN: &str = "b";
-    pub const DATE: &str = "d";
-    pub const ERROR: &str = "e";
-    pub const INLINE_STRING: &str = "inlineStr";
-    pub const NUMBER: &str = "n";
-    pub const SHARED_STRING: &str = "s";
-    pub const FORMULA_STRING: &str = "str";
+/// Cell data type tag, replacing `Option<String>` for zero-allocation matching.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CellTypeTag {
+    /// No type attribute (typically means Number).
+    #[default]
+    None,
+    /// Shared string ("s").
+    SharedString,
+    /// Explicit number ("n").
+    Number,
+    /// Boolean ("b").
+    Boolean,
+    /// Error ("e").
+    Error,
+    /// Inline string ("inlineStr").
+    InlineString,
+    /// Formula string result ("str").
+    FormulaString,
+    /// Date ("d").
+    Date,
+}
+
+impl CellTypeTag {
+    /// Returns `true` when the tag is `None`, used for `skip_serializing_if`.
+    pub fn is_none(&self) -> bool {
+        matches!(self, CellTypeTag::None)
+    }
+
+    /// Returns the XML string representation, or `None` for the default variant.
+    pub fn as_str(&self) -> Option<&'static str> {
+        match self {
+            CellTypeTag::None => Option::None,
+            CellTypeTag::SharedString => Some("s"),
+            CellTypeTag::Number => Some("n"),
+            CellTypeTag::Boolean => Some("b"),
+            CellTypeTag::Error => Some("e"),
+            CellTypeTag::InlineString => Some("inlineStr"),
+            CellTypeTag::FormulaString => Some("str"),
+            CellTypeTag::Date => Some("d"),
+        }
+    }
+}
+
+impl Serialize for CellTypeTag {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self.as_str() {
+            Some(s) => serializer.serialize_str(s),
+            Option::None => serializer.serialize_none(),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for CellTypeTag {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        match s.as_str() {
+            "s" => Ok(CellTypeTag::SharedString),
+            "n" => Ok(CellTypeTag::Number),
+            "b" => Ok(CellTypeTag::Boolean),
+            "e" => Ok(CellTypeTag::Error),
+            "inlineStr" => Ok(CellTypeTag::InlineString),
+            "str" => Ok(CellTypeTag::FormulaString),
+            "d" => Ok(CellTypeTag::Date),
+            _ => Ok(CellTypeTag::None),
+        }
+    }
 }
 
 /// Cell formula.
@@ -861,19 +1008,19 @@ mod tests {
                     outline_level: None,
                     cells: vec![
                         Cell {
-                            r: "A1".to_string(),
+                            r: CompactCellRef::new("A1"),
                             col: 1,
                             s: None,
-                            t: Some(cell_types::SHARED_STRING.to_string()),
+                            t: CellTypeTag::SharedString,
                             v: Some("0".to_string()),
                             f: None,
                             is: None,
                         },
                         Cell {
-                            r: "B1".to_string(),
+                            r: CompactCellRef::new("B1"),
                             col: 2,
                             s: None,
-                            t: None,
+                            t: CellTypeTag::None,
                             v: Some("42".to_string()),
                             f: None,
                             is: None,
@@ -890,7 +1037,10 @@ mod tests {
         assert_eq!(parsed.sheet_data.rows[0].r, 1);
         assert_eq!(parsed.sheet_data.rows[0].cells.len(), 2);
         assert_eq!(parsed.sheet_data.rows[0].cells[0].r, "A1");
-        assert_eq!(parsed.sheet_data.rows[0].cells[0].t, Some("s".to_string()));
+        assert_eq!(
+            parsed.sheet_data.rows[0].cells[0].t,
+            CellTypeTag::SharedString
+        );
         assert_eq!(parsed.sheet_data.rows[0].cells[0].v, Some("0".to_string()));
         assert_eq!(parsed.sheet_data.rows[0].cells[1].r, "B1");
         assert_eq!(parsed.sheet_data.rows[0].cells[1].v, Some("42".to_string()));
@@ -899,10 +1049,10 @@ mod tests {
     #[test]
     fn test_cell_with_formula() {
         let cell = Cell {
-            r: "C1".to_string(),
+            r: CompactCellRef::new("C1"),
             col: 3,
             s: None,
-            t: None,
+            t: CellTypeTag::None,
             v: Some("84".to_string()),
             f: Some(CellFormula {
                 t: None,
@@ -922,10 +1072,10 @@ mod tests {
     #[test]
     fn test_cell_with_inline_string() {
         let cell = Cell {
-            r: "A1".to_string(),
+            r: CompactCellRef::new("A1"),
             col: 1,
             s: None,
-            t: Some(cell_types::INLINE_STRING.to_string()),
+            t: CellTypeTag::InlineString,
             v: None,
             f: None,
             is: Some(InlineString {
@@ -935,7 +1085,7 @@ mod tests {
         let xml = quick_xml::se::to_string(&cell).unwrap();
         assert!(xml.contains("Hello World"));
         let parsed: Cell = quick_xml::de::from_str(&xml).unwrap();
-        assert_eq!(parsed.t, Some("inlineStr".to_string()));
+        assert_eq!(parsed.t, CellTypeTag::InlineString);
         assert!(parsed.is.is_some());
         assert_eq!(parsed.is.unwrap().t, Some("Hello World".to_string()));
     }
@@ -962,7 +1112,10 @@ mod tests {
         assert_eq!(parsed.sheet_data.rows.len(), 2);
         assert_eq!(parsed.sheet_data.rows[0].cells.len(), 2);
         assert_eq!(parsed.sheet_data.rows[0].cells[0].r, "A1");
-        assert_eq!(parsed.sheet_data.rows[0].cells[0].t, Some("s".to_string()));
+        assert_eq!(
+            parsed.sheet_data.rows[0].cells[0].t,
+            CellTypeTag::SharedString
+        );
         assert_eq!(parsed.sheet_data.rows[0].cells[0].v, Some("0".to_string()));
         assert_eq!(parsed.sheet_data.rows[1].cells[0].r, "A2");
         assert_eq!(
@@ -1019,14 +1172,70 @@ mod tests {
     }
 
     #[test]
-    fn test_cell_types_constants() {
-        assert_eq!(cell_types::BOOLEAN, "b");
-        assert_eq!(cell_types::DATE, "d");
-        assert_eq!(cell_types::ERROR, "e");
-        assert_eq!(cell_types::INLINE_STRING, "inlineStr");
-        assert_eq!(cell_types::NUMBER, "n");
-        assert_eq!(cell_types::SHARED_STRING, "s");
-        assert_eq!(cell_types::FORMULA_STRING, "str");
+    fn test_cell_type_tag_as_str() {
+        assert_eq!(CellTypeTag::Boolean.as_str(), Some("b"));
+        assert_eq!(CellTypeTag::Date.as_str(), Some("d"));
+        assert_eq!(CellTypeTag::Error.as_str(), Some("e"));
+        assert_eq!(CellTypeTag::InlineString.as_str(), Some("inlineStr"));
+        assert_eq!(CellTypeTag::Number.as_str(), Some("n"));
+        assert_eq!(CellTypeTag::SharedString.as_str(), Some("s"));
+        assert_eq!(CellTypeTag::FormulaString.as_str(), Some("str"));
+        assert_eq!(CellTypeTag::None.as_str(), Option::None);
+    }
+
+    #[test]
+    fn test_cell_type_tag_default_is_none() {
+        assert_eq!(CellTypeTag::default(), CellTypeTag::None);
+        assert!(CellTypeTag::None.is_none());
+        assert!(!CellTypeTag::SharedString.is_none());
+    }
+
+    #[test]
+    fn test_cell_type_tag_serde_round_trip() {
+        let variants = [
+            (CellTypeTag::SharedString, "s"),
+            (CellTypeTag::Number, "n"),
+            (CellTypeTag::Boolean, "b"),
+            (CellTypeTag::Error, "e"),
+            (CellTypeTag::InlineString, "inlineStr"),
+            (CellTypeTag::FormulaString, "str"),
+            (CellTypeTag::Date, "d"),
+        ];
+        for (tag, expected_str) in &variants {
+            let cell = Cell {
+                r: CompactCellRef::new("A1"),
+                col: 1,
+                s: None,
+                t: *tag,
+                v: Some("0".to_string()),
+                f: None,
+                is: None,
+            };
+            let xml = quick_xml::se::to_string(&cell).unwrap();
+            assert!(
+                xml.contains(&format!("t=\"{expected_str}\"")),
+                "expected t=\"{expected_str}\" in: {xml}"
+            );
+            let parsed: Cell = quick_xml::de::from_str(&xml).unwrap();
+            assert_eq!(parsed.t, *tag);
+        }
+
+        let cell_none = Cell {
+            r: CompactCellRef::new("A1"),
+            col: 1,
+            s: None,
+            t: CellTypeTag::None,
+            v: Some("42".to_string()),
+            f: None,
+            is: None,
+        };
+        let xml = quick_xml::se::to_string(&cell_none).unwrap();
+        assert!(
+            !xml.contains("t="),
+            "None variant should not emit t attribute: {xml}"
+        );
+        let parsed: Cell = quick_xml::de::from_str(&xml).unwrap();
+        assert_eq!(parsed.t, CellTypeTag::None);
     }
 
     #[test]
@@ -1109,5 +1318,107 @@ mod tests {
         assert_eq!(parsed.custom_height, Some(true));
         assert_eq!(parsed.outline_level_row, Some(2));
         assert_eq!(parsed.outline_level_col, Some(1));
+    }
+
+    #[test]
+    fn test_compact_cell_ref_basic() {
+        let r = CompactCellRef::new("A1");
+        assert_eq!(r.as_str(), "A1");
+        assert_eq!(r.len, 2);
+    }
+
+    #[test]
+    fn test_compact_cell_ref_max_length() {
+        let r = CompactCellRef::new("XFD1048576");
+        assert_eq!(r.as_str(), "XFD1048576");
+        assert_eq!(r.len, 10);
+    }
+
+    #[test]
+    fn test_compact_cell_ref_various_lengths() {
+        for s in &["A1", "B5", "Z99", "AA100", "XFD1048576"] {
+            let r = CompactCellRef::new(s);
+            assert_eq!(r.as_str(), *s);
+        }
+    }
+
+    #[test]
+    fn test_compact_cell_ref_display() {
+        let r = CompactCellRef::new("C3");
+        assert_eq!(format!("{r}"), "C3");
+    }
+
+    #[test]
+    fn test_compact_cell_ref_debug() {
+        let r = CompactCellRef::new("C3");
+        let dbg = format!("{r:?}");
+        assert!(dbg.contains("CompactCellRef"));
+        assert!(dbg.contains("C3"));
+    }
+
+    #[test]
+    fn test_compact_cell_ref_default() {
+        let r = CompactCellRef::default();
+        assert_eq!(r.as_str(), "");
+        assert_eq!(r.len, 0);
+    }
+
+    #[test]
+    fn test_compact_cell_ref_from_str() {
+        let r: CompactCellRef = "D4".into();
+        assert_eq!(r.as_str(), "D4");
+    }
+
+    #[test]
+    fn test_compact_cell_ref_from_string() {
+        let r: CompactCellRef = String::from("E5").into();
+        assert_eq!(r.as_str(), "E5");
+    }
+
+    #[test]
+    fn test_compact_cell_ref_as_ref_str() {
+        let r = CompactCellRef::new("F6");
+        let s: &str = r.as_ref();
+        assert_eq!(s, "F6");
+    }
+
+    #[test]
+    fn test_compact_cell_ref_partial_eq_str() {
+        let r = CompactCellRef::new("G7");
+        assert_eq!(r, "G7");
+        assert!(r == "G7");
+        assert!(r != "H8");
+    }
+
+    #[test]
+    fn test_compact_cell_ref_copy() {
+        let r1 = CompactCellRef::new("A1");
+        let r2 = r1;
+        assert_eq!(r1.as_str(), "A1");
+        assert_eq!(r2.as_str(), "A1");
+    }
+
+    #[test]
+    fn test_compact_cell_ref_serde_roundtrip() {
+        let cell = Cell {
+            r: CompactCellRef::new("XFD1048576"),
+            col: 16384,
+            s: None,
+            t: CellTypeTag::None,
+            v: Some("42".to_string()),
+            f: None,
+            is: None,
+        };
+        let xml = quick_xml::se::to_string(&cell).unwrap();
+        assert!(xml.contains("XFD1048576"));
+        let parsed: Cell = quick_xml::de::from_str(&xml).unwrap();
+        assert_eq!(parsed.r, "XFD1048576");
+        assert_eq!(parsed.v, Some("42".to_string()));
+    }
+
+    #[test]
+    #[should_panic(expected = "cell reference too long")]
+    fn test_compact_cell_ref_panics_on_overflow() {
+        CompactCellRef::new("ABCDEFGHIJK");
     }
 }

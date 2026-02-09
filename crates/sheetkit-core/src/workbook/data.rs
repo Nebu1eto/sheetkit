@@ -328,7 +328,7 @@ impl Workbook {
                     if let Some(ref f) = cell.f {
                         let formula_str = f.value.clone().unwrap_or_default();
                         if !formula_str.is_empty() {
-                            if let Ok((c, r)) = cell_name_to_coordinates(&cell.r) {
+                            if let Ok((c, r)) = cell_name_to_coordinates(cell.r.as_str()) {
                                 formula_cells.push((
                                     CellCoord {
                                         sheet: sn.clone(),
@@ -380,27 +380,27 @@ impl Workbook {
             let cell_ref = crate::utils::cell_ref::coordinates_to_cell_name(coord.col, coord.row)?;
             if let Some((_, ws)) = self.worksheets.iter_mut().find(|(n, _)| *n == coord.sheet) {
                 if let Some(row) = ws.sheet_data.rows.iter_mut().find(|r| r.r == coord.row) {
-                    if let Some(cell) = row.cells.iter_mut().find(|c| c.r == cell_ref) {
+                    if let Some(cell) = row.cells.iter_mut().find(|c| c.r == *cell_ref) {
                         match &result {
                             CellValue::Number(n) => {
                                 cell.v = Some(n.to_string());
-                                cell.t = None;
+                                cell.t = CellTypeTag::None;
                             }
                             CellValue::String(s) => {
                                 cell.v = Some(s.clone());
-                                cell.t = Some("str".to_string());
+                                cell.t = CellTypeTag::FormulaString;
                             }
                             CellValue::Bool(b) => {
                                 cell.v = Some(if *b { "1".to_string() } else { "0".to_string() });
-                                cell.t = Some("b".to_string());
+                                cell.t = CellTypeTag::Boolean;
                             }
                             CellValue::Error(e) => {
                                 cell.v = Some(e.clone());
-                                cell.t = Some("e".to_string());
+                                cell.t = CellTypeTag::Error;
                             }
                             CellValue::Date(n) => {
                                 cell.v = Some(n.to_string());
-                                cell.t = None;
+                                cell.t = CellTypeTag::None;
                             }
                             _ => {}
                         }
@@ -422,7 +422,7 @@ impl Workbook {
         for (sn, ws) in &self.worksheets {
             for row in &ws.sheet_data.rows {
                 for cell in &row.cells {
-                    if let Ok((c, r)) = cell_name_to_coordinates(&cell.r) {
+                    if let Ok((c, r)) = cell_name_to_coordinates(cell.r.as_str()) {
                         let cv = self.xml_cell_to_value(cell)?;
                         snapshot.set_cell(sn, c, r, cv);
                     }
@@ -445,7 +445,7 @@ impl Workbook {
         let mut cells = Vec::new();
         for row in &ws.sheet_data.rows {
             for cell in &row.cells {
-                if let Ok((c, r)) = cell_name_to_coordinates(&cell.r) {
+                if let Ok((c, r)) = cell_name_to_coordinates(cell.r.as_str()) {
                     cells.push((c, r));
                 }
             }

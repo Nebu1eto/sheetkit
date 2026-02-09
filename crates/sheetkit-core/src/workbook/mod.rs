@@ -19,7 +19,7 @@ use sheetkit_xml::relationships::{self, rel_types, Relationship, Relationships};
 use sheetkit_xml::shared_strings::Sst;
 use sheetkit_xml::styles::StyleSheet;
 use sheetkit_xml::workbook::{WorkbookProtection, WorkbookXml};
-use sheetkit_xml::worksheet::{Cell, CellFormula, DrawingRef, Row, WorksheetXml};
+use sheetkit_xml::worksheet::{Cell, CellFormula, CellTypeTag, DrawingRef, Row, WorksheetXml};
 use zip::write::SimpleFileOptions;
 use zip::CompressionMethod;
 
