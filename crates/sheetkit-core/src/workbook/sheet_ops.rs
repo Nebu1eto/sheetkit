@@ -28,6 +28,7 @@ impl Workbook {
         if self.sheet_vml.len() < self.worksheets.len() {
             self.sheet_vml.push(None);
         }
+        self.rebuild_sheet_index();
         Ok(idx)
     }
 
@@ -52,6 +53,7 @@ impl Workbook {
             self.sheet_vml.remove(idx);
         }
         self.reindex_sheet_maps_after_delete(idx);
+        self.rebuild_sheet_index();
         Ok(())
     }
 
@@ -62,7 +64,9 @@ impl Workbook {
             &mut self.worksheets,
             old_name,
             new_name,
-        )
+        )?;
+        self.rebuild_sheet_index();
+        Ok(())
     }
 
     /// Copy a sheet, returning the 0-based index of the new copy.
@@ -91,6 +95,7 @@ impl Workbook {
         if self.sheet_vml.len() < self.worksheets.len() {
             self.sheet_vml.push(None);
         }
+        self.rebuild_sheet_index();
         Ok(idx)
     }
 
@@ -186,6 +191,7 @@ impl Workbook {
         if self.sheet_vml.len() < self.worksheets.len() {
             self.sheet_vml.push(None);
         }
+        self.rebuild_sheet_index();
         Ok(idx)
     }
 

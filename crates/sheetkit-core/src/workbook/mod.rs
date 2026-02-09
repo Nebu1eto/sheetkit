@@ -100,14 +100,17 @@ pub struct Workbook {
     /// Per-sheet VML drawing bytes (for legacy comment rendering), parallel to `worksheets`.
     /// `None` means no VML part exists for that sheet.
     sheet_vml: Vec<Option<Vec<u8>>>,
+    /// O(1) sheet name -> index lookup cache. Must be kept in sync with
+    /// `worksheets` via [`rebuild_sheet_index`].
+    sheet_name_index: HashMap<String, usize>,
 }
 
 impl Workbook {
-    /// Get the 0-based index of a sheet by name.
+    /// Get the 0-based index of a sheet by name. O(1) via HashMap.
     pub(crate) fn sheet_index(&self, sheet: &str) -> Result<usize> {
-        self.worksheets
-            .iter()
-            .position(|(name, _)| name == sheet)
+        self.sheet_name_index
+            .get(sheet)
+            .copied()
             .ok_or_else(|| Error::SheetNotFound {
                 name: sheet.to_string(),
             })
@@ -115,24 +118,23 @@ impl Workbook {
 
     /// Get a mutable reference to the worksheet XML for the named sheet.
     pub(crate) fn worksheet_mut(&mut self, sheet: &str) -> Result<&mut WorksheetXml> {
-        self.worksheets
-            .iter_mut()
-            .find(|(name, _)| name == sheet)
-            .map(|(_, ws)| ws)
-            .ok_or_else(|| Error::SheetNotFound {
-                name: sheet.to_string(),
-            })
+        let idx = self.sheet_index(sheet)?;
+        Ok(&mut self.worksheets[idx].1)
     }
 
     /// Get an immutable reference to the worksheet XML for the named sheet.
     pub(crate) fn worksheet_ref(&self, sheet: &str) -> Result<&WorksheetXml> {
-        self.worksheets
-            .iter()
-            .find(|(name, _)| name == sheet)
-            .map(|(_, ws)| ws)
-            .ok_or_else(|| Error::SheetNotFound {
-                name: sheet.to_string(),
-            })
+        let idx = self.sheet_index(sheet)?;
+        Ok(&self.worksheets[idx].1)
+    }
+
+    /// Rebuild the sheet name -> index lookup after any structural change
+    /// to the worksheets vector.
+    pub(crate) fn rebuild_sheet_index(&mut self) {
+        self.sheet_name_index.clear();
+        for (i, (name, _)) in self.worksheets.iter().enumerate() {
+            self.sheet_name_index.insert(name.clone(), i);
+        }
     }
 
     /// Resolve the part path for a sheet index from workbook relationships.

@@ -6,30 +6,20 @@ impl Workbook {
     /// Returns [`CellValue::Empty`] for cells that have no value or do not
     /// exist in the sheet data.
     pub fn get_cell_value(&self, sheet: &str, cell: &str) -> Result<CellValue> {
-        let ws = self
-            .worksheets
-            .iter()
-            .find(|(name, _)| name == sheet)
-            .map(|(_, ws)| ws)
-            .ok_or_else(|| Error::SheetNotFound {
-                name: sheet.to_string(),
-            })?;
+        let ws = self.worksheet_ref(sheet)?;
 
         let (col, row) = cell_name_to_coordinates(cell)?;
-        let cell_ref = crate::utils::cell_ref::coordinates_to_cell_name(col, row)?;
 
-        // Find the row.
-        let xml_row = ws.sheet_data.rows.iter().find(|r| r.r == row);
-        let xml_row = match xml_row {
-            Some(r) => r,
-            None => return Ok(CellValue::Empty),
+        // Find the row via binary search (rows are sorted by row number).
+        let xml_row = match ws.sheet_data.rows.binary_search_by_key(&row, |r| r.r) {
+            Ok(idx) => &ws.sheet_data.rows[idx],
+            Err(_) => return Ok(CellValue::Empty),
         };
 
-        // Find the cell.
-        let xml_cell = xml_row.cells.iter().find(|c| c.r == cell_ref);
-        let xml_cell = match xml_cell {
-            Some(c) => c,
-            None => return Ok(CellValue::Empty),
+        // Find the cell via binary search on cached column number.
+        let xml_cell = match xml_row.cells.binary_search_by_key(&col, |c| c.col) {
+            Ok(idx) => &xml_row.cells[idx],
+            Err(_) => return Ok(CellValue::Empty),
         };
 
         self.xml_cell_to_value(xml_cell)
@@ -59,28 +49,18 @@ impl Workbook {
             }
         }
 
-        let ws = self
-            .worksheets
-            .iter_mut()
-            .find(|(name, _)| name == sheet)
-            .map(|(_, ws)| ws)
-            .ok_or_else(|| Error::SheetNotFound {
-                name: sheet.to_string(),
-            })?;
+        let sheet_idx = self.sheet_index(sheet)?;
+        let ws = &mut self.worksheets[sheet_idx].1;
 
         let (col, row_num) = cell_name_to_coordinates(cell)?;
         let cell_ref = crate::utils::cell_ref::coordinates_to_cell_name(col, row_num)?;
 
-        // Find or create the row (keep rows sorted by row number).
-        let row_idx = match ws.sheet_data.rows.iter().position(|r| r.r >= row_num) {
-            Some(idx) if ws.sheet_data.rows[idx].r == row_num => idx,
-            Some(idx) => {
+        // Find or create the row via binary search (rows are sorted by row number).
+        let row_idx = match ws.sheet_data.rows.binary_search_by_key(&row_num, |r| r.r) {
+            Ok(idx) => idx,
+            Err(idx) => {
                 ws.sheet_data.rows.insert(idx, new_row(row_num));
                 idx
-            }
-            None => {
-                ws.sheet_data.rows.push(new_row(row_num));
-                ws.sheet_data.rows.len() - 1
             }
         };
 
@@ -88,28 +68,21 @@ impl Workbook {
 
         // Handle Empty: remove the cell if present.
         if value == CellValue::Empty {
-            row.cells.retain(|c| c.r != cell_ref);
+            if let Ok(idx) = row.cells.binary_search_by_key(&col, |c| c.col) {
+                row.cells.remove(idx);
+            }
             return Ok(());
         }
 
-        // Find or create the cell.
-        let cell_idx = match row.cells.iter().position(|c| c.r == cell_ref) {
-            Some(idx) => idx,
-            None => {
-                // Insert in column order.
-                let insert_pos = row
-                    .cells
-                    .iter()
-                    .position(|c| {
-                        cell_name_to_coordinates(&c.r)
-                            .map(|(c_col, _)| c_col > col)
-                            .unwrap_or(false)
-                    })
-                    .unwrap_or(row.cells.len());
+        // Find or create the cell via binary search on cached column number.
+        let cell_idx = match row.cells.binary_search_by_key(&col, |c| c.col) {
+            Ok(idx) => idx,
+            Err(insert_pos) => {
                 row.cells.insert(
                     insert_pos,
                     Cell {
                         r: cell_ref,
+                        col,
                         s: None,
                         t: None,
                         v: None,
@@ -233,18 +206,17 @@ impl Workbook {
         let ws = self.worksheet_ref(sheet)?;
 
         let (col, row) = cell_name_to_coordinates(cell)?;
-        let cell_ref = crate::utils::cell_ref::coordinates_to_cell_name(col, row)?;
 
-        // Find the row.
-        let xml_row = match ws.sheet_data.rows.iter().find(|r| r.r == row) {
-            Some(r) => r,
-            None => return Ok(None),
+        // Find the row via binary search.
+        let xml_row = match ws.sheet_data.rows.binary_search_by_key(&row, |r| r.r) {
+            Ok(idx) => &ws.sheet_data.rows[idx],
+            Err(_) => return Ok(None),
         };
 
-        // Find the cell.
-        let xml_cell = match xml_row.cells.iter().find(|c| c.r == cell_ref) {
-            Some(c) => c,
-            None => return Ok(None),
+        // Find the cell via binary search on cached column number.
+        let xml_cell = match xml_row.cells.binary_search_by_key(&col, |c| c.col) {
+            Ok(idx) => &xml_row.cells[idx],
+            Err(_) => return Ok(None),
         };
 
         Ok(xml_cell.s)
@@ -260,51 +232,32 @@ impl Workbook {
             return Err(Error::StyleNotFound { id: style_id });
         }
 
-        let ws = self
-            .worksheets
-            .iter_mut()
-            .find(|(name, _)| name == sheet)
-            .map(|(_, ws)| ws)
-            .ok_or_else(|| Error::SheetNotFound {
-                name: sheet.to_string(),
-            })?;
+        let sheet_idx = self.sheet_index(sheet)?;
+        let ws = &mut self.worksheets[sheet_idx].1;
 
         let (col, row_num) = cell_name_to_coordinates(cell)?;
         let cell_ref = crate::utils::cell_ref::coordinates_to_cell_name(col, row_num)?;
 
-        // Find or create the row (keep rows sorted by row number).
-        let row_idx = match ws.sheet_data.rows.iter().position(|r| r.r >= row_num) {
-            Some(idx) if ws.sheet_data.rows[idx].r == row_num => idx,
-            Some(idx) => {
+        // Find or create the row via binary search.
+        let row_idx = match ws.sheet_data.rows.binary_search_by_key(&row_num, |r| r.r) {
+            Ok(idx) => idx,
+            Err(idx) => {
                 ws.sheet_data.rows.insert(idx, new_row(row_num));
                 idx
-            }
-            None => {
-                ws.sheet_data.rows.push(new_row(row_num));
-                ws.sheet_data.rows.len() - 1
             }
         };
 
         let row = &mut ws.sheet_data.rows[row_idx];
 
-        // Find or create the cell.
-        let cell_idx = match row.cells.iter().position(|c| c.r == cell_ref) {
-            Some(idx) => idx,
-            None => {
-                // Insert in column order.
-                let insert_pos = row
-                    .cells
-                    .iter()
-                    .position(|c| {
-                        cell_name_to_coordinates(&c.r)
-                            .map(|(c_col, _)| c_col > col)
-                            .unwrap_or(false)
-                    })
-                    .unwrap_or(row.cells.len());
+        // Find or create the cell via binary search on cached column number.
+        let cell_idx = match row.cells.binary_search_by_key(&col, |c| c.col) {
+            Ok(idx) => idx,
+            Err(insert_pos) => {
                 row.cells.insert(
                     insert_pos,
                     Cell {
                         r: cell_ref,
+                        col,
                         s: None,
                         t: None,
                         v: None,
@@ -425,29 +378,24 @@ impl Workbook {
         cell: &str,
     ) -> Result<Option<Vec<crate::rich_text::RichTextRun>>> {
         let (col, row) = cell_name_to_coordinates(cell)?;
-        let sheet_idx = self
-            .worksheets
-            .iter()
-            .position(|(name, _)| name == sheet)
-            .ok_or_else(|| Error::SheetNotFound {
-                name: sheet.to_string(),
-            })?;
-        let ws = &self.worksheets[sheet_idx].1;
+        let ws = self.worksheet_ref(sheet)?;
 
-        for xml_row in &ws.sheet_data.rows {
-            if xml_row.r == row {
-                for xml_cell in &xml_row.cells {
-                    let (cc, cr) = cell_name_to_coordinates(&xml_cell.r)?;
-                    if cc == col && cr == row {
-                        if xml_cell.t.as_deref() == Some("s") {
-                            if let Some(ref v) = xml_cell.v {
-                                if let Ok(idx) = v.parse::<usize>() {
-                                    return Ok(self.sst_runtime.get_rich_text(idx));
-                                }
-                            }
-                        }
-                        return Ok(None);
-                    }
+        // Binary search for the row.
+        let xml_row = match ws.sheet_data.rows.binary_search_by_key(&row, |r| r.r) {
+            Ok(idx) => &ws.sheet_data.rows[idx],
+            Err(_) => return Ok(None),
+        };
+
+        // Binary search for the cell by column.
+        let xml_cell = match xml_row.cells.binary_search_by_key(&col, |c| c.col) {
+            Ok(idx) => &xml_row.cells[idx],
+            Err(_) => return Ok(None),
+        };
+
+        if xml_cell.t.as_deref() == Some("s") {
+            if let Some(ref v) = xml_cell.v {
+                if let Ok(idx) = v.parse::<usize>() {
+                    return Ok(self.sst_runtime.get_rich_text(idx));
                 }
             }
         }
