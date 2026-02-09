@@ -164,7 +164,7 @@ impl Workbook {
         // Remap SST indices in the worksheet cells
         for row in &mut ws.sheet_data.rows {
             for cell in &mut row.cells {
-                if cell.t.as_deref() == Some("s") {
+                if cell.t == CellTypeTag::SharedString {
                     if let Some(ref v) = cell.v {
                         if let Ok(old_idx) = v.parse::<usize>() {
                             if let Some(&new_idx) = sst_remap.get(old_idx) {
@@ -182,7 +182,7 @@ impl Workbook {
         ws.sheet_data.rows.sort_unstable_by_key(|r| r.r);
         for row in &mut ws.sheet_data.rows {
             for cell in &mut row.cells {
-                if let Ok((c, _)) = cell_name_to_coordinates(&cell.r) {
+                if let Ok((c, _)) = cell_name_to_coordinates(cell.r.as_str()) {
                     cell.col = c;
                 }
             }

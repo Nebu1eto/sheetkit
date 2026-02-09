@@ -4,7 +4,7 @@
 //! business logic decoupled from the [`Workbook`](crate::workbook::Workbook)
 //! wrapper.
 
-use sheetkit_xml::worksheet::{cell_types, Row, WorksheetXml};
+use sheetkit_xml::worksheet::{CellTypeTag, Row, WorksheetXml};
 
 use crate::cell::CellValue;
 use crate::error::{Error, Result};
@@ -37,7 +37,7 @@ pub fn get_rows(
             let col_num = if cell.col > 0 {
                 cell.col
             } else {
-                cell_name_to_coordinates(&cell.r)?.0
+                cell_name_to_coordinates(cell.r.as_str())?.0
             };
             let col_name = column_number_to_name(col_num)?;
             let value = resolve_cell_value(cell, sst);
@@ -56,9 +56,9 @@ fn resolve_cell_value(cell: &sheetkit_xml::worksheet::Cell, sst: &SharedStringTa
     // Check for formula first.
     if let Some(ref formula) = cell.f {
         let expr = formula.value.clone().unwrap_or_default();
-        let cached = match (cell.t.as_deref(), &cell.v) {
-            (Some("b"), Some(v)) => Some(Box::new(CellValue::Bool(v == "1"))),
-            (Some("e"), Some(v)) => Some(Box::new(CellValue::Error(v.clone()))),
+        let cached = match (cell.t, &cell.v) {
+            (CellTypeTag::Boolean, Some(v)) => Some(Box::new(CellValue::Bool(v == "1"))),
+            (CellTypeTag::Error, Some(v)) => Some(Box::new(CellValue::Error(v.clone()))),
             (_, Some(v)) => v
                 .parse::<f64>()
                 .ok()
@@ -71,11 +71,10 @@ fn resolve_cell_value(cell: &sheetkit_xml::worksheet::Cell, sst: &SharedStringTa
         };
     }
 
-    let cell_type = cell.t.as_deref();
     let cell_value = cell.v.as_deref();
 
-    match (cell_type, cell_value) {
-        (Some(cell_types::SHARED_STRING), Some(v)) => {
+    match (cell.t, cell_value) {
+        (CellTypeTag::SharedString, Some(v)) => {
             let idx: usize = match v.parse() {
                 Ok(i) => i,
                 Err(_) => return CellValue::Empty,
@@ -83,9 +82,9 @@ fn resolve_cell_value(cell: &sheetkit_xml::worksheet::Cell, sst: &SharedStringTa
             let s = sst.get(idx).unwrap_or("").to_string();
             CellValue::String(s)
         }
-        (Some(cell_types::BOOLEAN), Some(v)) => CellValue::Bool(v == "1"),
-        (Some(cell_types::ERROR), Some(v)) => CellValue::Error(v.to_string()),
-        (Some(cell_types::INLINE_STRING), _) => {
+        (CellTypeTag::Boolean, Some(v)) => CellValue::Bool(v == "1"),
+        (CellTypeTag::Error, Some(v)) => CellValue::Error(v.to_string()),
+        (CellTypeTag::InlineString, _) => {
             let s = cell
                 .is
                 .as_ref()
@@ -93,8 +92,8 @@ fn resolve_cell_value(cell: &sheetkit_xml::worksheet::Cell, sst: &SharedStringTa
                 .unwrap_or_default();
             CellValue::String(s)
         }
-        (Some(cell_types::FORMULA_STRING), Some(v)) => CellValue::String(v.to_string()),
-        (None | Some(cell_types::NUMBER), Some(v)) => match v.parse::<f64>() {
+        (CellTypeTag::FormulaString, Some(v)) => CellValue::String(v.to_string()),
+        (CellTypeTag::None | CellTypeTag::Number, Some(v)) => match v.parse::<f64>() {
             Ok(n) => CellValue::Number(n),
             Err(_) => CellValue::Empty,
         },
@@ -316,8 +315,8 @@ pub fn get_row_style(ws: &WorksheetXml, row: u32) -> u32 {
 /// Update all cell references in a row to point to `new_row_num`.
 fn shift_row_cells(row: &mut Row, new_row_num: u32) -> Result<()> {
     for cell in row.cells.iter_mut() {
-        let (col, _) = cell_name_to_coordinates(&cell.r)?;
-        cell.r = coordinates_to_cell_name(col, new_row_num)?;
+        let (col, _) = cell_name_to_coordinates(cell.r.as_str())?;
+        cell.r = coordinates_to_cell_name(col, new_row_num)?.into();
         cell.col = col;
     }
     Ok(())
@@ -351,7 +350,7 @@ fn find_or_create_row(ws: &mut WorksheetXml, row: u32) -> &mut Row {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sheetkit_xml::worksheet::{Cell, SheetData};
+    use sheetkit_xml::worksheet::{Cell, CellTypeTag, SheetData};
 
     /// Helper: build a minimal worksheet with some pre-populated rows.
     fn sample_ws() -> WorksheetXml {
@@ -369,19 +368,19 @@ mod tests {
                     outline_level: None,
                     cells: vec![
                         Cell {
-                            r: "A1".to_string(),
+                            r: "A1".into(),
                             col: 1,
                             s: None,
-                            t: None,
+                            t: CellTypeTag::None,
                             v: Some("10".to_string()),
                             f: None,
                             is: None,
                         },
                         Cell {
-                            r: "B1".to_string(),
+                            r: "B1".into(),
                             col: 2,
                             s: None,
-                            t: None,
+                            t: CellTypeTag::None,
                             v: Some("20".to_string()),
                             f: None,
                             is: None,
@@ -398,10 +397,10 @@ mod tests {
                     custom_height: None,
                     outline_level: None,
                     cells: vec![Cell {
-                        r: "A2".to_string(),
+                        r: "A2".into(),
                         col: 1,
                         s: None,
-                        t: None,
+                        t: CellTypeTag::None,
                         v: Some("30".to_string()),
                         f: None,
                         is: None,
@@ -417,10 +416,10 @@ mod tests {
                     custom_height: None,
                     outline_level: None,
                     cells: vec![Cell {
-                        r: "C5".to_string(),
+                        r: "C5".into(),
                         col: 3,
                         s: None,
-                        t: None,
+                        t: CellTypeTag::None,
                         v: Some("50".to_string()),
                         f: None,
                         is: None,
@@ -835,19 +834,19 @@ mod tests {
                 outline_level: None,
                 cells: vec![
                     Cell {
-                        r: "A1".to_string(),
+                        r: "A1".into(),
                         col: 1,
                         s: None,
-                        t: Some("s".to_string()),
+                        t: CellTypeTag::SharedString,
                         v: Some("0".to_string()),
                         f: None,
                         is: None,
                     },
                     Cell {
-                        r: "B1".to_string(),
+                        r: "B1".into(),
                         col: 2,
                         s: None,
-                        t: Some("s".to_string()),
+                        t: CellTypeTag::SharedString,
                         v: Some("1".to_string()),
                         f: None,
                         is: None,
@@ -880,37 +879,37 @@ mod tests {
                 outline_level: None,
                 cells: vec![
                     Cell {
-                        r: "A1".to_string(),
+                        r: "A1".into(),
                         col: 1,
                         s: None,
-                        t: Some("s".to_string()),
+                        t: CellTypeTag::SharedString,
                         v: Some("0".to_string()),
                         f: None,
                         is: None,
                     },
                     Cell {
-                        r: "B1".to_string(),
+                        r: "B1".into(),
                         col: 2,
                         s: None,
-                        t: None,
+                        t: CellTypeTag::None,
                         v: Some("42.5".to_string()),
                         f: None,
                         is: None,
                     },
                     Cell {
-                        r: "C1".to_string(),
+                        r: "C1".into(),
                         col: 3,
                         s: None,
-                        t: Some("b".to_string()),
+                        t: CellTypeTag::Boolean,
                         v: Some("1".to_string()),
                         f: None,
                         is: None,
                     },
                     Cell {
-                        r: "D1".to_string(),
+                        r: "D1".into(),
                         col: 4,
                         s: None,
-                        t: Some("e".to_string()),
+                        t: CellTypeTag::Error,
                         v: Some("#DIV/0!".to_string()),
                         f: None,
                         is: None,
@@ -942,10 +941,10 @@ mod tests {
                     custom_height: None,
                     outline_level: None,
                     cells: vec![Cell {
-                        r: "A1".to_string(),
+                        r: "A1".into(),
                         col: 1,
                         s: None,
-                        t: None,
+                        t: CellTypeTag::None,
                         v: Some("1".to_string()),
                         f: None,
                         is: None,
@@ -973,10 +972,10 @@ mod tests {
                     custom_height: None,
                     outline_level: None,
                     cells: vec![Cell {
-                        r: "A3".to_string(),
+                        r: "A3".into(),
                         col: 1,
                         s: None,
-                        t: None,
+                        t: CellTypeTag::None,
                         v: Some("3".to_string()),
                         f: None,
                         is: None,
@@ -1007,10 +1006,10 @@ mod tests {
                 custom_height: None,
                 outline_level: None,
                 cells: vec![Cell {
-                    r: "A1".to_string(),
+                    r: "A1".into(),
                     col: 1,
                     s: None,
-                    t: None,
+                    t: CellTypeTag::None,
                     v: Some("42".to_string()),
                     f: Some(sheetkit_xml::worksheet::CellFormula {
                         t: None,
@@ -1049,10 +1048,10 @@ mod tests {
                 custom_height: None,
                 outline_level: None,
                 cells: vec![Cell {
-                    r: "A1".to_string(),
+                    r: "A1".into(),
                     col: 1,
                     s: None,
-                    t: Some("inlineStr".to_string()),
+                    t: CellTypeTag::InlineString,
                     v: None,
                     f: None,
                     is: Some(sheetkit_xml::worksheet::InlineString {

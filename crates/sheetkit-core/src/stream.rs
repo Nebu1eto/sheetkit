@@ -610,10 +610,16 @@ mod tests {
         assert_eq!(ws.sheet_data.rows[0].r, 1);
         assert_eq!(ws.sheet_data.rows[0].cells.len(), 2);
         // First cell is a shared string (t="s")
-        assert_eq!(ws.sheet_data.rows[0].cells[0].t, Some("s".to_string()));
+        assert_eq!(
+            ws.sheet_data.rows[0].cells[0].t,
+            sheetkit_xml::worksheet::CellTypeTag::SharedString
+        );
         assert_eq!(ws.sheet_data.rows[0].cells[0].r, "A1");
         // Second cell is a number
-        assert_eq!(ws.sheet_data.rows[0].cells[1].t, None);
+        assert_eq!(
+            ws.sheet_data.rows[0].cells[1].t,
+            sheetkit_xml::worksheet::CellTypeTag::None
+        );
         assert_eq!(ws.sheet_data.rows[0].cells[1].v, Some("42".to_string()));
         assert_eq!(ws.sheet_data.rows[0].cells[1].r, "B1");
     }

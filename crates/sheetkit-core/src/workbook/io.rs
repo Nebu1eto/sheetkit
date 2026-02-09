@@ -324,7 +324,7 @@ impl Workbook {
             ws.sheet_data.rows.sort_unstable_by_key(|r| r.r);
             for row in &mut ws.sheet_data.rows {
                 for cell in &mut row.cells {
-                    cell.col = fast_col_number(&cell.r);
+                    cell.col = fast_col_number(cell.r.as_str());
                 }
                 // Ensure cells within a row are sorted by column number.
                 row.cells.sort_unstable_by_key(|c| c.col);
