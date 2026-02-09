@@ -20,7 +20,11 @@
   },
   "files": [
     "index.js",
-    "index.d.ts"
+    "index.d.ts",
+    "binding.js",
+    "binding.d.ts",
+    "buffer-codec.js",
+    "sheet-data.js"
   ],
   "author": {
     "name": "Haze Lee",
@@ -36,8 +40,8 @@
   },
   "scripts": {
     "artifacts": "napi artifacts",
-    "build": "napi build --platform --release --esm",
-    "build:debug": "napi build --platform",
+    "build": "napi build --platform --release --esm --js binding.js --dts binding.d.ts",
+    "build:debug": "napi build --platform --js binding.js --dts binding.d.ts",
     "prepublishOnly": "napi prepublish -t npm",
     "test": "vitest run",
     "test:watch": "vitest",
