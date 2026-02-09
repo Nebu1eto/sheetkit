@@ -2,18 +2,43 @@
  * Excel Library Benchmark: SheetKit vs ExcelJS vs SheetJS (xlsx)
  *
  * Benchmarks:
+ * -- READ --
  * 1. Read large file (50k rows)
  * 2. Read heavy-styles file
  * 3. Read multi-sheet file
  * 4. Read formulas file
  * 5. Read strings file
- * 6. Write large dataset (50k rows x 20 cols)
- * 7. Write with styles (5k rows, formatted)
- * 8. Write multi-sheet (10 sheets x 5k rows)
- * 9. Write formulas (10k rows)
- * 10. Write strings (20k rows text-heavy)
- * 11. Buffer round-trip (write to buffer, read back)
- * 12. Streaming write (50k rows) -- SheetKit and ExcelJS only
+ * 6. Read data-validation file
+ * 7. Read comments file
+ * 8. Read merged-cells file
+ * 9. Read mixed-workload (ERP document)
+ *
+ * -- SCALING (read) --
+ * 10. Read 1k rows
+ * 11. Read 10k rows
+ * 12. Read 100k rows
+ *
+ * -- WRITE --
+ * 13. Write large dataset (50k rows x 20 cols)
+ * 14. Write with styles (5k rows, formatted)
+ * 15. Write multi-sheet (10 sheets x 5k rows)
+ * 16. Write formulas (10k rows)
+ * 17. Write strings (20k rows text-heavy)
+ * 18. Write data validation (5k rows, 8 rules)
+ * 19. Write comments (2k rows)
+ * 20. Write merged cells (500 merged regions)
+ *
+ * -- SCALING (write) --
+ * 21. Write 1k rows x 10 cols
+ * 22. Write 10k rows x 10 cols
+ * 23. Write 50k rows x 10 cols
+ * 24. Write 100k rows x 10 cols
+ *
+ * -- OTHER --
+ * 25. Buffer round-trip (write to buffer, read back)
+ * 26. Streaming write (50k rows) -- SheetKit and ExcelJS only
+ * 27. Cell random-access read (1000 lookups on 50k-row file)
+ * 28. Mixed workload write (ERP-style)
  */
 
 import { Workbook as SheetKitWorkbook, JsStreamWriter } from '@sheetkit/node';
@@ -32,6 +57,7 @@ const OUTPUT_DIR = join(import.meta.dirname, 'output');
 interface BenchResult {
   library: string;
   scenario: string;
+  category: string;
   timeMs: number;
   memoryMb: number;
   fileSizeKb?: number;
@@ -60,10 +86,10 @@ function fileSizeKb(path: string): number | undefined {
 async function bench(
   library: string,
   scenario: string,
+  category: string,
   fn: () => void | Promise<void>,
   outputPath?: string,
 ): Promise<BenchResult> {
-  // Warmup GC
   if (global.gc) global.gc();
 
   const memBefore = getMemoryMb();
@@ -77,6 +103,7 @@ async function bench(
   const result: BenchResult = {
     library,
     scenario,
+    category,
     timeMs: elapsed,
     memoryMb: memDelta,
     fileSizeKb: size,
@@ -85,7 +112,7 @@ async function bench(
 
   const sizeStr = size != null ? ` | ${(size / 1024).toFixed(1)}MB` : '';
   console.log(
-    `  [${library.padEnd(8)}] ${scenario.padEnd(40)} ${formatMs(elapsed).padStart(10)} | ${memDelta.toFixed(1).padStart(6)}MB${sizeStr}`,
+    `  [${library.padEnd(8)}] ${scenario.padEnd(46)} ${formatMs(elapsed).padStart(10)} | ${memDelta.toFixed(1).padStart(6)}MB${sizeStr}`,
   );
   return result;
 }
@@ -109,7 +136,7 @@ function colLetter(n: number): string {
 // READ benchmarks
 // ---------------------------------------------------------------------------
 
-async function benchReadFile(filename: string, label: string) {
+async function benchReadFile(filename: string, label: string, category: string) {
   const filepath = join(FIXTURES_DIR, filename);
   if (!existsSync(filepath)) {
     console.log(`  SKIP: ${filepath} not found. Run 'pnpm generate' first.`);
@@ -118,16 +145,14 @@ async function benchReadFile(filename: string, label: string) {
 
   console.log(`\n--- ${label} ---`);
 
-  // SheetKit (sync)
-  await bench('SheetKit', `Read ${label}`, () => {
+  await bench('SheetKit', `Read ${label}`, category, () => {
     const wb = SheetKitWorkbook.openSync(filepath);
     for (const name of wb.sheetNames) {
       wb.getRows(name);
     }
   });
 
-  // ExcelJS
-  await bench('ExcelJS', `Read ${label}`, async () => {
+  await bench('ExcelJS', `Read ${label}`, category, async () => {
     const wb = new ExcelJS.Workbook();
     await wb.xlsx.readFile(filepath);
     wb.eachSheet((ws) => {
@@ -135,8 +160,7 @@ async function benchReadFile(filename: string, label: string) {
     });
   });
 
-  // SheetJS
-  await bench('SheetJS', `Read ${label}`, () => {
+  await bench('SheetJS', `Read ${label}`, category, () => {
     const buf = readFileSync(filepath);
     const wb = XLSX.read(buf, { type: 'buffer' });
     for (const name of wb.SheetNames) {
@@ -159,8 +183,7 @@ async function benchWriteLargeData() {
   const outEj = join(OUTPUT_DIR, 'write-large-exceljs.xlsx');
   const outSj = join(OUTPUT_DIR, 'write-large-sheetjs.xlsx');
 
-  // SheetKit
-  await bench('SheetKit', label, () => {
+  await bench('SheetKit', label, 'Write', () => {
     const wb = new SheetKitWorkbook();
     const sheet = 'Sheet1';
     for (let r = 1; r <= ROWS; r++) {
@@ -174,8 +197,7 @@ async function benchWriteLargeData() {
     wb.saveSync(outSk);
   }, outSk);
 
-  // ExcelJS
-  await bench('ExcelJS', label, async () => {
+  await bench('ExcelJS', label, 'Write', async () => {
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet('Sheet1');
     for (let r = 1; r <= ROWS; r++) {
@@ -190,8 +212,7 @@ async function benchWriteLargeData() {
     await wb.xlsx.writeFile(outEj);
   }, outEj);
 
-  // SheetJS
-  await bench('SheetJS', label, () => {
+  await bench('SheetJS', label, 'Write', () => {
     const data: (number | string)[][] = [];
     for (let r = 0; r < ROWS; r++) {
       const row: (number | string)[] = [];
@@ -208,9 +229,7 @@ async function benchWriteLargeData() {
     XLSX.writeFile(wb, outSj);
   }, outSj);
 
-  cleanup(outSk);
-  cleanup(outEj);
-  cleanup(outSj);
+  cleanup(outSk); cleanup(outEj); cleanup(outSj);
 }
 
 async function benchWriteWithStyles() {
@@ -222,11 +241,9 @@ async function benchWriteWithStyles() {
   const outEj = join(OUTPUT_DIR, 'write-styles-exceljs.xlsx');
   const outSj = join(OUTPUT_DIR, 'write-styles-sheetjs.xlsx');
 
-  // SheetKit
-  await bench('SheetKit', label, () => {
+  await bench('SheetKit', label, 'Write', () => {
     const wb = new SheetKitWorkbook();
     const sheet = 'Sheet1';
-
     const boldId = wb.addStyle({
       font: { bold: true, size: 12, name: 'Arial', color: 'FFFFFFFF' },
       fill: { pattern: 'solid', fgColor: 'FF4472C4' },
@@ -263,20 +280,16 @@ async function benchWriteWithStyles() {
     wb.saveSync(outSk);
   }, outSk);
 
-  // ExcelJS
-  await bench('ExcelJS', label, async () => {
+  await bench('ExcelJS', label, 'Write', async () => {
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet('Sheet1');
-
     const headerRow = ws.addRow(Array.from({ length: 10 }, (_, c) => `Header${c + 1}`));
     headerRow.eachCell((cell) => {
       cell.font = { bold: true, size: 12, name: 'Arial', color: { argb: 'FFFFFFFF' } };
       cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF4472C4' } };
       cell.border = {
-        top: { style: 'thin' },
-        bottom: { style: 'thin' },
-        left: { style: 'thin' },
-        right: { style: 'thin' },
+        top: { style: 'thin' }, bottom: { style: 'thin' },
+        left: { style: 'thin' }, right: { style: 'thin' },
       };
       cell.alignment = { horizontal: 'center' };
     });
@@ -303,8 +316,7 @@ async function benchWriteWithStyles() {
     await wb.xlsx.writeFile(outEj);
   }, outEj);
 
-  // SheetJS (limited style support in community edition)
-  await bench('SheetJS', label, () => {
+  await bench('SheetJS', label, 'Write', () => {
     const data: (number | string)[][] = [
       Array.from({ length: 10 }, (_, c) => `Header${c + 1}`),
     ];
@@ -323,9 +335,7 @@ async function benchWriteWithStyles() {
     XLSX.writeFile(wb, outSj);
   }, outSj);
 
-  cleanup(outSk);
-  cleanup(outEj);
-  cleanup(outSj);
+  cleanup(outSk); cleanup(outEj); cleanup(outSj);
 }
 
 async function benchWriteMultiSheet() {
@@ -339,8 +349,7 @@ async function benchWriteMultiSheet() {
   const outEj = join(OUTPUT_DIR, 'write-multi-exceljs.xlsx');
   const outSj = join(OUTPUT_DIR, 'write-multi-sheetjs.xlsx');
 
-  // SheetKit
-  await bench('SheetKit', label, () => {
+  await bench('SheetKit', label, 'Write', () => {
     const wb = new SheetKitWorkbook();
     for (let s = 0; s < SHEETS; s++) {
       const name = s === 0 ? 'Sheet1' : `Sheet${s + 1}`;
@@ -356,8 +365,7 @@ async function benchWriteMultiSheet() {
     wb.saveSync(outSk);
   }, outSk);
 
-  // ExcelJS
-  await bench('ExcelJS', label, async () => {
+  await bench('ExcelJS', label, 'Write', async () => {
     const wb = new ExcelJS.Workbook();
     for (let s = 0; s < SHEETS; s++) {
       const ws = wb.addWorksheet(`Sheet${s + 1}`);
@@ -373,8 +381,7 @@ async function benchWriteMultiSheet() {
     await wb.xlsx.writeFile(outEj);
   }, outEj);
 
-  // SheetJS
-  await bench('SheetJS', label, () => {
+  await bench('SheetJS', label, 'Write', () => {
     const wb = XLSX.utils.book_new();
     for (let s = 0; s < SHEETS; s++) {
       const data: (number | string)[][] = [];
@@ -392,9 +399,7 @@ async function benchWriteMultiSheet() {
     XLSX.writeFile(wb, outSj);
   }, outSj);
 
-  cleanup(outSk);
-  cleanup(outEj);
-  cleanup(outSj);
+  cleanup(outSk); cleanup(outEj); cleanup(outSj);
 }
 
 async function benchWriteFormulas() {
@@ -406,8 +411,7 @@ async function benchWriteFormulas() {
   const outEj = join(OUTPUT_DIR, 'write-formulas-exceljs.xlsx');
   const outSj = join(OUTPUT_DIR, 'write-formulas-sheetjs.xlsx');
 
-  // SheetKit
-  await bench('SheetKit', label, () => {
+  await bench('SheetKit', label, 'Write', () => {
     const wb = new SheetKitWorkbook();
     const sheet = 'Sheet1';
     for (let r = 1; r <= ROWS; r++) {
@@ -420,8 +424,7 @@ async function benchWriteFormulas() {
     wb.saveSync(outSk);
   }, outSk);
 
-  // ExcelJS
-  await bench('ExcelJS', label, async () => {
+  await bench('ExcelJS', label, 'Write', async () => {
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet('Sheet1');
     for (let r = 1; r <= ROWS; r++) {
@@ -434,12 +437,10 @@ async function benchWriteFormulas() {
     await wb.xlsx.writeFile(outEj);
   }, outEj);
 
-  // SheetJS
-  await bench('SheetJS', label, () => {
+  await bench('SheetJS', label, 'Write', () => {
     const wb = XLSX.utils.book_new();
     const ws = XLSX.utils.aoa_to_sheet([]);
     for (let r = 0; r < ROWS; r++) {
-      const rowNum = r; // 0-based for SheetJS
       XLSX.utils.sheet_add_aoa(ws, [[r * 1.5 + 1.5, ((r + 1) % 100) + 0.5]], { origin: `A${r + 1}` });
       ws[`C${r + 1}`] = { t: 's', f: `A${r + 1}+B${r + 1}` };
       ws[`D${r + 1}`] = { t: 's', f: `A${r + 1}*B${r + 1}` };
@@ -450,9 +451,7 @@ async function benchWriteFormulas() {
     XLSX.writeFile(wb, outSj);
   }, outSj);
 
-  cleanup(outSk);
-  cleanup(outEj);
-  cleanup(outSj);
+  cleanup(outSk); cleanup(outEj); cleanup(outSj);
 }
 
 async function benchWriteStrings() {
@@ -479,8 +478,7 @@ async function benchWriteStrings() {
     ];
   }
 
-  // SheetKit
-  await bench('SheetKit', label, () => {
+  await bench('SheetKit', label, 'Write', () => {
     const wb = new SheetKitWorkbook();
     const sheet = 'Sheet1';
     for (let r = 1; r <= ROWS; r++) {
@@ -492,8 +490,7 @@ async function benchWriteStrings() {
     wb.saveSync(outSk);
   }, outSk);
 
-  // ExcelJS
-  await bench('ExcelJS', label, async () => {
+  await bench('ExcelJS', label, 'Write', async () => {
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet('Sheet1');
     for (let r = 1; r <= ROWS; r++) {
@@ -502,8 +499,7 @@ async function benchWriteStrings() {
     await wb.xlsx.writeFile(outEj);
   }, outEj);
 
-  // SheetJS
-  await bench('SheetJS', label, () => {
+  await bench('SheetJS', label, 'Write', () => {
     const data: string[][] = [];
     for (let r = 1; r <= ROWS; r++) {
       data.push(makeRow(r));
@@ -514,9 +510,252 @@ async function benchWriteStrings() {
     XLSX.writeFile(wb, outSj);
   }, outSj);
 
-  cleanup(outSk);
-  cleanup(outEj);
-  cleanup(outSj);
+  cleanup(outSk); cleanup(outEj); cleanup(outSj);
+}
+
+async function benchWriteDataValidation() {
+  const ROWS = 5_000;
+  const label = `Write ${ROWS} rows + 8 validation rules`;
+  console.log(`\n--- ${label} ---`);
+
+  const outSk = join(OUTPUT_DIR, 'write-dv-sheetkit.xlsx');
+  const outEj = join(OUTPUT_DIR, 'write-dv-exceljs.xlsx');
+
+  // SheetKit
+  await bench('SheetKit', label, 'Write (DV)', () => {
+    const wb = new SheetKitWorkbook();
+    const sheet = 'Sheet1';
+
+    wb.addDataValidation(sheet, {
+      sqref: `A2:A${ROWS + 1}`, validationType: 'list',
+      formula1: '"Active,Inactive,Pending,Closed"',
+    });
+    wb.addDataValidation(sheet, {
+      sqref: `B2:B${ROWS + 1}`, validationType: 'whole',
+      operator: 'between', formula1: '0', formula2: '100',
+    });
+    wb.addDataValidation(sheet, {
+      sqref: `C2:C${ROWS + 1}`, validationType: 'decimal',
+      operator: 'between', formula1: '0', formula2: '1',
+    });
+    wb.addDataValidation(sheet, {
+      sqref: `D2:D${ROWS + 1}`, validationType: 'textLength',
+      operator: 'lessThanOrEqual', formula1: '50',
+    });
+
+    const statuses = ['Active', 'Inactive', 'Pending', 'Closed'];
+    for (let r = 2; r <= ROWS + 1; r++) {
+      wb.setCellValue(sheet, `A${r}`, statuses[r % 4]);
+      wb.setCellValue(sheet, `B${r}`, r % 101);
+      wb.setCellValue(sheet, `C${r}`, (r % 100) / 100);
+      wb.setCellValue(sheet, `D${r}`, `Item_${r}`);
+    }
+    wb.saveSync(outSk);
+  }, outSk);
+
+  // ExcelJS
+  await bench('ExcelJS', label, 'Write (DV)', async () => {
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Sheet1');
+
+    const statuses = ['Active', 'Inactive', 'Pending', 'Closed'];
+    for (let r = 2; r <= ROWS + 1; r++) {
+      ws.getCell(`A${r}`).value = statuses[r % 4];
+      ws.getCell(`A${r}`).dataValidation = {
+        type: 'list', formulae: ['"Active,Inactive,Pending,Closed"'],
+        allowBlank: true, showDropDown: true,
+      };
+      ws.getCell(`B${r}`).value = r % 101;
+      ws.getCell(`B${r}`).dataValidation = {
+        type: 'whole', operator: 'between', formulae: [0, 100],
+      };
+      ws.getCell(`C${r}`).value = (r % 100) / 100;
+      ws.getCell(`C${r}`).dataValidation = {
+        type: 'decimal', operator: 'between', formulae: [0, 1],
+      };
+      ws.getCell(`D${r}`).value = `Item_${r}`;
+      ws.getCell(`D${r}`).dataValidation = {
+        type: 'textLength', operator: 'lessThanOrEqual', formulae: [50],
+      };
+    }
+    await wb.xlsx.writeFile(outEj);
+  }, outEj);
+
+  // SheetJS -- no data validation support
+  console.log('  [SheetJS  ] N/A (no data validation in community edition)');
+
+  cleanup(outSk); cleanup(outEj);
+}
+
+async function benchWriteComments() {
+  const ROWS = 2_000;
+  const label = `Write ${ROWS} rows with comments`;
+  console.log(`\n--- ${label} ---`);
+
+  const outSk = join(OUTPUT_DIR, 'write-comments-sheetkit.xlsx');
+  const outEj = join(OUTPUT_DIR, 'write-comments-exceljs.xlsx');
+  const outSj = join(OUTPUT_DIR, 'write-comments-sheetjs.xlsx');
+
+  await bench('SheetKit', label, 'Write (Comments)', () => {
+    const wb = new SheetKitWorkbook();
+    const sheet = 'Sheet1';
+    for (let r = 1; r <= ROWS; r++) {
+      wb.setCellValue(sheet, `A${r}`, r);
+      wb.setCellValue(sheet, `B${r}`, `Name_${r}`);
+      wb.addComment(sheet, {
+        cell: `A${r}`, author: 'Reviewer',
+        text: `Comment for row ${r}: review completed.`,
+      });
+    }
+    wb.saveSync(outSk);
+  }, outSk);
+
+  await bench('ExcelJS', label, 'Write (Comments)', async () => {
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Sheet1');
+    for (let r = 1; r <= ROWS; r++) {
+      ws.getCell(`A${r}`).value = r;
+      ws.getCell(`B${r}`).value = `Name_${r}`;
+      ws.getCell(`A${r}`).note = `Comment for row ${r}: review completed.`;
+    }
+    await wb.xlsx.writeFile(outEj);
+  }, outEj);
+
+  await bench('SheetJS', label, 'Write (Comments)', () => {
+    const data: (number | string)[][] = [];
+    for (let r = 0; r < ROWS; r++) {
+      data.push([r + 1, `Name_${r + 1}`]);
+    }
+    const ws = XLSX.utils.aoa_to_sheet(data);
+    for (let r = 0; r < ROWS; r++) {
+      const cellAddr = `A${r + 1}`;
+      if (!ws[cellAddr]) ws[cellAddr] = { t: 'n', v: r + 1 };
+      (ws[cellAddr] as any).c = [{ a: 'Reviewer', t: `Comment for row ${r + 1}: review completed.` }];
+    }
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
+    XLSX.writeFile(wb, outSj);
+  }, outSj);
+
+  cleanup(outSk); cleanup(outEj); cleanup(outSj);
+}
+
+async function benchWriteMergedCells() {
+  const REGIONS = 500;
+  const label = `Write ${REGIONS} merged regions`;
+  console.log(`\n--- ${label} ---`);
+
+  const outSk = join(OUTPUT_DIR, 'write-merge-sheetkit.xlsx');
+  const outEj = join(OUTPUT_DIR, 'write-merge-exceljs.xlsx');
+  const outSj = join(OUTPUT_DIR, 'write-merge-sheetjs.xlsx');
+
+  await bench('SheetKit', label, 'Write (Merge)', () => {
+    const wb = new SheetKitWorkbook();
+    const sheet = 'Sheet1';
+    for (let i = 0; i < REGIONS; i++) {
+      const row = i * 3 + 1;
+      wb.setCellValue(sheet, `A${row}`, `Section ${i + 1}`);
+      wb.mergeCells(sheet, `A${row}`, `D${row}`);
+      wb.setCellValue(sheet, `A${row + 1}`, i * 100);
+      wb.setCellValue(sheet, `B${row + 1}`, `Data_${i}`);
+    }
+    wb.saveSync(outSk);
+  }, outSk);
+
+  await bench('ExcelJS', label, 'Write (Merge)', async () => {
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Sheet1');
+    for (let i = 0; i < REGIONS; i++) {
+      const row = i * 3 + 1;
+      ws.mergeCells(row, 1, row, 4);
+      ws.getCell(row, 1).value = `Section ${i + 1}`;
+      ws.getCell(row + 1, 1).value = i * 100;
+      ws.getCell(row + 1, 2).value = `Data_${i}`;
+    }
+    await wb.xlsx.writeFile(outEj);
+  }, outEj);
+
+  await bench('SheetJS', label, 'Write (Merge)', () => {
+    const ws: XLSX.WorkSheet = {};
+    const merges: XLSX.Range[] = [];
+    for (let i = 0; i < REGIONS; i++) {
+      const row = i * 3;
+      ws[XLSX.utils.encode_cell({ r: row, c: 0 })] = { t: 's', v: `Section ${i + 1}` };
+      merges.push({ s: { r: row, c: 0 }, e: { r: row, c: 3 } });
+      ws[XLSX.utils.encode_cell({ r: row + 1, c: 0 })] = { t: 'n', v: i * 100 };
+      ws[XLSX.utils.encode_cell({ r: row + 1, c: 1 })] = { t: 's', v: `Data_${i}` };
+    }
+    ws['!ref'] = `A1:D${REGIONS * 3}`;
+    ws['!merges'] = merges;
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
+    XLSX.writeFile(wb, outSj);
+  }, outSj);
+
+  cleanup(outSk); cleanup(outEj); cleanup(outSj);
+}
+
+// ---------------------------------------------------------------------------
+// Scaling write benchmarks
+// ---------------------------------------------------------------------------
+
+async function benchWriteScale(rows: number) {
+  const COLS = 10;
+  const label = `Write ${rows >= 1000 ? `${rows / 1000}k` : rows} rows x ${COLS} cols`;
+  console.log(`\n--- ${label} ---`);
+
+  const tag = rows >= 1000 ? `${rows / 1000}k` : `${rows}`;
+  const outSk = join(OUTPUT_DIR, `write-scale-${tag}-sheetkit.xlsx`);
+  const outEj = join(OUTPUT_DIR, `write-scale-${tag}-exceljs.xlsx`);
+  const outSj = join(OUTPUT_DIR, `write-scale-${tag}-sheetjs.xlsx`);
+
+  await bench('SheetKit', label, 'Write (Scale)', () => {
+    const wb = new SheetKitWorkbook();
+    const sheet = 'Sheet1';
+    for (let r = 1; r <= rows; r++) {
+      for (let c = 0; c < COLS; c++) {
+        const cell = `${colLetter(c)}${r}`;
+        if (c % 3 === 0) wb.setCellValue(sheet, cell, r * (c + 1));
+        else if (c % 3 === 1) wb.setCellValue(sheet, cell, `R${r}C${c}`);
+        else wb.setCellValue(sheet, cell, (r * c) / 100);
+      }
+    }
+    wb.saveSync(outSk);
+  }, outSk);
+
+  await bench('ExcelJS', label, 'Write (Scale)', async () => {
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Sheet1');
+    for (let r = 0; r < rows; r++) {
+      const row: (number | string)[] = [];
+      for (let c = 0; c < COLS; c++) {
+        if (c % 3 === 0) row.push((r + 1) * (c + 1));
+        else if (c % 3 === 1) row.push(`R${r + 1}C${c}`);
+        else row.push(((r + 1) * c) / 100);
+      }
+      ws.addRow(row);
+    }
+    await wb.xlsx.writeFile(outEj);
+  }, outEj);
+
+  await bench('SheetJS', label, 'Write (Scale)', () => {
+    const data: (number | string)[][] = [];
+    for (let r = 0; r < rows; r++) {
+      const row: (number | string)[] = [];
+      for (let c = 0; c < COLS; c++) {
+        if (c % 3 === 0) row.push((r + 1) * (c + 1));
+        else if (c % 3 === 1) row.push(`R${r + 1}C${c}`);
+        else row.push(((r + 1) * c) / 100);
+      }
+      data.push(row);
+    }
+    const ws = XLSX.utils.aoa_to_sheet(data);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
+    XLSX.writeFile(wb, outSj);
+  }, outSj);
+
+  cleanup(outSk); cleanup(outEj); cleanup(outSj);
 }
 
 // ---------------------------------------------------------------------------
@@ -529,8 +768,7 @@ async function benchBufferRoundTrip() {
   const label = `Buffer round-trip (${ROWS} rows)`;
   console.log(`\n--- ${label} ---`);
 
-  // SheetKit
-  await bench('SheetKit', label, () => {
+  await bench('SheetKit', label, 'Round-Trip', () => {
     const wb = new SheetKitWorkbook();
     const sheet = 'Sheet1';
     for (let r = 1; r <= ROWS; r++) {
@@ -543,8 +781,7 @@ async function benchBufferRoundTrip() {
     wb2.getRows('Sheet1');
   });
 
-  // ExcelJS
-  await bench('ExcelJS', label, async () => {
+  await bench('ExcelJS', label, 'Round-Trip', async () => {
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet('Sheet1');
     for (let r = 0; r < ROWS; r++) {
@@ -560,8 +797,7 @@ async function benchBufferRoundTrip() {
     wb2.getWorksheet('Sheet1')!.eachRow(() => { /* iterate */ });
   });
 
-  // SheetJS
-  await bench('SheetJS', label, () => {
+  await bench('SheetJS', label, 'Round-Trip', () => {
     const data: number[][] = [];
     for (let r = 0; r < ROWS; r++) {
       const row: number[] = [];
@@ -592,8 +828,7 @@ async function benchStreamingWrite() {
   const outSk = join(OUTPUT_DIR, 'stream-sheetkit.xlsx');
   const outEj = join(OUTPUT_DIR, 'stream-exceljs.xlsx');
 
-  // SheetKit stream writer
-  await bench('SheetKit', label, () => {
+  await bench('SheetKit', label, 'Streaming', () => {
     const wb = new SheetKitWorkbook();
     const sw = wb.newStreamWriter('StreamSheet');
     for (let r = 1; r <= ROWS; r++) {
@@ -609,8 +844,7 @@ async function benchStreamingWrite() {
     wb.saveSync(outSk);
   }, outSk);
 
-  // ExcelJS streaming
-  await bench('ExcelJS', label, async () => {
+  await bench('ExcelJS', label, 'Streaming', async () => {
     const options = {
       filename: outEj,
       useStyles: false,
@@ -631,11 +865,172 @@ async function benchStreamingWrite() {
     await wb.commit();
   }, outEj);
 
-  // SheetJS has no streaming API -- skip
-  console.log('  [SheetJS  ] Streaming write                              N/A (no streaming API)');
+  console.log('  [SheetJS  ] N/A (no streaming API)');
 
-  cleanup(outSk);
-  cleanup(outEj);
+  cleanup(outSk); cleanup(outEj);
+}
+
+// ---------------------------------------------------------------------------
+// Cell random-access read
+// ---------------------------------------------------------------------------
+
+async function benchRandomAccessRead() {
+  const filepath = join(FIXTURES_DIR, 'large-data.xlsx');
+  if (!existsSync(filepath)) {
+    console.log('  SKIP: large-data.xlsx not found. Run pnpm generate first.');
+    return;
+  }
+
+  const LOOKUPS = 1_000;
+  const label = `Random-access read (${LOOKUPS} cells from 50k-row file)`;
+  console.log(`\n--- ${label} ---`);
+
+  // Pre-generate random cell addresses for consistency
+  const cells: string[] = [];
+  for (let i = 0; i < LOOKUPS; i++) {
+    const r = Math.floor(Math.random() * 50000) + 2;
+    const c = Math.floor(Math.random() * 20);
+    cells.push(`${colLetter(c)}${r}`);
+  }
+
+  await bench('SheetKit', label, 'Random Access', () => {
+    const wb = SheetKitWorkbook.openSync(filepath);
+    for (const cell of cells) {
+      wb.getCellValue('Sheet1', cell);
+    }
+  });
+
+  await bench('ExcelJS', label, 'Random Access', async () => {
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.readFile(filepath);
+    const ws = wb.getWorksheet('Sheet1')!;
+    for (const cell of cells) {
+      ws.getCell(cell).value;
+    }
+  });
+
+  await bench('SheetJS', label, 'Random Access', () => {
+    const buf = readFileSync(filepath);
+    const wb = XLSX.read(buf, { type: 'buffer' });
+    const ws = wb.Sheets['Sheet1'];
+    for (const cell of cells) {
+      const val = ws[cell];
+      if (val) val.v; // access value
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Mixed workload write
+// ---------------------------------------------------------------------------
+
+async function benchMixedWorkloadWrite() {
+  const label = 'Mixed workload write (ERP-style)';
+  console.log(`\n--- ${label} ---`);
+
+  const outSk = join(OUTPUT_DIR, 'write-mixed-sheetkit.xlsx');
+  const outEj = join(OUTPUT_DIR, 'write-mixed-exceljs.xlsx');
+
+  await bench('SheetKit', label, 'Mixed Write', () => {
+    const wb = new SheetKitWorkbook();
+    const sheet = 'Sheet1';
+
+    const boldId = wb.addStyle({
+      font: { bold: true, size: 11 },
+      fill: { pattern: 'solid', fgColor: 'FFD9E2F3' },
+    });
+    const numId = wb.addStyle({ customNumFmt: '$#,##0.00' });
+
+    // Title
+    wb.setCellValue(sheet, 'A1', 'Sales Report Q4');
+    wb.mergeCells(sheet, 'A1', 'F1');
+    wb.setCellStyle(sheet, 'A1', boldId);
+
+    // Headers
+    const headers = ['Order_ID', 'Product', 'Quantity', 'Unit_Price', 'Total', 'Region'];
+    for (let c = 0; c < headers.length; c++) {
+      wb.setCellValue(sheet, `${colLetter(c)}2`, headers[c]);
+      wb.setCellStyle(sheet, `${colLetter(c)}2`, boldId);
+    }
+
+    // Validation
+    wb.addDataValidation(sheet, {
+      sqref: 'F3:F5002', validationType: 'list',
+      formula1: '"North,South,East,West"',
+    });
+    wb.addDataValidation(sheet, {
+      sqref: 'C3:C5002', validationType: 'whole',
+      operator: 'greaterThan', formula1: '0',
+    });
+
+    const regions = ['North', 'South', 'East', 'West'];
+    const products = ['Widget A', 'Widget B', 'Gadget X', 'Gadget Y', 'Service Z'];
+    for (let r = 3; r <= 5002; r++) {
+      const i = r - 2;
+      wb.setCellValue(sheet, `A${r}`, `ORD-${String(i).padStart(5, '0')}`);
+      wb.setCellValue(sheet, `B${r}`, products[i % products.length]);
+      wb.setCellValue(sheet, `C${r}`, (i % 50) + 1);
+      wb.setCellValue(sheet, `D${r}`, ((i * 19) % 500) + 10);
+      wb.setCellStyle(sheet, `D${r}`, numId);
+      wb.setCellFormula(sheet, `E${r}`, `C${r}*D${r}`);
+      wb.setCellStyle(sheet, `E${r}`, numId);
+      wb.setCellValue(sheet, `F${r}`, regions[i % regions.length]);
+
+      if (i % 50 === 0) {
+        wb.addComment(sheet, {
+          cell: `A${r}`, author: 'Sales',
+          text: `Bulk order - special pricing applied for order ${i}.`,
+        });
+      }
+    }
+
+    wb.saveSync(outSk);
+  }, outSk);
+
+  await bench('ExcelJS', label, 'Mixed Write', async () => {
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Sheet1');
+
+    ws.mergeCells('A1:F1');
+    ws.getCell('A1').value = 'Sales Report Q4';
+    ws.getCell('A1').font = { bold: true, size: 11 };
+    ws.getCell('A1').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9E2F3' } };
+
+    const headers = ['Order_ID', 'Product', 'Quantity', 'Unit_Price', 'Total', 'Region'];
+    const headerRow = ws.addRow(headers);
+    headerRow.eachCell((cell) => {
+      cell.font = { bold: true, size: 11 };
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD9E2F3' } };
+    });
+
+    const regions = ['North', 'South', 'East', 'West'];
+    const products = ['Widget A', 'Widget B', 'Gadget X', 'Gadget Y', 'Service Z'];
+    for (let i = 1; i <= 5000; i++) {
+      const r = i + 2;
+      ws.getCell(`A${r}`).value = `ORD-${String(i).padStart(5, '0')}`;
+      ws.getCell(`B${r}`).value = products[i % products.length];
+      ws.getCell(`C${r}`).value = (i % 50) + 1;
+      ws.getCell(`C${r}`).dataValidation = { type: 'whole', operator: 'greaterThan', formulae: [0] };
+      ws.getCell(`D${r}`).value = ((i * 19) % 500) + 10;
+      ws.getCell(`D${r}`).numFmt = '$#,##0.00';
+      ws.getCell(`E${r}`).value = { formula: `C${r}*D${r}` } as any;
+      ws.getCell(`E${r}`).numFmt = '$#,##0.00';
+      ws.getCell(`F${r}`).value = regions[i % regions.length];
+      ws.getCell(`F${r}`).dataValidation = {
+        type: 'list', formulae: ['"North,South,East,West"'],
+        allowBlank: true, showDropDown: true,
+      };
+      if (i % 50 === 0) {
+        ws.getCell(`A${r}`).note = `Bulk order - special pricing applied for order ${i}.`;
+      }
+    }
+    await wb.xlsx.writeFile(outEj);
+  }, outEj);
+
+  // SheetJS: limited -- no validation, styles, or comments in community edition
+  console.log('  [SheetJS  ] N/A (no validation/styles/comments in community edition)');
+
+  cleanup(outSk); cleanup(outEj);
 }
 
 // ---------------------------------------------------------------------------
@@ -647,18 +1042,17 @@ function printSummaryTable() {
   console.log(' BENCHMARK RESULTS SUMMARY');
   console.log('========================================\n');
 
-  // Group by scenario
   const scenarios = [...new Set(results.map((r) => r.scenario))];
 
   console.log(
-    '| Scenario'.padEnd(45) +
+    '| Scenario'.padEnd(51) +
     '| SheetKit'.padEnd(14) +
     '| ExcelJS'.padEnd(14) +
     '| SheetJS'.padEnd(14) +
     '| Winner |'
   );
   console.log(
-    '|' + '-'.repeat(44) +
+    '|' + '-'.repeat(50) +
     '|' + '-'.repeat(13) +
     '|' + '-'.repeat(13) +
     '|' + '-'.repeat(13) +
@@ -685,7 +1079,7 @@ function printSummaryTable() {
       : 'N/A';
 
     console.log(
-      `| ${scenario.padEnd(43)}` +
+      `| ${scenario.padEnd(49)}` +
       `| ${skTime.padEnd(12)}` +
       `| ${ejTime.padEnd(12)}` +
       `| ${sjTime.padEnd(12)}` +
@@ -733,20 +1127,21 @@ function generateMarkdownReport(): string {
   lines.push('| Fixture | Description |');
   lines.push('|---------|-------------|');
   lines.push('| `large-data.xlsx` | 50,000 rows x 20 columns, mixed types (numbers, strings, floats, booleans) |');
-  lines.push('| `heavy-styles.xlsx` | 5,000 rows x 10 columns with rich formatting (fonts, fills, borders, number formats) |');
+  lines.push('| `heavy-styles.xlsx` | 5,000 rows x 10 columns with rich formatting |');
   lines.push('| `multi-sheet.xlsx` | 10 sheets, each with 5,000 rows x 10 columns |');
-  lines.push('| `formulas.xlsx` | 10,000 rows with 5 formula columns (SUM, PRODUCT, AVERAGE, MAX, IF) |');
+  lines.push('| `formulas.xlsx` | 10,000 rows with 5 formula columns |');
   lines.push('| `strings.xlsx` | 20,000 rows x 10 columns of text data (SST stress test) |');
+  lines.push('| `data-validation.xlsx` | 5,000 rows with 8 validation rules (list, whole, decimal, textLength, custom) |');
+  lines.push('| `comments.xlsx` | 2,000 rows with cell comments (2,667 total comments) |');
+  lines.push('| `merged-cells.xlsx` | 500 merged regions (section headers and sub-headers) |');
+  lines.push('| `mixed-workload.xlsx` | Multi-sheet ERP document with styles, formulas, validation, comments |');
+  lines.push('| `scale-{1k,10k,100k}.xlsx` | Scaling benchmarks at 1K, 10K, and 100K rows |');
   lines.push('');
 
   lines.push('## Results');
   lines.push('');
 
-  // Group into read/write
-  const readResults = results.filter((r) => r.scenario.startsWith('Read'));
-  const writeResults = results.filter((r) => !r.scenario.startsWith('Read') && !r.scenario.startsWith('Buffer') && !r.scenario.startsWith('Streaming'));
-  const bufferResults = results.filter((r) => r.scenario.startsWith('Buffer'));
-  const streamResults = results.filter((r) => r.scenario.startsWith('Streaming'));
+  const categories = [...new Set(results.map((r) => r.category))];
 
   function renderTable(title: string, subset: BenchResult[]) {
     if (subset.length === 0) return;
@@ -767,7 +1162,9 @@ function generateMarkdownReport(): string {
         { lib: 'SheetJS', ms: sj?.timeMs },
       ].filter((e) => e.ms != null) as { lib: string; ms: number }[];
 
-      const winner = entries.reduce((a, b) => (a.ms < b.ms ? a : b)).lib;
+      const winner = entries.length > 0
+        ? entries.reduce((a, b) => (a.ms < b.ms ? a : b)).lib
+        : 'N/A';
 
       const skStr = sk ? formatMs(sk.timeMs) : 'N/A';
       const ejStr = ej ? formatMs(ej.timeMs) : 'N/A';
@@ -778,10 +1175,10 @@ function generateMarkdownReport(): string {
     lines.push('');
   }
 
-  renderTable('Read Performance', readResults);
-  renderTable('Write Performance', writeResults);
-  renderTable('Buffer Round-Trip', bufferResults);
-  renderTable('Streaming Write', streamResults);
+  for (const cat of categories) {
+    const subset = results.filter((r) => r.category === cat);
+    renderTable(cat, subset);
+  }
 
   // Summary
   const allScenarios = [...new Set(results.map((r) => r.scenario))];
@@ -819,17 +1216,26 @@ async function main() {
   console.log(`Platform: ${process.platform} ${process.arch} | Node.js: ${process.version}`);
   console.log(`Run with --expose-gc for accurate memory measurements.\n`);
 
-  // Ensure output dir
   const { mkdirSync } = await import('node:fs');
   mkdirSync(OUTPUT_DIR, { recursive: true });
 
   // READ benchmarks
   console.log('=== READ BENCHMARKS ===');
-  await benchReadFile('large-data.xlsx', 'Large Data (50k rows x 20 cols)');
-  await benchReadFile('heavy-styles.xlsx', 'Heavy Styles (5k rows, formatted)');
-  await benchReadFile('multi-sheet.xlsx', 'Multi-Sheet (10 sheets x 5k rows)');
-  await benchReadFile('formulas.xlsx', 'Formulas (10k rows)');
-  await benchReadFile('strings.xlsx', 'Strings (20k rows text-heavy)');
+  await benchReadFile('large-data.xlsx', 'Large Data (50k rows x 20 cols)', 'Read');
+  await benchReadFile('heavy-styles.xlsx', 'Heavy Styles (5k rows, formatted)', 'Read');
+  await benchReadFile('multi-sheet.xlsx', 'Multi-Sheet (10 sheets x 5k rows)', 'Read');
+  await benchReadFile('formulas.xlsx', 'Formulas (10k rows)', 'Read');
+  await benchReadFile('strings.xlsx', 'Strings (20k rows text-heavy)', 'Read');
+  await benchReadFile('data-validation.xlsx', 'Data Validation (5k rows, 8 rules)', 'Read');
+  await benchReadFile('comments.xlsx', 'Comments (2k rows with comments)', 'Read');
+  await benchReadFile('merged-cells.xlsx', 'Merged Cells (500 regions)', 'Read');
+  await benchReadFile('mixed-workload.xlsx', 'Mixed Workload (ERP document)', 'Read');
+
+  // READ scaling
+  console.log('\n\n=== READ SCALING ===');
+  await benchReadFile('scale-1k.xlsx', 'Scale 1k rows', 'Read (Scale)');
+  await benchReadFile('scale-10k.xlsx', 'Scale 10k rows', 'Read (Scale)');
+  await benchReadFile('scale-100k.xlsx', 'Scale 100k rows', 'Read (Scale)');
 
   // WRITE benchmarks
   console.log('\n\n=== WRITE BENCHMARKS ===');
@@ -838,6 +1244,16 @@ async function main() {
   await benchWriteMultiSheet();
   await benchWriteFormulas();
   await benchWriteStrings();
+  await benchWriteDataValidation();
+  await benchWriteComments();
+  await benchWriteMergedCells();
+
+  // WRITE scaling
+  console.log('\n\n=== WRITE SCALING ===');
+  await benchWriteScale(1_000);
+  await benchWriteScale(10_000);
+  await benchWriteScale(50_000);
+  await benchWriteScale(100_000);
 
   // Buffer round-trip
   console.log('\n\n=== BUFFER ROUND-TRIP ===');
@@ -846,6 +1262,14 @@ async function main() {
   // Streaming
   console.log('\n\n=== STREAMING ===');
   await benchStreamingWrite();
+
+  // Random access
+  console.log('\n\n=== RANDOM ACCESS ===');
+  await benchRandomAccessRead();
+
+  // Mixed workload write
+  console.log('\n\n=== MIXED WORKLOAD ===');
+  await benchMixedWorkloadWrite();
 
   // Summary
   printSummaryTable();
