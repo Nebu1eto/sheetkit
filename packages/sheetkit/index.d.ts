@@ -229,6 +229,17 @@ export declare class Workbook {
    */
   getRows(sheet: string): Array<JsRowData>
   /**
+   * Serialize a sheet's cell data into a compact binary buffer.
+   * Returns the raw bytes suitable for efficient JS-side decoding.
+   */
+  getRowsBuffer(sheet: string): Buffer
+  /**
+   * Apply cell data from a binary buffer to a sheet.
+   * The buffer must follow the raw transfer binary format.
+   * Optionally specify a start cell (default "A1").
+   */
+  setSheetDataBuffer(sheet: string, buf: Buffer, startCell?: string | undefined | null): void
+  /**
    * Get all columns with their data from a sheet.
    * Only columns that have data are included.
    */

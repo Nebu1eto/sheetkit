@@ -18,6 +18,8 @@ pub mod merge;
 pub mod page_layout;
 pub mod pivot;
 pub mod protection;
+pub mod raw_transfer;
+pub mod raw_transfer_write;
 pub mod rich_text;
 pub mod row;
 pub mod sheet;
