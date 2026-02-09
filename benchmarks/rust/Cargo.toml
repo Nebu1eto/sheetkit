@@ -1,0 +1,10 @@
+[package]
+name = "sheetkit-bench"
+edition = "2021"
+publish = false
+
+[dependencies]
+sheetkit = { path = "../../crates/sheetkit" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"

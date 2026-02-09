@@ -50,6 +50,10 @@ import { join } from 'node:path';
 const FIXTURES_DIR = join(import.meta.dirname, 'fixtures');
 const OUTPUT_DIR = join(import.meta.dirname, 'output');
 
+// Match the Rust benchmark configuration
+const WARMUP_RUNS = 1;
+const BENCH_RUNS = 5;
+
 // ---------------------------------------------------------------------------
 // Utilities
 // ---------------------------------------------------------------------------
@@ -61,9 +65,37 @@ interface BenchResult {
   timeMs: number;
   memoryMb: number;
   fileSizeKb?: number;
+  timesMs: number[];
+  memoryDeltas: number[];
 }
 
 const results: BenchResult[] = [];
+
+function median(arr: number[]): number {
+  if (arr.length === 0) return 0;
+  const sorted = [...arr].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0
+    ? (sorted[mid - 1] + sorted[mid]) / 2
+    : sorted[mid];
+}
+
+function p95(arr: number[]): number {
+  if (arr.length === 0) return 0;
+  const sorted = [...arr].sort((a, b) => a - b);
+  const idx = Math.ceil(0.95 * sorted.length) - 1;
+  return sorted[Math.max(0, idx)];
+}
+
+function minVal(arr: number[]): number {
+  if (arr.length === 0) return 0;
+  return Math.min(...arr);
+}
+
+function maxVal(arr: number[]): number {
+  if (arr.length === 0) return 0;
+  return Math.max(...arr);
+}
 
 function formatMs(ms: number): string {
   if (ms < 1000) return `${ms.toFixed(0)}ms`;
@@ -107,12 +139,81 @@ async function bench(
     timeMs: elapsed,
     memoryMb: memDelta,
     fileSizeKb: size,
+    timesMs: [elapsed],
+    memoryDeltas: [memDelta],
   };
   results.push(result);
 
   const sizeStr = size != null ? ` | ${(size / 1024).toFixed(1)}MB` : '';
   console.log(
     `  [${library.padEnd(8)}] ${scenario.padEnd(46)} ${formatMs(elapsed).padStart(10)} | ${memDelta.toFixed(1).padStart(6)}MB${sizeStr}`,
+  );
+  return result;
+}
+
+async function benchMultiRun(
+  library: string,
+  scenario: string,
+  category: string,
+  fn: () => void | Promise<void>,
+  outputPath?: string,
+): Promise<BenchResult> {
+  // Warmup runs (not measured)
+  for (let i = 0; i < WARMUP_RUNS; i++) {
+    if (global.gc) global.gc();
+    await fn();
+  }
+
+  // Measured runs
+  const timesMs: number[] = [];
+  const memoryDeltas: number[] = [];
+  let size: number | undefined;
+
+  for (let i = 0; i < BENCH_RUNS; i++) {
+    if (global.gc) global.gc();
+
+    const memBefore = getMemoryMb();
+    const start = performance.now();
+    await fn();
+    const elapsed = performance.now() - start;
+    const memAfter = getMemoryMb();
+    const memDelta = Math.max(0, memAfter - memBefore);
+
+    timesMs.push(elapsed);
+    memoryDeltas.push(memDelta);
+
+    if (outputPath && i === BENCH_RUNS - 1) {
+      size = fileSizeKb(outputPath);
+    }
+  }
+
+  const med = median(timesMs);
+  const min = minVal(timesMs);
+  const max = maxVal(timesMs);
+  const p95Val = p95(timesMs);
+  const memMed = median(memoryDeltas);
+
+  const result: BenchResult = {
+    library,
+    scenario,
+    category,
+    timeMs: med,
+    memoryMb: memMed,
+    fileSizeKb: size,
+    timesMs,
+    memoryDeltas,
+  };
+  results.push(result);
+
+  const sizeStr = size != null ? ` | ${(size / 1024).toFixed(1)}MB` : '';
+  console.log(
+    `  [${library.padEnd(8)}] ${scenario.padEnd(46)} ` +
+    `med=${formatMs(med).padStart(8)} ` +
+    `min=${formatMs(min).padStart(8)} ` +
+    `max=${formatMs(max).padStart(8)} ` +
+    `p95=${formatMs(p95Val).padStart(8)} ` +
+    `| ${memMed.toFixed(1).padStart(6)}MB${sizeStr}` +
+    ` (${BENCH_RUNS} runs)`,
   );
   return result;
 }
@@ -145,7 +246,7 @@ async function benchReadFile(filename: string, label: string, category: string) 
 
   console.log(`\n--- ${label} ---`);
 
-  await bench('SheetKit', `Read ${label}`, category, () => {
+  await benchMultiRun('SheetKit', `Read ${label}`, category, () => {
     const wb = SheetKitWorkbook.openSync(filepath);
     for (const name of wb.sheetNames) {
       wb.getRows(name);
@@ -183,7 +284,7 @@ async function benchWriteLargeData() {
   const outEj = join(OUTPUT_DIR, 'write-large-exceljs.xlsx');
   const outSj = join(OUTPUT_DIR, 'write-large-sheetjs.xlsx');
 
-  await bench('SheetKit', label, 'Write', () => {
+  await benchMultiRun('SheetKit', label, 'Write', () => {
     const wb = new SheetKitWorkbook();
     const sheet = 'Sheet1';
     const data: (string | number | boolean | null)[][] = [];
@@ -244,7 +345,7 @@ async function benchWriteWithStyles() {
   const outEj = join(OUTPUT_DIR, 'write-styles-exceljs.xlsx');
   const outSj = join(OUTPUT_DIR, 'write-styles-sheetjs.xlsx');
 
-  await bench('SheetKit', label, 'Write', () => {
+  await benchMultiRun('SheetKit', label, 'Write', () => {
     const wb = new SheetKitWorkbook();
     const sheet = 'Sheet1';
     const boldId = wb.addStyle({
@@ -356,7 +457,7 @@ async function benchWriteMultiSheet() {
   const outEj = join(OUTPUT_DIR, 'write-multi-exceljs.xlsx');
   const outSj = join(OUTPUT_DIR, 'write-multi-sheetjs.xlsx');
 
-  await bench('SheetKit', label, 'Write', () => {
+  await benchMultiRun('SheetKit', label, 'Write', () => {
     const wb = new SheetKitWorkbook();
     for (let s = 0; s < SHEETS; s++) {
       const name = s === 0 ? 'Sheet1' : `Sheet${s + 1}`;
@@ -421,7 +522,7 @@ async function benchWriteFormulas() {
   const outEj = join(OUTPUT_DIR, 'write-formulas-exceljs.xlsx');
   const outSj = join(OUTPUT_DIR, 'write-formulas-sheetjs.xlsx');
 
-  await bench('SheetKit', label, 'Write', () => {
+  await benchMultiRun('SheetKit', label, 'Write', () => {
     const wb = new SheetKitWorkbook();
     const sheet = 'Sheet1';
     const data: (string | number | boolean | null)[][] = [];
@@ -491,7 +592,7 @@ async function benchWriteStrings() {
     ];
   }
 
-  await bench('SheetKit', label, 'Write', () => {
+  await benchMultiRun('SheetKit', label, 'Write', () => {
     const wb = new SheetKitWorkbook();
     const sheet = 'Sheet1';
     const data: (string | number | boolean | null)[][] = [];
@@ -534,7 +635,7 @@ async function benchWriteDataValidation() {
   const outEj = join(OUTPUT_DIR, 'write-dv-exceljs.xlsx');
 
   // SheetKit
-  await bench('SheetKit', label, 'Write (DV)', () => {
+  await benchMultiRun('SheetKit', label, 'Write (DV)', () => {
     const wb = new SheetKitWorkbook();
     const sheet = 'Sheet1';
 
@@ -607,7 +708,7 @@ async function benchWriteComments() {
   const outEj = join(OUTPUT_DIR, 'write-comments-exceljs.xlsx');
   const outSj = join(OUTPUT_DIR, 'write-comments-sheetjs.xlsx');
 
-  await bench('SheetKit', label, 'Write (Comments)', () => {
+  await benchMultiRun('SheetKit', label, 'Write (Comments)', () => {
     const wb = new SheetKitWorkbook();
     const sheet = 'Sheet1';
     const data: (string | number | boolean | null)[][] = [];
@@ -663,7 +764,7 @@ async function benchWriteMergedCells() {
   const outEj = join(OUTPUT_DIR, 'write-merge-exceljs.xlsx');
   const outSj = join(OUTPUT_DIR, 'write-merge-sheetjs.xlsx');
 
-  await bench('SheetKit', label, 'Write (Merge)', () => {
+  await benchMultiRun('SheetKit', label, 'Write (Merge)', () => {
     const wb = new SheetKitWorkbook();
     const sheet = 'Sheet1';
     const cells: { cell: string; value: string | number | boolean | null }[] = [];
@@ -728,7 +829,7 @@ async function benchWriteScale(rows: number) {
   const outEj = join(OUTPUT_DIR, `write-scale-${tag}-exceljs.xlsx`);
   const outSj = join(OUTPUT_DIR, `write-scale-${tag}-sheetjs.xlsx`);
 
-  await bench('SheetKit', label, 'Write (Scale)', () => {
+  await benchMultiRun('SheetKit', label, 'Write (Scale)', () => {
     const wb = new SheetKitWorkbook();
     const sheet = 'Sheet1';
     const data: (string | number | boolean | null)[][] = [];
@@ -790,7 +891,7 @@ async function benchBufferRoundTrip() {
   const label = `Buffer round-trip (${ROWS} rows)`;
   console.log(`\n--- ${label} ---`);
 
-  await bench('SheetKit', label, 'Round-Trip', () => {
+  await benchMultiRun('SheetKit', label, 'Round-Trip', () => {
     const wb = new SheetKitWorkbook();
     const sheet = 'Sheet1';
     const data: (string | number | boolean | null)[][] = [];
@@ -854,7 +955,7 @@ async function benchStreamingWrite() {
   const outSk = join(OUTPUT_DIR, 'stream-sheetkit.xlsx');
   const outEj = join(OUTPUT_DIR, 'stream-exceljs.xlsx');
 
-  await bench('SheetKit', label, 'Streaming', () => {
+  await benchMultiRun('SheetKit', label, 'Streaming', () => {
     const wb = new SheetKitWorkbook();
     const sw = wb.newStreamWriter('StreamSheet');
     for (let r = 1; r <= ROWS; r++) {
@@ -919,7 +1020,7 @@ async function benchRandomAccessRead() {
     cells.push(`${colLetter(c)}${r}`);
   }
 
-  await bench('SheetKit', label, 'Random Access', () => {
+  await benchMultiRun('SheetKit', label, 'Random Access', () => {
     const wb = SheetKitWorkbook.openSync(filepath);
     for (const cell of cells) {
       wb.getCellValue('Sheet1', cell);
@@ -957,7 +1058,7 @@ async function benchMixedWorkloadWrite() {
   const outSk = join(OUTPUT_DIR, 'write-mixed-sheetkit.xlsx');
   const outEj = join(OUTPUT_DIR, 'write-mixed-exceljs.xlsx');
 
-  await bench('SheetKit', label, 'Mixed Write', () => {
+  await benchMultiRun('SheetKit', label, 'Mixed Write', () => {
     const wb = new SheetKitWorkbook();
     const sheet = 'Sheet1';
 
@@ -1070,25 +1171,39 @@ async function benchMixedWorkloadWrite() {
 // Results formatting
 // ---------------------------------------------------------------------------
 
+function formatStats(r: BenchResult): string {
+  if (r.timesMs.length <= 1) {
+    return formatMs(r.timeMs);
+  }
+  const med = median(r.timesMs);
+  const min = minVal(r.timesMs);
+  const max = maxVal(r.timesMs);
+  return `${formatMs(med)} [${formatMs(min)}-${formatMs(max)}]`;
+}
+
 function printSummaryTable() {
   console.log('\n\n========================================');
   console.log(' BENCHMARK RESULTS SUMMARY');
-  console.log('========================================\n');
+  console.log('========================================');
+  console.log(` SheetKit: ${WARMUP_RUNS} warmup + ${BENCH_RUNS} measured runs (median shown)`);
+  console.log(' ExcelJS/SheetJS: single run\n');
 
   const scenarios = [...new Set(results.map((r) => r.scenario))];
 
   console.log(
     '| Scenario'.padEnd(51) +
-    '| SheetKit'.padEnd(14) +
+    '| SheetKit (median)'.padEnd(24) +
     '| ExcelJS'.padEnd(14) +
     '| SheetJS'.padEnd(14) +
+    '| Mem(SK)'.padEnd(11) +
     '| Winner |'
   );
   console.log(
     '|' + '-'.repeat(50) +
+    '|' + '-'.repeat(23) +
     '|' + '-'.repeat(13) +
     '|' + '-'.repeat(13) +
-    '|' + '-'.repeat(13) +
+    '|' + '-'.repeat(10) +
     '|--------|'
   );
 
@@ -1097,9 +1212,10 @@ function printSummaryTable() {
     const ej = results.find((r) => r.scenario === scenario && r.library === 'ExcelJS');
     const sj = results.find((r) => r.scenario === scenario && r.library === 'SheetJS');
 
-    const skTime = sk ? formatMs(sk.timeMs) : 'N/A';
+    const skTime = sk ? formatStats(sk) : 'N/A';
     const ejTime = ej ? formatMs(ej.timeMs) : 'N/A';
     const sjTime = sj ? formatMs(sj.timeMs) : 'N/A';
+    const skMem = sk ? `${median(sk.memoryDeltas).toFixed(1)}MB` : 'N/A';
 
     const times = [
       { lib: 'SheetKit', ms: sk?.timeMs ?? Infinity },
@@ -1113,11 +1229,49 @@ function printSummaryTable() {
 
     console.log(
       `| ${scenario.padEnd(49)}` +
-      `| ${skTime.padEnd(12)}` +
+      `| ${skTime.padEnd(22)}` +
       `| ${ejTime.padEnd(12)}` +
       `| ${sjTime.padEnd(12)}` +
+      `| ${skMem.padEnd(9)}` +
       `| ${winner.padEnd(7)}|`
     );
+  }
+
+  // SheetKit detailed statistics
+  const skResults = results.filter((r) => r.library === 'SheetKit' && r.timesMs.length > 1);
+  if (skResults.length > 0) {
+    console.log('\n--- SheetKit Detailed Statistics ---');
+    console.log(
+      '| Scenario'.padEnd(51) +
+      '| Median'.padEnd(12) +
+      '| Min'.padEnd(12) +
+      '| Max'.padEnd(12) +
+      '| P95'.padEnd(12) +
+      '| Memory |'
+    );
+    console.log(
+      '|' + '-'.repeat(50) +
+      '|' + '-'.repeat(11) +
+      '|' + '-'.repeat(11) +
+      '|' + '-'.repeat(11) +
+      '|' + '-'.repeat(11) +
+      '|--------|'
+    );
+    for (const r of skResults) {
+      const med = formatMs(median(r.timesMs));
+      const min = formatMs(minVal(r.timesMs));
+      const max = formatMs(maxVal(r.timesMs));
+      const p95v = formatMs(p95(r.timesMs));
+      const mem = `${median(r.memoryDeltas).toFixed(1)}MB`;
+      console.log(
+        `| ${r.scenario.padEnd(49)}` +
+        `| ${med.padEnd(10)}` +
+        `| ${min.padEnd(10)}` +
+        `| ${max.padEnd(10)}` +
+        `| ${p95v.padEnd(10)}` +
+        `| ${mem.padEnd(7)}|`
+      );
+    }
   }
 
   // Wins summary
@@ -1131,7 +1285,7 @@ function printSummaryTable() {
       wins[winner] = (wins[winner] || 0) + 1;
     }
   }
-  console.log('\nWins by library:');
+  console.log('\nWins by library (by median time):');
   for (const [lib, count] of Object.entries(wins)) {
     console.log(`  ${lib}: ${count}/${scenarios.length}`);
   }
@@ -1144,6 +1298,11 @@ function generateMarkdownReport(): string {
   lines.push(`Benchmark run: ${new Date().toISOString()}`);
   lines.push(`Platform: ${process.platform} ${process.arch}`);
   lines.push(`Node.js: ${process.version}`);
+  lines.push('');
+  lines.push('## Methodology');
+  lines.push('');
+  lines.push(`- **SheetKit**: ${WARMUP_RUNS} warmup run(s) + ${BENCH_RUNS} measured runs per scenario. Median time reported.`);
+  lines.push('- **ExcelJS / SheetJS**: Single run per scenario (comparison context only).');
   lines.push('');
 
   lines.push('## Libraries');
@@ -1180,8 +1339,8 @@ function generateMarkdownReport(): string {
     if (subset.length === 0) return;
     lines.push(`### ${title}`);
     lines.push('');
-    lines.push('| Scenario | SheetKit | ExcelJS | SheetJS | Winner |');
-    lines.push('|----------|----------|---------|---------|--------|');
+    lines.push('| Scenario | SheetKit (median) | ExcelJS | SheetJS | Winner |');
+    lines.push('|----------|-------------------|---------|---------|--------|');
 
     const scenarios = [...new Set(subset.map((r) => r.scenario))];
     for (const scenario of scenarios) {
@@ -1211,6 +1370,24 @@ function generateMarkdownReport(): string {
   for (const cat of categories) {
     const subset = results.filter((r) => r.category === cat);
     renderTable(cat, subset);
+  }
+
+  // SheetKit detailed statistics table
+  const skResults = results.filter((r) => r.library === 'SheetKit' && r.timesMs.length > 1);
+  if (skResults.length > 0) {
+    lines.push('### SheetKit Detailed Statistics');
+    lines.push('');
+    lines.push('| Scenario | Median | Min | Max | P95 | Memory (median) |');
+    lines.push('|----------|--------|-----|-----|-----|-----------------|');
+    for (const r of skResults) {
+      const med = formatMs(median(r.timesMs));
+      const min = formatMs(minVal(r.timesMs));
+      const max = formatMs(maxVal(r.timesMs));
+      const p95v = formatMs(p95(r.timesMs));
+      const mem = `${median(r.memoryDeltas).toFixed(1)}MB`;
+      lines.push(`| ${r.scenario} | ${med} | ${min} | ${max} | ${p95v} | ${mem} |`);
+    }
+    lines.push('');
   }
 
   // Summary
@@ -1247,6 +1424,7 @@ function generateMarkdownReport(): string {
 async function main() {
   console.log('Excel Library Benchmark');
   console.log(`Platform: ${process.platform} ${process.arch} | Node.js: ${process.version}`);
+  console.log(`SheetKit: ${WARMUP_RUNS} warmup + ${BENCH_RUNS} measured runs per scenario`);
   console.log(`Run with --expose-gc for accurate memory measurements.\n`);
 
   const { mkdirSync } = await import('node:fs');
