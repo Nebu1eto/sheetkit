@@ -56,7 +56,8 @@ Step 1: Bump versions
 ---------------------
 
 The version must be updated in **all** of the following files.
-Do **not** modify generated files (e.g., `packages/sheetkit/index.js`).
+Do **not** modify generated files (e.g., `packages/sheetkit/index.js`,
+`packages/sheetkit/index.d.ts` -- these are built from TypeScript sources).
 
 ### Cargo workspace
 
@@ -163,8 +164,6 @@ Files to stage:
 git add Cargo.toml Cargo.lock \
   packages/sheetkit/Cargo.toml \
   packages/sheetkit/package.json \
-  packages/sheetkit/index.js \
-  packages/sheetkit/index.d.ts \
   packages/darwin-arm64/package.json \
   packages/darwin-x64/package.json \
   packages/linux-arm64-gnu/package.json \
