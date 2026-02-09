@@ -48,6 +48,22 @@ export declare class Workbook {
   getCellValue(sheet: string, cell: string): null | boolean | number | string | DateValue
   /** Set the value of a cell. Pass string, number, boolean, DateValue, or null to clear. */
   setCellValue(sheet: string, cell: string, value: string | number | boolean | DateValue | null): void
+  /**
+   * Set multiple cell values at once. More efficient than calling
+   * setCellValue repeatedly because it crosses the FFI boundary only once.
+   */
+  setCellValues(sheet: string, cells: Array<JsCellEntry>): void
+  /**
+   * Set values in a single row starting from the given column.
+   * Values are placed left-to-right starting at startCol (e.g., "A").
+   */
+  setRowValues(sheet: string, row: number, startCol: string, values: Array<string | number | boolean | DateValue | null>): void
+  /**
+   * Set a block of cell values from a 2D array.
+   * Each inner array is a row, each element is a cell value.
+   * Optionally specify a start cell (default "A1").
+   */
+  setSheetData(sheet: string, data: Array<Array<string | number | boolean | DateValue | null>>, startCell?: string | undefined | null): void
   /** Create a new empty sheet. Returns the 0-based sheet index. */
   newSheet(name: string): number
   /** Delete a sheet by name. */
@@ -306,6 +322,14 @@ export interface JsBorderStyle {
   top?: JsBorderSideStyle
   bottom?: JsBorderSideStyle
   diagonal?: JsBorderSideStyle
+}
+
+/** A cell reference and value pair for batch operations. */
+export interface JsCellEntry {
+  /** Cell reference (e.g., "A1", "B2"). */
+  cell: string
+  /** Cell value: string, number, boolean, DateValue, or null. */
+  value: string | number | boolean | DateValue | null
 }
 
 export interface JsChartConfig {

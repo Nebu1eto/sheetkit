@@ -1885,3 +1885,154 @@ describe('Rich Text', () => {
     expect(val).toBe('HelloWorld');
   });
 });
+
+describe('Batch APIs', () => {
+  const out = tmpFile('test-batch.xlsx');
+  afterEach(async () => cleanup(out));
+
+  it('should set multiple cell values at once with setCellValues', () => {
+    const wb = new Workbook();
+    wb.setCellValues('Sheet1', [
+      { cell: 'A1', value: 'Hello' },
+      { cell: 'B1', value: 42 },
+      { cell: 'C1', value: true },
+      { cell: 'A2', value: 'World' },
+    ]);
+
+    expect(wb.getCellValue('Sheet1', 'A1')).toBe('Hello');
+    expect(wb.getCellValue('Sheet1', 'B1')).toBe(42);
+    expect(wb.getCellValue('Sheet1', 'C1')).toBe(true);
+    expect(wb.getCellValue('Sheet1', 'A2')).toBe('World');
+  });
+
+  it('should clear cells with null in setCellValues', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'existing');
+    wb.setCellValues('Sheet1', [{ cell: 'A1', value: null }]);
+    expect(wb.getCellValue('Sheet1', 'A1')).toBeNull();
+  });
+
+  it('should set row values with setRowValues', () => {
+    const wb = new Workbook();
+    wb.setRowValues('Sheet1', 1, 'A', ['Name', 'Age', 'Active']);
+
+    expect(wb.getCellValue('Sheet1', 'A1')).toBe('Name');
+    expect(wb.getCellValue('Sheet1', 'B1')).toBe('Age');
+    expect(wb.getCellValue('Sheet1', 'C1')).toBe('Active');
+  });
+
+  it('should set row values with column offset', () => {
+    const wb = new Workbook();
+    wb.setRowValues('Sheet1', 2, 'C', [100, 200, 300]);
+
+    expect(wb.getCellValue('Sheet1', 'C2')).toBe(100);
+    expect(wb.getCellValue('Sheet1', 'D2')).toBe(200);
+    expect(wb.getCellValue('Sheet1', 'E2')).toBe(300);
+    // A2 and B2 should be empty
+    expect(wb.getCellValue('Sheet1', 'A2')).toBeNull();
+  });
+
+  it('should set entire sheet data with setSheetData', () => {
+    const wb = new Workbook();
+    wb.setSheetData('Sheet1', [
+      ['Name', 'Score', 'Pass'],
+      ['Alice', 95, true],
+      ['Bob', 80, true],
+      ['Charlie', 55, false],
+    ]);
+
+    expect(wb.getCellValue('Sheet1', 'A1')).toBe('Name');
+    expect(wb.getCellValue('Sheet1', 'B1')).toBe('Score');
+    expect(wb.getCellValue('Sheet1', 'C1')).toBe('Pass');
+    expect(wb.getCellValue('Sheet1', 'A2')).toBe('Alice');
+    expect(wb.getCellValue('Sheet1', 'B2')).toBe(95);
+    expect(wb.getCellValue('Sheet1', 'C2')).toBe(true);
+    expect(wb.getCellValue('Sheet1', 'A4')).toBe('Charlie');
+    expect(wb.getCellValue('Sheet1', 'B4')).toBe(55);
+    expect(wb.getCellValue('Sheet1', 'C4')).toBe(false);
+  });
+
+  it('should set sheet data with start cell offset', () => {
+    const wb = new Workbook();
+    wb.setSheetData(
+      'Sheet1',
+      [
+        [1, 2],
+        [3, 4],
+      ],
+      'C3',
+    );
+
+    expect(wb.getCellValue('Sheet1', 'C3')).toBe(1);
+    expect(wb.getCellValue('Sheet1', 'D3')).toBe(2);
+    expect(wb.getCellValue('Sheet1', 'C4')).toBe(3);
+    expect(wb.getCellValue('Sheet1', 'D4')).toBe(4);
+    // A1 should be empty
+    expect(wb.getCellValue('Sheet1', 'A1')).toBeNull();
+  });
+
+  it('should roundtrip batch data through save/open', async () => {
+    const wb = new Workbook();
+    wb.setSheetData('Sheet1', [
+      ['Header1', 'Header2'],
+      [100, true],
+      ['text', 42.5],
+    ]);
+    await wb.save(out);
+
+    const wb2 = Workbook.openSync(out);
+    expect(wb2.getCellValue('Sheet1', 'A1')).toBe('Header1');
+    expect(wb2.getCellValue('Sheet1', 'B1')).toBe('Header2');
+    expect(wb2.getCellValue('Sheet1', 'A2')).toBe(100);
+    expect(wb2.getCellValue('Sheet1', 'B2')).toBe(true);
+    expect(wb2.getCellValue('Sheet1', 'A3')).toBe('text');
+    expect(wb2.getCellValue('Sheet1', 'B3')).toBe(42.5);
+  });
+
+  it('should handle large batch efficiently', () => {
+    const wb = new Workbook();
+    const rows: (string | number)[][] = [];
+    for (let r = 0; r < 1000; r++) {
+      const row: (string | number)[] = [];
+      for (let c = 0; c < 20; c++) {
+        row.push(r * 20 + c);
+      }
+      rows.push(row);
+    }
+    wb.setSheetData('Sheet1', rows);
+
+    // Spot-check
+    expect(wb.getCellValue('Sheet1', 'A1')).toBe(0);
+    expect(wb.getCellValue('Sheet1', 'T1')).toBe(19);
+    expect(wb.getCellValue('Sheet1', 'A1000')).toBe(999 * 20);
+    expect(wb.getCellValue('Sheet1', 'T1000')).toBe(999 * 20 + 19);
+  });
+
+  it('should handle mixed types in setSheetData', () => {
+    const wb = new Workbook();
+    wb.setSheetData('Sheet1', [
+      ['text', 42, true, null],
+    ]);
+
+    expect(wb.getCellValue('Sheet1', 'A1')).toBe('text');
+    expect(wb.getCellValue('Sheet1', 'B1')).toBe(42);
+    expect(wb.getCellValue('Sheet1', 'C1')).toBe(true);
+    expect(wb.getCellValue('Sheet1', 'D1')).toBeNull();
+  });
+
+  it('should handle ragged rows in setSheetData', () => {
+    const wb = new Workbook();
+    wb.setSheetData('Sheet1', [
+      ['a', 'b', 'c'],
+      ['d'],
+      ['e', 'f'],
+    ]);
+
+    expect(wb.getCellValue('Sheet1', 'A1')).toBe('a');
+    expect(wb.getCellValue('Sheet1', 'C1')).toBe('c');
+    expect(wb.getCellValue('Sheet1', 'A2')).toBe('d');
+    expect(wb.getCellValue('Sheet1', 'B2')).toBeNull();
+    expect(wb.getCellValue('Sheet1', 'A3')).toBe('e');
+    expect(wb.getCellValue('Sheet1', 'B3')).toBe('f');
+  });
+});
