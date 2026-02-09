@@ -460,7 +460,7 @@ wb.addDataValidation("Sheet1", {
 });
 ```
 
-> Node.js에서 `validationType`은 지원되는 값(`list`, `whole`, `decimal`, `date`, `time`, `textLength`, `custom`)만 허용되며, 지원되지 않는 값은 오류를 반환한다.
+> Node.js에서 `validationType`은 지원되는 값(`none`, `list`, `whole`, `decimal`, `date`, `time`, `textLength`, `custom`)만 허용되며, 지원되지 않는 값은 오류를 반환한다. `sqref`는 유효한 셀 범위여야 한다(예: `"A1:B10"`). `none` 이외의 타입에는 `formula1`이 필수이며, `between`/`notBetween` 연산자에는 `formula2`도 필수이다.
 
 ### `get_data_validations` / `getDataValidations`
 
@@ -494,10 +494,11 @@ wb.remove_data_validation("Sheet1", "A1:A100")?;
 wb.removeDataValidation("Sheet1", "A1:A100");
 ```
 
-### 유효성 검사 유형 (7종)
+### 유효성 검사 유형 (8종)
 
 | 값 | 설명 |
 |----|------|
+| `none` | 제한 없음 (프롬프트/메시지만 표시) |
 | `whole` | 정수 |
 | `decimal` | 소수 |
 | `list` | 드롭다운 목록 |
@@ -507,6 +508,8 @@ wb.removeDataValidation("Sheet1", "A1:A100");
 | `custom` | 사용자 정의 수식 |
 
 ### 연산자 (8종)
+
+TypeScript 입력은 대소문자를 구분하지 않으며, 출력은 OOXML 규격에 맞는 camelCase를 사용한다:
 
 | 값 | 설명 |
 |----|------|

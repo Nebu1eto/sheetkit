@@ -429,7 +429,7 @@ wb.addDataValidation("Sheet1", {
 });
 ```
 
-> Note (Node.js): `validationType` must be a supported value (`list`, `whole`, `decimal`, `date`, `time`, `textLength`, `custom`). Unknown values return an error.
+> Note (Node.js): `validationType` must be a supported value (`none`, `list`, `whole`, `decimal`, `date`, `time`, `textLength`, `custom`). Unknown values return an error. The `sqref` must be a valid cell range (e.g. `"A1:B10"`). For types other than `none`, `formula1` is required. For `between`/`notBetween` operators, `formula2` is also required.
 
 ### `get_data_validations` / `getDataValidations`
 
@@ -467,28 +467,29 @@ wb.removeDataValidation("Sheet1", "B2:B100");
 
 | Rust | TypeScript | Description |
 |---|---|---|
+| `ValidationType::None` | `"none"` | No constraint (prompt/message only) |
 | `ValidationType::Whole` | `"whole"` | Whole number |
 | `ValidationType::Decimal` | `"decimal"` | Decimal number |
 | `ValidationType::List` | `"list"` | Dropdown list |
 | `ValidationType::Date` | `"date"` | Date value |
 | `ValidationType::Time` | `"time"` | Time value |
-| `ValidationType::TextLength` | `"textlength"` | Text length constraint |
+| `ValidationType::TextLength` | `"textLength"` | Text length constraint |
 | `ValidationType::Custom` | `"custom"` | Custom formula |
 
 ### Validation Operators
 
-Used with `Whole`, `Decimal`, `Date`, `Time`, and `TextLength` types:
+Used with `Whole`, `Decimal`, `Date`, `Time`, and `TextLength` types. TypeScript input is case-insensitive; output uses camelCase matching the OOXML spec:
 
 | Rust | TypeScript |
 |---|---|
 | `ValidationOperator::Between` | `"between"` |
-| `ValidationOperator::NotBetween` | `"notbetween"` |
+| `ValidationOperator::NotBetween` | `"notBetween"` |
 | `ValidationOperator::Equal` | `"equal"` |
-| `ValidationOperator::NotEqual` | `"notequal"` |
-| `ValidationOperator::LessThan` | `"lessthan"` |
-| `ValidationOperator::LessThanOrEqual` | `"lessthanorequal"` |
-| `ValidationOperator::GreaterThan` | `"greaterthan"` |
-| `ValidationOperator::GreaterThanOrEqual` | `"greaterthanorequal"` |
+| `ValidationOperator::NotEqual` | `"notEqual"` |
+| `ValidationOperator::LessThan` | `"lessThan"` |
+| `ValidationOperator::LessThanOrEqual` | `"lessThanOrEqual"` |
+| `ValidationOperator::GreaterThan` | `"greaterThan"` |
+| `ValidationOperator::GreaterThanOrEqual` | `"greaterThanOrEqual"` |
 
 ### Error Styles
 

@@ -556,6 +556,96 @@ wb.addImage('Sheet1', {
 
 ---
 
+### Data Validation
+
+Add data validation rules to cell ranges to restrict what values users can enter.
+
+#### Validation Types
+
+| Rust Variant | TS String | Description |
+|---|---|---|
+| `ValidationType::None` | `"none"` | No constraint (prompt/message only) |
+| `ValidationType::Whole` | `"whole"` | Whole number constraint |
+| `ValidationType::Decimal` | `"decimal"` | Decimal number constraint |
+| `ValidationType::List` | `"list"` | Dropdown list |
+| `ValidationType::Date` | `"date"` | Date constraint |
+| `ValidationType::Time` | `"time"` | Time constraint |
+| `ValidationType::TextLength` | `"textLength"` | Text length constraint |
+| `ValidationType::Custom` | `"custom"` | Custom formula constraint |
+
+#### Operators
+
+`Between`, `NotBetween`, `Equal`, `NotEqual`, `LessThan`, `LessThanOrEqual`, `GreaterThan`, `GreaterThanOrEqual`.
+
+In TypeScript, input is case-insensitive; output uses camelCase: `"between"`, `"notBetween"`, `"lessThan"`, etc.
+
+The `sqref` must be a valid cell range reference. For types other than `none`, `formula1` is required. For `between`/`notBetween` operators, `formula2` is also required.
+
+#### Error Styles
+
+`Stop`, `Warning`, `Information` -- controls the severity of the error dialog shown when invalid data is entered.
+
+#### Rust
+
+```rust
+use sheetkit::{DataValidationConfig, ErrorStyle, ValidationType, Workbook};
+
+let mut wb = Workbook::new();
+
+// Dropdown list validation
+wb.add_data_validation(
+    "Sheet1",
+    &DataValidationConfig {
+        sqref: "C2:C100".into(),
+        validation_type: ValidationType::List,
+        operator: None,
+        formula1: Some("\"Achieved,Not Achieved,In Progress\"".into()),
+        formula2: None,
+        allow_blank: true,
+        show_input_message: true,
+        prompt_title: Some("Select Status".into()),
+        prompt_message: Some("Choose from the dropdown".into()),
+        show_error_message: true,
+        error_style: Some(ErrorStyle::Stop),
+        error_title: Some("Invalid".into()),
+        error_message: Some("Please select from the list".into()),
+    },
+)?;
+
+// Get all validations on a sheet
+let validations = wb.get_data_validations("Sheet1")?;
+
+// Remove a validation by cell range reference
+wb.remove_data_validation("Sheet1", "C2:C100")?;
+```
+
+#### TypeScript
+
+```typescript
+// Dropdown list validation
+wb.addDataValidation('Sheet1', {
+    sqref: 'C2:C100',
+    validationType: 'list',
+    formula1: '"Achieved,Not Achieved,In Progress"',
+    allowBlank: true,
+    showInputMessage: true,
+    promptTitle: 'Select Status',
+    promptMessage: 'Choose from the dropdown',
+    showErrorMessage: true,
+    errorStyle: 'stop',
+    errorTitle: 'Invalid',
+    errorMessage: 'Please select from the list',
+});
+
+// Get all validations on a sheet
+const validations = wb.getDataValidations('Sheet1');
+
+// Remove a validation by cell range reference
+wb.removeDataValidation('Sheet1', 'C2:C100');
+```
+
+---
+
 ### Merge Cells
 
 Merge a rectangular range of cells into a single visual cell. The value of the top-left cell is displayed across the merged area.

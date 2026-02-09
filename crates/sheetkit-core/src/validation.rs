@@ -3,12 +3,14 @@
 //! Provides a high-level API for adding, querying, and removing data validation
 //! rules on worksheet cells.
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use sheetkit_xml::worksheet::{DataValidation, DataValidations, WorksheetXml};
 
 /// The type of data validation to apply.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ValidationType {
+    /// No value restriction (prompt/message only).
+    None,
     Whole,
     Decimal,
     List,
@@ -22,6 +24,7 @@ impl ValidationType {
     /// Convert to the XML attribute string.
     pub fn as_str(&self) -> &str {
         match self {
+            ValidationType::None => "none",
             ValidationType::Whole => "whole",
             ValidationType::Decimal => "decimal",
             ValidationType::List => "list",
@@ -35,6 +38,7 @@ impl ValidationType {
     /// Parse from the XML attribute string.
     pub fn parse(s: &str) -> Option<Self> {
         match s {
+            "none" => Some(ValidationType::None),
             "whole" => Some(ValidationType::Whole),
             "decimal" => Some(ValidationType::Decimal),
             "list" => Some(ValidationType::List),
@@ -44,6 +48,18 @@ impl ValidationType {
             "custom" => Some(ValidationType::Custom),
             _ => None,
         }
+    }
+
+    /// Whether this type requires an operator.
+    pub fn uses_operator(&self) -> bool {
+        matches!(
+            self,
+            ValidationType::Whole
+                | ValidationType::Decimal
+                | ValidationType::Date
+                | ValidationType::Time
+                | ValidationType::TextLength
+        )
     }
 }
 
@@ -88,6 +104,14 @@ impl ValidationOperator {
             "greaterThanOrEqual" => Some(ValidationOperator::GreaterThanOrEqual),
             _ => None,
         }
+    }
+
+    /// Whether this operator requires two formulas.
+    pub fn needs_formula2(&self) -> bool {
+        matches!(
+            self,
+            ValidationOperator::Between | ValidationOperator::NotBetween
+        )
     }
 }
 
@@ -155,6 +179,7 @@ impl DataValidationConfig {
     /// Create a dropdown list validation.
     ///
     /// The items are joined with commas and quoted for the formula.
+    /// Individual items must not contain commas (Excel limitation).
     pub fn dropdown(sqref: &str, items: &[&str]) -> Self {
         let formula = format!("\"{}\"", items.join(","));
         Self {
@@ -232,12 +257,79 @@ impl DataValidationConfig {
     }
 }
 
+/// Validate that `sqref` looks like a valid cell range reference.
+///
+/// Accepts single refs ("A1"), ranges ("A1:B10"), and space-separated
+/// multi-area refs ("A1:B10 D1:E10"). This is not exhaustive but catches
+/// obvious mistakes like empty strings.
+fn validate_sqref(sqref: &str) -> Result<()> {
+    if sqref.is_empty() {
+        return Err(Error::InvalidReference {
+            reference: sqref.to_string(),
+        });
+    }
+    // Each part (split by space) must match a cell or range pattern.
+    for part in sqref.split(' ') {
+        if part.is_empty() {
+            return Err(Error::InvalidReference {
+                reference: sqref.to_string(),
+            });
+        }
+        // Allow "A1" or "A1:B10" shapes.  Each side must start with a letter
+        // and contain at least one digit.
+        for side in part.split(':') {
+            let has_alpha = side.chars().any(|c| c.is_ascii_alphabetic());
+            let has_digit = side.chars().any(|c| c.is_ascii_digit());
+            if !has_alpha || !has_digit {
+                return Err(Error::InvalidReference {
+                    reference: sqref.to_string(),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Validate formula constraints for the given validation type and operator.
+fn validate_formulas(config: &DataValidationConfig) -> Result<()> {
+    match &config.validation_type {
+        ValidationType::None => {}
+        ValidationType::List | ValidationType::Custom => {
+            if config.formula1.as_ref().is_none_or(|f| f.is_empty()) {
+                return Err(Error::InvalidArgument(format!(
+                    "formula1 is required for {:?} validation",
+                    config.validation_type
+                )));
+            }
+        }
+        _ => {
+            // Types that use an operator need formula1 at minimum.
+            if config.formula1.as_ref().is_none_or(|f| f.is_empty()) {
+                return Err(Error::InvalidArgument(format!(
+                    "formula1 is required for {:?} validation",
+                    config.validation_type
+                )));
+            }
+            if let Some(op) = &config.operator {
+                if op.needs_formula2() && config.formula2.as_ref().is_none_or(|f| f.is_empty()) {
+                    return Err(Error::InvalidArgument(format!(
+                        "formula2 is required for {:?} operator",
+                        op
+                    )));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Convert a `DataValidationConfig` to the XML `DataValidation` struct.
 pub fn config_to_xml(config: &DataValidationConfig) -> DataValidation {
     DataValidation {
         validation_type: Some(config.validation_type.as_str().to_string()),
         operator: config.operator.as_ref().map(|o| o.as_str().to_string()),
         allow_blank: if config.allow_blank { Some(true) } else { None },
+        show_drop_down: None,
         show_input_message: if config.show_input_message {
             Some(true)
         } else {
@@ -249,6 +341,7 @@ pub fn config_to_xml(config: &DataValidationConfig) -> DataValidation {
             None
         },
         error_style: config.error_style.as_ref().map(|e| e.as_str().to_string()),
+        ime_mode: None,
         error_title: config.error_title.clone(),
         error: config.error_message.clone(),
         prompt_title: config.prompt_title.clone(),
@@ -267,7 +360,7 @@ fn xml_to_config(dv: &DataValidation) -> DataValidationConfig {
             .validation_type
             .as_deref()
             .and_then(ValidationType::parse)
-            .unwrap_or(ValidationType::Whole),
+            .unwrap_or(ValidationType::None),
         operator: dv.operator.as_deref().and_then(ValidationOperator::parse),
         formula1: dv.formula1.clone(),
         formula2: dv.formula2.clone(),
@@ -284,9 +377,14 @@ fn xml_to_config(dv: &DataValidation) -> DataValidationConfig {
 
 /// Add a data validation to a worksheet.
 pub fn add_validation(ws: &mut WorksheetXml, config: &DataValidationConfig) -> Result<()> {
+    validate_sqref(&config.sqref)?;
+    validate_formulas(config)?;
     let dv = config_to_xml(config);
     let dvs = ws.data_validations.get_or_insert_with(|| DataValidations {
         count: Some(0),
+        disable_prompts: None,
+        x_window: None,
+        y_window: None,
         data_validations: Vec::new(),
     });
     dvs.data_validations.push(dv);
@@ -507,6 +605,7 @@ mod tests {
 
     #[test]
     fn test_validation_type_as_str() {
+        assert_eq!(ValidationType::None.as_str(), "none");
         assert_eq!(ValidationType::Whole.as_str(), "whole");
         assert_eq!(ValidationType::Decimal.as_str(), "decimal");
         assert_eq!(ValidationType::List.as_str(), "list");
@@ -539,5 +638,228 @@ mod tests {
         assert_eq!(ErrorStyle::Stop.as_str(), "stop");
         assert_eq!(ErrorStyle::Warning.as_str(), "warning");
         assert_eq!(ErrorStyle::Information.as_str(), "information");
+    }
+
+    #[test]
+    fn test_none_type_roundtrip() {
+        assert_eq!(ValidationType::parse("none"), Some(ValidationType::None));
+        assert_eq!(ValidationType::None.as_str(), "none");
+    }
+
+    #[test]
+    fn test_unknown_type_defaults_to_none() {
+        let dv = DataValidation {
+            validation_type: Some("unknownFuture".to_string()),
+            operator: None,
+            allow_blank: None,
+            show_drop_down: None,
+            show_input_message: None,
+            show_error_message: None,
+            error_style: None,
+            ime_mode: None,
+            error_title: None,
+            error: None,
+            prompt_title: None,
+            prompt: None,
+            sqref: "A1".to_string(),
+            formula1: None,
+            formula2: None,
+        };
+        let config = xml_to_config(&dv);
+        assert_eq!(config.validation_type, ValidationType::None);
+    }
+
+    #[test]
+    fn test_validate_sqref_valid() {
+        assert!(validate_sqref("A1").is_ok());
+        assert!(validate_sqref("A1:B10").is_ok());
+        assert!(validate_sqref("A1:B10 D1:E10").is_ok());
+        assert!(validate_sqref("AA100:ZZ999").is_ok());
+    }
+
+    #[test]
+    fn test_validate_sqref_invalid() {
+        assert!(validate_sqref("").is_err());
+        assert!(validate_sqref("hello").is_err());
+        assert!(validate_sqref("123").is_err());
+        assert!(validate_sqref("A1: B10").is_err()); // space inside range
+    }
+
+    #[test]
+    fn test_add_validation_rejects_empty_sqref() {
+        let mut ws = WorksheetXml::default();
+        let config = DataValidationConfig {
+            sqref: "".to_string(),
+            validation_type: ValidationType::List,
+            operator: None,
+            formula1: Some("\"A,B\"".to_string()),
+            formula2: None,
+            allow_blank: false,
+            error_style: None,
+            error_title: None,
+            error_message: None,
+            prompt_title: None,
+            prompt_message: None,
+            show_input_message: false,
+            show_error_message: false,
+        };
+        assert!(add_validation(&mut ws, &config).is_err());
+    }
+
+    #[test]
+    fn test_add_validation_rejects_missing_formula1_for_list() {
+        let mut ws = WorksheetXml::default();
+        let config = DataValidationConfig {
+            sqref: "A1:A10".to_string(),
+            validation_type: ValidationType::List,
+            operator: None,
+            formula1: None,
+            formula2: None,
+            allow_blank: false,
+            error_style: None,
+            error_title: None,
+            error_message: None,
+            prompt_title: None,
+            prompt_message: None,
+            show_input_message: false,
+            show_error_message: false,
+        };
+        assert!(add_validation(&mut ws, &config).is_err());
+    }
+
+    #[test]
+    fn test_add_validation_rejects_missing_formula2_for_between() {
+        let mut ws = WorksheetXml::default();
+        let config = DataValidationConfig {
+            sqref: "A1:A10".to_string(),
+            validation_type: ValidationType::Whole,
+            operator: Some(ValidationOperator::Between),
+            formula1: Some("1".to_string()),
+            formula2: None,
+            allow_blank: false,
+            error_style: None,
+            error_title: None,
+            error_message: None,
+            prompt_title: None,
+            prompt_message: None,
+            show_input_message: false,
+            show_error_message: false,
+        };
+        assert!(add_validation(&mut ws, &config).is_err());
+    }
+
+    #[test]
+    fn test_none_type_no_formula_required() {
+        let mut ws = WorksheetXml::default();
+        let config = DataValidationConfig {
+            sqref: "A1:A10".to_string(),
+            validation_type: ValidationType::None,
+            operator: None,
+            formula1: None,
+            formula2: None,
+            allow_blank: false,
+            error_style: None,
+            error_title: None,
+            error_message: None,
+            prompt_title: Some("Hint".to_string()),
+            prompt_message: Some("Enter a value".to_string()),
+            show_input_message: true,
+            show_error_message: false,
+        };
+        assert!(add_validation(&mut ws, &config).is_ok());
+        let configs = get_validations(&ws);
+        assert_eq!(configs[0].validation_type, ValidationType::None);
+    }
+
+    #[test]
+    fn test_uses_operator() {
+        assert!(!ValidationType::None.uses_operator());
+        assert!(ValidationType::Whole.uses_operator());
+        assert!(ValidationType::Decimal.uses_operator());
+        assert!(!ValidationType::List.uses_operator());
+        assert!(ValidationType::Date.uses_operator());
+        assert!(ValidationType::Time.uses_operator());
+        assert!(ValidationType::TextLength.uses_operator());
+        assert!(!ValidationType::Custom.uses_operator());
+    }
+
+    #[test]
+    fn test_needs_formula2() {
+        assert!(ValidationOperator::Between.needs_formula2());
+        assert!(ValidationOperator::NotBetween.needs_formula2());
+        assert!(!ValidationOperator::Equal.needs_formula2());
+        assert!(!ValidationOperator::GreaterThan.needs_formula2());
+    }
+
+    #[test]
+    fn test_show_drop_down_preserved_in_xml() {
+        let dv = DataValidation {
+            validation_type: Some("list".to_string()),
+            operator: None,
+            allow_blank: None,
+            show_drop_down: Some(true),
+            show_input_message: None,
+            show_error_message: None,
+            error_style: None,
+            ime_mode: None,
+            error_title: None,
+            error: None,
+            prompt_title: None,
+            prompt: None,
+            sqref: "A1".to_string(),
+            formula1: Some("\"A,B\"".to_string()),
+            formula2: None,
+        };
+        let xml = quick_xml::se::to_string(&dv).unwrap();
+        assert!(xml.contains("showDropDown"));
+
+        let parsed: DataValidation = quick_xml::de::from_str(&xml).unwrap();
+        assert_eq!(parsed.show_drop_down, Some(true));
+    }
+
+    #[test]
+    fn test_ime_mode_preserved_in_xml() {
+        let dv = DataValidation {
+            validation_type: Some("whole".to_string()),
+            operator: None,
+            allow_blank: None,
+            show_drop_down: None,
+            show_input_message: None,
+            show_error_message: None,
+            error_style: None,
+            ime_mode: Some("hiragana".to_string()),
+            error_title: None,
+            error: None,
+            prompt_title: None,
+            prompt: None,
+            sqref: "A1".to_string(),
+            formula1: Some("1".to_string()),
+            formula2: None,
+        };
+        let xml = quick_xml::se::to_string(&dv).unwrap();
+        assert!(xml.contains("imeMode"));
+
+        let parsed: DataValidation = quick_xml::de::from_str(&xml).unwrap();
+        assert_eq!(parsed.ime_mode, Some("hiragana".to_string()));
+    }
+
+    #[test]
+    fn test_container_attrs_preserved_in_xml() {
+        let dvs = DataValidations {
+            count: Some(0),
+            disable_prompts: Some(true),
+            x_window: Some(100),
+            y_window: Some(200),
+            data_validations: Vec::new(),
+        };
+        let xml = quick_xml::se::to_string(&dvs).unwrap();
+        assert!(xml.contains("disablePrompts"));
+        assert!(xml.contains("xWindow"));
+        assert!(xml.contains("yWindow"));
+
+        let parsed: DataValidations = quick_xml::de::from_str(&xml).unwrap();
+        assert_eq!(parsed.disable_prompts, Some(true));
+        assert_eq!(parsed.x_window, Some(100));
+        assert_eq!(parsed.y_window, Some(200));
     }
 }

@@ -348,6 +348,7 @@ pub(crate) fn parse_image_format(s: &str) -> Result<ImageFormat> {
 
 pub(crate) fn parse_validation_type(s: &str) -> Result<ValidationType> {
     let validation_type = match s.to_lowercase().as_str() {
+        "none" => ValidationType::None,
         "whole" => ValidationType::Whole,
         "decimal" => ValidationType::Decimal,
         "list" => ValidationType::List,
@@ -387,12 +388,13 @@ pub(crate) fn parse_error_style(s: &str) -> Option<ErrorStyle> {
 
 pub(crate) fn validation_type_to_string(vt: &ValidationType) -> String {
     match vt {
+        ValidationType::None => "none".to_string(),
         ValidationType::Whole => "whole".to_string(),
         ValidationType::Decimal => "decimal".to_string(),
         ValidationType::List => "list".to_string(),
         ValidationType::Date => "date".to_string(),
         ValidationType::Time => "time".to_string(),
-        ValidationType::TextLength => "textlength".to_string(),
+        ValidationType::TextLength => "textLength".to_string(),
         ValidationType::Custom => "custom".to_string(),
     }
 }
@@ -400,13 +402,13 @@ pub(crate) fn validation_type_to_string(vt: &ValidationType) -> String {
 pub(crate) fn validation_operator_to_string(vo: &ValidationOperator) -> String {
     match vo {
         ValidationOperator::Between => "between".to_string(),
-        ValidationOperator::NotBetween => "notbetween".to_string(),
+        ValidationOperator::NotBetween => "notBetween".to_string(),
         ValidationOperator::Equal => "equal".to_string(),
-        ValidationOperator::NotEqual => "notequal".to_string(),
-        ValidationOperator::LessThan => "lessthan".to_string(),
-        ValidationOperator::LessThanOrEqual => "lessthanorequal".to_string(),
-        ValidationOperator::GreaterThan => "greaterthan".to_string(),
-        ValidationOperator::GreaterThanOrEqual => "greaterthanorequal".to_string(),
+        ValidationOperator::NotEqual => "notEqual".to_string(),
+        ValidationOperator::LessThan => "lessThan".to_string(),
+        ValidationOperator::LessThanOrEqual => "lessThanOrEqual".to_string(),
+        ValidationOperator::GreaterThan => "greaterThan".to_string(),
+        ValidationOperator::GreaterThanOrEqual => "greaterThanOrEqual".to_string(),
     }
 }
 
