@@ -9,21 +9,19 @@ use sheetkit_xml::worksheet::{CellTypeTag, Row, WorksheetXml};
 use crate::cell::CellValue;
 use crate::error::{Error, Result};
 use crate::sst::SharedStringTable;
-use crate::utils::cell_ref::{
-    cell_name_to_coordinates, column_number_to_name, coordinates_to_cell_name,
-};
+use crate::utils::cell_ref::{cell_name_to_coordinates, coordinates_to_cell_name};
 use crate::utils::constants::{MAX_ROWS, MAX_ROW_HEIGHT};
 
 /// Get all rows with their data from a worksheet.
 ///
-/// Returns a Vec of `(row_number, Vec<(column_name, CellValue)>)` tuples.
-/// Only rows that contain at least one cell are included (sparse).
-/// The SST is used to resolve shared string references.
+/// Returns a Vec of `(row_number, Vec<(column_number, CellValue)>)` tuples.
+/// Column numbers are 1-based (A=1, B=2, ...). Only rows that contain at
+/// least one cell are included (sparse).
 #[allow(clippy::type_complexity)]
 pub fn get_rows(
     ws: &WorksheetXml,
     sst: &SharedStringTable,
-) -> Result<Vec<(u32, Vec<(String, CellValue)>)>> {
+) -> Result<Vec<(u32, Vec<(u32, CellValue)>)>> {
     let mut result = Vec::new();
 
     for row in &ws.sheet_data.rows {
@@ -33,15 +31,13 @@ pub fn get_rows(
 
         let mut cells = Vec::new();
         for cell in &row.cells {
-            // Use cached column number when available; fall back to parsing.
             let col_num = if cell.col > 0 {
                 cell.col
             } else {
                 cell_name_to_coordinates(cell.r.as_str())?.0
             };
-            let col_name = column_number_to_name(col_num)?;
             let value = resolve_cell_value(cell, sst);
-            cells.push((col_name, value));
+            cells.push((col_num, value));
         }
 
         result.push((row.r, cells));
@@ -50,15 +46,34 @@ pub fn get_rows(
     Ok(result)
 }
 
-/// Resolve the value of an XML cell to a [`CellValue`], using the SST for
-/// shared string lookups.
-fn resolve_cell_value(cell: &sheetkit_xml::worksheet::Cell, sst: &SharedStringTable) -> CellValue {
-    // Check for formula first.
-    if let Some(ref formula) = cell.f {
-        let expr = formula.value.clone().unwrap_or_default();
-        let cached = match (cell.t, &cell.v) {
+/// Look up a shared string by index string. Returns `CellValue::Empty` if the
+/// index is not a valid integer or the SST does not contain the entry.
+pub fn resolve_sst_value(sst: &SharedStringTable, index: &str) -> CellValue {
+    let idx: usize = match index.parse() {
+        Ok(i) => i,
+        Err(_) => return CellValue::Empty,
+    };
+    let s = sst.get(idx).unwrap_or("").to_string();
+    CellValue::String(s)
+}
+
+/// Resolve a cell's typed value from its raw XML components.
+///
+/// Handles all cell type tags (shared string, boolean, error, inline string,
+/// formula string, number) and SST lookup. This is the core dispatch that both
+/// `resolve_cell_value` and future buffer-pack paths share.
+pub fn parse_cell_type_value(
+    cell_type: CellTypeTag,
+    value: Option<&str>,
+    formula: Option<&sheetkit_xml::worksheet::CellFormula>,
+    inline_str: Option<&sheetkit_xml::worksheet::InlineString>,
+    sst: &SharedStringTable,
+) -> CellValue {
+    if let Some(f) = formula {
+        let expr = f.value.clone().unwrap_or_default();
+        let cached = match (cell_type, value) {
             (CellTypeTag::Boolean, Some(v)) => Some(Box::new(CellValue::Bool(v == "1"))),
-            (CellTypeTag::Error, Some(v)) => Some(Box::new(CellValue::Error(v.clone()))),
+            (CellTypeTag::Error, Some(v)) => Some(Box::new(CellValue::Error(v.to_string()))),
             (_, Some(v)) => v
                 .parse::<f64>()
                 .ok()
@@ -71,25 +86,12 @@ fn resolve_cell_value(cell: &sheetkit_xml::worksheet::Cell, sst: &SharedStringTa
         };
     }
 
-    let cell_value = cell.v.as_deref();
-
-    match (cell.t, cell_value) {
-        (CellTypeTag::SharedString, Some(v)) => {
-            let idx: usize = match v.parse() {
-                Ok(i) => i,
-                Err(_) => return CellValue::Empty,
-            };
-            let s = sst.get(idx).unwrap_or("").to_string();
-            CellValue::String(s)
-        }
+    match (cell_type, value) {
+        (CellTypeTag::SharedString, Some(v)) => resolve_sst_value(sst, v),
         (CellTypeTag::Boolean, Some(v)) => CellValue::Bool(v == "1"),
         (CellTypeTag::Error, Some(v)) => CellValue::Error(v.to_string()),
         (CellTypeTag::InlineString, _) => {
-            let s = cell
-                .is
-                .as_ref()
-                .and_then(|is| is.t.clone())
-                .unwrap_or_default();
+            let s = inline_str.and_then(|is| is.t.clone()).unwrap_or_default();
             CellValue::String(s)
         }
         (CellTypeTag::FormulaString, Some(v)) => CellValue::String(v.to_string()),
@@ -99,6 +101,21 @@ fn resolve_cell_value(cell: &sheetkit_xml::worksheet::Cell, sst: &SharedStringTa
         },
         _ => CellValue::Empty,
     }
+}
+
+/// Resolve the value of an XML cell to a [`CellValue`], using the SST for
+/// shared string lookups. Thin wrapper over [`parse_cell_type_value`].
+pub fn resolve_cell_value(
+    cell: &sheetkit_xml::worksheet::Cell,
+    sst: &SharedStringTable,
+) -> CellValue {
+    parse_cell_type_value(
+        cell.t,
+        cell.v.as_deref(),
+        cell.f.as_ref(),
+        cell.is.as_ref(),
+        sst,
+    )
 }
 
 /// Insert `count` empty rows starting at `start_row`, shifting existing rows
@@ -797,21 +814,21 @@ mod tests {
         // Row 1: A1=10, B1=20
         assert_eq!(rows[0].0, 1);
         assert_eq!(rows[0].1.len(), 2);
-        assert_eq!(rows[0].1[0].0, "A");
+        assert_eq!(rows[0].1[0].0, 1);
         assert_eq!(rows[0].1[0].1, CellValue::Number(10.0));
-        assert_eq!(rows[0].1[1].0, "B");
+        assert_eq!(rows[0].1[1].0, 2);
         assert_eq!(rows[0].1[1].1, CellValue::Number(20.0));
 
         // Row 2: A2=30
         assert_eq!(rows[1].0, 2);
         assert_eq!(rows[1].1.len(), 1);
-        assert_eq!(rows[1].1[0].0, "A");
+        assert_eq!(rows[1].1[0].0, 1);
         assert_eq!(rows[1].1[0].1, CellValue::Number(30.0));
 
         // Row 5: C5=50 (sparse -- rows 3 and 4 skipped)
         assert_eq!(rows[2].0, 5);
         assert_eq!(rows[2].1.len(), 1);
-        assert_eq!(rows[2].1[0].0, "C");
+        assert_eq!(rows[2].1[0].0, 3);
         assert_eq!(rows[2].1[0].1, CellValue::Number(50.0));
     }
 

@@ -1056,7 +1056,12 @@ impl Workbook {
                 row: row_num,
                 cells: cells
                     .into_iter()
-                    .map(|(col, val)| cell_value_to_row_cell(col, val))
+                    .map(|(col_num, val)| {
+                        let col_name =
+                            sheetkit_core::utils::cell_ref::column_number_to_name(col_num)
+                                .unwrap_or_default();
+                        cell_value_to_row_cell(col_name, val)
+                    })
                     .collect(),
             })
             .collect())
