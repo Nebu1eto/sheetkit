@@ -31,6 +31,8 @@ packages/sheetkit/buffer-codec.js
 packages/sheetkit/buffer-codec.d.ts
 packages/sheetkit/sheet-data.js
 packages/sheetkit/sheet-data.d.ts
+packages/sheetkit/*.js.map
+packages/sheetkit/*.d.ts.map
 
 # Environment
 .env

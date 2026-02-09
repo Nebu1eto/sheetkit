@@ -55,14 +55,14 @@ cargo fmt --check              # 포매팅 확인
 ```bash
 cd packages/sheetkit
 
-# 전체 빌드: napi (Rust cdylib) -> typecheck -> SWC 트랜스파일 -> tsc 선언 생성
+# 전체 빌드: napi (Rust cdylib) -> typecheck -> tsdown (트랜스파일 + 선언 생성)
 pnpm build
 
 # Node.js 테스트 스위트 실행
 pnpm test
 ```
 
-`pnpm build` 파이프라인은 네 단계를 순서대로 실행한다: `build:napi` (Rust 컴파일 및 `binding.js`/`binding.d.ts` 생성), `typecheck` (tsc --noEmit), `build:js` (SWC로 `.ts`를 `.js`로 트랜스파일), `build:types` (tsc로 `.d.ts` 선언 생성). 생성된 `.js`와 `.d.ts` 파일은 gitignore 처리되며, TypeScript 소스만 커밋된다.
+`pnpm build` 파이프라인은 세 단계를 순서대로 실행한다: `build:napi` (Rust 컴파일 및 `binding.js`/`binding.d.ts` 생성), `typecheck` (tsc --noEmit), `build:ts` (tsdown으로 `.ts`를 `.js`로 트랜스파일하고 `.d.ts` 선언 생성). 생성된 `.js`와 `.d.ts` 파일은 gitignore 처리되며, TypeScript 소스만 커밋된다.
 
 ## 5. 개발 워크플로우
 
@@ -192,7 +192,7 @@ SimpleFileOptions::default().compression_method(CompressionMethod::Deflated)
 
 ### 빌드 파이프라인
 
-`pnpm build`는 네 단계를 실행한다: `build:napi` (Rust + napi 코드 생성으로 `binding.js`/`binding.d.ts` 출력) -> `typecheck` (tsc --noEmit) -> `build:js` (SWC로 `.ts`를 `.js`로 트랜스파일) -> `build:types` (tsc로 `.d.ts` 생성). TypeScript 소스(`index.ts`, `buffer-codec.ts`, `sheet-data.ts`)가 커밋되고, 생성된 `.js`와 `.d.ts` 출력은 gitignore 처리된다.
+`pnpm build`는 세 단계를 실행한다: `build:napi` (Rust + napi 코드 생성으로 `binding.js`/`binding.d.ts` 출력) -> `typecheck` (tsc --noEmit) -> `build:ts` (tsdown으로 `.ts`를 `.js`로 트랜스파일하고 `.d.ts` 생성). TypeScript 소스(`index.ts`, `buffer-codec.ts`, `sheet-data.ts`)가 커밋되고, 생성된 `.js`와 `.d.ts` 출력은 gitignore 처리된다.
 
 ### 파일 구성
 
