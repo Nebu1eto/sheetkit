@@ -11,6 +11,8 @@ import type {
   JsDefinedNameConfig,
   JsDefinedNameInfo,
   JsDocProperties,
+  JsFormControlConfig,
+  JsFormControlInfo,
   JsHeaderFooter,
   JsHyperlinkInfo,
   JsHyperlinkOptions,
@@ -54,6 +56,8 @@ export type {
   JsDocProperties,
   JsFillStyle,
   JsFontStyle,
+  JsFormControlConfig,
+  JsFormControlInfo,
   JsHeaderFooter,
   JsHyperlinkInfo,
   JsHyperlinkOptions,
@@ -355,6 +359,21 @@ class Workbook {
   /** Add a shape to a sheet, anchored between two cells. */
   addShape(sheet: string, config: JsShapeConfig): void {
     this.#native.addShape(sheet, config);
+  }
+
+  /** Add a form control to a sheet. */
+  addFormControl(sheet: string, config: JsFormControlConfig): void {
+    this.#native.addFormControl(sheet, config);
+  }
+
+  /** Get all form controls on a sheet. */
+  getFormControls(sheet: string): JsFormControlInfo[] {
+    return this.#native.getFormControls(sheet);
+  }
+
+  /** Delete a form control by index. */
+  deleteFormControl(sheet: string, index: number): void {
+    this.#native.deleteFormControl(sheet, index);
   }
 
   /** Merge a range of cells on a sheet. */

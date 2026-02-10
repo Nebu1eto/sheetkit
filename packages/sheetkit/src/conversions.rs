@@ -1114,6 +1114,61 @@ pub(crate) fn js_sheet_protection_to_core(
     }
 }
 
+pub(crate) fn parse_form_control_type(s: &str) -> Result<sheetkit_core::control::FormControlType> {
+    sheetkit_core::control::FormControlType::parse(s).map_err(|e| Error::from_reason(e.to_string()))
+}
+
+pub(crate) fn js_form_control_to_core(
+    js: &crate::types::JsFormControlConfig,
+) -> Result<sheetkit_core::control::FormControlConfig> {
+    let control_type = parse_form_control_type(&js.control_type)?;
+    Ok(sheetkit_core::control::FormControlConfig {
+        control_type,
+        cell: js.cell.clone(),
+        width: js.width,
+        height: js.height,
+        text: js.text.clone(),
+        macro_name: js.macro_name.clone(),
+        cell_link: js.cell_link.clone(),
+        checked: js.checked,
+        min_value: js.min_value,
+        max_value: js.max_value,
+        increment: js.increment,
+        page_increment: js.page_increment,
+        current_value: js.current_value,
+        three_d: js.three_d,
+    })
+}
+
+pub(crate) fn core_form_control_info_to_js(
+    info: &sheetkit_core::control::FormControlInfo,
+) -> crate::types::JsFormControlInfo {
+    use sheetkit_core::control::FormControlType;
+    let control_type = match info.control_type {
+        FormControlType::Button => "button",
+        FormControlType::CheckBox => "checkbox",
+        FormControlType::OptionButton => "optionButton",
+        FormControlType::SpinButton => "spinButton",
+        FormControlType::ScrollBar => "scrollBar",
+        FormControlType::GroupBox => "groupBox",
+        FormControlType::Label => "label",
+    }
+    .to_string();
+    crate::types::JsFormControlInfo {
+        control_type,
+        cell: info.cell.clone(),
+        text: info.text.clone(),
+        macro_name: info.macro_name.clone(),
+        cell_link: info.cell_link.clone(),
+        checked: info.checked,
+        current_value: info.current_value,
+        min_value: info.min_value,
+        max_value: info.max_value,
+        increment: info.increment,
+        page_increment: info.page_increment,
+    }
+}
+
 pub(crate) fn js_sparkline_to_core(
     js: &crate::types::JsSparklineConfig,
 ) -> sheetkit_core::sparkline::SparklineConfig {

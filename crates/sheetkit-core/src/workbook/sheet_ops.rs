@@ -28,6 +28,9 @@ impl Workbook {
         if self.sheet_vml.len() < self.worksheets.len() {
             self.sheet_vml.push(None);
         }
+        if self.sheet_form_controls.len() < self.worksheets.len() {
+            self.sheet_form_controls.push(vec![]);
+        }
         self.rebuild_sheet_index();
         Ok(idx)
     }
@@ -51,6 +54,9 @@ impl Workbook {
         }
         if idx < self.sheet_vml.len() {
             self.sheet_vml.remove(idx);
+        }
+        if idx < self.sheet_form_controls.len() {
+            self.sheet_form_controls.remove(idx);
         }
         self.reindex_sheet_maps_after_delete(idx);
         self.rebuild_sheet_index();
@@ -94,6 +100,9 @@ impl Workbook {
         }
         if self.sheet_vml.len() < self.worksheets.len() {
             self.sheet_vml.push(None);
+        }
+        if self.sheet_form_controls.len() < self.worksheets.len() {
+            self.sheet_form_controls.push(vec![]);
         }
         self.rebuild_sheet_index();
         Ok(idx)
@@ -189,6 +198,9 @@ impl Workbook {
         }
         if self.sheet_vml.len() < self.worksheets.len() {
             self.sheet_vml.push(None);
+        }
+        if self.sheet_form_controls.len() < self.worksheets.len() {
+            self.sheet_form_controls.push(vec![]);
         }
         self.rebuild_sheet_index();
         Ok(idx)

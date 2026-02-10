@@ -532,6 +532,33 @@ impl Workbook {
             .map_err(|e| Error::from_reason(e.to_string()))
     }
 
+    /// Add a form control to a sheet.
+    #[napi]
+    pub fn add_form_control(&mut self, sheet: String, config: JsFormControlConfig) -> Result<()> {
+        let core_config = js_form_control_to_core(&config)?;
+        self.inner
+            .add_form_control(&sheet, core_config)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Get all form controls on a sheet.
+    #[napi]
+    pub fn get_form_controls(&self, sheet: String) -> Result<Vec<JsFormControlInfo>> {
+        let controls = self
+            .inner
+            .get_form_controls(&sheet)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        Ok(controls.iter().map(core_form_control_info_to_js).collect())
+    }
+
+    /// Delete a form control by index.
+    #[napi]
+    pub fn delete_form_control(&mut self, sheet: String, index: u32) -> Result<()> {
+        self.inner
+            .delete_form_control(&sheet, index as usize)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
     /// Add an image to a sheet.
     #[napi]
     pub fn add_image(&mut self, sheet: String, config: JsImageConfig) -> Result<()> {

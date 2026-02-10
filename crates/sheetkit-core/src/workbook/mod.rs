@@ -98,6 +98,8 @@ pub struct Workbook {
     /// Per-sheet VML drawing bytes (for legacy comment rendering), parallel to `worksheets`.
     /// `None` means no VML part exists for that sheet.
     sheet_vml: Vec<Option<Vec<u8>>>,
+    /// Per-sheet form control configurations, parallel to `worksheets`.
+    sheet_form_controls: Vec<Vec<crate::control::FormControlConfig>>,
     /// O(1) sheet name -> index lookup cache. Must be kept in sync with
     /// `worksheets` via [`rebuild_sheet_index`].
     sheet_name_index: HashMap<String, usize>,

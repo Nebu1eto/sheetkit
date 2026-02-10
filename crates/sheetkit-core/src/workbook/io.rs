@@ -32,6 +32,7 @@ impl Workbook {
             theme_colors: crate::theme::default_theme_colors(),
             sheet_sparklines: vec![vec![]],
             sheet_vml: vec![None],
+            sheet_form_controls: vec![vec![]],
             sheet_name_index,
         }
     }
@@ -311,6 +312,10 @@ impl Workbook {
             }
         }
 
+        // Parse form controls from VML drawing bytes.
+        let sheet_form_controls: Vec<Vec<crate::control::FormControlConfig>> =
+            vec![vec![]; worksheets.len()];
+
         // Build sheet name -> index lookup.
         let mut sheet_name_index = HashMap::with_capacity(worksheets.len());
         for (i, (name, _)) in worksheets.iter().enumerate() {
@@ -357,6 +362,7 @@ impl Workbook {
             theme_colors,
             sheet_sparklines,
             sheet_vml,
+            sheet_form_controls,
             sheet_name_index,
         })
     }
@@ -453,13 +459,11 @@ impl Workbook {
         let mut content_types = self.content_types.clone();
         let mut worksheet_rels = self.worksheet_rels.clone();
 
-        // Synchronize comment and VML parts with worksheet relationships/content types.
-        let comment_count = self.sheet_comments.iter().filter(|c| c.is_some()).count();
+        // Synchronize comment/form-control VML parts with worksheet relationships/content types.
         // Per-sheet VML bytes to write: (sheet_idx, zip_path, bytes).
-        let mut vml_parts_to_write: Vec<(usize, String, Vec<u8>)> =
-            Vec::with_capacity(comment_count);
+        let mut vml_parts_to_write: Vec<(usize, String, Vec<u8>)> = Vec::new();
         // Per-sheet legacy drawing relationship IDs for worksheet XML serialization.
-        let mut legacy_drawing_rids: HashMap<usize, String> = HashMap::with_capacity(comment_count);
+        let mut legacy_drawing_rids: HashMap<usize, String> = HashMap::new();
 
         // Ensure the vml extension default content type is present if any VML exists.
         let mut has_any_vml = false;
@@ -470,49 +474,81 @@ impl Workbook {
                 .get(sheet_idx)
                 .and_then(|c| c.as_ref())
                 .is_some();
+            let has_form_controls = self
+                .sheet_form_controls
+                .get(sheet_idx)
+                .map(|v| !v.is_empty())
+                .unwrap_or(false);
+
             if let Some(rels) = worksheet_rels.get_mut(&sheet_idx) {
                 rels.relationships
                     .retain(|r| r.rel_type != rel_types::COMMENTS);
                 rels.relationships
                     .retain(|r| r.rel_type != rel_types::VML_DRAWING);
             }
-            if !has_comments {
+
+            let needs_vml = has_comments || has_form_controls;
+            if !needs_vml && !has_comments {
                 continue;
             }
 
-            let comment_path = format!("xl/comments{}.xml", sheet_idx + 1);
-            let part_name = format!("/{}", comment_path);
-            if !content_types
-                .overrides
-                .iter()
-                .any(|o| o.part_name == part_name && o.content_type == mime_types::COMMENTS)
-            {
-                content_types.overrides.push(ContentTypeOverride {
-                    part_name,
-                    content_type: mime_types::COMMENTS.to_string(),
+            if has_comments {
+                let comment_path = format!("xl/comments{}.xml", sheet_idx + 1);
+                let part_name = format!("/{}", comment_path);
+                if !content_types
+                    .overrides
+                    .iter()
+                    .any(|o| o.part_name == part_name && o.content_type == mime_types::COMMENTS)
+                {
+                    content_types.overrides.push(ContentTypeOverride {
+                        part_name,
+                        content_type: mime_types::COMMENTS.to_string(),
+                    });
+                }
+
+                let sheet_path = self.sheet_part_path(sheet_idx);
+                let target = relative_relationship_target(&sheet_path, &comment_path);
+                let rels = worksheet_rels
+                    .entry(sheet_idx)
+                    .or_insert_with(default_relationships);
+                let rid = crate::sheet::next_rid(&rels.relationships);
+                rels.relationships.push(Relationship {
+                    id: rid,
+                    rel_type: rel_types::COMMENTS.to_string(),
+                    target,
+                    target_mode: None,
                 });
             }
 
-            let sheet_path = self.sheet_part_path(sheet_idx);
-            let target = relative_relationship_target(&sheet_path, &comment_path);
-            let rels = worksheet_rels
-                .entry(sheet_idx)
-                .or_insert_with(default_relationships);
-            let rid = crate::sheet::next_rid(&rels.relationships);
-            rels.relationships.push(Relationship {
-                id: rid,
-                rel_type: rel_types::COMMENTS.to_string(),
-                target,
-                target_mode: None,
-            });
+            if !needs_vml {
+                continue;
+            }
 
-            // Determine VML bytes: use preserved bytes if available, otherwise generate.
+            // Build VML bytes combining comments and form controls.
             let vml_path = format!("xl/drawings/vmlDrawing{}.vml", sheet_idx + 1);
-            let vml_bytes =
+            let vml_bytes = if has_comments && has_form_controls {
+                // Both comments and form controls: start with comment VML, then append controls.
+                let comment_vml =
+                    if let Some(bytes) = self.sheet_vml.get(sheet_idx).and_then(|v| v.as_ref()) {
+                        bytes.clone()
+                    } else {
+                        let comments = self.sheet_comments[sheet_idx].as_ref().unwrap();
+                        let cells: Vec<&str> = comments
+                            .comment_list
+                            .comments
+                            .iter()
+                            .map(|c| c.r#ref.as_str())
+                            .collect();
+                        crate::vml::build_vml_drawing(&cells).into_bytes()
+                    };
+                let shape_count = crate::control::count_vml_shapes(&comment_vml);
+                let start_id = 1025 + shape_count;
+                let form_controls = &self.sheet_form_controls[sheet_idx];
+                crate::control::merge_vml_controls(&comment_vml, form_controls, start_id)
+            } else if has_comments {
                 if let Some(bytes) = self.sheet_vml.get(sheet_idx).and_then(|v| v.as_ref()) {
                     bytes.clone()
                 } else {
-                    // Generate VML from comment cell references.
                     let comments = self.sheet_comments[sheet_idx].as_ref().unwrap();
                     let cells: Vec<&str> = comments
                         .comment_list
@@ -521,7 +557,12 @@ impl Workbook {
                         .map(|c| c.r#ref.as_str())
                         .collect();
                     crate::vml::build_vml_drawing(&cells).into_bytes()
-                };
+                }
+            } else {
+                // Form controls only.
+                let form_controls = &self.sheet_form_controls[sheet_idx];
+                crate::control::build_form_control_vml(form_controls, 1025).into_bytes()
+            };
 
             let vml_part_name = format!("/{}", vml_path);
             if !content_types
@@ -535,6 +576,10 @@ impl Workbook {
                 });
             }
 
+            let sheet_path = self.sheet_part_path(sheet_idx);
+            let rels = worksheet_rels
+                .entry(sheet_idx)
+                .or_insert_with(default_relationships);
             let vml_target = relative_relationship_target(&sheet_path, &vml_path);
             let vml_rid = crate::sheet::next_rid(&rels.relationships);
             rels.relationships.push(Relationship {

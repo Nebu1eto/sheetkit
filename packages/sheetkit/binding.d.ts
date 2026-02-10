@@ -130,6 +130,12 @@ export declare class Workbook {
   addChart(sheet: string, fromCell: string, toCell: string, config: JsChartConfig): void
   /** Add a shape to a sheet. */
   addShape(sheet: string, config: JsShapeConfig): void
+  /** Add a form control to a sheet. */
+  addFormControl(sheet: string, config: JsFormControlConfig): void
+  /** Get all form controls on a sheet. */
+  getFormControls(sheet: string): Array<JsFormControlInfo>
+  /** Delete a form control by index. */
+  deleteFormControl(sheet: string, index: number): void
   /** Add an image to a sheet. */
   addImage(sheet: string, config: JsImageConfig): void
   /** Merge a range of cells on a sheet. */
@@ -529,6 +535,67 @@ export interface JsFontStyle {
   underline?: boolean
   strikethrough?: boolean
   color?: string
+}
+
+/** Configuration for adding a form control to a worksheet. */
+export interface JsFormControlConfig {
+  /**
+   * Control type: "button", "checkbox", "optionButton", "spinButton",
+   * "scrollBar", "groupBox", "label".
+   */
+  controlType: string
+  /** Anchor cell (top-left corner), e.g. "B2". */
+  cell: string
+  /** Width in points. */
+  width?: number
+  /** Height in points. */
+  height?: number
+  /** Display text (Button, CheckBox, OptionButton, GroupBox, Label). */
+  text?: string
+  /** VBA macro name (Button only). */
+  macroName?: string
+  /** Linked cell reference for value binding. */
+  cellLink?: string
+  /** Initial checked state (CheckBox, OptionButton). */
+  checked?: boolean
+  /** Minimum value (SpinButton, ScrollBar). */
+  minValue?: number
+  /** Maximum value (SpinButton, ScrollBar). */
+  maxValue?: number
+  /** Step increment (SpinButton, ScrollBar). */
+  increment?: number
+  /** Page increment (ScrollBar only). */
+  pageIncrement?: number
+  /** Current value (SpinButton, ScrollBar). */
+  currentValue?: number
+  /** Enable 3D shading. */
+  threeD?: boolean
+}
+
+/** Information about an existing form control. */
+export interface JsFormControlInfo {
+  /** Control type string. */
+  controlType: string
+  /** Anchor cell reference. */
+  cell: string
+  /** Display text. */
+  text?: string
+  /** VBA macro name. */
+  macroName?: string
+  /** Linked cell reference. */
+  cellLink?: string
+  /** Checked state. */
+  checked?: boolean
+  /** Current value. */
+  currentValue?: number
+  /** Minimum value. */
+  minValue?: number
+  /** Maximum value. */
+  maxValue?: number
+  /** Step increment. */
+  increment?: number
+  /** Page increment. */
+  pageIncrement?: number
 }
 
 /** Header and footer text. */
