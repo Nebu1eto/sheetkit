@@ -2,7 +2,7 @@ import { access, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { decodeRowsBuffer } from '../buffer-codec.js';
-import { Workbook } from '../index.js';
+import { builtinFormatCode, formatNumber, Workbook } from '../index.js';
 import { SheetData } from '../sheet-data.js';
 
 const TEST_DIR = import.meta.dirname;
@@ -4311,5 +4311,191 @@ describe('Threaded Comments', () => {
     const s2 = wb2.getThreadedComments('Sheet2');
     expect(s2).toHaveLength(1);
     expect(s2[0].text).toBe('Sheet2 comment');
+  });
+});
+
+// Number Format Renderer
+describe('Number Format - builtinFormatCode', () => {
+  it('should return General for ID 0', () => {
+    expect(builtinFormatCode(0)).toBe('General');
+  });
+
+  it('should return format codes for common IDs', () => {
+    expect(builtinFormatCode(1)).toBe('0');
+    expect(builtinFormatCode(2)).toBe('0.00');
+    expect(builtinFormatCode(3)).toBe('#,##0');
+    expect(builtinFormatCode(4)).toBe('#,##0.00');
+    expect(builtinFormatCode(9)).toBe('0%');
+    expect(builtinFormatCode(10)).toBe('0.00%');
+    expect(builtinFormatCode(11)).toBe('0.00E+00');
+    expect(builtinFormatCode(14)).toBe('m/d/yyyy');
+  });
+
+  it('should return date/time format codes', () => {
+    expect(builtinFormatCode(15)).toBe('d-mmm-yy');
+    expect(builtinFormatCode(16)).toBe('d-mmm');
+    expect(builtinFormatCode(17)).toBe('mmm-yy');
+    expect(builtinFormatCode(18)).toBe('h:mm AM/PM');
+    expect(builtinFormatCode(19)).toBe('h:mm:ss AM/PM');
+    expect(builtinFormatCode(20)).toBe('h:mm');
+    expect(builtinFormatCode(21)).toBe('h:mm:ss');
+    expect(builtinFormatCode(22)).toBe('m/d/yyyy h:mm');
+  });
+
+  it('should return fraction format codes', () => {
+    expect(builtinFormatCode(12)).toBe('# ?/?');
+    expect(builtinFormatCode(13)).toBe('# ??/??');
+  });
+
+  it('should return null for unknown IDs', () => {
+    expect(builtinFormatCode(100)).toBeNull();
+    expect(builtinFormatCode(999)).toBeNull();
+  });
+});
+
+describe('Number Format - formatNumber', () => {
+  it('should format General', () => {
+    expect(formatNumber(123, 'General')).toBe('123');
+    expect(formatNumber(1.5, 'General')).toBe('1.5');
+    expect(formatNumber(0, 'General')).toBe('0');
+  });
+
+  it('should format integer patterns', () => {
+    expect(formatNumber(42, '0')).toBe('42');
+    expect(formatNumber(42.7, '0')).toBe('43');
+    expect(formatNumber(1234, '#,##0')).toBe('1,234');
+    expect(formatNumber(1234567, '#,##0')).toBe('1,234,567');
+  });
+
+  it('should format decimal patterns', () => {
+    expect(formatNumber(Math.PI, '0.00')).toBe('3.14');
+    expect(formatNumber(42, '0.00')).toBe('42.00');
+    expect(formatNumber(1234.5, '#,##0.00')).toBe('1,234.50');
+  });
+
+  it('should format percentages', () => {
+    expect(formatNumber(0.25, '0%')).toBe('25%');
+    expect(formatNumber(0.1234, '0.00%')).toBe('12.34%');
+    expect(formatNumber(1, '0%')).toBe('100%');
+  });
+
+  it('should format scientific notation', () => {
+    expect(formatNumber(12345, '0.00E+00')).toBe('1.23E+04');
+    expect(formatNumber(0.001, '0.00E+00')).toBe('1.00E-03');
+  });
+
+  it('should format dates', () => {
+    // Serial 45657 = Dec 31, 2024 (accounting for Excel 1900 leap year bug)
+    expect(formatNumber(45657, 'm/d/yyyy')).toBe('12/31/2024');
+    expect(formatNumber(45657, 'yyyy-mm-dd')).toBe('2024-12-31');
+    expect(formatNumber(1, 'm/d/yyyy')).toBe('1/1/1900');
+  });
+
+  it('should format times', () => {
+    expect(formatNumber(0.5, 'h:mm')).toBe('12:00');
+    expect(formatNumber(0.75, 'h:mm:ss')).toBe('18:00:00');
+    expect(formatNumber(0.5, 'h:mm AM/PM')).toBe('12:00 PM');
+    expect(formatNumber(0.25, 'h:mm AM/PM')).toBe('6:00 AM');
+  });
+
+  it('should format date with time', () => {
+    expect(formatNumber(45657.5, 'm/d/yyyy h:mm')).toBe('12/31/2024 12:00');
+  });
+
+  it('should format fractions', () => {
+    expect(formatNumber(1.5, '# ?/?')).toBe('1 1/2');
+    expect(formatNumber(0.333, '# ??/??')).toBe('1/3');
+  });
+
+  it('should handle multi-section formats', () => {
+    // positive;negative;zero
+    expect(formatNumber(42, '#,##0;(#,##0);"-"')).toBe('42');
+    expect(formatNumber(-42, '#,##0;(#,##0);"-"')).toBe('(42)');
+    expect(formatNumber(0, '#,##0;(#,##0);"-"')).toBe('-');
+  });
+
+  it('should strip color codes', () => {
+    expect(formatNumber(42, '[Red]0.00')).toBe('42.00');
+    expect(formatNumber(-5, '[Blue]0;[Red]0')).toBe('5');
+  });
+
+  it('should handle text format with @', () => {
+    expect(formatNumber(42, '0.00;-0.00;0;"Text: "@')).toBe('42.00');
+  });
+
+  it('should handle zero values', () => {
+    expect(formatNumber(0, '0.00')).toBe('0.00');
+    expect(formatNumber(0, '#,##0')).toBe('0');
+  });
+
+  it('should handle negative values in default format', () => {
+    expect(formatNumber(-42, '0.00')).toBe('-42.00');
+    expect(formatNumber(-1234.5, '#,##0.00')).toBe('-1,234.50');
+  });
+
+  it('should handle AM/PM time formatting', () => {
+    expect(formatNumber(0.0, 'h:mm AM/PM')).toBe('12:00 AM');
+    expect(formatNumber(0.04166666667, 'h:mm AM/PM')).toBe('1:00 AM');
+    expect(formatNumber(0.999, 'h:mm:ss AM/PM')).toBe('11:58:34 PM');
+  });
+});
+
+describe('Number Format - getCellFormattedValue', () => {
+  const out = tmpFile('test-numfmt.xlsx');
+  afterEach(async () => cleanup(out));
+
+  it('should format a number cell with a style', async () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 1234.5);
+    const styleId = wb.addStyle({ customNumFmt: '#,##0.00' });
+    wb.setCellStyle('Sheet1', 'A1', styleId);
+    await wb.save(out);
+
+    const wb2 = await Workbook.open(out);
+    expect(wb2.getCellFormattedValue('Sheet1', 'A1')).toBe('1,234.50');
+  });
+
+  it('should format a date cell', async () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 45657);
+    const styleId = wb.addStyle({ customNumFmt: 'yyyy-mm-dd' });
+    wb.setCellStyle('Sheet1', 'A1', styleId);
+    await wb.save(out);
+
+    const wb2 = await Workbook.open(out);
+    expect(wb2.getCellFormattedValue('Sheet1', 'A1')).toBe('2024-12-31');
+  });
+
+  it('should format a percentage cell', async () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 0.85);
+    const styleId = wb.addStyle({ customNumFmt: '0.00%' });
+    wb.setCellStyle('Sheet1', 'A1', styleId);
+    await wb.save(out);
+
+    const wb2 = await Workbook.open(out);
+    expect(wb2.getCellFormattedValue('Sheet1', 'A1')).toBe('85.00%');
+  });
+
+  it('should return raw string for text cells', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'hello');
+    expect(wb.getCellFormattedValue('Sheet1', 'A1')).toBe('hello');
+  });
+
+  it('should return empty string for empty cells', () => {
+    const wb = new Workbook();
+    expect(wb.getCellFormattedValue('Sheet1', 'A1')).toBe('');
+  });
+
+  it('should format with built-in format IDs', async () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 0.75);
+    const styleId = wb.addStyle({ numFmtId: 10 });
+    wb.setCellStyle('Sheet1', 'A1', styleId);
+    await wb.save(out);
+
+    const wb2 = await Workbook.open(out);
+    expect(wb2.getCellFormattedValue('Sheet1', 'A1')).toBe('75.00%');
   });
 });

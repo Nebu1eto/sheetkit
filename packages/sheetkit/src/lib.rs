@@ -159,6 +159,29 @@ impl Workbook {
         cell_value_to_either(value)
     }
 
+    /// Get the formatted display text for a cell, applying its number format.
+    /// Returns the value formatted according to the cell's style.
+    #[napi]
+    pub fn get_cell_formatted_value(&self, sheet: String, cell: String) -> Result<String> {
+        self.inner
+            .get_cell_formatted_value(&sheet, &cell)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Format a numeric value using a format code string.
+    /// This is a standalone utility that does not require cell context.
+    #[napi]
+    pub fn format_number(value: f64, format_code: String) -> String {
+        sheetkit_core::numfmt::format_number(value, &format_code)
+    }
+
+    /// Get the format code string for a built-in number format ID (0-49).
+    /// Returns null if the ID is not recognized.
+    #[napi]
+    pub fn builtin_format_code(id: u32) -> Option<String> {
+        sheetkit_core::numfmt::builtin_format_code(id).map(|s| s.to_string())
+    }
+
     /// Set the value of a cell. Pass string, number, boolean, DateValue, or null to clear.
     #[napi]
     pub fn set_cell_value(

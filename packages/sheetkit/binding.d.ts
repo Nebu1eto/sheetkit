@@ -46,6 +46,21 @@ export declare class Workbook {
   get sheetNames(): Array<string>
   /** Get the value of a cell. Returns string, number, boolean, DateValue, or null. */
   getCellValue(sheet: string, cell: string): null | boolean | number | string | DateValue
+  /**
+   * Get the formatted display text for a cell, applying its number format.
+   * Returns the value formatted according to the cell's style.
+   */
+  getCellFormattedValue(sheet: string, cell: string): string
+  /**
+   * Format a numeric value using a format code string.
+   * This is a standalone utility that does not require cell context.
+   */
+  static formatNumber(value: number, formatCode: string): string
+  /**
+   * Get the format code string for a built-in number format ID (0-49).
+   * Returns null if the ID is not recognized.
+   */
+  static builtinFormatCode(id: number): string | null
   /** Set the value of a cell. Pass string, number, boolean, DateValue, or null to clear. */
   setCellValue(sheet: string, cell: string, value: string | number | boolean | DateValue | null): void
   /**
