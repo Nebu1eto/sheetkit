@@ -56,19 +56,9 @@ Write performance scales linearly:
 | 50k | 347ms | 336ms | -3% |
 | 100k | 705ms | 720ms | +2% |
 
-## Memory Efficiency
+## Raw Buffer Transfer and Memory Behavior
 
-SheetKit uses significantly less memory than object-based approaches:
-
-| Scenario | Before Optimization | After Optimization | Reduction |
-|----------|--------------------|--------------------|-----------|
-| Read 50k × 20 | 405.6 MB | 349.2 MB | 14% |
-| Read 100k rows | 361.1 MB | 13.5 MB | **96%** |
-| Write 50k × 20 | 255.0 MB | 186.2 MB | 27% |
-| Write 100k × 10 | 268.7 MB | 85.8 MB | 68% |
-| Streaming 50k rows | 323.4 MB | 101.3 MB | 69% |
-
-The dramatic improvement comes from buffer-based FFI transfer, which eliminates per-cell JavaScript object creation.
+SheetKit reduces Node.js-Rust boundary cost by transferring sheet data as raw buffers instead of per-cell JavaScript objects. This transfer model keeps the FFI boundary coarse-grained, reduces object marshalling overhead, and lowers GC pressure in read-heavy paths.
 
 ## Key Optimizations
 
@@ -76,12 +66,12 @@ The dramatic improvement comes from buffer-based FFI transfer, which eliminates 
 
 Instead of creating individual JavaScript objects for each cell, SheetKit serializes entire sheets into compact binary buffers that cross the FFI boundary in a single operation.
 
-**Before**: Creating 1 million objects for a 50k × 20 spreadsheet
-**After**: Transferring a single ~10MB buffer
+**Before**: Per-cell object transfer across the FFI boundary
+**After**: Single raw-buffer transfer for a sheet payload
 
 This optimization:
-- Reduces read overhead from 75% to 13%
-- Cuts memory usage by up to 96%
+- Reduces read-side FFI overhead
+- Reduces allocation and GC pressure from per-cell object creation
 - Maintains full type safety
 
 ### 2. Internal Data Structure Optimizations
@@ -116,15 +106,11 @@ All benchmarks were performed on:
 
 Results are median values from 5 runs with 1 warmup run per scenario.
 
-## Comparing to Other Libraries
+## Benchmark Scope and Data
 
-While we don't provide direct comparisons to other libraries in this documentation, SheetKit's architecture enables:
+The numbers on this page are from SheetKit's own Rust and Node.js benchmark suites in this repository. Results vary based on data shape, feature usage, and runtime environment.
 
-- Up to 10x faster performance for large datasets compared to JavaScript-only libraries
-- Memory usage comparable to or better than native Rust/Go implementations
-- Near-zero overhead for Node.js bindings (unlike Python bindings which typically add 2-5x overhead)
-
-For detailed benchmark methodology and raw data, see [`benchmarks/COMPARISON.md`](https://github.com/Nebu1eto/sheetkit/blob/main/benchmarks/COMPARISON.md) in the repository.
+For benchmark methodology and raw data, see [`benchmarks/COMPARISON.md`](https://github.com/Nebu1eto/sheetkit/blob/main/benchmarks/COMPARISON.md) in the repository.
 
 ## Performance Tips
 
