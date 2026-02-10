@@ -3,24 +3,66 @@
 SheetKit은 Rust와 TypeScript를 위한 고성능 SpreadsheetML 라이브러리입니다.
 Rust 코어가 모든 Excel (.xlsx) 처리를 담당하며, napi-rs 바인딩을 통해 TypeScript에서도 최소한의 overhead로 동일한 성능을 제공합니다.
 
+## SheetKit을 선택해야 하는 이유
+
+- **네이티브 성능**: Rust 코어와 저오버헤드 Node.js 바인딩으로 대용량 스프레드시트를 빠르게 처리합니다
+- **FFI 오버헤드 최소화**: Raw Buffer 기반 전송으로 Node.js와 Rust 간 FFI 경계 오버헤드를 줄입니다
+- **타입 안전성**: Rust와 TypeScript 모두에서 강력한 타입 안전 API를 제공합니다
+- **완전한 기능**: 110개 이상의 수식 함수, 43가지 차트 타입, 스트리밍 쓰기 등을 지원합니다
+
 ## 설치
 
-### Rust
+### Rust 라이브러리
 
-`Cargo.toml`에 SheetKit을 추가합니다:
+`cargo add` 명령어를 사용하여 설치합니다 (권장):
+
+```bash
+cargo add sheetkit
+```
+
+또는 `Cargo.toml`에 직접 추가합니다:
 
 ```toml
 [dependencies]
-sheetkit = "0.1"
+sheetkit = { version = "0.3" }
 ```
 
-### Node.js
-
-npm으로 설치합니다. 네이티브 컴파일을 위해 Rust 툴체인이 필요합니다.
+암호화 기능이 필요한 경우:
 
 ```bash
-npm install @sheetkit/node
+cargo add sheetkit --features encryption
 ```
+
+[crates.io에서 보기](https://crates.io/crates/sheetkit)
+
+### Node.js 라이브러리
+
+선호하는 패키지 매니저를 사용하여 설치합니다:
+
+```bash
+# npm
+npm install @sheetkit/node
+
+# yarn
+yarn add @sheetkit/node
+
+# pnpm
+pnpm add @sheetkit/node
+```
+
+참고: 주요 플랫폼에는 사전 빌드 바이너리가 제공됩니다. 사전 빌드 바이너리가 없는 환경이거나 소스에서 직접 빌드하는 경우에만 Rust 툴체인이 필요합니다.
+
+[npm에서 보기](https://www.npmjs.com/package/@sheetkit/node)
+
+### CLI 도구
+
+커맨드 라인에서 시트 검사, 데이터 변환 등의 작업을 수행하려면:
+
+```bash
+cargo install sheetkit --features cli
+```
+
+사용 방법은 [CLI 가이드](./guide/cli.md)를 참조하세요.
 
 ## 빠른 시작
 
@@ -193,6 +235,8 @@ wb.setCellStyle("Sheet1", "A1", styleId);
 
 ## 스타일 사용하기
 
+아래 예시는 재사용 가능한 스타일 정의를 한 번 등록하고, 반환된 스타일 ID를 대상 셀에 적용하는 방식입니다. 이 패턴을 사용하면 `styles.xml`의 중복 스타일 레코드를 줄여 워크북 구조를 더 간결하게 유지할 수 있습니다.
+
 **Rust**
 
 ```rust
@@ -240,6 +284,7 @@ await wb.save("styled.xlsx");
 ## 차트 사용하기
 
 앵커 범위(왼쪽 상단, 오른쪽 하단 셀), 차트 유형, 데이터 시리즈를 지정하여 차트를 추가합니다.
+앵커 셀은 차트의 배치 위치를 제어하고, `categories`와 `values` 범위는 실제 플롯 데이터를 제어합니다. 범주 범위와 값 범위의 길이를 맞춰야 의도한 차트 결과를 얻을 수 있습니다.
 
 **Rust**
 
@@ -312,6 +357,7 @@ await wb.save("chart.xlsx");
 ## 대용량 파일을 위한 StreamWriter
 
 `StreamWriter`는 전체 워크시트를 메모리에 구축하지 않고 내부 버퍼에 행을 순차적으로 씁니다. 행은 오름차순으로 작성해야 합니다.
+이 방식은 배치 내보내기, ETL 작업, 스트림 입력처럼 행 데이터가 점진적으로 생성되는 워크로드에 적합합니다. 먼저 헤더와 열 너비를 설정하고, 데이터를 순서대로 추가한 다음, 마지막에 스트림 결과를 워크북에 적용하면 됩니다.
 
 **Rust**
 
@@ -370,6 +416,7 @@ await wb.save("large.xlsx");
 ## 암호화된 파일 다루기
 
 SheetKit은 비밀번호로 보호된 .xlsx 파일의 읽기/쓰기를 지원합니다. Rust에서는 `encryption` feature를 활성화해야 하며, Node.js 바인딩에는 항상 암호화 지원이 포함됩니다.
+이 기능은 OOXML 패키지 수준의 파일 암호화를 적용하므로 비밀번호 없이는 파일을 열 수 없습니다. 운영 환경에서는 암호화된 파일 경로를 도입하기 전에 비밀번호 관리 및 복구 절차를 함께 설계하는 것이 좋습니다.
 
 **Rust**
 

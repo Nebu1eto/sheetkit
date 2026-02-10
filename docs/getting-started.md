@@ -3,24 +3,66 @@
 SheetKit is a high-performance SpreadsheetML library for Rust and TypeScript.
 The Rust core handles all Excel (.xlsx) processing, and napi-rs bindings bring the same performance to TypeScript with minimal overhead.
 
+## Why SheetKit?
+
+- **Native Performance**: Rust core with low-overhead Node.js bindings for large spreadsheets
+- **Low FFI Overhead**: Raw buffer transfer between Node.js and Rust reduces boundary overhead
+- **Type Safe**: Strongly typed APIs for both Rust and TypeScript
+- **Complete**: 110+ formula functions, 43 chart types, streaming writer, and more
+
 ## Installation
 
-### Rust
+### Rust Library
 
-Add SheetKit to your `Cargo.toml`:
+Add SheetKit using `cargo add` (recommended):
+
+```bash
+cargo add sheetkit
+```
+
+Or manually add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-sheetkit = "0.1"
+sheetkit = { version = "0.3" }
 ```
 
-### Node.js
-
-Install via npm. A Rust toolchain is required for native compilation.
+For encryption support:
 
 ```bash
-npm install @sheetkit/node
+cargo add sheetkit --features encryption
 ```
+
+[View on crates.io](https://crates.io/crates/sheetkit)
+
+### Node.js Library
+
+Install via your preferred package manager:
+
+```bash
+# npm
+npm install @sheetkit/node
+
+# yarn
+yarn add @sheetkit/node
+
+# pnpm
+pnpm add @sheetkit/node
+```
+
+Note: Prebuilt binaries are provided for common platforms. A Rust toolchain is needed only when building from source or when a prebuilt binary is unavailable.
+
+[View on npm](https://www.npmjs.com/package/@sheetkit/node)
+
+### CLI Tool
+
+For command-line operations (sheet inspection, data conversion, etc.):
+
+```bash
+cargo install sheetkit --features cli
+```
+
+See the [CLI Guide](./guide/cli.md) for usage examples.
 
 ## Quick Start
 
@@ -193,6 +235,8 @@ Style deduplication is automatic. Registering two identical styles returns the s
 
 ## Working with Styles
 
+The example below uses a reusable style definition, registers it once, and applies the returned style ID to target cells. This pattern keeps style records compact and avoids duplicated style entries in `styles.xml`.
+
 **Rust**
 
 ```rust
@@ -240,6 +284,7 @@ await wb.save("styled.xlsx");
 ## Working with Charts
 
 Add a chart by specifying the anchor range (top-left and bottom-right cells), chart type, and data series.
+Anchor cells control where the chart is placed on the sheet, while `categories` and `values` control which data is plotted. Keep category and value ranges aligned to avoid misleading chart output.
 
 **Rust**
 
@@ -312,6 +357,7 @@ await wb.save("chart.xlsx");
 ## StreamWriter for Large Files
 
 The `StreamWriter` writes rows sequentially to an internal buffer without building the entire worksheet in memory. Rows must be written in ascending order.
+Use this pattern for batch exports, ETL jobs, and other pipelines that produce row data incrementally. Set headers and column widths first, then append data rows in order, and finally apply the stream output to the workbook.
 
 **Rust**
 
@@ -370,6 +416,7 @@ await wb.save("large.xlsx");
 ## Working with Encrypted Files
 
 SheetKit can read and write password-protected .xlsx files. Enable the `encryption` feature in Rust; Node.js bindings always include encryption support.
+This is file-level encryption for OOXML packages, so the file cannot be opened without the password. In production, plan password management and recovery workflows before enabling encrypted export/import paths.
 
 **Rust**
 

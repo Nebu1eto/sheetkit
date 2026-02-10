@@ -1,0 +1,26 @@
+.vp-doc .mermaid {
+  margin: 1.25rem 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 0.25rem;
+}
+
+.vp-doc .mermaid svg {
+  display: block;
+  width: 100% !important;
+  max-width: 100% !important;
+  min-width: 0;
+  height: auto !important;
+}
+
+.vp-doc .mermaid svg text,
+.vp-doc .mermaid .edgeLabel {
+  font-size: 15px !important;
+}
+
+@media (max-width: 768px) {
+  .vp-doc .mermaid svg text,
+  .vp-doc .mermaid .edgeLabel {
+    font-size: 14px !important;
+  }
+}

@@ -55,18 +55,35 @@ wb.save("output.xlsx");
 
 ## Installation
 
-**Rust** -- add to your `Cargo.toml`:
+**Rust** -- use `cargo add` (recommended):
+
+```bash
+cargo add sheetkit
+```
+
+Or add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-sheetkit = "0.1"
+sheetkit = "0.3"
 ```
+
+[View on crates.io](https://crates.io/crates/sheetkit)
 
 **Node.js:**
 
 ```bash
+# npm
 npm install @sheetkit/node
+
+# yarn
+yarn add @sheetkit/node
+
+# pnpm
+pnpm add @sheetkit/node
 ```
+
+[View on npm](https://www.npmjs.com/package/@sheetkit/node)
 
 ## Documentation
 

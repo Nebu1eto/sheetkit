@@ -6,16 +6,51 @@ SheetKit is a high-performance SpreadsheetML library for Rust and TypeScript. Th
 
 ## Table of Contents
 
-- [Workbook I/O](./workbook.md) - Create, open, and save workbooks; workbook format profiling, VBA preservation, extension-based save
-- [Cell Operations](./cell.md) - Get and set cell values, cell value types
-- [Sheet Management](./sheet.md) - Create, delete, rename, and copy sheets
-- [Row and Column Operations](./row-column.md) - Insert, delete, duplicate rows and columns; manage heights, widths, visibility, and outline levels
-- [Styles](./style.md) - Font, fill, border, alignment, number format, and protection styles; style builder and deduplication
-- [Charts](./chart.md) - Create and manage charts (43 chart types)
-- [Images](./image.md) - Insert and manage images
-- [Form Controls](./form-control.md) - Buttons, check boxes, option buttons, spin buttons, scroll bars, group boxes, labels
-- [Data Features](./data-features.md) - Merge cells, hyperlinks, data validation, comments, auto-filter, conditional formatting, tables, data conversion utilities
-- [Advanced](./advanced.md) - Freeze/split panes, page layout, defined names, document properties, workbook and sheet protection, formula evaluation, pivot tables, streaming writer, utilities, sparklines, theme colors, rich text, file encryption, sheet view options, sheet visibility
+### Core Operations
+
+- **[Workbook I/O](./workbook.md)**
+  Create new workbooks, open existing files (.xlsx, .xlsm, .xltx, .xltm, .xlam), save with various options, detect file format, preserve VBA projects, handle encrypted files, and use partial reading options for large files.
+
+- **[Cell Operations](./cell.md)**
+  Read and write cell values (string, number, boolean, date, formula, error, empty), batch get/set operations, and understand cell value type conversions between Rust and TypeScript.
+
+- **[Sheet Management](./sheet.md)**
+  Create new sheets, delete existing sheets, rename sheets, copy sheets within or across workbooks, reorder sheets, get/set active sheet, and list all sheet names.
+
+- **[Row and Column Operations](./row-column.md)**
+  Insert and delete rows/columns, duplicate ranges, set heights and widths, hide/unhide rows and columns, manage outline levels for grouping, and apply styles to entire rows or columns.
+
+### Styling and Formatting
+
+- **[Styles](./style.md)**
+  Define and apply cell styles including fonts (bold, italic, size, color), fills (solid, gradient, pattern), borders (style, color, thickness), alignment (horizontal, vertical, rotation, wrap text), number formats (built-in and custom), and cell protection.
+
+### Content and Visualization
+
+- **[Charts](./chart.md)**
+  Create and configure 43 chart types (column, bar, line, pie, scatter, area, doughnut, radar, surface, bubble, stock, combo, and more), customize titles, legends, axes, data series, and 3D view options.
+
+- **[Images](./image.md)**
+  Insert images in 11 formats (PNG, JPEG, GIF, BMP, ICO, TIFF, SVG, EMF, EMZ, WMF, WMZ), position and size images, manage image anchoring, and retrieve image metadata.
+
+- **[Shapes](./shape.md)**
+  Add preset geometric shapes (rectangles, circles, arrows, callouts, stars, and more) with customizable position, size, fill, border, and text content.
+
+- **[Slicers](./slicer.md)**
+  Create visual filters for Excel tables, configure slicer appearance, manage slicer items and selection, and control slicer position and size.
+
+- **[Form Controls](./form-control.md)**
+  Add interactive form controls: buttons, check boxes, option buttons (radio buttons), spin buttons, scroll bars, group boxes, and labels with cell linking and macro assignment.
+
+### Data Features
+
+- **[Data Features](./data-features.md)**
+  Merge cells, create hyperlinks, apply data validation rules (list, number, date, text length, custom), add comments and threaded comments (Excel 2019+), enable auto-filter, apply conditional formatting (17 rule types), create and manage Excel tables, and use data conversion utilities (to/from JSON, CSV, HTML, SVG).
+
+### Advanced Features
+
+- **[Advanced](./advanced.md)**
+  Freeze and split panes, configure page layout and print settings, define named ranges, set document properties (author, title, subject, keywords, etc.), protect workbooks and sheets with passwords, evaluate formulas (110+ functions), create pivot tables, use StreamWriter for memory-efficient large file generation, access utility functions, add sparklines, work with theme colors, create rich text with inline formatting, encrypt and decrypt files, configure sheet view options (gridlines, zoom, formulas), and control sheet visibility (visible, hidden, very hidden).
 
 ---
 
