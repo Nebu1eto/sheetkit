@@ -64,7 +64,7 @@ wb.addChart("Sheet1", "D1", "K15", {
 | `x_values` | `Option<String>` | `string?` | X-axis values (scatter/bubble charts only) |
 | `bubble_sizes` | `Option<String>` | `string?` | Bubble sizes (bubble charts only) |
 
-### Supported Chart Types (43 types)
+### Supported Chart Types (57 types)
 
 **Column charts:**
 
@@ -76,6 +76,15 @@ wb.addChart("Sheet1", "D1", "K15", {
 | `ChartType::Col3D` | `"col3D"` | 3D clustered column |
 | `ChartType::Col3DStacked` | `"col3DStacked"` | 3D stacked column |
 | `ChartType::Col3DPercentStacked` | `"col3DPercentStacked"` | 3D 100% stacked column |
+| `ChartType::Col3DCone` | `"col3DCone"` | 3D cone column |
+| `ChartType::Col3DConeStacked` | `"col3DConeStacked"` | 3D stacked cone column |
+| `ChartType::Col3DConePercentStacked` | `"col3DConePercentStacked"` | 3D 100% stacked cone column |
+| `ChartType::Col3DPyramid` | `"col3DPyramid"` | 3D pyramid column |
+| `ChartType::Col3DPyramidStacked` | `"col3DPyramidStacked"` | 3D stacked pyramid column |
+| `ChartType::Col3DPyramidPercentStacked` | `"col3DPyramidPercentStacked"` | 3D 100% stacked pyramid column |
+| `ChartType::Col3DCylinder` | `"col3DCylinder"` | 3D cylinder column |
+| `ChartType::Col3DCylinderStacked` | `"col3DCylinderStacked"` | 3D stacked cylinder column |
+| `ChartType::Col3DCylinderPercentStacked` | `"col3DCylinderPercentStacked"` | 3D 100% stacked cylinder column |
 
 **Bar charts:**
 
@@ -103,6 +112,8 @@ wb.addChart("Sheet1", "D1", "K15", {
 |---|---|---|
 | `ChartType::Pie` | `"pie"` | Pie |
 | `ChartType::Pie3D` | `"pie3D"` | 3D pie |
+| `ChartType::PieOfPie` | `"pieOfPie"` | Pie of pie |
+| `ChartType::BarOfPie` | `"barOfPie"` | Bar of pie |
 
 **Area charts:**
 
@@ -140,7 +151,7 @@ wb.addChart("Sheet1", "D1", "K15", {
 | `ChartType::StockVHLC` | `"stockVHLC"` | Volume-High-Low-Close |
 | `ChartType::StockVOHLC` | `"stockVOHLC"` | Volume-Open-High-Low-Close |
 
-**Surface charts:**
+**Surface and contour charts:**
 
 | Rust | TypeScript | Description |
 |---|---|---|
@@ -148,6 +159,8 @@ wb.addChart("Sheet1", "D1", "K15", {
 | `ChartType::Surface3D` | `"surface3D"` | 3D surface (top view) |
 | `ChartType::SurfaceWireframe` | `"surfaceWireframe"` | Wireframe surface |
 | `ChartType::SurfaceWireframe3D` | `"surfaceWireframe3D"` | Wireframe surface (top view) |
+| `ChartType::Contour` | `"contour"` | Contour (2D surface projection) |
+| `ChartType::WireframeContour` | `"wireframeContour"` | Wireframe contour |
 
 **Other charts:**
 
@@ -155,6 +168,7 @@ wb.addChart("Sheet1", "D1", "K15", {
 |---|---|---|
 | `ChartType::Doughnut` | `"doughnut"` | Doughnut |
 | `ChartType::Bubble` | `"bubble"` | Bubble |
+| `ChartType::Bubble3D` | `"bubble3D"` | 3D bubble |
 
 **Combo charts:**
 

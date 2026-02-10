@@ -6,9 +6,10 @@
 use sheetkit_xml::chart::{
     Area3DChart, AreaChart, Bar3DChart, BarChart, BodyPr, BoolVal, BubbleChart, BubbleSeries,
     CatAx, CategoryRef, Chart, ChartSpace, ChartTitle, DoughnutChart, IntVal, Layout, Legend,
-    Line3DChart, LineChart, NumRef, Paragraph, Pie3DChart, PieChart, PlotArea, RadarChart,
-    RichText, Run, Scaling, ScatterChart, ScatterSeries, SerAx, Series, SeriesText, StockChart,
-    StrRef, StringVal, Surface3DChart, SurfaceChart, TitleTx, UintVal, ValAx, ValueRef, View3D,
+    Line3DChart, LineChart, NumRef, OfPieChart, Paragraph, Pie3DChart, PieChart, PlotArea,
+    RadarChart, RichText, Run, Scaling, ScatterChart, ScatterSeries, SerAx, SerLines, Series,
+    SeriesText, StockChart, StrRef, StringVal, Surface3DChart, SurfaceChart, TitleTx, UintVal,
+    ValAx, ValueRef, View3D,
 };
 use sheetkit_xml::drawing::{
     AExt, CNvGraphicFramePr, CNvPr, ChartRef, ClientData, Graphic, GraphicData, GraphicFrame,
@@ -105,6 +106,34 @@ pub enum ChartType {
     ColLineStacked,
     /// Combo chart: column percent stacked + line.
     ColLinePercentStacked,
+    /// Pie-of-pie chart.
+    PieOfPie,
+    /// Bar-of-pie chart.
+    BarOfPie,
+    /// 3D cone column chart.
+    Col3DCone,
+    /// 3D cone column chart, stacked.
+    Col3DConeStacked,
+    /// 3D cone column chart, percent stacked.
+    Col3DConePercentStacked,
+    /// 3D pyramid column chart.
+    Col3DPyramid,
+    /// 3D pyramid column chart, stacked.
+    Col3DPyramidStacked,
+    /// 3D pyramid column chart, percent stacked.
+    Col3DPyramidPercentStacked,
+    /// 3D cylinder column chart.
+    Col3DCylinder,
+    /// 3D cylinder column chart, stacked.
+    Col3DCylinderStacked,
+    /// 3D cylinder column chart, percent stacked.
+    Col3DCylinderPercentStacked,
+    /// Contour chart (surface chart as 2D projection).
+    Contour,
+    /// Wireframe contour chart.
+    WireframeContour,
+    /// 3D bubble chart.
+    Bubble3D,
 }
 
 /// 3D view configuration for charts.
@@ -217,7 +246,14 @@ pub fn build_drawing_with_chart(chart_ref_id: &str, from: MarkerType, to: Marker
 }
 
 fn is_no_axis_chart(ct: &ChartType) -> bool {
-    matches!(ct, ChartType::Pie | ChartType::Pie3D | ChartType::Doughnut)
+    matches!(
+        ct,
+        ChartType::Pie
+            | ChartType::Pie3D
+            | ChartType::Doughnut
+            | ChartType::PieOfPie
+            | ChartType::BarOfPie
+    )
 }
 
 fn is_3d_chart(ct: &ChartType) -> bool {
@@ -236,6 +272,15 @@ fn is_3d_chart(ct: &ChartType) -> bool {
             | ChartType::Pie3D
             | ChartType::Surface3D
             | ChartType::SurfaceWireframe3D
+            | ChartType::Col3DCone
+            | ChartType::Col3DConeStacked
+            | ChartType::Col3DConePercentStacked
+            | ChartType::Col3DPyramid
+            | ChartType::Col3DPyramidStacked
+            | ChartType::Col3DPyramidPercentStacked
+            | ChartType::Col3DCylinder
+            | ChartType::Col3DCylinderStacked
+            | ChartType::Col3DCylinderPercentStacked
     )
 }
 
@@ -246,6 +291,8 @@ fn needs_ser_ax(ct: &ChartType) -> bool {
             | ChartType::Surface3D
             | ChartType::SurfaceWireframe
             | ChartType::SurfaceWireframe3D
+            | ChartType::Contour
+            | ChartType::WireframeContour
     )
 }
 
@@ -352,7 +399,7 @@ fn build_scatter_series(index: u32, series: &ChartSeries) -> ScatterSeries {
     }
 }
 
-fn build_bubble_series(index: u32, series: &ChartSeries) -> BubbleSeries {
+fn build_bubble_series(index: u32, series: &ChartSeries, is_3d: bool) -> BubbleSeries {
     let tx = build_series_text(series);
     let x_val = series
         .x_values
@@ -385,6 +432,11 @@ fn build_bubble_series(index: u32, series: &ChartSeries) -> BubbleSeries {
         x_val,
         y_val,
         bubble_size,
+        bubble_3d: if is_3d {
+            Some(BoolVal { val: true })
+        } else {
+            None
+        },
     }
 }
 
@@ -503,6 +555,7 @@ fn build_plot_area(config: &ChartConfig) -> PlotArea {
         stock_chart: None,
         surface_chart: None,
         surface_3d_chart: None,
+        of_pie_chart: None,
         cat_ax,
         val_ax,
         ser_ax,
@@ -678,6 +731,7 @@ fn build_plot_area(config: &ChartConfig) -> PlotArea {
                     val: "clustered".into(),
                 },
                 series: xml_series,
+                shape: None,
                 ax_ids,
             });
         }
@@ -688,6 +742,7 @@ fn build_plot_area(config: &ChartConfig) -> PlotArea {
                     val: "stacked".into(),
                 },
                 series: xml_series,
+                shape: None,
                 ax_ids,
             });
         }
@@ -698,6 +753,7 @@ fn build_plot_area(config: &ChartConfig) -> PlotArea {
                     val: "percentStacked".into(),
                 },
                 series: xml_series,
+                shape: None,
                 ax_ids,
             });
         }
@@ -708,6 +764,7 @@ fn build_plot_area(config: &ChartConfig) -> PlotArea {
                     val: "clustered".into(),
                 },
                 series: xml_series,
+                shape: None,
                 ax_ids,
             });
         }
@@ -718,6 +775,7 @@ fn build_plot_area(config: &ChartConfig) -> PlotArea {
                     val: "stacked".into(),
                 },
                 series: xml_series,
+                shape: None,
                 ax_ids,
             });
         }
@@ -728,6 +786,7 @@ fn build_plot_area(config: &ChartConfig) -> PlotArea {
                     val: "percentStacked".into(),
                 },
                 series: xml_series,
+                shape: None,
                 ax_ids,
             });
         }
@@ -779,7 +838,16 @@ fn build_plot_area(config: &ChartConfig) -> PlotArea {
                 .series
                 .iter()
                 .enumerate()
-                .map(|(i, s)| build_bubble_series(i as u32, s))
+                .map(|(i, s)| build_bubble_series(i as u32, s, false))
+                .collect();
+            plot_area.bubble_chart = Some(BubbleChart { series: bs, ax_ids });
+        }
+        ChartType::Bubble3D => {
+            let bs: Vec<BubbleSeries> = config
+                .series
+                .iter()
+                .enumerate()
+                .map(|(i, s)| build_bubble_series(i as u32, s, true))
                 .collect();
             plot_area.bubble_chart = Some(BubbleChart { series: bs, ax_ids });
         }
@@ -842,6 +910,145 @@ fn build_plot_area(config: &ChartConfig) -> PlotArea {
         }
         ChartType::SurfaceWireframe3D => {
             plot_area.surface_3d_chart = Some(Surface3DChart {
+                wireframe: Some(BoolVal { val: true }),
+                series: xml_series,
+                ax_ids,
+            });
+        }
+        ChartType::PieOfPie => {
+            plot_area.of_pie_chart = Some(OfPieChart {
+                of_pie_type: StringVal { val: "pie".into() },
+                series: xml_series,
+                ser_lines: Some(SerLines {}),
+            });
+        }
+        ChartType::BarOfPie => {
+            plot_area.of_pie_chart = Some(OfPieChart {
+                of_pie_type: StringVal { val: "bar".into() },
+                series: xml_series,
+                ser_lines: Some(SerLines {}),
+            });
+        }
+        ChartType::Col3DCone => {
+            plot_area.bar_3d_chart = Some(Bar3DChart {
+                bar_dir: StringVal { val: "col".into() },
+                grouping: StringVal {
+                    val: "clustered".into(),
+                },
+                series: xml_series,
+                shape: Some(StringVal { val: "cone".into() }),
+                ax_ids,
+            });
+        }
+        ChartType::Col3DConeStacked => {
+            plot_area.bar_3d_chart = Some(Bar3DChart {
+                bar_dir: StringVal { val: "col".into() },
+                grouping: StringVal {
+                    val: "stacked".into(),
+                },
+                series: xml_series,
+                shape: Some(StringVal { val: "cone".into() }),
+                ax_ids,
+            });
+        }
+        ChartType::Col3DConePercentStacked => {
+            plot_area.bar_3d_chart = Some(Bar3DChart {
+                bar_dir: StringVal { val: "col".into() },
+                grouping: StringVal {
+                    val: "percentStacked".into(),
+                },
+                series: xml_series,
+                shape: Some(StringVal { val: "cone".into() }),
+                ax_ids,
+            });
+        }
+        ChartType::Col3DPyramid => {
+            plot_area.bar_3d_chart = Some(Bar3DChart {
+                bar_dir: StringVal { val: "col".into() },
+                grouping: StringVal {
+                    val: "clustered".into(),
+                },
+                series: xml_series,
+                shape: Some(StringVal {
+                    val: "pyramid".into(),
+                }),
+                ax_ids,
+            });
+        }
+        ChartType::Col3DPyramidStacked => {
+            plot_area.bar_3d_chart = Some(Bar3DChart {
+                bar_dir: StringVal { val: "col".into() },
+                grouping: StringVal {
+                    val: "stacked".into(),
+                },
+                series: xml_series,
+                shape: Some(StringVal {
+                    val: "pyramid".into(),
+                }),
+                ax_ids,
+            });
+        }
+        ChartType::Col3DPyramidPercentStacked => {
+            plot_area.bar_3d_chart = Some(Bar3DChart {
+                bar_dir: StringVal { val: "col".into() },
+                grouping: StringVal {
+                    val: "percentStacked".into(),
+                },
+                series: xml_series,
+                shape: Some(StringVal {
+                    val: "pyramid".into(),
+                }),
+                ax_ids,
+            });
+        }
+        ChartType::Col3DCylinder => {
+            plot_area.bar_3d_chart = Some(Bar3DChart {
+                bar_dir: StringVal { val: "col".into() },
+                grouping: StringVal {
+                    val: "clustered".into(),
+                },
+                series: xml_series,
+                shape: Some(StringVal {
+                    val: "cylinder".into(),
+                }),
+                ax_ids,
+            });
+        }
+        ChartType::Col3DCylinderStacked => {
+            plot_area.bar_3d_chart = Some(Bar3DChart {
+                bar_dir: StringVal { val: "col".into() },
+                grouping: StringVal {
+                    val: "stacked".into(),
+                },
+                series: xml_series,
+                shape: Some(StringVal {
+                    val: "cylinder".into(),
+                }),
+                ax_ids,
+            });
+        }
+        ChartType::Col3DCylinderPercentStacked => {
+            plot_area.bar_3d_chart = Some(Bar3DChart {
+                bar_dir: StringVal { val: "col".into() },
+                grouping: StringVal {
+                    val: "percentStacked".into(),
+                },
+                series: xml_series,
+                shape: Some(StringVal {
+                    val: "cylinder".into(),
+                }),
+                ax_ids,
+            });
+        }
+        ChartType::Contour => {
+            plot_area.surface_chart = Some(SurfaceChart {
+                wireframe: Some(BoolVal { val: false }),
+                series: xml_series,
+                ax_ids,
+            });
+        }
+        ChartType::WireframeContour => {
+            plot_area.surface_chart = Some(SurfaceChart {
                 wireframe: Some(BoolVal { val: true }),
                 series: xml_series,
                 ax_ids,
@@ -1644,6 +1851,20 @@ mod tests {
             ChartType::ColLine,
             ChartType::ColLineStacked,
             ChartType::ColLinePercentStacked,
+            ChartType::PieOfPie,
+            ChartType::BarOfPie,
+            ChartType::Col3DCone,
+            ChartType::Col3DConeStacked,
+            ChartType::Col3DConePercentStacked,
+            ChartType::Col3DPyramid,
+            ChartType::Col3DPyramidStacked,
+            ChartType::Col3DPyramidPercentStacked,
+            ChartType::Col3DCylinder,
+            ChartType::Col3DCylinderStacked,
+            ChartType::Col3DCylinderPercentStacked,
+            ChartType::Contour,
+            ChartType::WireframeContour,
+            ChartType::Bubble3D,
         ];
         for ct in &types {
             let _ = build_chart_xml(&ChartConfig {
@@ -1694,5 +1915,159 @@ mod tests {
         assert!(cs.chart.plot_area.bubble_chart.unwrap().series[0]
             .bubble_size
             .is_none());
+    }
+
+    #[test]
+    fn test_pie_of_pie() {
+        let cs = build_chart_xml(&mc(ChartType::PieOfPie));
+        assert!(cs.chart.plot_area.of_pie_chart.is_some());
+        assert!(cs.chart.plot_area.cat_ax.is_none());
+        assert!(cs.chart.plot_area.val_ax.is_none());
+        let op = cs.chart.plot_area.of_pie_chart.unwrap();
+        assert_eq!(op.of_pie_type.val, "pie");
+        assert!(op.ser_lines.is_some());
+        assert_eq!(op.series.len(), 1);
+    }
+
+    #[test]
+    fn test_bar_of_pie() {
+        let cs = build_chart_xml(&mc(ChartType::BarOfPie));
+        assert!(cs.chart.plot_area.of_pie_chart.is_some());
+        assert!(cs.chart.plot_area.cat_ax.is_none());
+        let op = cs.chart.plot_area.of_pie_chart.unwrap();
+        assert_eq!(op.of_pie_type.val, "bar");
+        assert!(op.ser_lines.is_some());
+    }
+
+    #[test]
+    fn test_col_3d_cone() {
+        let cs = build_chart_xml(&mc(ChartType::Col3DCone));
+        assert!(cs.chart.view_3d.is_some());
+        let b = cs.chart.plot_area.bar_3d_chart.unwrap();
+        assert_eq!(b.bar_dir.val, "col");
+        assert_eq!(b.grouping.val, "clustered");
+        assert_eq!(b.shape.as_ref().unwrap().val, "cone");
+    }
+
+    #[test]
+    fn test_col_3d_cone_stacked() {
+        let cs = build_chart_xml(&mc(ChartType::Col3DConeStacked));
+        let b = cs.chart.plot_area.bar_3d_chart.unwrap();
+        assert_eq!(b.grouping.val, "stacked");
+        assert_eq!(b.shape.as_ref().unwrap().val, "cone");
+    }
+
+    #[test]
+    fn test_col_3d_cone_percent_stacked() {
+        let cs = build_chart_xml(&mc(ChartType::Col3DConePercentStacked));
+        let b = cs.chart.plot_area.bar_3d_chart.unwrap();
+        assert_eq!(b.grouping.val, "percentStacked");
+        assert_eq!(b.shape.as_ref().unwrap().val, "cone");
+    }
+
+    #[test]
+    fn test_col_3d_pyramid() {
+        let cs = build_chart_xml(&mc(ChartType::Col3DPyramid));
+        assert!(cs.chart.view_3d.is_some());
+        let b = cs.chart.plot_area.bar_3d_chart.unwrap();
+        assert_eq!(b.bar_dir.val, "col");
+        assert_eq!(b.grouping.val, "clustered");
+        assert_eq!(b.shape.as_ref().unwrap().val, "pyramid");
+    }
+
+    #[test]
+    fn test_col_3d_pyramid_stacked() {
+        let cs = build_chart_xml(&mc(ChartType::Col3DPyramidStacked));
+        let b = cs.chart.plot_area.bar_3d_chart.unwrap();
+        assert_eq!(b.grouping.val, "stacked");
+        assert_eq!(b.shape.as_ref().unwrap().val, "pyramid");
+    }
+
+    #[test]
+    fn test_col_3d_pyramid_percent_stacked() {
+        let cs = build_chart_xml(&mc(ChartType::Col3DPyramidPercentStacked));
+        let b = cs.chart.plot_area.bar_3d_chart.unwrap();
+        assert_eq!(b.grouping.val, "percentStacked");
+        assert_eq!(b.shape.as_ref().unwrap().val, "pyramid");
+    }
+
+    #[test]
+    fn test_col_3d_cylinder() {
+        let cs = build_chart_xml(&mc(ChartType::Col3DCylinder));
+        assert!(cs.chart.view_3d.is_some());
+        let b = cs.chart.plot_area.bar_3d_chart.unwrap();
+        assert_eq!(b.bar_dir.val, "col");
+        assert_eq!(b.grouping.val, "clustered");
+        assert_eq!(b.shape.as_ref().unwrap().val, "cylinder");
+    }
+
+    #[test]
+    fn test_col_3d_cylinder_stacked() {
+        let cs = build_chart_xml(&mc(ChartType::Col3DCylinderStacked));
+        let b = cs.chart.plot_area.bar_3d_chart.unwrap();
+        assert_eq!(b.grouping.val, "stacked");
+        assert_eq!(b.shape.as_ref().unwrap().val, "cylinder");
+    }
+
+    #[test]
+    fn test_col_3d_cylinder_percent_stacked() {
+        let cs = build_chart_xml(&mc(ChartType::Col3DCylinderPercentStacked));
+        let b = cs.chart.plot_area.bar_3d_chart.unwrap();
+        assert_eq!(b.grouping.val, "percentStacked");
+        assert_eq!(b.shape.as_ref().unwrap().val, "cylinder");
+    }
+
+    #[test]
+    fn test_contour() {
+        let cs = build_chart_xml(&mc(ChartType::Contour));
+        assert!(cs.chart.plot_area.surface_chart.is_some());
+        assert!(cs.chart.plot_area.ser_ax.is_some());
+        let sf = cs.chart.plot_area.surface_chart.unwrap();
+        assert!(!sf.wireframe.as_ref().unwrap().val);
+        assert_eq!(sf.ax_ids.len(), 3);
+    }
+
+    #[test]
+    fn test_wireframe_contour() {
+        let cs = build_chart_xml(&mc(ChartType::WireframeContour));
+        assert!(cs.chart.plot_area.surface_chart.is_some());
+        assert!(cs.chart.plot_area.ser_ax.is_some());
+        let sf = cs.chart.plot_area.surface_chart.unwrap();
+        assert!(sf.wireframe.as_ref().unwrap().val);
+        assert_eq!(sf.ax_ids.len(), 3);
+    }
+
+    #[test]
+    fn test_bubble_3d() {
+        let cs = build_chart_xml(&ChartConfig {
+            chart_type: ChartType::Bubble3D,
+            title: None,
+            series: vec![ChartSeries {
+                name: "B3D".into(),
+                categories: "Sheet1!$A$2:$A$6".into(),
+                values: "Sheet1!$B$2:$B$6".into(),
+                x_values: None,
+                bubble_sizes: Some("Sheet1!$C$2:$C$6".into()),
+            }],
+            show_legend: false,
+            view_3d: None,
+        });
+        let b = cs.chart.plot_area.bubble_chart.unwrap();
+        assert_eq!(b.series.len(), 1);
+        assert!(b.series[0].bubble_3d.as_ref().unwrap().val);
+    }
+
+    #[test]
+    fn test_bubble_no_3d_flag() {
+        let cs = build_chart_xml(&mc(ChartType::Bubble));
+        let b = cs.chart.plot_area.bubble_chart.unwrap();
+        assert!(b.series[0].bubble_3d.is_none());
+    }
+
+    #[test]
+    fn test_col_3d_no_shape() {
+        let cs = build_chart_xml(&mc(ChartType::Col3D));
+        let b = cs.chart.plot_area.bar_3d_chart.unwrap();
+        assert!(b.shape.is_none());
     }
 }
