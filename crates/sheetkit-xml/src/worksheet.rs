@@ -327,7 +327,7 @@ pub struct Row {
     #[serde(rename = "@r")]
     pub r: u32,
 
-    #[serde(rename = "@spans", skip_serializing_if = "Option::is_none")]
+    #[serde(skip)]
     pub spans: Option<String>,
 
     #[serde(rename = "@s", skip_serializing_if = "Option::is_none")]
