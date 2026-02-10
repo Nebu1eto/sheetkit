@@ -527,6 +527,25 @@ pub struct JsShapeConfig {
     pub line_width: Option<f64>,
 }
 
+/// Options for rendering a worksheet to SVG.
+#[napi(object)]
+pub struct JsRenderOptions {
+    /// Name of the sheet to render.
+    pub sheet_name: String,
+    /// Optional cell range to render (e.g. "A1:F20"). None renders the used range.
+    pub range: Option<String>,
+    /// Whether to draw gridlines between cells. Defaults to true.
+    pub show_gridlines: Option<bool>,
+    /// Whether to draw row and column headers. Defaults to true.
+    pub show_headers: Option<bool>,
+    /// Scale factor for the output (1.0 = 100%). Defaults to 1.0.
+    pub scale: Option<f64>,
+    /// Default font family for cell text. Defaults to "Arial".
+    pub default_font_family: Option<String>,
+    /// Default font size in points. Defaults to 11.0.
+    pub default_font_size: Option<f64>,
+}
+
 /// A single formatted text segment within a rich text cell.
 #[napi(object)]
 pub struct JsRichTextRun {

@@ -1614,6 +1614,25 @@ impl Workbook {
             sheetkit_core::sheet::SheetVisibility::VeryHidden => "veryHidden".to_string(),
         })
     }
+
+    /// Render a worksheet to an SVG string.
+    #[napi]
+    pub fn render_to_svg(&self, options: JsRenderOptions) -> Result<String> {
+        let render_opts = sheetkit_core::render::RenderOptions {
+            sheet_name: options.sheet_name,
+            range: options.range,
+            show_gridlines: options.show_gridlines.unwrap_or(true),
+            show_headers: options.show_headers.unwrap_or(true),
+            scale: options.scale.unwrap_or(1.0),
+            default_font_family: options
+                .default_font_family
+                .unwrap_or_else(|| "Arial".to_string()),
+            default_font_size: options.default_font_size.unwrap_or(11.0),
+        };
+        self.inner
+            .render_to_svg(&render_opts)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
 }
 
 impl Workbook {

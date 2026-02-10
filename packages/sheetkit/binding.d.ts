@@ -320,6 +320,8 @@ export declare class Workbook {
   setSheetVisibility(sheet: string, visibility: string): void
   /** Get sheet visibility. Returns "visible", "hidden", or "veryHidden". */
   getSheetVisibility(sheet: string): string
+  /** Render a worksheet to an SVG string. */
+  renderToSvg(options: JsRenderOptions): string
 }
 
 export interface DateValue {
@@ -677,6 +679,24 @@ export interface JsPrintOptions {
 export interface JsProtectionStyle {
   locked?: boolean
   hidden?: boolean
+}
+
+/** Options for rendering a worksheet to SVG. */
+export interface JsRenderOptions {
+  /** Name of the sheet to render. */
+  sheetName: string
+  /** Optional cell range to render (e.g. "A1:F20"). None renders the used range. */
+  range?: string
+  /** Whether to draw gridlines between cells. Defaults to true. */
+  showGridlines?: boolean
+  /** Whether to draw row and column headers. Defaults to true. */
+  showHeaders?: boolean
+  /** Scale factor for the output (1.0 = 100%). Defaults to 1.0. */
+  scale?: number
+  /** Default font family for cell text. Defaults to "Arial". */
+  defaultFontFamily?: string
+  /** Default font size in points. Defaults to 11.0. */
+  defaultFontSize?: number
 }
 
 /** A single formatted text segment within a rich text cell. */
