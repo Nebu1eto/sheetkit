@@ -366,6 +366,48 @@ impl CompactCellRef {
         // Safety: we only ever store valid UTF-8 (ASCII cell refs).
         unsafe { std::str::from_utf8_unchecked(&self.buf[..self.len as usize]) }
     }
+
+    /// Convert 1-based column and row numbers into a CompactCellRef with zero heap allocation.
+    pub fn from_coordinates(col: u32, row: u32) -> Self {
+        let mut buf = [0u8; 10];
+        let mut pos = 0;
+
+        // Convert column number to letters (A-XFD)
+        let mut col_buf = [0u8; 3];
+        let mut col_len = 0;
+        let mut c = col;
+        while c > 0 {
+            c -= 1;
+            col_buf[col_len] = b'A' + (c % 26) as u8;
+            col_len += 1;
+            c /= 26;
+        }
+        // Write column letters in correct (reversed) order
+        for i in (0..col_len).rev() {
+            buf[pos] = col_buf[i];
+            pos += 1;
+        }
+
+        // Convert row number to digits
+        let mut row_buf = [0u8; 7];
+        let mut row_len = 0;
+        let mut r = row;
+        while r > 0 {
+            row_buf[row_len] = b'0' + (r % 10) as u8;
+            row_len += 1;
+            r /= 10;
+        }
+        // Write row digits in correct (reversed) order
+        for i in (0..row_len).rev() {
+            buf[pos] = row_buf[i];
+            pos += 1;
+        }
+
+        Self {
+            buf,
+            len: pos as u8,
+        }
+    }
 }
 
 impl fmt::Display for CompactCellRef {
@@ -1420,5 +1462,53 @@ mod tests {
     #[should_panic(expected = "cell reference too long")]
     fn test_compact_cell_ref_panics_on_overflow() {
         CompactCellRef::new("ABCDEFGHIJK");
+    }
+
+    #[test]
+    fn test_compact_cell_ref_from_coordinates_a1() {
+        let r = CompactCellRef::from_coordinates(1, 1);
+        assert_eq!(r.as_str(), "A1");
+    }
+
+    #[test]
+    fn test_compact_cell_ref_from_coordinates_z26() {
+        let r = CompactCellRef::from_coordinates(26, 26);
+        assert_eq!(r.as_str(), "Z26");
+    }
+
+    #[test]
+    fn test_compact_cell_ref_from_coordinates_aa1() {
+        let r = CompactCellRef::from_coordinates(27, 1);
+        assert_eq!(r.as_str(), "AA1");
+    }
+
+    #[test]
+    fn test_compact_cell_ref_from_coordinates_max() {
+        let r = CompactCellRef::from_coordinates(16384, 1048576);
+        assert_eq!(r.as_str(), "XFD1048576");
+    }
+
+    #[test]
+    fn test_compact_cell_ref_from_coordinates_zz1() {
+        let r = CompactCellRef::from_coordinates(702, 1);
+        assert_eq!(r.as_str(), "ZZ1");
+    }
+
+    #[test]
+    fn test_compact_cell_ref_from_coordinates_roundtrip() {
+        fn col_to_name(mut col: u32) -> String {
+            let mut result = String::new();
+            while col > 0 {
+                col -= 1;
+                result.insert(0, (b'A' + (col % 26) as u8) as char);
+                col /= 26;
+            }
+            result
+        }
+        for c in [1, 2, 26, 27, 52, 100, 256, 702, 703, 16384] {
+            let r = CompactCellRef::from_coordinates(c, 1);
+            let expected = format!("{}1", col_to_name(c));
+            assert_eq!(r.as_str(), expected, "mismatch for col={c}");
+        }
     }
 }
