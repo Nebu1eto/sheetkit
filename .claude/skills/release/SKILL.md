@@ -121,6 +121,34 @@ Update `"version"` in `examples/node/package.json`.
 > **Note:** Do not update `benchmarks/node/package.json` -- it is a
 > private package with its own independent version.
 
+### Documentation and READMEs
+
+Search all documentation files for hardcoded SheetKit version references
+and update them to the new version using the full **major.minor.patch**
+format (e.g., `0.4.0`).
+
+Files that typically contain version references:
+
+-   `README.md` -- Rust installation example (`sheetkit = "X.Y.Z"`)
+-   `README.ko.md` -- same as above
+-   `docs/getting-started.md` -- Rust dependency example
+-   `docs/ko/getting-started.md` -- same as above
+-   `docs/guide/basic-operations.md` -- Rust dependency example
+-   `docs/ko/guide/basic-operations.md` -- same as above
+-   `docs/guide/index.md` -- Rust dependency example
+-   `docs/ko/guide/index.md` -- same as above
+
+To find all occurrences, run:
+
+~~~~ bash
+grep -rn 'sheetkit\s*=\s*"[0-9]' README.md README.ko.md docs/
+grep -rn 'sheetkit.*version\s*=\s*"[0-9]' README.md README.ko.md docs/
+~~~~
+
+Update every match to the new version.  Do **not** change
+toolchain versions (Node.js, Rust) or other unrelated version numbers
+in documentation.
+
 
 Step 2: Build and verify
 ------------------------
@@ -173,6 +201,18 @@ git add Cargo.toml Cargo.lock \
   packages/win32-arm64-msvc/package.json \
   packages/win32-x64-msvc/package.json \
   examples/node/package.json
+~~~~
+
+Also stage any documentation files where versions were updated:
+
+~~~~ bash
+git add README.md README.ko.md \
+  docs/getting-started.md \
+  docs/ko/getting-started.md \
+  docs/guide/basic-operations.md \
+  docs/ko/guide/basic-operations.md \
+  docs/guide/index.md \
+  docs/ko/guide/index.md
 ~~~~
 
 Also stage any files modified by `pnpm check:fix` or `cargo fmt`.
@@ -291,6 +331,14 @@ A complete list for quick reference:
 | `packages/win32-arm64-msvc/package.json` | `version` |
 | `packages/win32-x64-msvc/package.json` | `version` |
 | `examples/node/package.json` | `version` |
+| `README.md` | Rust dependency example version |
+| `README.ko.md` | Rust dependency example version |
+| `docs/getting-started.md` | Rust dependency example version |
+| `docs/ko/getting-started.md` | Rust dependency example version |
+| `docs/guide/basic-operations.md` | Rust dependency example version |
+| `docs/ko/guide/basic-operations.md` | Rust dependency example version |
+| `docs/guide/index.md` | Rust dependency example version |
+| `docs/ko/guide/index.md` | Rust dependency example version |
 
 
 Checklist summary
@@ -303,6 +351,7 @@ Checklist summary
 -   [ ] Version bumped in `packages/sheetkit/package.json` (version + 8 optionalDeps)
 -   [ ] Version bumped in 8 platform `package.json` files
 -   [ ] Version bumped in `examples/node/package.json`
+-   [ ] Version bumped in READMEs and docs
 -   [ ] `pnpm install` and `pnpm -r build` succeed
 -   [ ] `cargo build --workspace` succeeds
 -   [ ] `pnpm check:fix` and `cargo fmt --check` pass
