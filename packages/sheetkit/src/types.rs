@@ -722,3 +722,64 @@ pub struct JsVbaProject {
     /// Non-fatal warnings encountered during parsing.
     pub warnings: Vec<String>,
 }
+
+/// Configuration for adding a form control to a worksheet.
+#[napi(object)]
+pub struct JsFormControlConfig {
+    /// Control type: "button", "checkbox", "optionButton", "spinButton",
+    /// "scrollBar", "groupBox", "label".
+    pub control_type: String,
+    /// Anchor cell (top-left corner), e.g. "B2".
+    pub cell: String,
+    /// Width in points.
+    pub width: Option<f64>,
+    /// Height in points.
+    pub height: Option<f64>,
+    /// Display text (Button, CheckBox, OptionButton, GroupBox, Label).
+    pub text: Option<String>,
+    /// VBA macro name (Button only).
+    pub macro_name: Option<String>,
+    /// Linked cell reference for value binding.
+    pub cell_link: Option<String>,
+    /// Initial checked state (CheckBox, OptionButton).
+    pub checked: Option<bool>,
+    /// Minimum value (SpinButton, ScrollBar).
+    pub min_value: Option<u32>,
+    /// Maximum value (SpinButton, ScrollBar).
+    pub max_value: Option<u32>,
+    /// Step increment (SpinButton, ScrollBar).
+    pub increment: Option<u32>,
+    /// Page increment (ScrollBar only).
+    pub page_increment: Option<u32>,
+    /// Current value (SpinButton, ScrollBar).
+    pub current_value: Option<u32>,
+    /// Enable 3D shading.
+    pub three_d: Option<bool>,
+}
+
+/// Information about an existing form control.
+#[napi(object)]
+pub struct JsFormControlInfo {
+    /// Control type string.
+    pub control_type: String,
+    /// Anchor cell reference.
+    pub cell: String,
+    /// Display text.
+    pub text: Option<String>,
+    /// VBA macro name.
+    pub macro_name: Option<String>,
+    /// Linked cell reference.
+    pub cell_link: Option<String>,
+    /// Checked state.
+    pub checked: Option<bool>,
+    /// Current value.
+    pub current_value: Option<u32>,
+    /// Minimum value.
+    pub min_value: Option<u32>,
+    /// Maximum value.
+    pub max_value: Option<u32>,
+    /// Step increment.
+    pub increment: Option<u32>,
+    /// Page increment.
+    pub page_increment: Option<u32>,
+}

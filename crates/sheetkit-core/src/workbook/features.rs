@@ -679,6 +679,80 @@ impl Workbook {
         }
     }
 
+    /// Add a form control to a sheet.
+    ///
+    /// The control is positioned at the cell specified in `config.cell`.
+    /// Supported control types: Button, CheckBox, OptionButton, SpinButton,
+    /// ScrollBar, GroupBox, Label.
+    pub fn add_form_control(
+        &mut self,
+        sheet: &str,
+        config: crate::control::FormControlConfig,
+    ) -> Result<()> {
+        let idx = self.sheet_index(sheet)?;
+        config.validate()?;
+        while self.sheet_form_controls.len() <= idx {
+            self.sheet_form_controls.push(vec![]);
+        }
+        self.sheet_form_controls[idx].push(config);
+        // Invalidate cached VML so save() regenerates from current state.
+        if idx < self.sheet_vml.len() {
+            self.sheet_vml[idx] = None;
+        }
+        Ok(())
+    }
+
+    /// Get all form controls on a sheet.
+    ///
+    /// If the sheet has VML content (e.g. from an opened file), form controls
+    /// are parsed from the VML. Otherwise, returns the controls added via
+    /// [`add_form_control`].
+    pub fn get_form_controls(&self, sheet: &str) -> Result<Vec<crate::control::FormControlInfo>> {
+        let idx = self.sheet_index(sheet)?;
+
+        // If there are programmatically added controls, convert them to info.
+        let added = self.sheet_form_controls.get(idx);
+        if let Some(controls) = added {
+            if !controls.is_empty() {
+                // Generate VML and parse to get consistent FormControlInfo.
+                let vml = crate::control::build_form_control_vml(controls, 1025);
+                return Ok(crate::control::parse_form_controls(&vml));
+            }
+        }
+
+        // Try parsing from preserved VML bytes.
+        if let Some(Some(vml_bytes)) = self.sheet_vml.get(idx) {
+            let vml_str = String::from_utf8_lossy(vml_bytes);
+            let controls = crate::control::parse_form_controls(&vml_str);
+            if !controls.is_empty() {
+                return Ok(controls);
+            }
+        }
+
+        Ok(vec![])
+    }
+
+    /// Delete a form control from a sheet by its 0-based index.
+    pub fn delete_form_control(&mut self, sheet: &str, index: usize) -> Result<()> {
+        let idx = self.sheet_index(sheet)?;
+        let controls = self
+            .sheet_form_controls
+            .get_mut(idx)
+            .ok_or_else(|| Error::Internal("no form controls on this sheet".to_string()))?;
+        if index >= controls.len() {
+            return Err(Error::InvalidArgument(format!(
+                "form control index {index} out of bounds (sheet has {} controls)",
+                controls.len()
+            )));
+        }
+        controls.remove(index);
+        // Invalidate cached VML.
+        if idx < self.sheet_vml.len() {
+            self.sheet_vml[idx] = None;
+        }
+        Ok(())
+    }
+
     /// Resolve an optional sheet name to a [`DefinedNameScope`](crate::defined_names::DefinedNameScope).
     fn resolve_defined_name_scope(
         &self,
