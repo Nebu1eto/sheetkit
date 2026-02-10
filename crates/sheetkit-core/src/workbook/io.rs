@@ -44,7 +44,6 @@ impl Workbook {
             sheet_vml: vec![None],
             unknown_parts: vec![],
             vba_blob: None,
-            vba_project: None,
             tables: vec![],
             raw_sheet_xml: vec![None],
             slicer_defs: vec![],
@@ -495,9 +494,6 @@ impl Workbook {
             known_paths.insert("xl/vbaProject.bin".to_string());
         }
 
-        // Read VBA project binary (xl/vbaProject.bin), for VBA module extraction.
-        let vba_project = vba_blob.clone();
-
         // Parse table parts referenced from worksheet relationships.
         let mut tables: Vec<(String, sheetkit_xml::table::TableXml, usize)> = Vec::new();
         for (sheet_idx, sheet_path) in worksheet_paths.iter().enumerate() {
@@ -609,7 +605,6 @@ impl Workbook {
             sheet_vml,
             unknown_parts,
             vba_blob,
-            vba_project,
             tables,
             raw_sheet_xml,
             slicer_defs,
