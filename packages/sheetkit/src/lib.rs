@@ -1288,6 +1288,53 @@ impl Workbook {
             .map_err(|e| Error::from_reason(e.to_string()))
     }
 
+    /// Add a slicer to a sheet targeting a table column.
+    #[napi]
+    pub fn add_slicer(&mut self, sheet: String, config: JsSlicerConfig) -> Result<()> {
+        let core_config = sheetkit_core::slicer::SlicerConfig {
+            name: config.name,
+            cell: config.cell,
+            table_name: config.table_name,
+            column_name: config.column_name,
+            caption: config.caption,
+            style: config.style,
+            width: config.width,
+            height: config.height,
+            show_caption: config.show_caption,
+            column_count: config.column_count,
+        };
+        self.inner
+            .add_slicer(&sheet, &core_config)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Get all slicers on a sheet.
+    #[napi]
+    pub fn get_slicers(&self, sheet: String) -> Result<Vec<JsSlicerInfo>> {
+        let slicers = self
+            .inner
+            .get_slicers(&sheet)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        Ok(slicers
+            .into_iter()
+            .map(|info| JsSlicerInfo {
+                name: info.name,
+                caption: info.caption,
+                table_name: info.table_name,
+                column_name: info.column_name,
+                style: info.style,
+            })
+            .collect())
+    }
+
+    /// Delete a slicer by name from a sheet.
+    #[napi]
+    pub fn delete_slicer(&mut self, sheet: String, name: String) -> Result<()> {
+        self.inner
+            .delete_slicer(&sheet, &name)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
     /// Set a cell to a rich text value with multiple formatted runs.
     #[napi]
     pub fn set_cell_rich_text(

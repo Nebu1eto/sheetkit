@@ -34,6 +34,7 @@ pub use sheetkit_core::pivot::{
 };
 pub use sheetkit_core::rich_text::{rich_text_to_plain, RichTextRun};
 pub use sheetkit_core::shape::{ShapeConfig, ShapeType};
+pub use sheetkit_core::slicer::{SlicerConfig, SlicerInfo};
 pub use sheetkit_core::sparkline::{SparklineConfig, SparklineType};
 pub use sheetkit_core::style::{
     AlignmentStyle, BorderLineStyle, BorderSideStyle, BorderStyle, FillStyle, FontStyle,

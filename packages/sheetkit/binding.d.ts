@@ -269,6 +269,12 @@ export declare class Workbook {
   getSparklines(sheet: string): Array<JsSparklineConfig>
   /** Remove a sparkline by its location cell reference. */
   removeSparkline(sheet: string, location: string): void
+  /** Add a slicer to a sheet targeting a table column. */
+  addSlicer(sheet: string, config: JsSlicerConfig): void
+  /** Get all slicers on a sheet. */
+  getSlicers(sheet: string): Array<JsSlicerInfo>
+  /** Delete a slicer by name from a sheet. */
+  deleteSlicer(sheet: string, name: string): void
   /** Set a cell to a rich text value with multiple formatted runs. */
   setCellRichText(sheet: string, cell: string, runs: Array<JsRichTextRun>): void
   /** Get rich text runs for a cell, or null if not rich text. */
@@ -769,6 +775,44 @@ export interface JsSheetViewOptions {
   viewMode?: string
   /** Top-left cell visible in the view (e.g. "A1"). */
   topLeftCell?: string
+}
+
+/** Configuration for adding a slicer to a table. */
+export interface JsSlicerConfig {
+  /** Unique slicer name. */
+  name: string
+  /** Anchor cell (top-left corner). */
+  cell: string
+  /** Source table name. */
+  tableName: string
+  /** Column name from the table to filter. */
+  columnName: string
+  /** Caption displayed on the slicer header. */
+  caption?: string
+  /** Slicer visual style (e.g. "SlicerStyleLight1"). */
+  style?: string
+  /** Width in pixels. */
+  width?: number
+  /** Height in pixels. */
+  height?: number
+  /** Whether to show the caption header. */
+  showCaption?: boolean
+  /** Number of columns in the slicer item display. */
+  columnCount?: number
+}
+
+/** Information about an existing slicer. */
+export interface JsSlicerInfo {
+  /** The slicer's unique name. */
+  name: string
+  /** The display caption. */
+  caption: string
+  /** The source table name. */
+  tableName: string
+  /** The column name being filtered. */
+  columnName: string
+  /** The visual style name, if set. */
+  style?: string
 }
 
 export interface JsSparklineConfig {

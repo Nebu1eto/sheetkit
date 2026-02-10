@@ -3725,3 +3725,120 @@ describe('Additional Chart Types', () => {
     ).toThrow();
   });
 });
+
+describe('Slicers', () => {
+  const out = tmpFile('test-slicer.xlsx');
+  afterEach(async () => cleanup(out));
+
+  it('should add and get slicers', () => {
+    const wb = new Workbook();
+    wb.addSlicer('Sheet1', {
+      name: 'StatusFilter',
+      cell: 'F1',
+      tableName: 'Table1',
+      columnName: 'Status',
+    });
+
+    const slicers = wb.getSlicers('Sheet1');
+    expect(slicers.length).toBe(1);
+    expect(slicers[0].name).toBe('StatusFilter');
+    expect(slicers[0].columnName).toBe('Status');
+  });
+
+  it('should add slicer with options', () => {
+    const wb = new Workbook();
+    wb.addSlicer('Sheet1', {
+      name: 'RegionSlicer',
+      cell: 'G2',
+      tableName: 'Table1',
+      columnName: 'Region',
+      caption: 'Filter by Region',
+      style: 'SlicerStyleLight1',
+      width: 300,
+      height: 250,
+      showCaption: true,
+      columnCount: 2,
+    });
+
+    const slicers = wb.getSlicers('Sheet1');
+    expect(slicers.length).toBe(1);
+    expect(slicers[0].caption).toBe('Filter by Region');
+    expect(slicers[0].style).toBe('SlicerStyleLight1');
+  });
+
+  it('should delete a slicer', () => {
+    const wb = new Workbook();
+    wb.addSlicer('Sheet1', {
+      name: 'S1',
+      cell: 'F1',
+      tableName: 'T1',
+      columnName: 'Col1',
+    });
+
+    expect(wb.getSlicers('Sheet1').length).toBe(1);
+    wb.deleteSlicer('Sheet1', 'S1');
+    expect(wb.getSlicers('Sheet1').length).toBe(0);
+  });
+
+  it('should save and open with slicers', async () => {
+    const wb = new Workbook();
+    wb.addSlicer('Sheet1', {
+      name: 'CategoryFilter',
+      cell: 'F1',
+      tableName: 'Table1',
+      columnName: 'Category',
+      caption: 'Category',
+      style: 'SlicerStyleLight1',
+    });
+
+    await wb.save(out);
+    const wb2 = await Workbook.open(out);
+    const slicers = wb2.getSlicers('Sheet1');
+    expect(slicers.length).toBe(1);
+    expect(slicers[0].name).toBe('CategoryFilter');
+    expect(slicers[0].columnName).toBe('Category');
+  });
+
+  it('should throw on duplicate slicer name', () => {
+    const wb = new Workbook();
+    wb.addSlicer('Sheet1', {
+      name: 'S1',
+      cell: 'F1',
+      tableName: 'T1',
+      columnName: 'Col1',
+    });
+
+    expect(() =>
+      wb.addSlicer('Sheet1', {
+        name: 'S1',
+        cell: 'G1',
+        tableName: 'T1',
+        columnName: 'Col2',
+      }),
+    ).toThrow(/already exists/);
+  });
+
+  it('should throw on delete non-existent slicer', () => {
+    const wb = new Workbook();
+    expect(() => wb.deleteSlicer('Sheet1', 'NoSuch')).toThrow(/not found/);
+  });
+
+  it('should support multiple slicers on same sheet', () => {
+    const wb = new Workbook();
+    wb.addSlicer('Sheet1', {
+      name: 'S1',
+      cell: 'F1',
+      tableName: 'T1',
+      columnName: 'Col1',
+    });
+    wb.addSlicer('Sheet1', {
+      name: 'S2',
+      cell: 'G1',
+      tableName: 'T1',
+      columnName: 'Col2',
+    });
+
+    const slicers = wb.getSlicers('Sheet1');
+    expect(slicers.length).toBe(2);
+  });
+});

@@ -46,6 +46,8 @@ impl Workbook {
             vba_blob: None,
             tables: vec![],
             raw_sheet_xml: vec![None],
+            slicer_defs: vec![],
+            slicer_caches: vec![],
         }
     }
 
@@ -396,6 +398,26 @@ impl Workbook {
             }
         }
 
+        // Parse slicer definitions and slicer cache definitions.
+        let mut slicer_defs = Vec::new();
+        let mut slicer_caches = Vec::new();
+        for ovr in &content_types.overrides {
+            let path = ovr.part_name.trim_start_matches('/');
+            if ovr.content_type == mime_types::SLICER {
+                if let Ok(sd) =
+                    read_xml_part::<sheetkit_xml::slicer::SlicerDefinitions, _>(archive, path)
+                {
+                    slicer_defs.push((path.to_string(), sd));
+                }
+            } else if ovr.content_type == mime_types::SLICER_CACHE {
+                if let Ok(raw) = read_string_part(archive, path) {
+                    if let Some(scd) = sheetkit_xml::slicer::parse_slicer_cache(&raw) {
+                        slicer_caches.push((path.to_string(), scd));
+                    }
+                }
+            }
+        }
+
         // Parse sparklines from worksheet extension lists.
         let mut sheet_sparklines: Vec<Vec<crate::sparkline::SparklineConfig>> =
             vec![vec![]; worksheets.len()];
@@ -523,6 +545,8 @@ impl Workbook {
             vba_blob,
             tables,
             raw_sheet_xml,
+            slicer_defs,
+            slicer_caches,
         })
     }
 
@@ -984,6 +1008,23 @@ impl Workbook {
         // xl/tables/table{N}.xml
         for (path, table_xml, _sheet_idx) in &self.tables {
             write_xml_part(zip, path, table_xml, options)?;
+        }
+
+        // xl/slicers/slicer{N}.xml
+        for (path, sd) in &self.slicer_defs {
+            write_xml_part(zip, path, sd, options)?;
+        }
+
+        // xl/slicerCaches/slicerCache{N}.xml (manual serialization)
+        for (path, scd) in &self.slicer_caches {
+            let xml_str = format!(
+                "{}\n{}",
+                XML_DECLARATION,
+                sheetkit_xml::slicer::serialize_slicer_cache(scd),
+            );
+            zip.start_file(path, options)
+                .map_err(|e| Error::Zip(e.to_string()))?;
+            zip.write_all(xml_str.as_bytes())?;
         }
 
         // xl/theme/theme1.xml

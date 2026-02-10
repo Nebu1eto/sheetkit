@@ -138,6 +138,10 @@ pub mod mime_types {
     pub const PIVOT_CACHE_RECORDS: &str =
         "application/vnd.openxmlformats-officedocument.spreadsheetml.pivotCacheRecords+xml";
 
+    // Slicers
+    pub const SLICER: &str = "application/vnd.ms-excel.slicer+xml";
+    pub const SLICER_CACHE: &str = "application/vnd.ms-excel.slicerCache+xml";
+
     // Document properties
     pub const CORE_PROPERTIES: &str = "application/vnd.openxmlformats-package.core-properties+xml";
     pub const EXTENDED_PROPERTIES: &str =
