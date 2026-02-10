@@ -212,11 +212,8 @@ pub fn fn_delta(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     } else {
         0.0
     };
-    Ok(CellValue::Number(if (n1 - n2).abs() < f64::EPSILON {
-        1.0
-    } else {
-        0.0
-    }))
+    // Excel DELTA uses exact bitwise equality, not epsilon comparison.
+    Ok(CellValue::Number(if n1 == n2 { 1.0 } else { 0.0 }))
 }
 
 /// GESTEP(number, [step])
@@ -1110,6 +1107,17 @@ mod tests {
     #[test]
     fn delta_default() {
         assert_approx(eval("DELTA(0)"), 1.0, 0.01);
+    }
+
+    #[test]
+    fn delta_distinct_close_values() {
+        // Values that differ by more than f64::EPSILON but are distinct
+        // should NOT be considered equal (old code used epsilon comparison).
+        // 1.0 and 1.0 + 1e-15 are distinct f64 values.
+        let a = 1.0_f64;
+        let b = 1.0_f64 + 1e-15;
+        assert_ne!(a, b);
+        assert_approx(eval("DELTA(1, 1.000000000000001)"), 0.0, 0.01);
     }
 
     #[test]
