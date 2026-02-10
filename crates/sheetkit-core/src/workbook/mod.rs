@@ -164,11 +164,9 @@ pub struct Workbook {
     /// ZIP entries not recognized by the parser, preserved for round-trip fidelity.
     /// Each entry is (zip_path, raw_bytes).
     unknown_parts: Vec<(String, Vec<u8>)>,
-    /// Raw VBA project binary blob (`xl/vbaProject.bin`), preserved opaquely for round-trip.
-    /// `None` for non-macro workbooks.
+    /// Raw VBA project binary blob (`xl/vbaProject.bin`), preserved for round-trip
+    /// and used for VBA module extraction. `None` for non-macro workbooks.
     vba_blob: Option<Vec<u8>>,
-    /// Raw bytes of `xl/vbaProject.bin` if present (for VBA module extraction).
-    vba_project: Option<Vec<u8>>,
     /// Table parts: (zip path like "xl/tables/table1.xml", TableXml data, sheet_index).
     tables: Vec<(String, sheetkit_xml::table::TableXml, usize)>,
     /// Raw XML bytes for sheets that were not parsed during selective open.
