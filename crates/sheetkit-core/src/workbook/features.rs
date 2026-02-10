@@ -685,6 +685,9 @@ impl Workbook {
     /// only as raw VML bytes in `sheet_vml`. This method parses the VML and
     /// populates `sheet_form_controls` so that add/delete/get operations work
     /// correctly on files with pre-existing controls.
+    ///
+    /// After hydration, form control shapes are stripped from the preserved VML
+    /// to prevent duplication on save. Comment (Note) shapes are preserved.
     fn hydrate_form_controls(&mut self, idx: usize) {
         while self.sheet_form_controls.len() <= idx {
             self.sheet_form_controls.push(vec![]);
@@ -698,6 +701,11 @@ impl Workbook {
             if !parsed.is_empty() {
                 self.sheet_form_controls[idx] =
                     parsed.iter().map(|info| info.to_config()).collect();
+                // Strip form control shapes from preserved VML so save()
+                // regenerates them solely from sheet_form_controls, avoiding
+                // duplication.
+                let cleaned = crate::control::strip_form_control_shapes_from_vml(vml_bytes);
+                self.sheet_vml[idx] = cleaned;
             }
         }
     }

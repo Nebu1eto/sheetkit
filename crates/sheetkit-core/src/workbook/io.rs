@@ -808,6 +808,11 @@ impl Workbook {
                 .get(sheet_idx)
                 .map(|v| !v.is_empty())
                 .unwrap_or(false);
+            let has_preserved_vml = self
+                .sheet_vml
+                .get(sheet_idx)
+                .and_then(|v| v.as_ref())
+                .is_some();
 
             if let Some(rels) = worksheet_rels.get_mut(&sheet_idx) {
                 rels.relationships
@@ -816,7 +821,7 @@ impl Workbook {
                     .retain(|r| r.rel_type != rel_types::VML_DRAWING);
             }
 
-            let needs_vml = has_comments || has_form_controls;
+            let needs_vml = has_comments || has_form_controls || has_preserved_vml;
             if !needs_vml && !has_comments {
                 continue;
             }
@@ -887,10 +892,13 @@ impl Workbook {
                         .collect();
                     crate::vml::build_vml_drawing(&cells).into_bytes()
                 }
-            } else {
-                // Form controls only.
+            } else if has_form_controls {
+                // Hydrated form controls only (no comments).
                 let form_controls = &self.sheet_form_controls[sheet_idx];
                 crate::control::build_form_control_vml(form_controls, 1025).into_bytes()
+            } else {
+                // Preserved VML bytes only (controls not hydrated, no comments).
+                self.sheet_vml[sheet_idx].as_ref().unwrap().clone()
             };
 
             let vml_part_name = format!("/{}", vml_path);
