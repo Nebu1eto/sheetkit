@@ -235,6 +235,8 @@ Style deduplication is automatic. Registering two identical styles returns the s
 
 ## Working with Styles
 
+The example below uses a reusable style definition, registers it once, and applies the returned style ID to target cells. This pattern keeps style records compact and avoids duplicated style entries in `styles.xml`.
+
 **Rust**
 
 ```rust
@@ -282,6 +284,7 @@ await wb.save("styled.xlsx");
 ## Working with Charts
 
 Add a chart by specifying the anchor range (top-left and bottom-right cells), chart type, and data series.
+Anchor cells control where the chart is placed on the sheet, while `categories` and `values` control which data is plotted. Keep category and value ranges aligned to avoid misleading chart output.
 
 **Rust**
 
@@ -354,6 +357,7 @@ await wb.save("chart.xlsx");
 ## StreamWriter for Large Files
 
 The `StreamWriter` writes rows sequentially to an internal buffer without building the entire worksheet in memory. Rows must be written in ascending order.
+Use this pattern for batch exports, ETL jobs, and other pipelines that produce row data incrementally. Set headers and column widths first, then append data rows in order, and finally apply the stream output to the workbook.
 
 **Rust**
 
@@ -412,6 +416,7 @@ await wb.save("large.xlsx");
 ## Working with Encrypted Files
 
 SheetKit can read and write password-protected .xlsx files. Enable the `encryption` feature in Rust; Node.js bindings always include encryption support.
+This is file-level encryption for OOXML packages, so the file cannot be opened without the password. In production, plan password management and recovery workflows before enabling encrypted export/import paths.
 
 **Rust**
 

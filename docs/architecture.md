@@ -6,13 +6,15 @@ SheetKit is a high-performance SpreadsheetML library for Rust and TypeScript, de
 
 ## 2. Crate Structure
 
-```
-crates/
-  sheetkit-xml/     # XML schema types (serde-based)
-  sheetkit-core/    # Business logic
-  sheetkit/         # Public facade (re-exports)
-packages/
-  sheetkit/         # Node.js bindings (napi-rs)
+```mermaid
+flowchart TD
+  workspace["SheetKit Workspace"]
+  workspace --> crates["crates/"]
+  crates --> xml["sheetkit-xml<br/>XML schema types (serde-based)"]
+  crates --> core["sheetkit-core<br/>Business logic"]
+  crates --> facade["sheetkit<br/>Public facade (re-exports)"]
+  workspace --> packages["packages/"]
+  packages --> node["sheetkit<br/>Node.js bindings (napi-rs)"]
 ```
 
 ### sheetkit-xml
@@ -181,56 +183,32 @@ napi v3 `Either` types are used for polymorphic values instead of `JsUnknown`, p
 
 ### Reading an .xlsx file
 
-```
-.xlsx file (ZIP archive)
-  |
-  v
-zip::ZipArchive::new(reader)
-  |
-  v
-For each known XML part path (e.g., "xl/workbook.xml", "xl/worksheets/sheet1.xml"):
-  zip_archive.by_name(path) -> raw XML bytes
-  |
-  v
-quick_xml::de::from_str() or manual Reader -> sheetkit-xml typed struct
-  |
-  v
-All deserialized parts assembled into Workbook struct
-  (sheets, styles, SST, relationships, drawings, charts, etc.)
+```mermaid
+flowchart TD
+  file[".xlsx file (ZIP archive)"] --> archive["zip::ZipArchive::new(reader)"]
+  archive --> iterate["Iterate known XML part paths<br/>(e.g., xl/workbook.xml, xl/worksheets/sheet1.xml)"]
+  iterate --> raw["zip_archive.by_name(path)<br/>raw XML bytes"]
+  raw --> parse["quick_xml::de::from_str() or manual Reader<br/>sheetkit-xml typed struct"]
+  parse --> wb["Assemble Workbook struct<br/>(sheets, styles, SST, relationships, drawings, charts)"]
 ```
 
 ### Manipulating data
 
-```
-User code calls Workbook methods:
-  wb.set_cell_value("Sheet1", "A1", CellValue::String("Hello".into()))
-  |
-  v
-Workbook locates the target worksheet (by name -> sheet index)
-  |
-  v
-SST.get_or_insert("Hello") -> string index (O(1) via HashMap)
-  |
-  v
-Worksheet row/cell data updated with SST index reference
+```mermaid
+flowchart TD
+  call["User code calls Workbook API<br/>wb.set_cell_value('Sheet1', 'A1', CellValue::String('Hello'))"] --> locate["Workbook resolves target worksheet<br/>(sheet name to index)"]
+  locate --> sst["SST.get_or_insert('Hello')<br/>returns string index in O(1)"]
+  sst --> update["Worksheet row/cell state updated<br/>with SST index reference"]
 ```
 
 ### Writing an .xlsx file
 
-```
-Workbook.save_as("output.xlsx")
-  |
-  v
-For each XML part:
-  quick_xml::se::to_string() or manual Writer -> XML string
-  Prepend XML declaration
-  |
-  v
-zip::ZipWriter::start_file(path, options)
-  writer.write_all(xml_bytes)
-  |
-  v
-zip::ZipWriter::finish() -> .xlsx file
+```mermaid
+flowchart TD
+  save["Workbook.save_as('output.xlsx')"] --> parts["For each XML part"]
+  parts --> serialize["quick_xml::se::to_string() or manual Writer<br/>serialize XML and prepend declaration"]
+  serialize --> write["zip::ZipWriter::start_file(path, options)<br/>writer.write_all(xml_bytes)"]
+  write --> finish["zip::ZipWriter::finish()<br/>output .xlsx file"]
 ```
 
 ## 5. Testing Strategy
@@ -252,20 +230,14 @@ The root cause is that napi object creation does not scale: the overhead is prop
 
 SheetKit uses a buffer-based FFI transfer strategy. Instead of creating one JS object per cell, the Rust side serializes the entire sheet's cell data into a single compact binary `Buffer`. This buffer crosses the FFI boundary in one call. On the JavaScript side, a codec layer decodes the buffer into whatever representation the caller needs.
 
-```
-Rust Workbook (native)
-  |
-  sheet_to_raw_buffer()    -- serialize cells to binary
-  |
-  v
-Buffer (single FFI transfer)
-  |
-  v
-JS Workbook wrapper
-  |
-  +-- getRows()         -- decodes buffer into JsRowData[] (backward compatible)
-  +-- getRowsBuffer()   -- returns raw Buffer for advanced use
-  +-- SheetData class   -- wraps buffer for O(1) random access
+```mermaid
+flowchart TD
+  rust["Rust Workbook (native)"] --> encode["sheet_to_raw_buffer()<br/>serialize cells to binary"]
+  encode --> buffer["Buffer (single FFI transfer)"]
+  buffer --> js["JS Workbook wrapper"]
+  js --> rows["getRows()<br/>decode buffer into JsRowData[]"]
+  js --> raw["getRowsBuffer()<br/>return raw Buffer"]
+  js --> sheetdata["SheetData class<br/>O(1) random access over buffer"]
 ```
 
 The decision rule is straightforward: if the payload scales with cell count, use buffer transfer. If the payload is fixed-size or small (single cell value, style config, sheet properties), use direct napi calls.

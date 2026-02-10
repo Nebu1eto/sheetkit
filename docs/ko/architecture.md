@@ -6,13 +6,15 @@ SheetKit은 Rust와 TypeScript를 위한 고성능 SpreadsheetML 라이브러리
 
 ## 2. 크레이트 구조
 
-```
-crates/
-  sheetkit-xml/     # XML 스키마 타입 (serde 기반)
-  sheetkit-core/    # 비즈니스 로직
-  sheetkit/         # 공개 파사드 (재내보내기)
-packages/
-  sheetkit/         # Node.js 바인딩 (napi-rs)
+```mermaid
+flowchart TD
+  workspace["SheetKit 워크스페이스"]
+  workspace --> crates["crates/"]
+  crates --> xml["sheetkit-xml<br/>XML 스키마 타입 (serde 기반)"]
+  crates --> core["sheetkit-core<br/>비즈니스 로직"]
+  crates --> facade["sheetkit<br/>공개 facade (재내보내기)"]
+  workspace --> packages["packages/"]
+  packages --> node["sheetkit<br/>Node.js 바인딩 (napi-rs)"]
 ```
 
 ### sheetkit-xml
@@ -181,56 +183,32 @@ napi v3의 `Either` 타입은 `JsUnknown` 대신 다형 값에 사용되어 Rust
 
 ### .xlsx 파일 읽기
 
-```
-.xlsx file (ZIP archive)
-  |
-  v
-zip::ZipArchive::new(reader)
-  |
-  v
-For each known XML part path (e.g., "xl/workbook.xml", "xl/worksheets/sheet1.xml"):
-  zip_archive.by_name(path) -> raw XML bytes
-  |
-  v
-quick_xml::de::from_str() or manual Reader -> sheetkit-xml typed struct
-  |
-  v
-All deserialized parts assembled into Workbook struct
-  (sheets, styles, SST, relationships, drawings, charts, etc.)
+```mermaid
+flowchart TD
+  file[".xlsx 파일 (ZIP 아카이브)"] --> archive["zip::ZipArchive::new(reader)"]
+  archive --> iterate["알려진 XML 파트 경로 순회<br/>(예: xl/workbook.xml, xl/worksheets/sheet1.xml)"]
+  iterate --> raw["zip_archive.by_name(path)<br/>raw XML bytes"]
+  raw --> parse["quick_xml::de::from_str() 또는 수동 Reader<br/>sheetkit-xml typed struct"]
+  parse --> wb["Workbook 상태 조립<br/>(sheets, styles, SST, relationships, drawings, charts)"]
 ```
 
 ### 데이터 조작
 
-```
-User code calls Workbook methods:
-  wb.set_cell_value("Sheet1", "A1", CellValue::String("Hello".into()))
-  |
-  v
-Workbook locates the target worksheet (by name -> sheet index)
-  |
-  v
-SST.get_or_insert("Hello") -> string index (O(1) via HashMap)
-  |
-  v
-Worksheet row/cell data updated with SST index reference
+```mermaid
+flowchart TD
+  call["사용자 코드에서 Workbook API 호출<br/>wb.set_cell_value('Sheet1', 'A1', CellValue::String('Hello'))"] --> locate["Workbook이 대상 워크시트 해석<br/>(시트 이름에서 인덱스)"]
+  locate --> sst["SST.get_or_insert('Hello')<br/>O(1)으로 문자열 인덱스 반환"]
+  sst --> update["워크시트 row/cell 상태를<br/>SST 인덱스 참조로 갱신"]
 ```
 
 ### .xlsx 파일 쓰기
 
-```
-Workbook.save_as("output.xlsx")
-  |
-  v
-For each XML part:
-  quick_xml::se::to_string() or manual Writer -> XML string
-  Prepend XML declaration
-  |
-  v
-zip::ZipWriter::start_file(path, options)
-  writer.write_all(xml_bytes)
-  |
-  v
-zip::ZipWriter::finish() -> .xlsx file
+```mermaid
+flowchart TD
+  save["Workbook.save_as('output.xlsx')"] --> parts["각 XML 파트 순회"]
+  parts --> serialize["quick_xml::se::to_string() 또는 수동 Writer<br/>XML 직렬화 후 선언문 추가"]
+  serialize --> write["zip::ZipWriter::start_file(path, options)<br/>writer.write_all(xml_bytes)"]
+  write --> finish["zip::ZipWriter::finish()<br/>.xlsx 파일 생성"]
 ```
 
 ## 5. 테스트 전략
@@ -252,20 +230,14 @@ Node.js 바인딩을 통해 50,000행 x 20열 시트를 읽을 때, 기존 `getR
 
 SheetKit은 Buffer 기반 FFI 전송 전략을 사용합니다. 셀 하나마다 JS 객체를 생성하는 대신, Rust 측에서 시트의 전체 셀 데이터를 단일 압축 바이너리 `Buffer`로 직렬화합니다. 이 Buffer는 한 번의 호출로 FFI 경계를 넘습니다. JavaScript 측에서는 코덱 레이어가 Buffer를 호출자가 필요로 하는 형태로 디코딩합니다.
 
-```
-Rust Workbook (native)
-  |
-  sheet_to_raw_buffer()    -- 셀을 바이너리로 직렬화
-  |
-  v
-Buffer (단일 FFI 전송)
-  |
-  v
-JS Workbook wrapper
-  |
-  +-- getRows()         -- Buffer를 JsRowData[]로 디코딩 (하위 호환)
-  +-- getRowsBuffer()   -- 고급 사용을 위한 raw Buffer 반환
-  +-- SheetData class   -- O(1) 임의 접근을 위한 Buffer 래퍼
+```mermaid
+flowchart TD
+  rust["Rust Workbook (native)"] --> encode["sheet_to_raw_buffer()<br/>셀 데이터를 바이너리로 직렬화"]
+  encode --> buffer["Buffer (단일 FFI 전송)"]
+  buffer --> js["JS Workbook wrapper"]
+  js --> rows["getRows()<br/>Buffer를 JsRowData[]로 디코딩 (하위 호환)"]
+  js --> raw["getRowsBuffer()<br/>고급 사용을 위한 raw Buffer 반환"]
+  js --> sheetdata["SheetData class<br/>Buffer 기반 O(1) 임의 접근"]
 ```
 
 결정 규칙은 단순합니다: payload가 셀 수에 비례하여 증가하면 Buffer 전송을 사용합니다. payload가 고정 크기이거나 작은 경우 (단일 셀 값, 스타일 설정, 시트 속성)에는 직접 napi 호출을 사용합니다.
