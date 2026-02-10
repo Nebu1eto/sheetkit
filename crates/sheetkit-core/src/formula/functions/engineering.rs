@@ -535,7 +535,8 @@ fn format_oct(n: i64, args: &[Expr], ctx: &mut Evaluator, places_idx: usize) -> 
     let s = if n >= 0 {
         format!("{n:o}")
     } else {
-        let bits = (n as u64) & 0x7F_FFFF_FFFF;
+        // 10 octal digits = 30 bits
+        let bits = (n as u64) & 0x3FFFFFFF;
         format!("{bits:010o}")
     };
     if args.len() > places_idx {
@@ -941,6 +942,20 @@ mod tests {
     #[test]
     fn dec2oct_basic() {
         assert_eq!(eval("DEC2OCT(58)"), CellValue::String("72".to_string()));
+    }
+
+    #[test]
+    fn dec2oct_negative() {
+        // DEC2OCT(-1) should produce 7777777777 (10-digit, 30-bit two's complement)
+        assert_eq!(
+            eval("DEC2OCT(-1)"),
+            CellValue::String("7777777777".to_string())
+        );
+        // DEC2OCT(-536870912) is the minimum value
+        assert_eq!(
+            eval("DEC2OCT(-536870912)"),
+            CellValue::String("4000000000".to_string())
+        );
     }
 
     #[test]
