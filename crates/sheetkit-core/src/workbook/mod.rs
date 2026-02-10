@@ -176,8 +176,6 @@ pub struct Workbook {
     slicer_defs: Vec<(String, sheetkit_xml::slicer::SlicerDefinitions)>,
     /// Slicer cache definition parts: (zip path, raw XML string).
     slicer_caches: Vec<(String, sheetkit_xml::slicer::SlicerCacheDefinition)>,
-    /// Registered table entries for slicer-table metadata wiring.
-    tables: Vec<crate::table::TableEntry>,
     /// O(1) sheet name -> index lookup cache. Must be kept in sync with
     /// `worksheets` via [`rebuild_sheet_index`].
     sheet_name_index: HashMap<String, usize>,

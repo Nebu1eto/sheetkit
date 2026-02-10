@@ -144,10 +144,6 @@ pub enum Error {
     #[error("slicer '{name}' already exists")]
     SlicerAlreadyExists { name: String },
 
-    /// The specified table was not found.
-    #[error("table '{name}' not found")]
-    TableNotFound { name: String },
-
     /// The specified column was not found in the table.
     #[error("column '{column}' not found in table '{table}'")]
     TableColumnNotFound { table: String, column: String },

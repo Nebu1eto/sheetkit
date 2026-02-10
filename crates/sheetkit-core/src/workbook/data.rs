@@ -636,72 +636,37 @@ impl Workbook {
         }
     }
 
-    /// Register a table in the workbook for slicer metadata wiring.
-    ///
-    /// The table is stored as an in-memory entry that allows `add_slicer` to
-    /// validate and reference real table IDs and column indices. The table
-    /// must reside on a valid sheet.
-    pub fn add_table(&mut self, sheet: &str, config: &crate::table::TableConfig) -> Result<()> {
-        let sheet_idx = self.sheet_index(sheet)?;
-
-        // Validate unique table name.
-        if self.tables.iter().any(|t| t.name == config.name) {
-            return Err(Error::Internal(format!(
-                "table '{}' already exists",
-                config.name
-            )));
-        }
-
-        let next_id = self.tables.iter().map(|t| t.id).max().unwrap_or(0) + 1;
-
-        let columns: Vec<String> = config.columns.iter().map(|c| c.name.clone()).collect();
-
-        self.tables.push(crate::table::TableEntry {
-            id: next_id,
-            name: config.name.clone(),
-            sheet_index: sheet_idx,
-            range: config.range.clone(),
-            columns,
-        });
-
-        Ok(())
-    }
-
-    /// Get information about all tables on a sheet.
-    pub fn get_tables(&self, sheet: &str) -> Result<Vec<crate::table::TableInfo>> {
-        let sheet_idx = self.sheet_index(sheet)?;
-        Ok(self
-            .tables
+    /// Look up a table by name across all sheets. Returns a reference to the
+    /// table XML, path, and sheet index from the main table storage.
+    fn find_table_by_name(
+        &self,
+        name: &str,
+    ) -> Option<(&String, &sheetkit_xml::table::TableXml, usize)> {
+        self.tables
             .iter()
-            .filter(|t| t.sheet_index == sheet_idx)
-            .map(|t| crate::table::TableInfo {
-                name: t.name.clone(),
-                range: t.range.clone(),
-                columns: t.columns.clone(),
-            })
-            .collect())
-    }
-
-    /// Look up a table entry by name across all sheets.
-    fn find_table(&self, name: &str) -> Option<&crate::table::TableEntry> {
-        self.tables.iter().find(|t| t.name == name)
+            .find(|(_, t, _)| t.name == name)
+            .map(|(path, t, idx)| (path, t, *idx))
     }
 
     /// Look up the table name for a given table ID.
     fn table_name_by_id(&self, table_id: u32) -> Option<&str> {
         self.tables
             .iter()
-            .find(|t| t.id == table_id)
-            .map(|t| t.name.as_str())
+            .find(|(_, t, _)| t.id == table_id)
+            .map(|(_, t, _)| t.name.as_str())
     }
 
     /// Look up the column name by 1-based column index and table ID.
     fn table_column_name_by_index(&self, table_id: u32, column_index: u32) -> Option<&str> {
         self.tables
             .iter()
-            .find(|t| t.id == table_id)
-            .and_then(|t| t.columns.get((column_index - 1) as usize))
-            .map(|s| s.as_str())
+            .find(|(_, t, _)| t.id == table_id)
+            .and_then(|(_, t, _)| {
+                t.table_columns
+                    .columns
+                    .get((column_index - 1) as usize)
+                    .map(|c| c.name.as_str())
+            })
     }
 
     /// Add a slicer to a sheet targeting a table column.
@@ -762,29 +727,30 @@ impl Workbook {
         };
 
         // Look up the actual table by name and validate it exists on this sheet.
-        let table_entry =
-            self.find_table(&config.table_name)
-                .ok_or_else(|| Error::TableNotFound {
-                    name: config.table_name.clone(),
-                })?;
+        let (_path, table_xml, table_sheet_idx) = self
+            .find_table_by_name(&config.table_name)
+            .ok_or_else(|| Error::TableNotFound {
+                name: config.table_name.clone(),
+            })?;
 
-        if table_entry.sheet_index != sheet_idx {
+        if table_sheet_idx != sheet_idx {
             return Err(Error::TableNotFound {
                 name: config.table_name.clone(),
             });
         }
 
         // Validate the column exists in the table and get its 1-based index.
-        let column_index = table_entry
+        let column_index = table_xml
+            .table_columns
             .columns
             .iter()
-            .position(|c| c == &config.column_name)
+            .position(|c| c.name == config.column_name)
             .ok_or_else(|| Error::TableColumnNotFound {
                 table: config.table_name.clone(),
                 column: config.column_name.clone(),
             })?;
 
-        let real_table_id = table_entry.id;
+        let real_table_id = table_xml.id;
         let real_column = (column_index + 1) as u32;
 
         // Build the slicer cache definition with real table metadata.
@@ -1954,11 +1920,11 @@ mod tests {
                 .iter()
                 .map(|c| crate::table::TableColumn {
                     name: c.to_string(),
+                    totals_row_function: None,
+                    totals_row_label: None,
                 })
                 .collect(),
-            show_header_row: true,
-            style_name: None,
-            auto_filter: false,
+            ..crate::table::TableConfig::default()
         }
     }
 
@@ -2193,10 +2159,7 @@ mod tests {
             .unwrap();
         wb.save(&path).unwrap();
 
-        let mut wb2 = Workbook::open(&path).unwrap();
-        // Re-register the table since table registry is not persisted yet.
-        let table = make_table_config(&["Status", "Region", "Category", "Col1", "Col2"]);
-        wb2.add_table("Sheet1", &table).unwrap();
+        let wb2 = Workbook::open(&path).unwrap();
         let slicers = wb2.get_slicers("Sheet1").unwrap();
         assert_eq!(slicers.len(), 1);
         assert_eq!(slicers[0].name, "MySlicer");
