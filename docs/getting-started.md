@@ -3,24 +3,66 @@
 SheetKit is a high-performance SpreadsheetML library for Rust and TypeScript.
 The Rust core handles all Excel (.xlsx) processing, and napi-rs bindings bring the same performance to TypeScript with minimal overhead.
 
+## Why SheetKit?
+
+- **Native Performance**: Up to 10x faster than JavaScript-only libraries for large datasets
+- **Memory Efficient**: Buffer-based FFI transfer reduces memory usage by up to 96%
+- **Type Safe**: Strongly typed APIs for both Rust and TypeScript
+- **Complete**: 110+ formula functions, 43 chart types, streaming writer, and more
+
 ## Installation
 
-### Rust
+### Rust Library
 
-Add SheetKit to your `Cargo.toml`:
+Add SheetKit using `cargo add` (recommended):
+
+```bash
+cargo add sheetkit
+```
+
+Or manually add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-sheetkit = "0.1"
+sheetkit = { version = "0.3" }
 ```
 
-### Node.js
-
-Install via npm. A Rust toolchain is required for native compilation.
+For encryption support:
 
 ```bash
-npm install @sheetkit/node
+cargo add sheetkit --features encryption
 ```
+
+[View on crates.io](https://crates.io/crates/sheetkit)
+
+### Node.js Library
+
+Install via your preferred package manager:
+
+```bash
+# npm
+npm install @sheetkit/node
+
+# yarn
+yarn add @sheetkit/node
+
+# pnpm
+pnpm add @sheetkit/node
+```
+
+Note: A Rust toolchain is required for native compilation during installation.
+
+[View on npm](https://www.npmjs.com/package/@sheetkit/node)
+
+### CLI Tool
+
+For command-line operations (sheet inspection, data conversion, etc.):
+
+```bash
+cargo install sheetkit --features cli
+```
+
+See the [CLI Guide](./guide/cli.md) for usage examples.
 
 ## Quick Start
 

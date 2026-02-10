@@ -46,6 +46,7 @@ function sidebarGuide(): DefaultTheme.SidebarItem[] {
       items: [
         { text: '시작 가이드', link: '/ko/getting-started' },
         { text: '아키텍처', link: '/ko/architecture' },
+        { text: '성능', link: '/ko/performance' },
       ],
     },
     {
