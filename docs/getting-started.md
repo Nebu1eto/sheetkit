@@ -1,7 +1,7 @@
 # Getting Started with SheetKit
 
-SheetKit is a library for reading and writing Excel (.xlsx) files.
-It provides a Rust crate and Node.js bindings (via napi-rs).
+SheetKit is a high-performance SpreadsheetML library for Rust and TypeScript.
+The Rust core handles all Excel (.xlsx) processing, and napi-rs bindings bring the same performance to TypeScript with minimal overhead.
 
 ## Installation
 

@@ -2,7 +2,7 @@
 
 ## 1. 개요
 
-SheetKit은 Excel (.xlsx) 파일을 읽고 쓰기 위한 Go Excelize 라이브러리의 Rust 재작성 버전입니다. .xlsx 형식은 XML 파트를 포함하는 ZIP 아카이브인 OOXML (Office Open XML)입니다. SheetKit은 ZIP을 읽고, 각 XML 파트를 타입이 지정된 Rust 구조체로 역직렬화하며, 조작을 위한 고수준 API를 제공하고, 저장 시 모든 것을 유효한 .xlsx 파일로 직렬화합니다.
+SheetKit은 Rust와 TypeScript를 위한 고성능 SpreadsheetML 라이브러리로, Excel (.xlsx) 파일을 읽고 쓰기 위해 설계되었습니다. .xlsx 형식은 XML 파트를 포함하는 ZIP 아카이브인 OOXML (Office Open XML)입니다. SheetKit은 ZIP을 읽고, 각 XML 파트를 타입이 지정된 Rust 구조체로 역직렬화하며, 조작을 위한 고수준 API를 제공하고, 저장 시 모든 것을 유효한 .xlsx 파일로 직렬화합니다.
 
 ## 2. 크레이트 구조
 

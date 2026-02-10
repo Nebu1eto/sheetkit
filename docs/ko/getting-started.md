@@ -1,7 +1,7 @@
 # SheetKit 시작 가이드
 
-SheetKit은 Excel (.xlsx) 파일을 읽고 쓰기 위한 라이브러리입니다.
-Rust 크레이트와 napi-rs 기반 Node.js 바인딩을 제공합니다.
+SheetKit은 Rust와 TypeScript를 위한 고성능 SpreadsheetML 라이브러리입니다.
+Rust 코어가 모든 Excel (.xlsx) 처리를 담당하며, napi-rs 바인딩을 통해 TypeScript에서도 최소한의 overhead로 동일한 성능을 제공합니다.
 
 ## 설치
 
