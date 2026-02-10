@@ -927,6 +927,101 @@ wb.unprotectSheet('Sheet1');
 
 ---
 
+### 스레드 댓글
+
+스레드 댓글(Excel 2019+)은 대화 형식의 스레드, 답글, 작성자 추적(공유 인물 목록), 해결/완료 상태를 지원합니다. 레거시 댓글과는 별도로 저장됩니다.
+
+#### Rust
+
+```rust
+use sheetkit::{ThreadedCommentInput, PersonInput, Workbook};
+
+let mut wb = Workbook::new();
+
+// 스레드 댓글 추가 (작성자는 인물 목록에 자동 추가됩니다)
+let comment_id = wb.add_threaded_comment(
+    "Sheet1",
+    "A1",
+    &ThreadedCommentInput {
+        author: "Alice".into(),
+        text: "Please review this value.".into(),
+        parent_id: None,
+    },
+)?;
+
+// 기존 댓글에 답글 달기
+wb.add_threaded_comment(
+    "Sheet1",
+    "A1",
+    &ThreadedCommentInput {
+        author: "Bob".into(),
+        text: "Looks correct to me.".into(),
+        parent_id: Some(comment_id.clone()),
+    },
+)?;
+
+// 댓글 스레드를 해결됨으로 표시
+wb.resolve_threaded_comment("Sheet1", &comment_id, true)?;
+
+// 시트의 모든 스레드 댓글 가져오기
+let comments = wb.get_threaded_comments("Sheet1")?;
+
+// 특정 셀의 스레드 댓글 가져오기
+let cell_comments = wb.get_threaded_comments_by_cell("Sheet1", "A1")?;
+
+// ID로 스레드 댓글 삭제
+wb.delete_threaded_comment("Sheet1", &comment_id)?;
+
+// 인물 직접 관리
+let person_id = wb.add_person(&PersonInput {
+    display_name: "Alice".into(),
+    user_id: Some("alice@example.com".into()),
+    provider_id: Some("ADAL".into()),
+});
+let persons = wb.get_persons();
+```
+
+#### TypeScript
+
+```typescript
+// 스레드 댓글 추가 (작성자는 인물 목록에 자동 추가됩니다)
+const commentId = wb.addThreadedComment('Sheet1', 'A1', {
+    author: 'Alice',
+    text: 'Please review this value.',
+});
+
+// 기존 댓글에 답글 달기
+wb.addThreadedComment('Sheet1', 'A1', {
+    author: 'Bob',
+    text: 'Looks correct to me.',
+    parentId: commentId,
+});
+
+// 댓글 스레드를 해결됨으로 표시
+wb.resolveThreadedComment('Sheet1', commentId, true);
+
+// 시트의 모든 스레드 댓글 가져오기
+const comments = wb.getThreadedComments('Sheet1');
+
+// 특정 셀의 스레드 댓글 가져오기
+const cellComments = wb.getThreadedCommentsByCell('Sheet1', 'A1');
+
+// ID로 스레드 댓글 삭제
+wb.deleteThreadedComment('Sheet1', commentId);
+
+// 인물 직접 관리
+const personId = wb.addPerson({
+    displayName: 'Alice',
+    userId: 'alice@example.com',
+    providerId: 'ADAL',
+});
+const persons = wb.getPersons();
+```
+
+각 `ThreadedCommentData` 객체에는 `id`, `cellRef`, `text`, `author`, `personId`, `dateTime`, `parentId`(답글인 경우), `done`(해결 상태) 필드가 포함됩니다. 스레드 댓글은 저장 및 열기를 통해 완전히 라운드트립됩니다.
+
+---
+
 ### 시트 보기 옵션
 
 시트 보기 옵션은 워크시트의 시각적 표시를 제어합니다. 눈금선, 수식 표시, 확대/축소 수준, 보기 모드 등을 포함합니다. 보기 옵션을 설정해도 틀 고정 설정에는 영향을 주지 않습니다.
@@ -1037,7 +1132,7 @@ wb.setSheetVisibility("Config", "visible");
 - **Rust**: `examples/rust/` -- 독립된 Cargo 프로젝트 (해당 디렉토리에서 `cargo run` 실행)
 - **Node.js**: `examples/node/` -- TypeScript 프로젝트 (네이티브 모듈을 먼저 빌드한 후 `npx tsx index.ts`로 실행)
 
-각 예제는 워크북 생성, 셀 값 설정, 시트 관리, 스타일 적용, 차트와 이미지 추가, 데이터 유효성 검사, 코멘트, 자동 필터, 대용량 데이터 스트리밍, 문서 속성, 워크북 보호, 셀 병합, 하이퍼링크, 조건부 서식, 틀 고정, 페이지 레이아웃, 수식 계산, 피벗 테이블, 파일 암호화, 스파크라인, 정의된 이름, 시트 보호 등 모든 기능을 순서대로 시연합니다.
+각 예제는 워크북 생성, 셀 값 설정, 시트 관리, 스타일 적용, 차트와 이미지 추가, 데이터 유효성 검사, 코멘트, 스레드 댓글, 자동 필터, 대용량 데이터 스트리밍, 문서 속성, 워크북 보호, 셀 병합, 하이퍼링크, 조건부 서식, 틀 고정, 페이지 레이아웃, 수식 계산, 피벗 테이블, 파일 암호화, 스파크라인, 정의된 이름, 시트 보호 등 모든 기능을 순서대로 시연합니다.
 
 ---
 

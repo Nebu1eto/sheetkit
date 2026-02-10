@@ -31,6 +31,9 @@ impl Workbook {
         if self.raw_sheet_xml.len() < self.worksheets.len() {
             self.raw_sheet_xml.push(None);
         }
+        if self.sheet_threaded_comments.len() < self.worksheets.len() {
+            self.sheet_threaded_comments.push(None);
+        }
         self.rebuild_sheet_index();
         Ok(idx)
     }
@@ -64,6 +67,9 @@ impl Workbook {
         }
         if idx < self.raw_sheet_xml.len() {
             self.raw_sheet_xml.remove(idx);
+        }
+        if idx < self.sheet_threaded_comments.len() {
+            self.sheet_threaded_comments.remove(idx);
         }
         self.reindex_sheet_maps_after_delete(idx);
         self.rebuild_sheet_index();
@@ -110,6 +116,9 @@ impl Workbook {
         }
         if self.raw_sheet_xml.len() < self.worksheets.len() {
             self.raw_sheet_xml.push(None);
+        }
+        if self.sheet_threaded_comments.len() < self.worksheets.len() {
+            self.sheet_threaded_comments.push(None);
         }
         self.rebuild_sheet_index();
         Ok(idx)
@@ -208,6 +217,9 @@ impl Workbook {
         }
         if self.raw_sheet_xml.len() < self.worksheets.len() {
             self.raw_sheet_xml.push(None);
+        }
+        if self.sheet_threaded_comments.len() < self.worksheets.len() {
+            self.sheet_threaded_comments.push(None);
         }
         self.rebuild_sheet_index();
         Ok(idx)

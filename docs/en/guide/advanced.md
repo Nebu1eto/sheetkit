@@ -235,6 +235,101 @@ wb.removeComment('Sheet1', 'A1');
 
 ---
 
+### Threaded Comments
+
+Threaded comments (Excel 2019+) support conversation-style threads with replies, author tracking via a shared person list, and a resolved/done state. They are stored separately from legacy comments.
+
+#### Rust
+
+```rust
+use sheetkit::{ThreadedCommentInput, PersonInput, Workbook};
+
+let mut wb = Workbook::new();
+
+// Add a threaded comment (author is auto-added to the person list)
+let comment_id = wb.add_threaded_comment(
+    "Sheet1",
+    "A1",
+    &ThreadedCommentInput {
+        author: "Alice".into(),
+        text: "Please review this value.".into(),
+        parent_id: None,
+    },
+)?;
+
+// Reply to an existing comment
+wb.add_threaded_comment(
+    "Sheet1",
+    "A1",
+    &ThreadedCommentInput {
+        author: "Bob".into(),
+        text: "Looks correct to me.".into(),
+        parent_id: Some(comment_id.clone()),
+    },
+)?;
+
+// Mark a comment thread as resolved
+wb.resolve_threaded_comment("Sheet1", &comment_id, true)?;
+
+// Get all threaded comments on a sheet
+let comments = wb.get_threaded_comments("Sheet1")?;
+
+// Get threaded comments for a specific cell
+let cell_comments = wb.get_threaded_comments_by_cell("Sheet1", "A1")?;
+
+// Delete a threaded comment by ID
+wb.delete_threaded_comment("Sheet1", &comment_id)?;
+
+// Manage persons directly
+let person_id = wb.add_person(&PersonInput {
+    display_name: "Alice".into(),
+    user_id: Some("alice@example.com".into()),
+    provider_id: Some("ADAL".into()),
+});
+let persons = wb.get_persons();
+```
+
+#### TypeScript
+
+```typescript
+// Add a threaded comment (author is auto-added to the person list)
+const commentId = wb.addThreadedComment('Sheet1', 'A1', {
+    author: 'Alice',
+    text: 'Please review this value.',
+});
+
+// Reply to an existing comment
+wb.addThreadedComment('Sheet1', 'A1', {
+    author: 'Bob',
+    text: 'Looks correct to me.',
+    parentId: commentId,
+});
+
+// Mark a comment thread as resolved
+wb.resolveThreadedComment('Sheet1', commentId, true);
+
+// Get all threaded comments on a sheet
+const comments = wb.getThreadedComments('Sheet1');
+
+// Get threaded comments for a specific cell
+const cellComments = wb.getThreadedCommentsByCell('Sheet1', 'A1');
+
+// Delete a threaded comment by ID
+wb.deleteThreadedComment('Sheet1', commentId);
+
+// Manage persons directly
+const personId = wb.addPerson({
+    displayName: 'Alice',
+    userId: 'alice@example.com',
+    providerId: 'ADAL',
+});
+const persons = wb.getPersons();
+```
+
+Each `ThreadedCommentData` object contains `id`, `cellRef`, `text`, `author`, `personId`, `dateTime`, `parentId` (for replies), and `done` (resolved state). Threaded comments are fully round-tripped through save and open.
+
+---
+
 ### Auto-Filter
 
 Apply or remove auto-filter dropdowns on a range of columns.

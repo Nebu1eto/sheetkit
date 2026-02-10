@@ -32,6 +32,7 @@ pub mod stream;
 pub mod style;
 pub mod table;
 pub mod theme;
+pub mod threaded_comment;
 pub mod utils;
 pub mod validation;
 pub mod vml;

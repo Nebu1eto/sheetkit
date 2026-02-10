@@ -112,6 +112,40 @@ pub struct JsCommentConfig {
 }
 
 #[napi(object)]
+pub struct JsThreadedCommentInput {
+    pub author: String,
+    pub text: String,
+    pub parent_id: Option<String>,
+}
+
+#[napi(object)]
+pub struct JsThreadedCommentData {
+    pub id: String,
+    pub cell_ref: String,
+    pub text: String,
+    pub author: String,
+    pub person_id: String,
+    pub date_time: String,
+    pub parent_id: Option<String>,
+    pub done: bool,
+}
+
+#[napi(object)]
+pub struct JsPersonInput {
+    pub display_name: String,
+    pub user_id: Option<String>,
+    pub provider_id: Option<String>,
+}
+
+#[napi(object)]
+pub struct JsPersonData {
+    pub id: String,
+    pub display_name: String,
+    pub user_id: Option<String>,
+    pub provider_id: Option<String>,
+}
+
+#[napi(object)]
 pub struct JsDataValidationConfig {
     pub sqref: String,
     pub validation_type: String,

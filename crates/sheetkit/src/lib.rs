@@ -42,6 +42,9 @@ pub use sheetkit_core::style::{
     GradientFillStyle, GradientStop, GradientType, HorizontalAlign, NumFmtStyle, PatternType,
     ProtectionStyle, Style, StyleColor, VerticalAlign,
 };
+pub use sheetkit_core::threaded_comment::{
+    PersonData, PersonInput, ThreadedCommentData, ThreadedCommentInput,
+};
 pub use sheetkit_core::validation::{
     DataValidationConfig, ErrorStyle, ValidationOperator, ValidationType,
 };

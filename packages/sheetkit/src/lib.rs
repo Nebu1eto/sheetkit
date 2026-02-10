@@ -17,6 +17,7 @@ use sheetkit_core::page_layout::PageMarginsConfig;
 use sheetkit_core::pivot::{PivotDataField, PivotField, PivotTableConfig};
 use sheetkit_core::protection::WorkbookProtectionConfig;
 use sheetkit_core::table::{TableColumn, TableConfig};
+use sheetkit_core::threaded_comment::{PersonInput, ThreadedCommentInput};
 use sheetkit_core::validation::DataValidationConfig;
 use sheetkit_core::workbook::WorkbookFormat;
 
@@ -708,6 +709,119 @@ impl Workbook {
         self.inner
             .remove_comment(&sheet, &cell)
             .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Add a threaded comment to a cell. Returns the comment ID.
+    #[napi]
+    pub fn add_threaded_comment(
+        &mut self,
+        sheet: String,
+        cell: String,
+        input: JsThreadedCommentInput,
+    ) -> Result<String> {
+        let core_input = ThreadedCommentInput {
+            author: input.author,
+            text: input.text,
+            parent_id: input.parent_id,
+        };
+        self.inner
+            .add_threaded_comment(&sheet, &cell, &core_input)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Get all threaded comments for a sheet.
+    #[napi]
+    pub fn get_threaded_comments(&self, sheet: String) -> Result<Vec<JsThreadedCommentData>> {
+        let comments = self
+            .inner
+            .get_threaded_comments(&sheet)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        Ok(comments
+            .into_iter()
+            .map(|c| JsThreadedCommentData {
+                id: c.id,
+                cell_ref: c.cell_ref,
+                text: c.text,
+                author: c.author,
+                person_id: c.person_id,
+                date_time: c.date_time,
+                parent_id: c.parent_id,
+                done: c.done,
+            })
+            .collect())
+    }
+
+    /// Get threaded comments for a specific cell on a sheet.
+    #[napi]
+    pub fn get_threaded_comments_by_cell(
+        &self,
+        sheet: String,
+        cell: String,
+    ) -> Result<Vec<JsThreadedCommentData>> {
+        let comments = self
+            .inner
+            .get_threaded_comments_by_cell(&sheet, &cell)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        Ok(comments
+            .into_iter()
+            .map(|c| JsThreadedCommentData {
+                id: c.id,
+                cell_ref: c.cell_ref,
+                text: c.text,
+                author: c.author,
+                person_id: c.person_id,
+                date_time: c.date_time,
+                parent_id: c.parent_id,
+                done: c.done,
+            })
+            .collect())
+    }
+
+    /// Delete a threaded comment by ID.
+    #[napi]
+    pub fn delete_threaded_comment(&mut self, sheet: String, comment_id: String) -> Result<()> {
+        self.inner
+            .delete_threaded_comment(&sheet, &comment_id)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Set the resolved (done) state of a threaded comment.
+    #[napi]
+    pub fn resolve_threaded_comment(
+        &mut self,
+        sheet: String,
+        comment_id: String,
+        done: bool,
+    ) -> Result<()> {
+        self.inner
+            .resolve_threaded_comment(&sheet, &comment_id, done)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Add a person to the person list. Returns the person ID.
+    #[napi]
+    pub fn add_person(&mut self, input: JsPersonInput) -> String {
+        let core_input = PersonInput {
+            display_name: input.display_name,
+            user_id: input.user_id,
+            provider_id: input.provider_id,
+        };
+        self.inner.add_person(&core_input)
+    }
+
+    /// Get all persons in the person list.
+    #[napi]
+    pub fn get_persons(&self) -> Vec<JsPersonData> {
+        self.inner
+            .get_persons()
+            .into_iter()
+            .map(|p| JsPersonData {
+                id: p.id,
+                display_name: p.display_name,
+                user_id: p.user_id,
+                provider_id: p.provider_id,
+            })
+            .collect()
     }
 
     /// Set an auto-filter on a sheet.
