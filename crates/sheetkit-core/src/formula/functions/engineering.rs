@@ -155,8 +155,9 @@ pub fn fn_oct2bin(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
         return Ok(CellValue::Error("#NUM!".to_string()));
     }
     let val = i64::from_str_radix(s, 8).unwrap_or(0);
-    let result = if val > 0x3FFFFFFF {
-        val - 0x40000000_i64 * 2
+    // 30-bit two's complement: values above 2^29-1 are negative.
+    let result = if val > 0x1FFFFFFF {
+        val - 0x40000000
     } else {
         val
     };
@@ -175,8 +176,9 @@ pub fn fn_oct2dec(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
         return Ok(CellValue::Error("#NUM!".to_string()));
     }
     let val = i64::from_str_radix(s, 8).unwrap_or(0);
-    let result = if val > 0x3FFFFFFF {
-        val - 0x40000000_i64 * 2
+    // 30-bit two's complement: values above 2^29-1 are negative.
+    let result = if val > 0x1FFFFFFF {
+        val - 0x40000000
     } else {
         val
     };
@@ -192,8 +194,9 @@ pub fn fn_oct2hex(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
         return Ok(CellValue::Error("#NUM!".to_string()));
     }
     let val = i64::from_str_radix(s, 8).unwrap_or(0);
-    let result = if val > 0x3FFFFFFF {
-        val - 0x40000000_i64 * 2
+    // 30-bit two's complement: values above 2^29-1 are negative.
+    let result = if val > 0x1FFFFFFF {
+        val - 0x40000000
     } else {
         val
     };
@@ -209,11 +212,8 @@ pub fn fn_delta(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     } else {
         0.0
     };
-    Ok(CellValue::Number(if (n1 - n2).abs() < f64::EPSILON {
-        1.0
-    } else {
-        0.0
-    }))
+    // Excel DELTA uses exact bitwise equality, not epsilon comparison.
+    Ok(CellValue::Number(if n1 == n2 { 1.0 } else { 0.0 }))
 }
 
 /// GESTEP(number, [step])
@@ -454,7 +454,7 @@ pub fn fn_besseli(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     if n < 0 {
         return Ok(CellValue::Error("#NUM!".to_string()));
     }
-    Ok(CellValue::Number(bessel_i(x, n)))
+    Ok(CellValue::Number(bessel_i(x, n as f64)))
 }
 
 /// BESSELJ(x, n)
@@ -465,7 +465,7 @@ pub fn fn_besselj(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     if n < 0 {
         return Ok(CellValue::Error("#NUM!".to_string()));
     }
-    Ok(CellValue::Number(bessel_j(x, n)))
+    Ok(CellValue::Number(bessel_j(x, n as f64)))
 }
 
 /// BESSELK(x, n)
@@ -532,7 +532,8 @@ fn format_oct(n: i64, args: &[Expr], ctx: &mut Evaluator, places_idx: usize) -> 
     let s = if n >= 0 {
         format!("{n:o}")
     } else {
-        let bits = (n as u64) & 0x7F_FFFF_FFFF;
+        // 10 octal digits = 30 bits
+        let bits = (n as u64) & 0x3FFFFFFF;
         format!("{bits:010o}")
     };
     if args.len() > places_idx {
@@ -808,12 +809,31 @@ fn unit_to_base_factor(unit: &str) -> Option<(f64, &'static str)> {
     }
 }
 
-fn bessel_j(x: f64, n: i32) -> f64 {
+fn bessel_y(x: f64, n: i32) -> f64 {
+    // For integer orders, the generic formula divides by sin(n*pi) = 0.
+    // Use the limiting form via numerical differentiation instead.
+    let nf = n as f64;
+    let eps = 1e-8;
+    let y_plus = {
+        let v = nf + eps;
+        let pi = std::f64::consts::PI;
+        ((v * pi).cos() * bessel_j(x, v) - bessel_j(x, -v)) / (v * pi).sin()
+    };
+    let y_minus = {
+        let v = nf - eps;
+        let pi = std::f64::consts::PI;
+        ((v * pi).cos() * bessel_j(x, v) - bessel_j(x, -v)) / (v * pi).sin()
+    };
+    (y_plus + y_minus) / 2.0
+}
+
+/// Evaluate J_v(x) for real (non-integer) order v using the power series.
+fn bessel_j(x: f64, v: f64) -> f64 {
     let mut sum = 0.0;
     for m in 0_i32..50 {
         let sign = if m % 2 == 0 { 1.0 } else { -1.0 };
-        let numer = (x / 2.0).powi(2 * m + n);
-        let denom = factorial(m as u64) * factorial((m + n) as u64);
+        let numer = (x / 2.0).powf(2.0 * m as f64 + v);
+        let denom = gamma(m as f64 + 1.0) * gamma(m as f64 + v + 1.0);
         if denom == 0.0 || !numer.is_finite() {
             break;
         }
@@ -822,11 +842,29 @@ fn bessel_j(x: f64, n: i32) -> f64 {
     sum
 }
 
-fn bessel_i(x: f64, n: i32) -> f64 {
+fn bessel_k(x: f64, n: i32) -> f64 {
+    // For integer orders, the generic formula divides by sin(n*pi) = 0.
+    // Use the limiting form via numerical differentiation.
+    let nf = n as f64;
+    let eps = 1e-8;
+    let pi = std::f64::consts::PI;
+    let k_plus = {
+        let v = nf + eps;
+        pi / 2.0 * (bessel_i(x, -v) - bessel_i(x, v)) / (v * pi).sin()
+    };
+    let k_minus = {
+        let v = nf - eps;
+        pi / 2.0 * (bessel_i(x, -v) - bessel_i(x, v)) / (v * pi).sin()
+    };
+    (k_plus + k_minus) / 2.0
+}
+
+/// Evaluate I_v(x) for real (non-integer) order v using the power series.
+fn bessel_i(x: f64, v: f64) -> f64 {
     let mut sum = 0.0;
     for m in 0_i32..50 {
-        let numer = (x / 2.0).powi(2 * m + n);
-        let denom = factorial(m as u64) * factorial((m + n) as u64);
+        let numer = (x / 2.0).powf(2.0 * m as f64 + v);
+        let denom = gamma(m as f64 + 1.0) * gamma(m as f64 + v + 1.0);
         if denom == 0.0 || !numer.is_finite() {
             break;
         }
@@ -835,25 +873,32 @@ fn bessel_i(x: f64, n: i32) -> f64 {
     sum
 }
 
-fn bessel_y(x: f64, n: i32) -> f64 {
-    let pi = std::f64::consts::PI;
-    let cos_factor = (n as f64 * pi).cos();
-    (cos_factor * bessel_j(x, n) - bessel_j(x, -n)) / (n as f64 * pi).sin()
-}
-
-fn bessel_k(x: f64, n: i32) -> f64 {
-    let pi = std::f64::consts::PI;
-    let i_neg = bessel_i(x, -n);
-    let i_pos = bessel_i(x, n);
-    pi / 2.0 * (i_neg - i_pos) / (n as f64 * pi).sin()
-}
-
-fn factorial(n: u64) -> f64 {
-    let mut result = 1.0;
-    for i in 2..=n {
-        result *= i as f64;
+/// Lanczos approximation of the Gamma function for real arguments.
+fn gamma(z: f64) -> f64 {
+    if z < 0.5 {
+        let pi = std::f64::consts::PI;
+        return pi / ((pi * z).sin() * gamma(1.0 - z));
     }
-    result
+    let g = 7.0;
+    #[allow(clippy::excessive_precision)]
+    let c = [
+        0.99999999999980993,
+        676.5203681218851,
+        -1259.1392167224028,
+        771.32342877765313,
+        -176.61502916214059,
+        12.507343278686905,
+        -0.13857109526572012,
+        9.9843695780195716e-6,
+        1.5056327351493116e-7,
+    ];
+    let z = z - 1.0;
+    let mut x = c[0];
+    for (i, &coeff) in c.iter().enumerate().skip(1) {
+        x += coeff / (z + i as f64);
+    }
+    let t = z + g + 0.5;
+    (2.0 * std::f64::consts::PI).sqrt() * t.powf(z + 0.5) * (-t).exp() * x
 }
 
 #[cfg(test)]
@@ -941,6 +986,20 @@ mod tests {
     }
 
     #[test]
+    fn dec2oct_negative() {
+        // DEC2OCT(-1) should produce 7777777777 (10-digit, 30-bit two's complement)
+        assert_eq!(
+            eval("DEC2OCT(-1)"),
+            CellValue::String("7777777777".to_string())
+        );
+        // DEC2OCT(-536870912) is the minimum value
+        assert_eq!(
+            eval("DEC2OCT(-536870912)"),
+            CellValue::String("4000000000".to_string())
+        );
+    }
+
+    #[test]
     fn hex2bin_basic() {
         assert_eq!(
             eval("HEX2BIN(\"F\",8)"),
@@ -975,8 +1034,43 @@ mod tests {
     }
 
     #[test]
+    fn oct2bin_negative() {
+        // 7777777000 octal = -512 decimal -> 10-bit binary 1000000000
+        assert_eq!(
+            eval("OCT2BIN(\"7777777000\")"),
+            CellValue::String("1000000000".to_string())
+        );
+        // 7777777776 octal = -2 decimal -> 1111111110
+        assert_eq!(
+            eval("OCT2BIN(\"7777777776\")"),
+            CellValue::String("1111111110".to_string())
+        );
+        // 7777777777 octal = -1 decimal -> 1111111111
+        assert_eq!(
+            eval("OCT2BIN(\"7777777777\")"),
+            CellValue::String("1111111111".to_string())
+        );
+    }
+
+    #[test]
     fn oct2dec_basic() {
         assert_approx(eval("OCT2DEC(\"54\")"), 44.0, 0.01);
+    }
+
+    #[test]
+    fn oct2dec_negative() {
+        // 7777777777 octal = -1 decimal (30-bit two's complement)
+        assert_approx(eval("OCT2DEC(\"7777777777\")"), -1.0, 0.01);
+        // 4000000000 octal = -536870912 decimal
+        assert_approx(eval("OCT2DEC(\"4000000000\")"), -536_870_912.0, 0.01);
+        // 7777777000 octal = -512 decimal
+        assert_approx(eval("OCT2DEC(\"7777777000\")"), -512.0, 0.01);
+    }
+
+    #[test]
+    fn oct2dec_positive_boundary() {
+        // 3777777777 octal = 536870911 (max positive in 30-bit two's complement)
+        assert_approx(eval("OCT2DEC(\"3777777777\")"), 536_870_911.0, 0.01);
     }
 
     #[test]
@@ -984,6 +1078,20 @@ mod tests {
         assert_eq!(
             eval("OCT2HEX(\"100\",4)"),
             CellValue::String("0040".to_string())
+        );
+    }
+
+    #[test]
+    fn oct2hex_negative() {
+        // 7777777777 octal = -1 decimal -> FFFFFFFFFF hex
+        assert_eq!(
+            eval("OCT2HEX(\"7777777777\")"),
+            CellValue::String("FFFFFFFFFF".to_string())
+        );
+        // 4000000000 octal = -536870912 decimal -> FFE0000000 hex
+        assert_eq!(
+            eval("OCT2HEX(\"4000000000\")"),
+            CellValue::String("FFE0000000".to_string())
         );
     }
 
@@ -1000,6 +1108,17 @@ mod tests {
     #[test]
     fn delta_default() {
         assert_approx(eval("DELTA(0)"), 1.0, 0.01);
+    }
+
+    #[test]
+    fn delta_distinct_close_values() {
+        // Values that differ by more than f64::EPSILON but are distinct
+        // should NOT be considered equal (old code used epsilon comparison).
+        // 1.0 and 1.0 + 1e-15 are distinct f64 values.
+        let a = 1.0_f64;
+        let b = 1.0_f64 + 1e-15;
+        assert_ne!(a, b);
+        assert_approx(eval("DELTA(1, 1.000000000000001)"), 0.0, 0.01);
     }
 
     #[test]
@@ -1173,12 +1292,54 @@ mod tests {
     }
 
     #[test]
+    fn besselj_order_zero() {
+        // BESSELJ(0, 0) = 1.0
+        assert_approx(eval("BESSELJ(0,0)"), 1.0, 0.01);
+    }
+
+    #[test]
     fn besselk_zero_x() {
         assert_eq!(eval("BESSELK(0,1)"), CellValue::Error("#NUM!".to_string()));
     }
 
     #[test]
+    fn besselk_integer_order() {
+        // BESSELK(1.5, 1) should be finite (~0.2774)
+        let result = eval("BESSELK(1.5,1)");
+        if let CellValue::Number(v) = result {
+            assert!(v.is_finite(), "BESSELK(1.5,1) should be finite, got {v}");
+            assert!((v - 0.2774).abs() < 0.05);
+        } else {
+            panic!("expected number, got {result:?}");
+        }
+    }
+
+    #[test]
     fn bessely_zero_x() {
         assert_eq!(eval("BESSELY(0,1)"), CellValue::Error("#NUM!".to_string()));
+    }
+
+    #[test]
+    fn bessely_integer_order() {
+        // BESSELY(2.5, 1) should be finite (~0.1459)
+        let result = eval("BESSELY(2.5,1)");
+        if let CellValue::Number(v) = result {
+            assert!(v.is_finite(), "BESSELY(2.5,1) should be finite, got {v}");
+            assert!((v - 0.1459).abs() < 0.05);
+        } else {
+            panic!("expected number, got {result:?}");
+        }
+    }
+
+    #[test]
+    fn bessely_order_zero() {
+        // BESSELY(1, 0) should be finite (~0.0883)
+        let result = eval("BESSELY(1,0)");
+        if let CellValue::Number(v) = result {
+            assert!(v.is_finite(), "BESSELY(1,0) should be finite, got {v}");
+            assert!((v - 0.0883).abs() < 0.05);
+        } else {
+            panic!("expected number, got {result:?}");
+        }
     }
 }

@@ -2094,3 +2094,329 @@ if (modules) {
 | `name` | `String` | `string` | 모듈 이름 |
 | `source_code` / `sourceCode` | `String` | `string` | 압축 해제된 VBA 소스 코드 |
 | `module_type` / `moduleType` | `VbaModuleType` | `string` | `standard`, `class`, `form`, `document`, `thisWorkbook` 중 하나 |
+
+---
+
+## 34. Threaded Comments
+
+Threaded comments(Excel 2019+)는 대화형 댓글 스레드를 지원합니다. 답글, 공유 person list를 통한 작성자 추적, 해결(done) 상태를 지원합니다. 레거시 댓글과 별도로 `xl/threadedComments/threadedComment{N}.xml` 파트에 저장됩니다.
+
+### `add_threaded_comment` / `addThreadedComment`
+
+셀에 threaded comment를 추가합니다. 작성자가 person list에 없으면 자동으로 추가됩니다. 생성된 댓글 ID를 반환합니다.
+
+**Rust:**
+
+```rust
+use sheetkit::ThreadedCommentInput;
+
+let comment_id = wb.add_threaded_comment(
+    "Sheet1",
+    "A1",
+    &ThreadedCommentInput {
+        author: "Alice".into(),
+        text: "Please review this value.".into(),
+        parent_id: None,
+    },
+)?;
+
+// Reply to an existing comment
+wb.add_threaded_comment(
+    "Sheet1",
+    "A1",
+    &ThreadedCommentInput {
+        author: "Bob".into(),
+        text: "Looks correct to me.".into(),
+        parent_id: Some(comment_id.clone()),
+    },
+)?;
+```
+
+**TypeScript:**
+
+```typescript
+const commentId = wb.addThreadedComment("Sheet1", "A1", {
+    author: "Alice",
+    text: "Please review this value.",
+});
+
+// Reply to an existing comment
+wb.addThreadedComment("Sheet1", "A1", {
+    author: "Bob",
+    text: "Looks correct to me.",
+    parentId: commentId,
+});
+```
+
+### `get_threaded_comments` / `getThreadedComments`
+
+시트의 모든 threaded comment를 반환합니다.
+
+**Rust:**
+
+```rust
+let comments = wb.get_threaded_comments("Sheet1")?;
+for c in &comments {
+    println!("{}: {} (by {})", c.cell_ref, c.text, c.author);
+}
+```
+
+**TypeScript:**
+
+```typescript
+const comments = wb.getThreadedComments("Sheet1");
+```
+
+### `get_threaded_comments_by_cell` / `getThreadedCommentsByCell`
+
+특정 셀의 threaded comment를 반환합니다.
+
+**Rust:**
+
+```rust
+let comments = wb.get_threaded_comments_by_cell("Sheet1", "A1")?;
+```
+
+**TypeScript:**
+
+```typescript
+const comments = wb.getThreadedCommentsByCell("Sheet1", "A1");
+```
+
+### `delete_threaded_comment` / `deleteThreadedComment`
+
+댓글 ID로 threaded comment를 삭제합니다. 댓글을 찾을 수 없으면 오류를 반환합니다.
+
+**Rust:**
+
+```rust
+wb.delete_threaded_comment("Sheet1", &comment_id)?;
+```
+
+**TypeScript:**
+
+```typescript
+wb.deleteThreadedComment("Sheet1", commentId);
+```
+
+### `resolve_threaded_comment` / `resolveThreadedComment`
+
+threaded comment의 해결(done) 상태를 설정합니다.
+
+**Rust:**
+
+```rust
+wb.resolve_threaded_comment("Sheet1", &comment_id, true)?;
+```
+
+**TypeScript:**
+
+```typescript
+wb.resolveThreadedComment("Sheet1", commentId, true);
+```
+
+### `add_person` / `addPerson`
+
+공유 person list에 사람을 추가합니다. 같은 표시 이름의 사람이 이미 있으면 기존 ID를 반환합니다.
+
+**Rust:**
+
+```rust
+use sheetkit::PersonInput;
+
+let person_id = wb.add_person(&PersonInput {
+    display_name: "Alice".into(),
+    user_id: Some("alice@example.com".into()),
+    provider_id: Some("ADAL".into()),
+});
+```
+
+**TypeScript:**
+
+```typescript
+const personId = wb.addPerson({
+    displayName: "Alice",
+    userId: "alice@example.com",
+    providerId: "ADAL",
+});
+```
+
+### `get_persons` / `getPersons`
+
+person list의 모든 사람을 반환합니다.
+
+**Rust:**
+
+```rust
+let persons = wb.get_persons();
+```
+
+**TypeScript:**
+
+```typescript
+const persons = wb.getPersons();
+```
+
+### ThreadedCommentInput / JsThreadedCommentInput
+
+| 필드 | Rust 타입 | TypeScript 타입 | 설명 |
+|------|-----------|----------------|------|
+| `author` | `String` | `string` | 작성자 표시 이름 (person list에 자동 추가) |
+| `text` | `String` | `string` | 댓글 텍스트 |
+| `parent_id` / `parentId` | `Option<String>` | `string?` | 답글 시 부모 댓글 ID |
+
+### ThreadedCommentData / JsThreadedCommentData
+
+| 필드 | Rust 타입 | TypeScript 타입 | 설명 |
+|------|-----------|----------------|------|
+| `id` | `String` | `string` | 고유 댓글 ID |
+| `cell_ref` / `cellRef` | `String` | `string` | 셀 참조 (예: "A1") |
+| `text` | `String` | `string` | 댓글 텍스트 |
+| `author` | `String` | `string` | 작성자 표시 이름 |
+| `person_id` / `personId` | `String` | `string` | person list의 사람 ID |
+| `date_time` / `dateTime` | `String` | `string` | ISO 8601 타임스탬프 |
+| `parent_id` / `parentId` | `Option<String>` | `string?` | 부모 댓글 ID (답글인 경우) |
+| `done` | `bool` | `boolean` | 해결(done) 상태 |
+
+### PersonInput / JsPersonInput
+
+| 필드 | Rust 타입 | TypeScript 타입 | 설명 |
+|------|-----------|----------------|------|
+| `display_name` / `displayName` | `String` | `string` | 사람 표시 이름 |
+| `user_id` / `userId` | `Option<String>` | `string?` | 사용자 식별자 (예: 이메일) |
+| `provider_id` / `providerId` | `Option<String>` | `string?` | ID 공급자 식별자 |
+
+### PersonData / JsPersonData
+
+| 필드 | Rust 타입 | TypeScript 타입 | 설명 |
+|------|-----------|----------------|------|
+| `id` | `String` | `string` | 고유 사람 ID |
+| `display_name` / `displayName` | `String` | `string` | 사람 표시 이름 |
+| `user_id` / `userId` | `Option<String>` | `string?` | 사용자 식별자 |
+| `provider_id` / `providerId` | `Option<String>` | `string?` | ID 공급자 식별자 |
+
+---
+
+## 35. 에러 타입
+
+실패할 수 있는 모든 작업은 Rust에서 `Result<T, Error>`를 반환합니다. TypeScript에서는 Rust 에러 메시지를 포함한 JavaScript `Error` 객체가 throw됩니다.
+
+### Error Enum 레퍼런스
+
+#### 셀 및 참조 에러
+
+| Variant | 메시지 | 설명 |
+|---------|--------|------|
+| `InvalidCellReference(String)` | `invalid cell reference: {0}` | 유효하지 않은 A1 스타일 참조 |
+| `InvalidRowNumber(u32)` | `invalid row number: {0}` | 행 번호가 1..=1,048,576 범위 밖 |
+| `InvalidColumnNumber(u32)` | `invalid column number: {0}` | 열 번호가 1..=16,384 범위 밖 |
+| `InvalidReference { reference }` | `invalid reference: {reference}` | 유효하지 않은 셀 범위(sqref) |
+| `InvalidMergeCellReference(String)` | `invalid merge cell reference: {0}` | 잘못된 형식의 병합 범위 |
+| `CellValueTooLong { length, max }` | `cell value too long: {length} characters (max {max})` | 값이 32,767자 제한을 초과 |
+
+#### 시트 에러
+
+| Variant | 메시지 | 설명 |
+|---------|--------|------|
+| `SheetNotFound { name }` | `sheet '{name}' does not exist` | 해당 이름의 시트가 워크북에 없음 |
+| `SheetAlreadyExists { name }` | `sheet '{name}' already exists` | 중복된 시트 이름 |
+| `InvalidSheetName(String)` | `invalid sheet name: {0}` | Excel 이름 규칙을 위반 |
+
+#### 스타일 에러
+
+| Variant | 메시지 | 설명 |
+|---------|--------|------|
+| `StyleNotFound { id }` | `style not found: {id}` | 스타일 ID가 스타일시트에 없음 |
+| `CellStylesExceeded { max }` | `cell styles exceeded maximum ({max})` | 등록된 스타일 수가 너무 많음 |
+| `ColumnWidthExceeded { width, max }` | `column width {width} exceeds maximum {max}` | 열 너비 > 255 |
+| `RowHeightExceeded { height, max }` | `row height {height} exceeds maximum {max}` | 행 높이 > 409 |
+| `OutlineLevelExceeded { level, max }` | `outline level {level} exceeds maximum {max}` | 개요 수준 > 7 |
+
+#### 병합 셀 에러
+
+| Variant | 메시지 | 설명 |
+|---------|--------|------|
+| `MergeCellOverlap { new, existing }` | `merge cell range '{new}' overlaps with existing range '{existing}'` | 병합 범위가 겹침 |
+| `MergeCellNotFound(String)` | `merge cell range '{0}' not found` | 병합 범위가 존재하지 않음 |
+
+#### 수식 에러
+
+| Variant | 메시지 | 설명 |
+|---------|--------|------|
+| `CircularReference { cell }` | `circular reference detected at {cell}` | 수식에서 순환 참조 감지 |
+| `UnknownFunction { name }` | `unknown function: {name}` | 인식할 수 없는 함수 이름 |
+| `WrongArgCount { name, expected, got }` | `function {name} expects {expected} arguments, got {got}` | 잘못된 인수 개수 |
+| `FormulaError(String)` | `formula evaluation error: {0}` | 일반적인 수식 평가 실패 |
+
+#### 이름 정의 에러
+
+| Variant | 메시지 | 설명 |
+|---------|--------|------|
+| `InvalidDefinedName(String)` | `invalid defined name: {0}` | 이름에 금지된 문자 포함 |
+| `DefinedNameNotFound { name }` | `defined name '{name}' not found` | 정의된 이름이 존재하지 않음 |
+
+#### 기능별 에러
+
+| Variant | 메시지 | 설명 |
+|---------|--------|------|
+| `PivotTableNotFound { name }` | `pivot table '{name}' not found` | 피벗 테이블이 존재하지 않음 |
+| `PivotTableAlreadyExists { name }` | `pivot table '{name}' already exists` | 중복된 피벗 테이블 이름 |
+| `TableNotFound { name }` | `table '{name}' not found` | 테이블이 존재하지 않음 |
+| `TableAlreadyExists { name }` | `table '{name}' already exists` | 중복된 테이블 이름 |
+| `TableColumnNotFound { table, column }` | `column '{column}' not found in table '{table}'` | 테이블에 열이 없음 |
+| `InvalidSourceRange(String)` | `invalid source range: {0}` | 피벗 테이블 소스 범위가 유효하지 않음 |
+| `SlicerNotFound { name }` | `slicer '{name}' not found` | 슬라이서가 존재하지 않음 |
+| `SlicerAlreadyExists { name }` | `slicer '{name}' already exists` | 중복된 슬라이서 이름 |
+| `ThreadedCommentNotFound { id }` | `threaded comment '{id}' not found` | 댓글 ID가 존재하지 않음 |
+| `ChartNotFound { sheet, cell }` | `no chart found at cell '{cell}' on sheet '{sheet}'` | 해당 위치에 차트가 없음 |
+| `PictureNotFound { sheet, cell }` | `no picture found at cell '{cell}' on sheet '{sheet}'` | 해당 위치에 이미지가 없음 |
+| `UnsupportedImageFormat { format }` | `unsupported image format: {format}` | 지원하지 않는 이미지 형식 |
+
+#### StreamWriter 에러
+
+| Variant | 메시지 | 설명 |
+|---------|--------|------|
+| `StreamRowAlreadyWritten { row }` | `row {row} has already been written` | 행은 오름차순으로 작성해야 합니다 |
+| `StreamAlreadyFinished` | `stream writer already finished` | Writer가 이미 완료됨 |
+| `StreamColumnsAfterRows` | `cannot set column width after rows have been written` | 열 설정은 행 작성 전에 해야 합니다 |
+
+#### 파일 I/O 및 ZIP 에러
+
+| Variant | 메시지 | 설명 |
+|---------|--------|------|
+| `Io(std::io::Error)` | `I/O error: {0}` | OS 수준의 I/O 에러 |
+| `Zip(String)` | `ZIP error: {0}` | ZIP 아카이브 읽기/쓰기 에러 |
+| `XmlParse(String)` | `XML parse error: {0}` | 잘못된 형식의 XML |
+| `XmlDeserialize(String)` | `XML deserialization error: {0}` | XML이 예상 스키마와 일치하지 않음 |
+| `UnsupportedFileExtension(String)` | `unsupported file extension: {0}` | .xlsx/.xlsm/.xltx/.xltm/.xlam이 아님 |
+| `ZipSizeExceeded { size, limit }` | `ZIP decompressed size {size} bytes exceeds limit of {limit} bytes` | 압축 해제 크기 안전 제한 초과 |
+| `ZipEntryCountExceeded { count, limit }` | `ZIP entry count {count} exceeds limit of {limit}` | 항목 수 안전 제한 초과 |
+
+#### 암호화 에러
+
+| Variant | 메시지 | 설명 |
+|---------|--------|------|
+| `FileEncrypted` | `file is encrypted, password required` | 파일에 비밀번호가 필요합니다 |
+| `IncorrectPassword` | `incorrect password` | 잘못된 복호화 비밀번호 |
+| `UnsupportedEncryption(String)` | `unsupported encryption method: {0}` | 알 수 없는 암호화 알고리즘 |
+
+#### 기타
+
+| Variant | 메시지 | 설명 |
+|---------|--------|------|
+| `InvalidArgument(String)` | `invalid argument: {0}` | 일반적인 유효하지 않은 매개변수 |
+| `Internal(String)` | `internal error: {0}` | 분류되지 않은 내부 에러 |
+
+### TypeScript 에러 처리
+
+TypeScript에서 모든 에러는 표준 `Error` 객체로 throw됩니다. 메시지 문자열로 에러를 매칭할 수 있습니다:
+
+```typescript
+try {
+    wb.getCellValue("NonExistent", "A1");
+} catch (e) {
+    if (e instanceof Error && e.message.includes("does not exist")) {
+        console.log("Sheet not found");
+    }
+}
+```

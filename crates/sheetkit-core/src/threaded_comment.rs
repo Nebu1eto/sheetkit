@@ -210,7 +210,7 @@ pub fn get_threaded_comments(
                 person_id: c.person_id.clone(),
                 date_time: c.date_time.clone(),
                 parent_id: c.parent_id.clone(),
-                done: c.done.as_deref() == Some("1"),
+                done: matches!(c.done.as_deref(), Some("1" | "true")),
             }
         })
         .collect()
@@ -502,6 +502,35 @@ mod tests {
         resolve_threaded_comment(&mut tc, &id, false).unwrap();
         let comments = get_threaded_comments(&tc, &pl);
         assert!(!comments[0].done);
+    }
+
+    #[test]
+    fn test_done_field_accepts_true_string() {
+        let mut tc: Option<ThreadedComments> = Some(ThreadedComments::default());
+        let mut pl = PersonList::default();
+        let id = add_threaded_comment(
+            &mut tc,
+            &mut pl,
+            "A1",
+            &ThreadedCommentInput {
+                author: "Alice".to_string(),
+                text: "check done".to_string(),
+                parent_id: None,
+            },
+        )
+        .unwrap();
+
+        // Manually set done to "true" (some OOXML producers use this).
+        let tc_inner = tc.as_mut().unwrap();
+        tc_inner
+            .comments
+            .iter_mut()
+            .find(|c| c.id == id)
+            .unwrap()
+            .done = Some("true".to_string());
+
+        let comments = get_threaded_comments(&tc, &pl);
+        assert!(comments[0].done, "done='true' should be treated as done");
     }
 
     #[test]

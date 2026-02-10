@@ -2856,6 +2856,20 @@ describe('toCSV', () => {
     const csv = wb.toCSV('Sheet1', { quote: "'" });
     expect(csv).toBe("'it''s a test',normal");
   });
+
+  it('should escape formula-like values when escapeFormulas is true', () => {
+    const wb = new Workbook();
+    wb.setSheetData('Sheet1', [['=cmd|calc', '+1', '-1', '@SUM(A1)', 'safe']]);
+    const csv = wb.toCSV('Sheet1', { escapeFormulas: true });
+    expect(csv).toBe('\t=cmd|calc,\t+1,\t-1,\t@SUM(A1),safe');
+  });
+
+  it('should not escape formulas by default', () => {
+    const wb = new Workbook();
+    wb.setSheetData('Sheet1', [['=SUM(A1)']]);
+    const csv = wb.toCSV('Sheet1');
+    expect(csv).toBe('=SUM(A1)');
+  });
 });
 
 describe('toHTML', () => {

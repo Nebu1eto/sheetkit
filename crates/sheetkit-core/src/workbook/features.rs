@@ -657,7 +657,7 @@ impl Workbook {
     /// Returns `None` for standard `.xlsx` files (which have no VBA project).
     /// Returns `Some(bytes)` for `.xlsm` files that contain a VBA project.
     pub fn get_vba_project(&self) -> Option<&[u8]> {
-        self.vba_project.as_deref()
+        self.vba_blob.as_deref()
     }
 
     /// Extract VBA module source code from the workbook's VBA project.
@@ -670,7 +670,7 @@ impl Workbook {
     /// Returns `Ok(Some(project))` with the extracted modules and any warnings.
     /// Returns `Err` if the VBA project exists but is corrupt or unreadable.
     pub fn get_vba_modules(&self) -> Result<Option<crate::vba::VbaProject>> {
-        match &self.vba_project {
+        match &self.vba_blob {
             None => Ok(None),
             Some(bin) => {
                 let project = crate::vba::extract_vba_modules(bin)?;
