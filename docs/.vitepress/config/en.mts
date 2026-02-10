@@ -46,6 +46,7 @@ function sidebarGuide(): DefaultTheme.SidebarItem[] {
       items: [
         { text: 'Getting Started', link: '/getting-started' },
         { text: 'Architecture', link: '/architecture' },
+        { text: 'Performance', link: '/performance' },
       ],
     },
     {

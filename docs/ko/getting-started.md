@@ -3,24 +3,66 @@
 SheetKit은 Rust와 TypeScript를 위한 고성능 SpreadsheetML 라이브러리입니다.
 Rust 코어가 모든 Excel (.xlsx) 처리를 담당하며, napi-rs 바인딩을 통해 TypeScript에서도 최소한의 overhead로 동일한 성능을 제공합니다.
 
+## SheetKit을 선택해야 하는 이유
+
+- **네이티브 성능**: 대용량 데이터셋에서 JavaScript 전용 라이브러리보다 최대 10배 빠른 성능을 제공합니다
+- **메모리 효율성**: Buffer 기반 FFI 전송으로 메모리 사용량을 최대 96% 감소시킵니다
+- **타입 안전성**: Rust와 TypeScript 모두에서 강력한 타입 안전 API를 제공합니다
+- **완전한 기능**: 110개 이상의 수식 함수, 43가지 차트 타입, 스트리밍 쓰기 등을 지원합니다
+
 ## 설치
 
-### Rust
+### Rust 라이브러리
 
-`Cargo.toml`에 SheetKit을 추가합니다:
+`cargo add` 명령어를 사용하여 설치합니다 (권장):
+
+```bash
+cargo add sheetkit
+```
+
+또는 `Cargo.toml`에 직접 추가합니다:
 
 ```toml
 [dependencies]
-sheetkit = "0.1"
+sheetkit = { version = "0.3" }
 ```
 
-### Node.js
-
-npm으로 설치합니다. 네이티브 컴파일을 위해 Rust 툴체인이 필요합니다.
+암호화 기능이 필요한 경우:
 
 ```bash
-npm install @sheetkit/node
+cargo add sheetkit --features encryption
 ```
+
+[crates.io에서 보기](https://crates.io/crates/sheetkit)
+
+### Node.js 라이브러리
+
+선호하는 패키지 매니저를 사용하여 설치합니다:
+
+```bash
+# npm
+npm install @sheetkit/node
+
+# yarn
+yarn add @sheetkit/node
+
+# pnpm
+pnpm add @sheetkit/node
+```
+
+참고: 설치 시 네이티브 컴파일을 위해 Rust 툴체인이 필요합니다.
+
+[npm에서 보기](https://www.npmjs.com/package/@sheetkit/node)
+
+### CLI 도구
+
+커맨드 라인에서 시트 검사, 데이터 변환 등의 작업을 수행하려면:
+
+```bash
+cargo install sheetkit --features cli
+```
+
+사용 방법은 [CLI 가이드](./guide/cli.md)를 참조하세요.
 
 ## 빠른 시작
 

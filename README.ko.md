@@ -55,18 +55,35 @@ wb.save("output.xlsx");
 
 ## 설치
 
-**Rust** -- `Cargo.toml`에 추가:
+**Rust** -- `cargo add` 사용 (권장):
+
+```bash
+cargo add sheetkit
+```
+
+또는 `Cargo.toml`에 직접 추가:
 
 ```toml
 [dependencies]
-sheetkit = "0.1"
+sheetkit = "0.3"
 ```
+
+[crates.io에서 보기](https://crates.io/crates/sheetkit)
 
 **Node.js:**
 
 ```bash
+# npm
 npm install @sheetkit/node
+
+# yarn
+yarn add @sheetkit/node
+
+# pnpm
+pnpm add @sheetkit/node
 ```
+
+[npm에서 보기](https://www.npmjs.com/package/@sheetkit/node)
 
 ## 문서
 
