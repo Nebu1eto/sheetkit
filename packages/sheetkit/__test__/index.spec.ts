@@ -4879,4 +4879,78 @@ describe('Form Controls', () => {
     expect(controls).toHaveLength(1);
     expect(controls[0].controlType).toBe('button');
   });
+
+  it('should add control to opened file without losing existing controls', async () => {
+    const wb = new Workbook();
+    wb.addFormControl('Sheet1', { controlType: 'button', cell: 'A1', text: 'First' });
+    wb.addFormControl('Sheet1', { controlType: 'checkbox', cell: 'A3', text: 'Second' });
+    await wb.save(out);
+
+    const wb2 = Workbook.openSync(out);
+    wb2.addFormControl('Sheet1', {
+      controlType: 'spinButton',
+      cell: 'C1',
+      minValue: 0,
+      maxValue: 50,
+    });
+    const controls = wb2.getFormControls('Sheet1');
+    expect(controls).toHaveLength(3);
+    expect(controls[0].controlType).toBe('button');
+    expect(controls[0].text).toBe('First');
+    expect(controls[1].controlType).toBe('checkbox');
+    expect(controls[1].text).toBe('Second');
+    expect(controls[2].controlType).toBe('spinButton');
+    expect(controls[2].minValue).toBe(0);
+    expect(controls[2].maxValue).toBe(50);
+  });
+
+  it('should delete control from opened file by index', async () => {
+    const wb = new Workbook();
+    wb.addFormControl('Sheet1', { controlType: 'button', cell: 'A1', text: 'First' });
+    wb.addFormControl('Sheet1', { controlType: 'checkbox', cell: 'A3', text: 'Second' });
+    wb.addFormControl('Sheet1', {
+      controlType: 'spinButton',
+      cell: 'C1',
+      minValue: 0,
+      maxValue: 10,
+    });
+    await wb.save(out);
+
+    const wb2 = Workbook.openSync(out);
+    wb2.deleteFormControl('Sheet1', 1);
+    const controls = wb2.getFormControls('Sheet1');
+    expect(controls).toHaveLength(2);
+    expect(controls[0].controlType).toBe('button');
+    expect(controls[1].controlType).toBe('spinButton');
+  });
+
+  it('should persist modified controls through open-modify-save-reopen cycle', async () => {
+    const out2 = tmpFile('test-form-controls-cycle.xlsx');
+
+    const wb = new Workbook();
+    wb.addFormControl('Sheet1', { controlType: 'button', cell: 'A1', text: 'Button' });
+    wb.addFormControl('Sheet1', { controlType: 'checkbox', cell: 'A3', text: 'Check' });
+    await wb.save(out);
+
+    const wb2 = Workbook.openSync(out);
+    wb2.addFormControl('Sheet1', {
+      controlType: 'scrollBar',
+      cell: 'E1',
+      minValue: 0,
+      maxValue: 100,
+    });
+    wb2.deleteFormControl('Sheet1', 0);
+    await wb2.save(out2);
+
+    const wb3 = Workbook.openSync(out2);
+    const controls = wb3.getFormControls('Sheet1');
+    expect(controls).toHaveLength(2);
+    expect(controls[0].controlType).toBe('checkbox');
+    expect(controls[0].text).toBe('Check');
+    expect(controls[1].controlType).toBe('scrollBar');
+    expect(controls[1].minValue).toBe(0);
+    expect(controls[1].maxValue).toBe(100);
+
+    await cleanup(out2);
+  });
 });

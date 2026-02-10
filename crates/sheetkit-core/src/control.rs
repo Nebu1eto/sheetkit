@@ -633,6 +633,31 @@ pub fn merge_vml_controls(
     }
 }
 
+impl FormControlInfo {
+    /// Convert a parsed `FormControlInfo` back to a `FormControlConfig`.
+    ///
+    /// This is used during VML hydration to reconstruct the config list from
+    /// existing VML data so that subsequent add/delete operations work correctly.
+    pub fn to_config(&self) -> FormControlConfig {
+        FormControlConfig {
+            control_type: self.control_type.clone(),
+            cell: self.cell.clone(),
+            width: None,
+            height: None,
+            text: self.text.clone(),
+            macro_name: self.macro_name.clone(),
+            cell_link: self.cell_link.clone(),
+            checked: self.checked,
+            min_value: self.min_value,
+            max_value: self.max_value,
+            increment: self.increment,
+            page_increment: self.page_increment,
+            current_value: self.current_value,
+            three_d: None,
+        }
+    }
+}
+
 /// Count existing VML shapes in VML bytes to determine the next shape ID.
 pub fn count_vml_shapes(vml_bytes: &[u8]) -> usize {
     let vml_str = String::from_utf8_lossy(vml_bytes);
@@ -1217,7 +1242,7 @@ mod tests {
         assert!(has_vml, "should have a vmlDrawing file in the ZIP");
 
         // Re-open and verify controls are preserved.
-        let wb2 = Workbook::open(&path).unwrap();
+        let mut wb2 = Workbook::open(&path).unwrap();
         let controls = wb2.get_form_controls("Sheet1").unwrap();
         assert_eq!(controls.len(), 3);
         assert_eq!(controls[0].control_type, FormControlType::Button);
@@ -1338,7 +1363,7 @@ mod tests {
             .unwrap();
         wb.save(&path).unwrap();
 
-        let wb2 = Workbook::open(&path).unwrap();
+        let mut wb2 = Workbook::open(&path).unwrap();
         let comments = wb2.get_comments("Sheet1").unwrap();
         assert_eq!(comments.len(), 1);
         let controls = wb2.get_form_controls("Sheet1").unwrap();
@@ -1350,7 +1375,7 @@ mod tests {
     fn test_workbook_get_form_controls_empty() {
         use crate::workbook::Workbook;
 
-        let wb = Workbook::new();
+        let mut wb = Workbook::new();
         let controls = wb.get_form_controls("Sheet1").unwrap();
         assert!(controls.is_empty());
     }
@@ -1359,8 +1384,157 @@ mod tests {
     fn test_workbook_get_form_controls_sheet_not_found() {
         use crate::workbook::Workbook;
 
-        let wb = Workbook::new();
+        let mut wb = Workbook::new();
         let result = wb.get_form_controls("NoSheet");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_open_file_get_form_controls_returns_existing() {
+        use crate::workbook::Workbook;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("get_existing.xlsx");
+
+        let mut wb = Workbook::new();
+        wb.add_form_control("Sheet1", FormControlConfig::button("A1", "Existing"))
+            .unwrap();
+        wb.add_form_control("Sheet1", FormControlConfig::checkbox("A3", "Check"))
+            .unwrap();
+        wb.save(&path).unwrap();
+
+        let mut wb2 = Workbook::open(&path).unwrap();
+        let controls = wb2.get_form_controls("Sheet1").unwrap();
+        assert_eq!(controls.len(), 2);
+        assert_eq!(controls[0].control_type, FormControlType::Button);
+        assert_eq!(controls[0].text.as_deref(), Some("Existing"));
+        assert_eq!(controls[1].control_type, FormControlType::CheckBox);
+        assert_eq!(controls[1].text.as_deref(), Some("Check"));
+    }
+
+    #[test]
+    fn test_open_file_add_form_control_preserves_existing() {
+        use crate::workbook::Workbook;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("add_preserves.xlsx");
+
+        let mut wb = Workbook::new();
+        wb.add_form_control("Sheet1", FormControlConfig::button("A1", "First"))
+            .unwrap();
+        wb.add_form_control("Sheet1", FormControlConfig::checkbox("A3", "Second"))
+            .unwrap();
+        wb.save(&path).unwrap();
+
+        let mut wb2 = Workbook::open(&path).unwrap();
+        wb2.add_form_control("Sheet1", FormControlConfig::spin_button("C1", 0, 50))
+            .unwrap();
+
+        let controls = wb2.get_form_controls("Sheet1").unwrap();
+        assert_eq!(
+            controls.len(),
+            3,
+            "old + new controls should all be present"
+        );
+        assert_eq!(controls[0].control_type, FormControlType::Button);
+        assert_eq!(controls[0].text.as_deref(), Some("First"));
+        assert_eq!(controls[1].control_type, FormControlType::CheckBox);
+        assert_eq!(controls[1].text.as_deref(), Some("Second"));
+        assert_eq!(controls[2].control_type, FormControlType::SpinButton);
+        assert_eq!(controls[2].min_value, Some(0));
+        assert_eq!(controls[2].max_value, Some(50));
+    }
+
+    #[test]
+    fn test_open_file_delete_form_control_works() {
+        use crate::workbook::Workbook;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("delete_works.xlsx");
+
+        let mut wb = Workbook::new();
+        wb.add_form_control("Sheet1", FormControlConfig::button("A1", "First"))
+            .unwrap();
+        wb.add_form_control("Sheet1", FormControlConfig::checkbox("A3", "Second"))
+            .unwrap();
+        wb.add_form_control("Sheet1", FormControlConfig::spin_button("C1", 0, 10))
+            .unwrap();
+        wb.save(&path).unwrap();
+
+        let mut wb2 = Workbook::open(&path).unwrap();
+        wb2.delete_form_control("Sheet1", 1).unwrap();
+
+        let controls = wb2.get_form_controls("Sheet1").unwrap();
+        assert_eq!(controls.len(), 2);
+        assert_eq!(controls[0].control_type, FormControlType::Button);
+        assert_eq!(controls[1].control_type, FormControlType::SpinButton);
+    }
+
+    #[test]
+    fn test_open_file_modify_save_reopen_persistence() {
+        use crate::workbook::Workbook;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let path1 = dir.path().join("persistence_step1.xlsx");
+        let path2 = dir.path().join("persistence_step2.xlsx");
+
+        // Step 1: Create with 2 controls.
+        let mut wb = Workbook::new();
+        wb.add_form_control("Sheet1", FormControlConfig::button("A1", "Button"))
+            .unwrap();
+        wb.add_form_control("Sheet1", FormControlConfig::checkbox("A3", "Check"))
+            .unwrap();
+        wb.save(&path1).unwrap();
+
+        // Step 2: Open, add one, delete one, save.
+        let mut wb2 = Workbook::open(&path1).unwrap();
+        wb2.add_form_control("Sheet1", FormControlConfig::scroll_bar("E1", 0, 100))
+            .unwrap();
+        wb2.delete_form_control("Sheet1", 0).unwrap();
+        wb2.save(&path2).unwrap();
+
+        // Step 3: Re-open and verify.
+        let mut wb3 = Workbook::open(&path2).unwrap();
+        let controls = wb3.get_form_controls("Sheet1").unwrap();
+        assert_eq!(controls.len(), 2);
+        assert_eq!(controls[0].control_type, FormControlType::CheckBox);
+        assert_eq!(controls[0].text.as_deref(), Some("Check"));
+        assert_eq!(controls[1].control_type, FormControlType::ScrollBar);
+        assert_eq!(controls[1].min_value, Some(0));
+        assert_eq!(controls[1].max_value, Some(100));
+    }
+
+    #[test]
+    fn test_info_to_config_roundtrip() {
+        let config = FormControlConfig {
+            control_type: FormControlType::CheckBox,
+            cell: "B2".to_string(),
+            width: None,
+            height: None,
+            text: Some("Toggle".to_string()),
+            macro_name: Some("MyMacro".to_string()),
+            cell_link: Some("$D$1".to_string()),
+            checked: Some(true),
+            min_value: None,
+            max_value: None,
+            increment: None,
+            page_increment: None,
+            current_value: None,
+            three_d: None,
+        };
+
+        let vml = build_form_control_vml(&[config.clone()], 1025);
+        let parsed = parse_form_controls(&vml);
+        assert_eq!(parsed.len(), 1);
+        let roundtripped = parsed[0].to_config();
+        assert_eq!(roundtripped.control_type, config.control_type);
+        assert_eq!(roundtripped.text, config.text);
+        assert_eq!(roundtripped.macro_name, config.macro_name);
+        assert_eq!(roundtripped.cell_link, config.cell_link);
+        assert_eq!(roundtripped.checked, config.checked);
     }
 }

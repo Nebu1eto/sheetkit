@@ -679,6 +679,29 @@ impl Workbook {
         }
     }
 
+    /// Hydrate form controls from VML bytes into `sheet_form_controls`.
+    ///
+    /// When a workbook is opened from a file, existing form controls are stored
+    /// only as raw VML bytes in `sheet_vml`. This method parses the VML and
+    /// populates `sheet_form_controls` so that add/delete/get operations work
+    /// correctly on files with pre-existing controls.
+    fn hydrate_form_controls(&mut self, idx: usize) {
+        while self.sheet_form_controls.len() <= idx {
+            self.sheet_form_controls.push(vec![]);
+        }
+        if !self.sheet_form_controls[idx].is_empty() {
+            return;
+        }
+        if let Some(Some(vml_bytes)) = self.sheet_vml.get(idx) {
+            let vml_str = String::from_utf8_lossy(vml_bytes);
+            let parsed = crate::control::parse_form_controls(&vml_str);
+            if !parsed.is_empty() {
+                self.sheet_form_controls[idx] =
+                    parsed.iter().map(|info| info.to_config()).collect();
+            }
+        }
+    }
+
     /// Add a form control to a sheet.
     ///
     /// The control is positioned at the cell specified in `config.cell`.
@@ -691,9 +714,7 @@ impl Workbook {
     ) -> Result<()> {
         let idx = self.sheet_index(sheet)?;
         config.validate()?;
-        while self.sheet_form_controls.len() <= idx {
-            self.sheet_form_controls.push(vec![]);
-        }
+        self.hydrate_form_controls(idx);
         self.sheet_form_controls[idx].push(config);
         // Invalidate cached VML so save() regenerates from current state.
         if idx < self.sheet_vml.len() {
@@ -704,29 +725,19 @@ impl Workbook {
 
     /// Get all form controls on a sheet.
     ///
-    /// If the sheet has VML content (e.g. from an opened file), form controls
-    /// are parsed from the VML. Otherwise, returns the controls added via
-    /// [`add_form_control`].
-    pub fn get_form_controls(&self, sheet: &str) -> Result<Vec<crate::control::FormControlInfo>> {
+    /// If the sheet has VML content from an opened file, form controls are
+    /// hydrated from the VML first and then returned.
+    pub fn get_form_controls(
+        &mut self,
+        sheet: &str,
+    ) -> Result<Vec<crate::control::FormControlInfo>> {
         let idx = self.sheet_index(sheet)?;
+        self.hydrate_form_controls(idx);
 
-        // If there are programmatically added controls, convert them to info.
-        let added = self.sheet_form_controls.get(idx);
-        if let Some(controls) = added {
-            if !controls.is_empty() {
-                // Generate VML and parse to get consistent FormControlInfo.
-                let vml = crate::control::build_form_control_vml(controls, 1025);
-                return Ok(crate::control::parse_form_controls(&vml));
-            }
-        }
-
-        // Try parsing from preserved VML bytes.
-        if let Some(Some(vml_bytes)) = self.sheet_vml.get(idx) {
-            let vml_str = String::from_utf8_lossy(vml_bytes);
-            let controls = crate::control::parse_form_controls(&vml_str);
-            if !controls.is_empty() {
-                return Ok(controls);
-            }
+        let controls = &self.sheet_form_controls[idx];
+        if !controls.is_empty() {
+            let vml = crate::control::build_form_control_vml(controls, 1025);
+            return Ok(crate::control::parse_form_controls(&vml));
         }
 
         Ok(vec![])
@@ -735,10 +746,8 @@ impl Workbook {
     /// Delete a form control from a sheet by its 0-based index.
     pub fn delete_form_control(&mut self, sheet: &str, index: usize) -> Result<()> {
         let idx = self.sheet_index(sheet)?;
-        let controls = self
-            .sheet_form_controls
-            .get_mut(idx)
-            .ok_or_else(|| Error::Internal("no form controls on this sheet".to_string()))?;
+        self.hydrate_form_controls(idx);
+        let controls = &mut self.sheet_form_controls[idx];
         if index >= controls.len() {
             return Err(Error::InvalidArgument(format!(
                 "form control index {index} out of bounds (sheet has {} controls)",
