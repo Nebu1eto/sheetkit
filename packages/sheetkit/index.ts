@@ -25,6 +25,7 @@ import type {
   JsSheetProtectionConfig,
   JsSparklineConfig,
   JsStyle,
+  JsVbaModule,
   JsWorkbookProtectionConfig,
 } from './binding.js';
 import { JsStreamWriter, Workbook as NativeWorkbook } from './binding.js';
@@ -71,6 +72,7 @@ export type {
   JsSheetProtectionConfig,
   JsSparklineConfig,
   JsStyle,
+  JsVbaModule,
   JsView3DConfig,
   JsWorkbookProtectionConfig,
 } from './binding.js';
@@ -688,6 +690,16 @@ class Workbook {
   /** Check if a sheet is protected. */
   isSheetProtected(sheet: string): boolean {
     return this.#native.isSheetProtected(sheet);
+  }
+
+  /** Get the raw VBA project binary (xl/vbaProject.bin), or null if not present. */
+  getVbaProject(): Buffer | null {
+    return this.#native.getVbaProject();
+  }
+
+  /** Extract VBA module source code from the workbook's VBA project. Returns null if no VBA project. */
+  getVbaModules(): JsVbaModule[] | null {
+    return this.#native.getVbaModules();
   }
 }
 

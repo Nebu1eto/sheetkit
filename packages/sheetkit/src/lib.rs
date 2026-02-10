@@ -1401,6 +1401,42 @@ impl Workbook {
             .is_sheet_protected(&sheet)
             .map_err(|e| Error::from_reason(e.to_string()))
     }
+
+    /// Get the raw VBA project binary (xl/vbaProject.bin), or null if not present.
+    #[napi]
+    pub fn get_vba_project(&self) -> Option<Buffer> {
+        self.inner
+            .get_vba_project()
+            .map(|b| Buffer::from(b.to_vec()))
+    }
+
+    /// Extract VBA module source code from the workbook's VBA project.
+    /// Returns null if no VBA project is present.
+    #[napi]
+    pub fn get_vba_modules(&self) -> Result<Option<Vec<JsVbaModule>>> {
+        let modules = self
+            .inner
+            .get_vba_modules()
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        Ok(modules.map(|mods| {
+            mods.into_iter()
+                .map(|m| {
+                    let module_type = match m.module_type {
+                        sheetkit_core::vba::VbaModuleType::Standard => "standard",
+                        sheetkit_core::vba::VbaModuleType::Class => "class",
+                        sheetkit_core::vba::VbaModuleType::Form => "form",
+                        sheetkit_core::vba::VbaModuleType::Document => "document",
+                        sheetkit_core::vba::VbaModuleType::ThisWorkbook => "thisWorkbook",
+                    };
+                    JsVbaModule {
+                        name: m.name,
+                        source_code: m.source_code,
+                        module_type: module_type.to_string(),
+                    }
+                })
+                .collect()
+        }))
+    }
 }
 
 impl Workbook {

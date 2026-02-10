@@ -31,6 +31,7 @@ pub mod table;
 pub mod theme;
 pub mod utils;
 pub mod validation;
+pub mod vba;
 pub mod vml;
 pub mod workbook;
 pub(crate) mod workbook_paths;

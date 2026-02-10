@@ -1177,3 +1177,81 @@ const buf = wb.getRowsBuffer('Sheet1');
 | `getRowsBuffer()` (raw) | ~30MB | Buffer만 유지, 디코딩 없음 |
 
 자세한 API 설명은 [API 레퍼런스](../api-reference/advanced.md#30-대량-데이터-전송)를 참조하세요.
+
+---
+
+### VBA 프로젝트 추출
+
+SheetKit은 매크로가 포함된 워크북(`.xlsm` 파일)에서 VBA 매크로 코드를 추출할 수 있습니다. VBA 프로젝트는 ZIP 아카이브 내의 `xl/vbaProject.bin`에 저장되며, VBA 모듈을 포함하는 OLE/CFB 복합 파일입니다.
+
+이 기능은 읽기 전용입니다. SheetKit은 VBA 코드를 읽고 추출할 수 있지만, VBA 프로젝트를 생성하거나 수정하는 기능은 지원하지 않습니다.
+
+#### Rust
+
+```rust
+use sheetkit::Workbook;
+
+let wb = Workbook::open("macros.xlsm")?;
+
+// VBA 프로젝트 포함 여부 확인
+if let Some(raw_bytes) = wb.get_vba_project() {
+    println!("VBA project size: {} bytes", raw_bytes.len());
+}
+
+// 개별 VBA 모듈과 소스 코드 추출
+if let Some(modules) = wb.get_vba_modules()? {
+    for module in &modules {
+        println!("Module: {} (type: {:?})", module.name, module.module_type);
+        println!("Source:\n{}", module.source_code);
+    }
+}
+
+// 표준 .xlsx 파일은 None을 반환합니다
+let wb2 = Workbook::new();
+assert!(wb2.get_vba_project().is_none());
+assert!(wb2.get_vba_modules()?.is_none());
+```
+
+#### TypeScript
+
+```typescript
+import { Workbook } from '@anthropic/sheetkit';
+
+const wb = Workbook.openSync('macros.xlsm');
+
+// raw VBA 프로젝트 바이너리 (없으면 null)
+const rawProject: Buffer | null = wb.getVbaProject();
+if (rawProject) {
+  console.log(`VBA project size: ${rawProject.length} bytes`);
+}
+
+// 개별 VBA 모듈과 소스 코드 추출
+const modules = wb.getVbaModules();
+if (modules) {
+  for (const mod of modules) {
+    console.log(`Module: ${mod.name} (type: ${mod.moduleType})`);
+    console.log(`Source:\n${mod.sourceCode}`);
+  }
+}
+
+// 표준 .xlsx 파일은 null을 반환합니다
+const wb2 = new Workbook();
+console.log(wb2.getVbaProject());  // null
+console.log(wb2.getVbaModules());  // null
+```
+
+#### 모듈 유형
+
+각 VBA 모듈에는 종류를 나타내는 `moduleType` 필드가 있습니다.
+
+| 유형 | 설명 |
+|------|------|
+| `standard` | 표준 코드 모듈 (`.bas`) |
+| `class` | 클래스 모듈 (`.cls`) |
+| `form` | UserForm 모듈 |
+| `document` | 문서 모듈 (예: Sheet 코드 비하인드) |
+| `thisWorkbook` | ThisWorkbook 모듈 |
+
+#### VBA 프로젝트 라운드트립
+
+`.xlsm` 파일을 열고 다시 저장할 때, `xl/vbaProject.bin` 항목은 그대로 보존되어 열기/저장 과정에서 매크로 기능이 유지됩니다.

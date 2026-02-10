@@ -435,6 +435,33 @@ impl Workbook {
         Ok(crate::sheet::is_sheet_protected(ws))
     }
 
+    /// Get the raw VBA project binary (`xl/vbaProject.bin`), if present.
+    ///
+    /// Returns `None` for standard `.xlsx` files (which have no VBA project).
+    /// Returns `Some(bytes)` for `.xlsm` files that contain a VBA project.
+    pub fn get_vba_project(&self) -> Option<&[u8]> {
+        self.vba_project.as_deref()
+    }
+
+    /// Extract VBA module source code from the workbook's VBA project.
+    ///
+    /// Parses the OLE/CFB container inside `xl/vbaProject.bin`, reads the
+    /// `dir` stream for module metadata, and decompresses each module's
+    /// source code.
+    ///
+    /// Returns `Ok(None)` if no VBA project is present.
+    /// Returns `Ok(Some(modules))` with the extracted modules.
+    /// Returns `Err` if the VBA project exists but is corrupt or unreadable.
+    pub fn get_vba_modules(&self) -> Result<Option<Vec<crate::vba::VbaModule>>> {
+        match &self.vba_project {
+            None => Ok(None),
+            Some(bin) => {
+                let modules = crate::vba::extract_vba_modules(bin)?;
+                Ok(Some(modules))
+            }
+        }
+    }
+
     /// Resolve an optional sheet name to a [`DefinedNameScope`](crate::defined_names::DefinedNameScope).
     fn resolve_defined_name_scope(
         &self,

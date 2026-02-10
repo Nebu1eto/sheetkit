@@ -32,6 +32,7 @@ impl Workbook {
             theme_colors: crate::theme::default_theme_colors(),
             sheet_sparklines: vec![vec![]],
             sheet_vml: vec![None],
+            vba_project: None,
             sheet_name_index,
         }
     }
@@ -311,6 +312,9 @@ impl Workbook {
             }
         }
 
+        // Read VBA project binary (xl/vbaProject.bin), if present.
+        let vba_project = read_bytes_part(archive, "xl/vbaProject.bin").ok();
+
         // Build sheet name -> index lookup.
         let mut sheet_name_index = HashMap::with_capacity(worksheets.len());
         for (i, (name, _)) in worksheets.iter().enumerate() {
@@ -357,6 +361,7 @@ impl Workbook {
             theme_colors,
             sheet_sparklines,
             sheet_vml,
+            vba_project,
             sheet_name_index,
         })
     }
@@ -698,6 +703,13 @@ impl Workbook {
             zip.start_file("docProps/custom.xml", options)
                 .map_err(|e| Error::Zip(e.to_string()))?;
             zip.write_all(xml_str.as_bytes())?;
+        }
+
+        // xl/vbaProject.bin (preserved for round-trip of .xlsm files)
+        if let Some(ref vba_data) = self.vba_project {
+            zip.start_file("xl/vbaProject.bin", options)
+                .map_err(|e| Error::Zip(e.to_string()))?;
+            zip.write_all(vba_data)?;
         }
 
         Ok(())

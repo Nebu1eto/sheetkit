@@ -1836,3 +1836,62 @@ sheet.columnName(25);  // 'Z'
 | `getRows()` | 중간 (모든 셀을 객체로 디코딩) | 전체를 한 번에 | 하위 호환성, 모든 셀 순회 |
 | `getRowsBuffer()` + `SheetData` | 낮음 (Buffer + 필요 시 디코딩) | 접근 시마다 | 대용량 시트, 임의 접근, 셀 일부만 읽기 |
 | `getRowsBuffer()` (raw) | 최소 (Buffer만) | 없음 | 커스텀 디코더, 네트워크 전송, 캐싱 |
+
+---
+
+## 31. VBA 프로젝트 추출
+
+`.xlsm` 파일에 저장된 VBA 매크로에 대한 읽기 전용 접근을 제공합니다.
+
+### `get_vba_project()` / `getVbaProject()`
+
+`xl/vbaProject.bin`의 raw 바이너리 내용을 반환합니다. VBA 프로젝트가 없는 워크북의 경우 `None`/`null`을 반환합니다.
+
+**Rust:**
+
+```rust
+let raw: Option<&[u8]> = wb.get_vba_project();
+```
+
+**TypeScript:**
+
+```typescript
+const raw: Buffer | null = wb.getVbaProject();
+```
+
+### `get_vba_modules()` / `getVbaModules()`
+
+VBA 프로젝트 바이너리를 파싱하고, 모듈 소스 코드를 압축 해제하여 모듈 배열을 반환합니다. VBA 프로젝트가 없으면 `None`/`null`을 반환합니다. VBA 프로젝트가 손상된 경우 에러를 발생시킵니다.
+
+**Rust:**
+
+```rust
+use sheetkit::vba::{VbaModule, VbaModuleType};
+
+if let Some(modules) = wb.get_vba_modules()? {
+    for m in &modules {
+        println!("{}: {:?}", m.name, m.module_type);
+        println!("{}", m.source_code);
+    }
+}
+```
+
+**TypeScript:**
+
+```typescript
+const modules = wb.getVbaModules();
+if (modules) {
+  for (const m of modules) {
+    console.log(`${m.name}: ${m.moduleType}`);
+    console.log(m.sourceCode);
+  }
+}
+```
+
+### VbaModule / JsVbaModule
+
+| 필드 | Rust 타입 | TypeScript 타입 | 설명 |
+|------|-----------|----------------|------|
+| `name` | `String` | `string` | 모듈 이름 |
+| `source_code` / `sourceCode` | `String` | `string` | 압축 해제된 VBA 소스 코드 |
+| `module_type` / `moduleType` | `VbaModuleType` | `string` | `standard`, `class`, `form`, `document`, `thisWorkbook` 중 하나 |

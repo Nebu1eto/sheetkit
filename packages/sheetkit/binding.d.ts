@@ -296,6 +296,13 @@ export declare class Workbook {
   unprotectSheet(sheet: string): void
   /** Check if a sheet is protected. */
   isSheetProtected(sheet: string): boolean
+  /** Get the raw VBA project binary (xl/vbaProject.bin), or null if not present. */
+  getVbaProject(): Buffer | null
+  /**
+   * Extract VBA module source code from the workbook's VBA project.
+   * Returns null if no VBA project is present.
+   */
+  getVbaModules(): Array<JsVbaModule> | null
 }
 
 export interface DateValue {
@@ -730,6 +737,16 @@ export interface JsStyle {
   numFmtId?: number
   customNumFmt?: string
   protection?: JsProtectionStyle
+}
+
+/** A VBA module extracted from a .xlsm file. */
+export interface JsVbaModule {
+  /** Module name (e.g., "Module1", "ThisWorkbook"). */
+  name: string
+  /** Decompressed VBA source code. */
+  sourceCode: string
+  /** Module type: "standard", "class", "form", "document", or "thisWorkbook". */
+  moduleType: string
 }
 
 export interface JsView3DConfig {

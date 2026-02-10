@@ -1807,3 +1807,62 @@ sheet.columnName(25);  // 'Z'
 | `getRows()` | Moderate (all cells decoded to objects) | All upfront | Backward compatibility, iterating all cells |
 | `getRowsBuffer()` + `SheetData` | Low (buffer + on-demand decode) | Per-access | Large sheets, random access, reading a subset of cells |
 | `getRowsBuffer()` (raw) | Minimal (buffer only) | None | Custom decoders, network transfer, caching |
+
+---
+
+## 31. VBA Project Extraction
+
+Read-only access to VBA macros stored in `.xlsm` files.
+
+### `get_vba_project()` / `getVbaProject()`
+
+Returns the raw binary content of `xl/vbaProject.bin`, or `None`/`null` for workbooks without a VBA project.
+
+**Rust:**
+
+```rust
+let raw: Option<&[u8]> = wb.get_vba_project();
+```
+
+**TypeScript:**
+
+```typescript
+const raw: Buffer | null = wb.getVbaProject();
+```
+
+### `get_vba_modules()` / `getVbaModules()`
+
+Parses the VBA project binary, decompresses module source code, and returns an array of modules. Returns `None`/`null` if no VBA project is present. Raises an error if the VBA project is corrupt.
+
+**Rust:**
+
+```rust
+use sheetkit::vba::{VbaModule, VbaModuleType};
+
+if let Some(modules) = wb.get_vba_modules()? {
+    for m in &modules {
+        println!("{}: {:?}", m.name, m.module_type);
+        println!("{}", m.source_code);
+    }
+}
+```
+
+**TypeScript:**
+
+```typescript
+const modules = wb.getVbaModules();
+if (modules) {
+  for (const m of modules) {
+    console.log(`${m.name}: ${m.moduleType}`);
+    console.log(m.sourceCode);
+  }
+}
+```
+
+### VbaModule / JsVbaModule
+
+| Field | Rust type | TypeScript type | Description |
+|-------|-----------|----------------|-------------|
+| `name` | `String` | `string` | Module name |
+| `source_code` / `sourceCode` | `String` | `string` | Decompressed VBA source |
+| `module_type` / `moduleType` | `VbaModuleType` | `string` | One of: `standard`, `class`, `form`, `document`, `thisWorkbook` |
