@@ -132,16 +132,19 @@ impl Workbook {
     }
 
     /// Delete a threaded comment by its ID.
+    ///
+    /// Returns an error if the comment was not found.
     pub fn delete_threaded_comment(&mut self, sheet: &str, comment_id: &str) -> Result<()> {
         let idx = self.sheet_index(sheet)?;
         crate::threaded_comment::delete_threaded_comment(
             &mut self.sheet_threaded_comments[idx],
             comment_id,
-        );
-        Ok(())
+        )
     }
 
     /// Set the resolved (done) state of a threaded comment.
+    ///
+    /// Returns an error if the comment was not found.
     pub fn resolve_threaded_comment(
         &mut self,
         sheet: &str,
@@ -153,8 +156,7 @@ impl Workbook {
             &mut self.sheet_threaded_comments[idx],
             comment_id,
             done,
-        );
-        Ok(())
+        )
     }
 
     /// Add a person to the person list. Returns the person ID.

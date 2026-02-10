@@ -19,6 +19,7 @@ chrono = { workspace = true }
 quick-xml = { workspace = true }
 serde = { workspace = true }
 nom = { workspace = true }
+uuid = { workspace = true }
 
 # Encryption (optional, behind "encryption" feature)
 aes = { workspace = true, optional = true }

@@ -43,6 +43,7 @@ hmac = "0.12"
 rand = "0.8"
 cfb = "0.10"
 base64 = "0.22"
+uuid = { version = "1", features = ["v4"] }
 
 [profile.release]
 opt-level = 3

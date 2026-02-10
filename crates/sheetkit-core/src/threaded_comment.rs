@@ -64,20 +64,9 @@ pub struct PersonData {
     pub provider_id: Option<String>,
 }
 
-/// Generate a simple GUID-like identifier wrapped in curly braces.
-/// Uses a counter-based approach for deterministic IDs in a session.
+/// Generate a random UUID v4 wrapped in curly braces.
 fn generate_guid() -> String {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(1);
-    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!(
-        "{{{:08X}-{:04X}-{:04X}-{:04X}-{:012X}}}",
-        (n >> 32) as u32,
-        ((n >> 16) & 0xFFFF) as u16,
-        (n & 0xFFFF) as u16,
-        ((n >> 48) | 0x4000) as u16,
-        n & 0xFFFF_FFFF_FFFF
-    )
+    format!("{{{}}}", uuid::Uuid::new_v4().to_string().to_uppercase())
 }
 
 /// Get the current UTC timestamp in ISO 8601 format with two-digit
@@ -89,12 +78,46 @@ fn current_timestamp() -> String {
     format!("{base}.{centiseconds:02}")
 }
 
+/// Generate a GUID that does not collide with any existing person or comment ID.
+fn generate_unique_guid(
+    person_list: &PersonList,
+    threaded_comments: Option<&ThreadedComments>,
+) -> String {
+    loop {
+        let id = generate_guid();
+        let person_collision = person_list.persons.iter().any(|p| p.id == id);
+        let comment_collision = threaded_comments
+            .map(|tc| tc.comments.iter().any(|c| c.id == id))
+            .unwrap_or(false);
+        if !person_collision && !comment_collision {
+            return id;
+        }
+    }
+}
+
 /// Find or create a person in the person list, returning their ID.
 pub fn find_or_create_person(
     person_list: &mut PersonList,
     display_name: &str,
     user_id: Option<&str>,
     provider_id: Option<&str>,
+) -> String {
+    find_or_create_person_with_collision_check(
+        person_list,
+        display_name,
+        user_id,
+        provider_id,
+        None,
+    )
+}
+
+/// Find or create a person with collision checking against existing IDs.
+fn find_or_create_person_with_collision_check(
+    person_list: &mut PersonList,
+    display_name: &str,
+    user_id: Option<&str>,
+    provider_id: Option<&str>,
+    threaded_comments: Option<&ThreadedComments>,
 ) -> String {
     if let Some(existing) = person_list
         .persons
@@ -104,7 +127,7 @@ pub fn find_or_create_person(
         return existing.id.clone();
     }
 
-    let id = generate_guid();
+    let id = generate_unique_guid(person_list, threaded_comments);
     person_list.persons.push(Person {
         display_name: display_name.to_string(),
         id: id.clone(),
@@ -116,28 +139,36 @@ pub fn find_or_create_person(
 
 /// Add a threaded comment to a sheet's threaded comments collection.
 ///
-/// Returns the generated comment ID.
+/// Validates the cell reference format before inserting. Returns the
+/// generated comment ID.
 pub fn add_threaded_comment(
     threaded_comments: &mut Option<ThreadedComments>,
     person_list: &mut PersonList,
     cell: &str,
     input: &ThreadedCommentInput,
 ) -> Result<String> {
+    crate::utils::cell_ref::cell_name_to_coordinates(cell)?;
+
     if let Some(ref parent_id) = input.parent_id {
         let tc = threaded_comments.as_ref();
         let parent_exists = tc
             .map(|t| t.comments.iter().any(|c| c.id == *parent_id))
             .unwrap_or(false);
         if !parent_exists {
-            return Err(Error::Internal(format!(
-                "parent comment '{}' not found",
-                parent_id
-            )));
+            return Err(Error::ThreadedCommentNotFound {
+                id: parent_id.clone(),
+            });
         }
     }
 
-    let person_id = find_or_create_person(person_list, &input.author, None, None);
-    let comment_id = generate_guid();
+    let person_id = find_or_create_person_with_collision_check(
+        person_list,
+        &input.author,
+        None,
+        None,
+        threaded_comments.as_ref(),
+    );
+    let comment_id = generate_unique_guid(person_list, threaded_comments.as_ref());
 
     let tc = threaded_comments.get_or_insert_with(ThreadedComments::default);
     tc.comments.push(ThreadedComment {
@@ -199,41 +230,49 @@ pub fn get_threaded_comments_by_cell(
 
 /// Delete a threaded comment by its ID.
 ///
-/// Returns `true` if the comment was found and removed.
+/// Returns an error if the comment was not found.
 pub fn delete_threaded_comment(
     threaded_comments: &mut Option<ThreadedComments>,
     comment_id: &str,
-) -> bool {
+) -> Result<()> {
     if let Some(ref mut tc) = threaded_comments {
         let before = tc.comments.len();
         tc.comments.retain(|c| c.id != comment_id);
-        let removed = tc.comments.len() < before;
+        if tc.comments.len() == before {
+            return Err(Error::ThreadedCommentNotFound {
+                id: comment_id.to_string(),
+            });
+        }
 
         if tc.comments.is_empty() {
             *threaded_comments = None;
         }
 
-        removed
+        Ok(())
     } else {
-        false
+        Err(Error::ThreadedCommentNotFound {
+            id: comment_id.to_string(),
+        })
     }
 }
 
 /// Set the resolved (done) state of a threaded comment.
 ///
-/// Returns `true` if the comment was found and updated.
+/// Returns an error if the comment was not found.
 pub fn resolve_threaded_comment(
     threaded_comments: &mut Option<ThreadedComments>,
     comment_id: &str,
     done: bool,
-) -> bool {
+) -> Result<()> {
     if let Some(ref mut tc) = threaded_comments {
         if let Some(comment) = tc.comments.iter_mut().find(|c| c.id == comment_id) {
             comment.done = if done { Some("1".to_string()) } else { None };
-            return true;
+            return Ok(());
         }
     }
-    false
+    Err(Error::ThreadedCommentNotFound {
+        id: comment_id.to_string(),
+    })
 }
 
 /// Add a person to the person list. Returns the person ID.
@@ -392,14 +431,15 @@ mod tests {
         )
         .unwrap();
 
-        assert!(delete_threaded_comment(&mut tc, &id));
+        delete_threaded_comment(&mut tc, &id).unwrap();
         assert!(tc.is_none());
     }
 
     #[test]
     fn test_delete_nonexistent_comment() {
         let mut tc: Option<ThreadedComments> = None;
-        assert!(!delete_threaded_comment(&mut tc, "{NONEXISTENT}"));
+        let result = delete_threaded_comment(&mut tc, "{NONEXISTENT}");
+        assert!(result.is_err());
     }
 
     #[test]
@@ -431,7 +471,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(delete_threaded_comment(&mut tc, &id1));
+        delete_threaded_comment(&mut tc, &id1).unwrap();
         assert!(tc.is_some());
         let remaining = get_threaded_comments(&tc, &pl);
         assert_eq!(remaining.len(), 1);
@@ -455,11 +495,11 @@ mod tests {
         )
         .unwrap();
 
-        assert!(resolve_threaded_comment(&mut tc, &id, true));
+        resolve_threaded_comment(&mut tc, &id, true).unwrap();
         let comments = get_threaded_comments(&tc, &pl);
         assert!(comments[0].done);
 
-        assert!(resolve_threaded_comment(&mut tc, &id, false));
+        resolve_threaded_comment(&mut tc, &id, false).unwrap();
         let comments = get_threaded_comments(&tc, &pl);
         assert!(!comments[0].done);
     }
@@ -467,7 +507,8 @@ mod tests {
     #[test]
     fn test_resolve_nonexistent() {
         let mut tc: Option<ThreadedComments> = None;
-        assert!(!resolve_threaded_comment(&mut tc, "{NONEXISTENT}", true));
+        let result = resolve_threaded_comment(&mut tc, "{NONEXISTENT}", true);
+        assert!(result.is_err());
     }
 
     #[test]
@@ -616,5 +657,158 @@ mod tests {
 
         let all = get_threaded_comments(&tc, &pl);
         assert_eq!(all.len(), 3);
+    }
+
+    #[test]
+    fn test_generated_ids_are_unique() {
+        let mut ids = std::collections::HashSet::new();
+        for _ in 0..1000 {
+            let id = generate_guid();
+            assert!(ids.insert(id.clone()), "duplicate ID generated: {}", id);
+        }
+    }
+
+    #[test]
+    fn test_generated_id_format() {
+        let id = generate_guid();
+        assert!(id.starts_with('{'));
+        assert!(id.ends_with('}'));
+        let inner = &id[1..id.len() - 1];
+        let parts: Vec<&str> = inner.split('-').collect();
+        assert_eq!(parts.len(), 5, "GUID should have 5 hyphen-separated parts");
+        assert_eq!(parts[0].len(), 8);
+        assert_eq!(parts[1].len(), 4);
+        assert_eq!(parts[2].len(), 4);
+        assert_eq!(parts[3].len(), 4);
+        assert_eq!(parts[4].len(), 12);
+    }
+
+    #[test]
+    fn test_no_id_collision_with_existing_workbook() {
+        let mut pl = PersonList::default();
+        pl.persons.push(Person {
+            display_name: "Existing".to_string(),
+            id: "{EXISTING-PERSON-ID}".to_string(),
+            user_id: None,
+            provider_id: None,
+        });
+
+        let mut tc = Some(ThreadedComments {
+            xmlns: sheetkit_xml::threaded_comment::THREADED_COMMENTS_NS.to_string(),
+            comments: vec![ThreadedComment {
+                cell_ref: "A1".to_string(),
+                date_time: "2024-01-01T00:00:00.00".to_string(),
+                person_id: "{EXISTING-PERSON-ID}".to_string(),
+                id: "{EXISTING-COMMENT-ID}".to_string(),
+                parent_id: None,
+                done: None,
+                text: "Pre-existing".to_string(),
+            }],
+        });
+
+        let new_id = add_threaded_comment(
+            &mut tc,
+            &mut pl,
+            "B2",
+            &ThreadedCommentInput {
+                author: "NewUser".to_string(),
+                text: "New comment".to_string(),
+                parent_id: None,
+            },
+        )
+        .unwrap();
+
+        assert_ne!(new_id, "{EXISTING-COMMENT-ID}");
+        assert_ne!(new_id, "{EXISTING-PERSON-ID}");
+
+        let persons = get_persons(&pl);
+        let new_person = persons
+            .iter()
+            .find(|p| p.display_name == "NewUser")
+            .unwrap();
+        assert_ne!(new_person.id, "{EXISTING-PERSON-ID}");
+        assert_ne!(new_person.id, "{EXISTING-COMMENT-ID}");
+    }
+
+    #[test]
+    fn test_delete_nonexistent_returns_error() {
+        let mut tc = None;
+        let mut pl = PersonList::default();
+
+        add_threaded_comment(
+            &mut tc,
+            &mut pl,
+            "A1",
+            &ThreadedCommentInput {
+                author: "Alice".to_string(),
+                text: "Exists".to_string(),
+                parent_id: None,
+            },
+        )
+        .unwrap();
+
+        let result = delete_threaded_comment(&mut tc, "{DOES-NOT-EXIST}");
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("DOES-NOT-EXIST"),
+            "error should contain the missing ID"
+        );
+    }
+
+    #[test]
+    fn test_resolve_nonexistent_returns_error() {
+        let mut tc = None;
+        let mut pl = PersonList::default();
+
+        add_threaded_comment(
+            &mut tc,
+            &mut pl,
+            "A1",
+            &ThreadedCommentInput {
+                author: "Alice".to_string(),
+                text: "Exists".to_string(),
+                parent_id: None,
+            },
+        )
+        .unwrap();
+
+        let result = resolve_threaded_comment(&mut tc, "{DOES-NOT-EXIST}", true);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            err.to_string().contains("DOES-NOT-EXIST"),
+            "error should contain the missing ID"
+        );
+    }
+
+    #[test]
+    fn test_add_comment_invalid_cell_reference() {
+        let mut tc = None;
+        let mut pl = PersonList::default();
+
+        let result = add_threaded_comment(
+            &mut tc,
+            &mut pl,
+            "INVALID",
+            &ThreadedCommentInput {
+                author: "Alice".to_string(),
+                text: "Bad cell".to_string(),
+                parent_id: None,
+            },
+        );
+        assert!(result.is_err());
+
+        let result = add_threaded_comment(
+            &mut tc,
+            &mut pl,
+            "",
+            &ThreadedCommentInput {
+                author: "Alice".to_string(),
+                text: "Empty cell".to_string(),
+                parent_id: None,
+            },
+        );
+        assert!(result.is_err());
     }
 }

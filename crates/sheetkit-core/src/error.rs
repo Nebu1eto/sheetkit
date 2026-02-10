@@ -192,6 +192,10 @@ pub enum Error {
     #[error("ZIP entry count {count} exceeds limit of {limit}")]
     ZipEntryCountExceeded { count: usize, limit: usize },
 
+    /// The specified threaded comment was not found.
+    #[error("threaded comment '{id}' not found")]
+    ThreadedCommentNotFound { id: String },
+
     /// An internal or otherwise unclassified error.
     #[error("internal error: {0}")]
     Internal(String),
