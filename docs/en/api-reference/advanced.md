@@ -2009,3 +2009,203 @@ if (modules) {
 | `name` | `String` | `string` | Module name |
 | `source_code` / `sourceCode` | `String` | `string` | Decompressed VBA source |
 | `module_type` / `moduleType` | `VbaModuleType` | `string` | One of: `standard`, `class`, `form`, `document`, `thisWorkbook` |
+
+---
+
+## 34. Threaded Comments
+
+Threaded comments (Excel 2019+) support conversation-style threads with replies, author tracking via a shared person list, and a resolved/done state. They are stored separately from legacy comments as `xl/threadedComments/threadedComment{N}.xml` parts.
+
+### `add_threaded_comment` / `addThreadedComment`
+
+Add a threaded comment to a cell. If the author does not exist in the person list, they are added automatically. Returns the generated comment ID.
+
+**Rust:**
+
+```rust
+use sheetkit::ThreadedCommentInput;
+
+let comment_id = wb.add_threaded_comment(
+    "Sheet1",
+    "A1",
+    &ThreadedCommentInput {
+        author: "Alice".into(),
+        text: "Please review this value.".into(),
+        parent_id: None,
+    },
+)?;
+
+// Reply to an existing comment
+wb.add_threaded_comment(
+    "Sheet1",
+    "A1",
+    &ThreadedCommentInput {
+        author: "Bob".into(),
+        text: "Looks correct to me.".into(),
+        parent_id: Some(comment_id.clone()),
+    },
+)?;
+```
+
+**TypeScript:**
+
+```typescript
+const commentId = wb.addThreadedComment("Sheet1", "A1", {
+    author: "Alice",
+    text: "Please review this value.",
+});
+
+// Reply to an existing comment
+wb.addThreadedComment("Sheet1", "A1", {
+    author: "Bob",
+    text: "Looks correct to me.",
+    parentId: commentId,
+});
+```
+
+### `get_threaded_comments` / `getThreadedComments`
+
+Get all threaded comments for a sheet.
+
+**Rust:**
+
+```rust
+let comments = wb.get_threaded_comments("Sheet1")?;
+for c in &comments {
+    println!("{}: {} (by {})", c.cell_ref, c.text, c.author);
+}
+```
+
+**TypeScript:**
+
+```typescript
+const comments = wb.getThreadedComments("Sheet1");
+```
+
+### `get_threaded_comments_by_cell` / `getThreadedCommentsByCell`
+
+Get threaded comments for a specific cell.
+
+**Rust:**
+
+```rust
+let comments = wb.get_threaded_comments_by_cell("Sheet1", "A1")?;
+```
+
+**TypeScript:**
+
+```typescript
+const comments = wb.getThreadedCommentsByCell("Sheet1", "A1");
+```
+
+### `delete_threaded_comment` / `deleteThreadedComment`
+
+Delete a threaded comment by its ID. Returns an error if the comment is not found.
+
+**Rust:**
+
+```rust
+wb.delete_threaded_comment("Sheet1", &comment_id)?;
+```
+
+**TypeScript:**
+
+```typescript
+wb.deleteThreadedComment("Sheet1", commentId);
+```
+
+### `resolve_threaded_comment` / `resolveThreadedComment`
+
+Set the resolved (done) state of a threaded comment.
+
+**Rust:**
+
+```rust
+wb.resolve_threaded_comment("Sheet1", &comment_id, true)?;
+```
+
+**TypeScript:**
+
+```typescript
+wb.resolveThreadedComment("Sheet1", commentId, true);
+```
+
+### `add_person` / `addPerson`
+
+Add a person to the shared person list. If a person with the same display name already exists, returns their existing ID.
+
+**Rust:**
+
+```rust
+use sheetkit::PersonInput;
+
+let person_id = wb.add_person(&PersonInput {
+    display_name: "Alice".into(),
+    user_id: Some("alice@example.com".into()),
+    provider_id: Some("ADAL".into()),
+});
+```
+
+**TypeScript:**
+
+```typescript
+const personId = wb.addPerson({
+    displayName: "Alice",
+    userId: "alice@example.com",
+    providerId: "ADAL",
+});
+```
+
+### `get_persons` / `getPersons`
+
+Get all persons in the person list.
+
+**Rust:**
+
+```rust
+let persons = wb.get_persons();
+```
+
+**TypeScript:**
+
+```typescript
+const persons = wb.getPersons();
+```
+
+### ThreadedCommentInput / JsThreadedCommentInput
+
+| Field | Rust type | TypeScript type | Description |
+|-------|-----------|----------------|-------------|
+| `author` | `String` | `string` | Author display name (auto-added to person list) |
+| `text` | `String` | `string` | Comment text |
+| `parent_id` / `parentId` | `Option<String>` | `string?` | Parent comment ID for replies |
+
+### ThreadedCommentData / JsThreadedCommentData
+
+| Field | Rust type | TypeScript type | Description |
+|-------|-----------|----------------|-------------|
+| `id` | `String` | `string` | Unique comment ID |
+| `cell_ref` / `cellRef` | `String` | `string` | Cell reference (e.g., "A1") |
+| `text` | `String` | `string` | Comment text |
+| `author` | `String` | `string` | Author display name |
+| `person_id` / `personId` | `String` | `string` | Person ID from person list |
+| `date_time` / `dateTime` | `String` | `string` | ISO 8601 timestamp |
+| `parent_id` / `parentId` | `Option<String>` | `string?` | Parent comment ID (for replies) |
+| `done` | `bool` | `boolean` | Resolved/done state |
+
+### PersonInput / JsPersonInput
+
+| Field | Rust type | TypeScript type | Description |
+|-------|-----------|----------------|-------------|
+| `display_name` / `displayName` | `String` | `string` | Person display name |
+| `user_id` / `userId` | `Option<String>` | `string?` | User identifier (e.g., email) |
+| `provider_id` / `providerId` | `Option<String>` | `string?` | Identity provider ID |
+
+### PersonData / JsPersonData
+
+| Field | Rust type | TypeScript type | Description |
+|-------|-----------|----------------|-------------|
+| `id` | `String` | `string` | Unique person ID |
+| `display_name` / `displayName` | `String` | `string` | Person display name |
+| `user_id` / `userId` | `Option<String>` | `string?` | User identifier |
+| `provider_id` / `providerId` | `Option<String>` | `string?` | Identity provider ID |

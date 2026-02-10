@@ -2094,3 +2094,203 @@ if (modules) {
 | `name` | `String` | `string` | 모듈 이름 |
 | `source_code` / `sourceCode` | `String` | `string` | 압축 해제된 VBA 소스 코드 |
 | `module_type` / `moduleType` | `VbaModuleType` | `string` | `standard`, `class`, `form`, `document`, `thisWorkbook` 중 하나 |
+
+---
+
+## 34. Threaded Comments
+
+Threaded comments(Excel 2019+)는 대화형 댓글 스레드를 지원합니다. 답글, 공유 person list를 통한 작성자 추적, 해결(done) 상태를 지원합니다. 레거시 댓글과 별도로 `xl/threadedComments/threadedComment{N}.xml` 파트에 저장됩니다.
+
+### `add_threaded_comment` / `addThreadedComment`
+
+셀에 threaded comment를 추가합니다. 작성자가 person list에 없으면 자동으로 추가됩니다. 생성된 댓글 ID를 반환합니다.
+
+**Rust:**
+
+```rust
+use sheetkit::ThreadedCommentInput;
+
+let comment_id = wb.add_threaded_comment(
+    "Sheet1",
+    "A1",
+    &ThreadedCommentInput {
+        author: "Alice".into(),
+        text: "Please review this value.".into(),
+        parent_id: None,
+    },
+)?;
+
+// Reply to an existing comment
+wb.add_threaded_comment(
+    "Sheet1",
+    "A1",
+    &ThreadedCommentInput {
+        author: "Bob".into(),
+        text: "Looks correct to me.".into(),
+        parent_id: Some(comment_id.clone()),
+    },
+)?;
+```
+
+**TypeScript:**
+
+```typescript
+const commentId = wb.addThreadedComment("Sheet1", "A1", {
+    author: "Alice",
+    text: "Please review this value.",
+});
+
+// Reply to an existing comment
+wb.addThreadedComment("Sheet1", "A1", {
+    author: "Bob",
+    text: "Looks correct to me.",
+    parentId: commentId,
+});
+```
+
+### `get_threaded_comments` / `getThreadedComments`
+
+시트의 모든 threaded comment를 반환합니다.
+
+**Rust:**
+
+```rust
+let comments = wb.get_threaded_comments("Sheet1")?;
+for c in &comments {
+    println!("{}: {} (by {})", c.cell_ref, c.text, c.author);
+}
+```
+
+**TypeScript:**
+
+```typescript
+const comments = wb.getThreadedComments("Sheet1");
+```
+
+### `get_threaded_comments_by_cell` / `getThreadedCommentsByCell`
+
+특정 셀의 threaded comment를 반환합니다.
+
+**Rust:**
+
+```rust
+let comments = wb.get_threaded_comments_by_cell("Sheet1", "A1")?;
+```
+
+**TypeScript:**
+
+```typescript
+const comments = wb.getThreadedCommentsByCell("Sheet1", "A1");
+```
+
+### `delete_threaded_comment` / `deleteThreadedComment`
+
+댓글 ID로 threaded comment를 삭제합니다. 댓글을 찾을 수 없으면 오류를 반환합니다.
+
+**Rust:**
+
+```rust
+wb.delete_threaded_comment("Sheet1", &comment_id)?;
+```
+
+**TypeScript:**
+
+```typescript
+wb.deleteThreadedComment("Sheet1", commentId);
+```
+
+### `resolve_threaded_comment` / `resolveThreadedComment`
+
+threaded comment의 해결(done) 상태를 설정합니다.
+
+**Rust:**
+
+```rust
+wb.resolve_threaded_comment("Sheet1", &comment_id, true)?;
+```
+
+**TypeScript:**
+
+```typescript
+wb.resolveThreadedComment("Sheet1", commentId, true);
+```
+
+### `add_person` / `addPerson`
+
+공유 person list에 사람을 추가합니다. 같은 표시 이름의 사람이 이미 있으면 기존 ID를 반환합니다.
+
+**Rust:**
+
+```rust
+use sheetkit::PersonInput;
+
+let person_id = wb.add_person(&PersonInput {
+    display_name: "Alice".into(),
+    user_id: Some("alice@example.com".into()),
+    provider_id: Some("ADAL".into()),
+});
+```
+
+**TypeScript:**
+
+```typescript
+const personId = wb.addPerson({
+    displayName: "Alice",
+    userId: "alice@example.com",
+    providerId: "ADAL",
+});
+```
+
+### `get_persons` / `getPersons`
+
+person list의 모든 사람을 반환합니다.
+
+**Rust:**
+
+```rust
+let persons = wb.get_persons();
+```
+
+**TypeScript:**
+
+```typescript
+const persons = wb.getPersons();
+```
+
+### ThreadedCommentInput / JsThreadedCommentInput
+
+| 필드 | Rust 타입 | TypeScript 타입 | 설명 |
+|------|-----------|----------------|------|
+| `author` | `String` | `string` | 작성자 표시 이름 (person list에 자동 추가) |
+| `text` | `String` | `string` | 댓글 텍스트 |
+| `parent_id` / `parentId` | `Option<String>` | `string?` | 답글 시 부모 댓글 ID |
+
+### ThreadedCommentData / JsThreadedCommentData
+
+| 필드 | Rust 타입 | TypeScript 타입 | 설명 |
+|------|-----------|----------------|------|
+| `id` | `String` | `string` | 고유 댓글 ID |
+| `cell_ref` / `cellRef` | `String` | `string` | 셀 참조 (예: "A1") |
+| `text` | `String` | `string` | 댓글 텍스트 |
+| `author` | `String` | `string` | 작성자 표시 이름 |
+| `person_id` / `personId` | `String` | `string` | person list의 사람 ID |
+| `date_time` / `dateTime` | `String` | `string` | ISO 8601 타임스탬프 |
+| `parent_id` / `parentId` | `Option<String>` | `string?` | 부모 댓글 ID (답글인 경우) |
+| `done` | `bool` | `boolean` | 해결(done) 상태 |
+
+### PersonInput / JsPersonInput
+
+| 필드 | Rust 타입 | TypeScript 타입 | 설명 |
+|------|-----------|----------------|------|
+| `display_name` / `displayName` | `String` | `string` | 사람 표시 이름 |
+| `user_id` / `userId` | `Option<String>` | `string?` | 사용자 식별자 (예: 이메일) |
+| `provider_id` / `providerId` | `Option<String>` | `string?` | ID 공급자 식별자 |
+
+### PersonData / JsPersonData
+
+| 필드 | Rust 타입 | TypeScript 타입 | 설명 |
+|------|-----------|----------------|------|
+| `id` | `String` | `string` | 고유 사람 ID |
+| `display_name` / `displayName` | `String` | `string` | 사람 표시 이름 |
+| `user_id` / `userId` | `Option<String>` | `string?` | 사용자 식별자 |
+| `provider_id` / `providerId` | `Option<String>` | `string?` | ID 공급자 식별자 |
