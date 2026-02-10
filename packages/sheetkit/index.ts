@@ -124,6 +124,12 @@ export interface ToCsvOptions {
   quote?: string;
   /** Line ending. Default: "\n" */
   lineEnding?: string;
+  /**
+   * When true, prefix cell values starting with `=`, `+`, `-`, or `@` with
+   * a tab character to prevent formula injection when the CSV is opened in
+   * a spreadsheet application. Default: false.
+   */
+  escapeFormulas?: boolean;
 }
 
 export interface ToHtmlOptions {
@@ -943,6 +949,7 @@ class Workbook {
     const delimiter = options?.delimiter ?? ',';
     const quote = options?.quote ?? '"';
     const lineEnding = options?.lineEnding ?? '\n';
+    const escapeFormulas = options?.escapeFormulas ?? false;
 
     const buf = this.#native.getRowsBuffer(sheet);
     const sd = new SheetData(buf);
@@ -956,7 +963,10 @@ class Workbook {
       const fields: string[] = [];
       for (let c = 0; c < maxCols; c++) {
         const val = c < row.length ? row[c] : null;
-        const str = cellValueToString(val);
+        let str = cellValueToString(val);
+        if (escapeFormulas && str.length > 0 && '=+\x2D@'.includes(str[0])) {
+          str = `\t${str}`;
+        }
         if (
           str.includes(delimiter) ||
           str.includes(quote) ||
