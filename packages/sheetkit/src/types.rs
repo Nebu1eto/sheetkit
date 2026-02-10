@@ -580,6 +580,21 @@ pub struct JsRenderOptions {
     pub default_font_size: Option<f64>,
 }
 
+/// Information about a picture retrieved from a worksheet.
+#[napi(object)]
+pub struct JsPictureInfo {
+    /// Raw image bytes.
+    pub data: napi::bindgen_prelude::Buffer,
+    /// Image format extension (e.g., "png", "jpeg").
+    pub format: String,
+    /// Anchor cell reference (e.g., "B2").
+    pub cell: String,
+    /// Image width in pixels.
+    pub width_px: u32,
+    /// Image height in pixels.
+    pub height_px: u32,
+}
+
 /// A single formatted text segment within a rich text cell.
 #[napi(object)]
 pub struct JsRichTextRun {

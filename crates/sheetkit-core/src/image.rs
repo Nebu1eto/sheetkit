@@ -101,6 +101,21 @@ impl ImageFormat {
     }
 }
 
+/// Information about a picture retrieved from a worksheet.
+#[derive(Debug, Clone)]
+pub struct PictureInfo {
+    /// Raw image bytes.
+    pub data: Vec<u8>,
+    /// Image format.
+    pub format: ImageFormat,
+    /// Anchor cell reference (e.g., `"B2"`).
+    pub cell: String,
+    /// Image width in pixels.
+    pub width_px: u32,
+    /// Image height in pixels.
+    pub height_px: u32,
+}
+
 /// Configuration for inserting an image into a worksheet.
 #[derive(Debug, Clone)]
 pub struct ImageConfig {
