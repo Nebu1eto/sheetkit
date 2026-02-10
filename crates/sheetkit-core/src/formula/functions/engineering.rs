@@ -457,7 +457,7 @@ pub fn fn_besseli(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     if n < 0 {
         return Ok(CellValue::Error("#NUM!".to_string()));
     }
-    Ok(CellValue::Number(bessel_i(x, n)))
+    Ok(CellValue::Number(bessel_i(x, n as f64)))
 }
 
 /// BESSELJ(x, n)
@@ -468,7 +468,7 @@ pub fn fn_besselj(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     if n < 0 {
         return Ok(CellValue::Error("#NUM!".to_string()));
     }
-    Ok(CellValue::Number(bessel_j(x, n)))
+    Ok(CellValue::Number(bessel_j(x, n as f64)))
 }
 
 /// BESSELK(x, n)
@@ -812,12 +812,31 @@ fn unit_to_base_factor(unit: &str) -> Option<(f64, &'static str)> {
     }
 }
 
-fn bessel_j(x: f64, n: i32) -> f64 {
+fn bessel_y(x: f64, n: i32) -> f64 {
+    // For integer orders, the generic formula divides by sin(n*pi) = 0.
+    // Use the limiting form via numerical differentiation instead.
+    let nf = n as f64;
+    let eps = 1e-8;
+    let y_plus = {
+        let v = nf + eps;
+        let pi = std::f64::consts::PI;
+        ((v * pi).cos() * bessel_j(x, v) - bessel_j(x, -v)) / (v * pi).sin()
+    };
+    let y_minus = {
+        let v = nf - eps;
+        let pi = std::f64::consts::PI;
+        ((v * pi).cos() * bessel_j(x, v) - bessel_j(x, -v)) / (v * pi).sin()
+    };
+    (y_plus + y_minus) / 2.0
+}
+
+/// Evaluate J_v(x) for real (non-integer) order v using the power series.
+fn bessel_j(x: f64, v: f64) -> f64 {
     let mut sum = 0.0;
     for m in 0_i32..50 {
         let sign = if m % 2 == 0 { 1.0 } else { -1.0 };
-        let numer = (x / 2.0).powi(2 * m + n);
-        let denom = factorial(m as u64) * factorial((m + n) as u64);
+        let numer = (x / 2.0).powf(2.0 * m as f64 + v);
+        let denom = gamma(m as f64 + 1.0) * gamma(m as f64 + v + 1.0);
         if denom == 0.0 || !numer.is_finite() {
             break;
         }
@@ -826,11 +845,29 @@ fn bessel_j(x: f64, n: i32) -> f64 {
     sum
 }
 
-fn bessel_i(x: f64, n: i32) -> f64 {
+fn bessel_k(x: f64, n: i32) -> f64 {
+    // For integer orders, the generic formula divides by sin(n*pi) = 0.
+    // Use the limiting form via numerical differentiation.
+    let nf = n as f64;
+    let eps = 1e-8;
+    let pi = std::f64::consts::PI;
+    let k_plus = {
+        let v = nf + eps;
+        pi / 2.0 * (bessel_i(x, -v) - bessel_i(x, v)) / (v * pi).sin()
+    };
+    let k_minus = {
+        let v = nf - eps;
+        pi / 2.0 * (bessel_i(x, -v) - bessel_i(x, v)) / (v * pi).sin()
+    };
+    (k_plus + k_minus) / 2.0
+}
+
+/// Evaluate I_v(x) for real (non-integer) order v using the power series.
+fn bessel_i(x: f64, v: f64) -> f64 {
     let mut sum = 0.0;
     for m in 0_i32..50 {
-        let numer = (x / 2.0).powi(2 * m + n);
-        let denom = factorial(m as u64) * factorial((m + n) as u64);
+        let numer = (x / 2.0).powf(2.0 * m as f64 + v);
+        let denom = gamma(m as f64 + 1.0) * gamma(m as f64 + v + 1.0);
         if denom == 0.0 || !numer.is_finite() {
             break;
         }
@@ -839,25 +876,31 @@ fn bessel_i(x: f64, n: i32) -> f64 {
     sum
 }
 
-fn bessel_y(x: f64, n: i32) -> f64 {
-    let pi = std::f64::consts::PI;
-    let cos_factor = (n as f64 * pi).cos();
-    (cos_factor * bessel_j(x, n) - bessel_j(x, -n)) / (n as f64 * pi).sin()
-}
-
-fn bessel_k(x: f64, n: i32) -> f64 {
-    let pi = std::f64::consts::PI;
-    let i_neg = bessel_i(x, -n);
-    let i_pos = bessel_i(x, n);
-    pi / 2.0 * (i_neg - i_pos) / (n as f64 * pi).sin()
-}
-
-fn factorial(n: u64) -> f64 {
-    let mut result = 1.0;
-    for i in 2..=n {
-        result *= i as f64;
+/// Lanczos approximation of the Gamma function for real arguments.
+fn gamma(z: f64) -> f64 {
+    if z < 0.5 {
+        let pi = std::f64::consts::PI;
+        return pi / ((pi * z).sin() * gamma(1.0 - z));
     }
-    result
+    let g = 7.0;
+    let c = [
+        0.99999999999980993,
+        676.5203681218851,
+        -1259.1392167224028,
+        771.32342877765313,
+        -176.61502916214059,
+        12.507343278686905,
+        -0.13857109526572012,
+        9.9843695780195716e-6,
+        1.5056327351493116e-7,
+    ];
+    let z = z - 1.0;
+    let mut x = c[0];
+    for (i, &coeff) in c.iter().enumerate().skip(1) {
+        x += coeff / (z + i as f64);
+    }
+    let t = z + g + 0.5;
+    (2.0 * std::f64::consts::PI).sqrt() * t.powf(z + 0.5) * (-t).exp() * x
 }
 
 #[cfg(test)]
@@ -1240,12 +1283,54 @@ mod tests {
     }
 
     #[test]
+    fn besselj_order_zero() {
+        // BESSELJ(0, 0) = 1.0
+        assert_approx(eval("BESSELJ(0,0)"), 1.0, 0.01);
+    }
+
+    #[test]
     fn besselk_zero_x() {
         assert_eq!(eval("BESSELK(0,1)"), CellValue::Error("#NUM!".to_string()));
     }
 
     #[test]
+    fn besselk_integer_order() {
+        // BESSELK(1.5, 1) should be finite (~0.2774)
+        let result = eval("BESSELK(1.5,1)");
+        if let CellValue::Number(v) = result {
+            assert!(v.is_finite(), "BESSELK(1.5,1) should be finite, got {v}");
+            assert!((v - 0.2774).abs() < 0.05);
+        } else {
+            panic!("expected number, got {result:?}");
+        }
+    }
+
+    #[test]
     fn bessely_zero_x() {
         assert_eq!(eval("BESSELY(0,1)"), CellValue::Error("#NUM!".to_string()));
+    }
+
+    #[test]
+    fn bessely_integer_order() {
+        // BESSELY(2.5, 1) should be finite (~0.1459)
+        let result = eval("BESSELY(2.5,1)");
+        if let CellValue::Number(v) = result {
+            assert!(v.is_finite(), "BESSELY(2.5,1) should be finite, got {v}");
+            assert!((v - 0.1459).abs() < 0.05);
+        } else {
+            panic!("expected number, got {result:?}");
+        }
+    }
+
+    #[test]
+    fn bessely_order_zero() {
+        // BESSELY(1, 0) should be finite (~0.0883)
+        let result = eval("BESSELY(1,0)");
+        if let CellValue::Number(v) = result {
+            assert!(v.is_finite(), "BESSELY(1,0) should be finite, got {v}");
+            assert!((v - 0.0883).abs() < 0.05);
+        } else {
+            panic!("expected number, got {result:?}");
+        }
     }
 }
