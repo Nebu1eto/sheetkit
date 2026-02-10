@@ -123,7 +123,7 @@ const names: string[] = wb.sheetNames;
 
 #### Buffer I/O
 
-파일 시스템을 거치지 않고 메모리 내 버퍼로 읽고 쓸 수 있다.
+파일 시스템을 거치지 않고 메모리 내 버퍼로 읽고 쓸 수 있습니다.
 
 **Rust:**
 

@@ -1116,11 +1116,11 @@ const wb3 = await Workbook.openWithPassword('encrypted.xlsx', 'secret');
 
 ### 성능 최적화
 
-대용량 시트를 읽을 때 SheetKit은 Buffer 기반 FFI 전송을 사용하여 메모리 사용량을 대폭 줄인다. Node.js 바인딩은 셀 데이터를 읽기 위한 세 가지 API를 제공하며, 사용 사례에 따라 적합한 API를 선택할 수 있다.
+대용량 시트를 읽을 때 SheetKit은 Buffer 기반 FFI 전송을 사용하여 메모리 사용량을 대폭 줄입니다. Node.js 바인딩은 셀 데이터를 읽기 위한 세 가지 API를 제공하며, 사용 사례에 따라 적합한 API를 선택할 수 있습니다.
 
 #### getRows() -- 기존 코드 호환
 
-가장 단순한 방법으로 기존 코드를 변경할 필요가 없다. 내부적으로 Buffer 전송을 사용하므로 이전 버전보다 메모리 효율이 높다.
+가장 단순한 방법으로 기존 코드를 변경할 필요가 없습니다. 내부적으로 Buffer 전송을 사용하므로 이전 버전보다 메모리 효율이 높습니다.
 
 ```typescript
 const wb = Workbook.openSync('large.xlsx');
@@ -1134,7 +1134,7 @@ for (const row of rows) {
 
 #### getRowsBuffer() + SheetData -- 대용량 시트에 최적
 
-`SheetData` 클래스를 사용하면 전체 시트를 디코딩하지 않고 필요한 셀만 O(1)로 접근할 수 있다. 대용량 시트에서 특정 영역만 읽을 때 가장 효율적이다.
+`SheetData` 클래스를 사용하면 전체 시트를 디코딩하지 않고 필요한 셀만 O(1)로 접근할 수 있습니다. 대용량 시트에서 특정 영역만 읽을 때 가장 효율적입니다.
 
 ```typescript
 import { SheetData } from '@sheetkit/node/sheet-data';
@@ -1158,7 +1158,7 @@ const data = sheet.toArray();
 
 #### getRowsBuffer() -- 커스텀 처리
 
-raw Buffer를 직접 사용하여 커스텀 디코더를 구현하거나 네트워크로 전송할 수 있다. Buffer 형식은 [아키텍처](../architecture.md#6-buffer-기반-ffi-전송) 문서를 참고한다.
+raw Buffer를 직접 사용하여 커스텀 디코더를 구현하거나 네트워크로 전송할 수 있습니다. Buffer 형식은 [아키텍처](../architecture.md#6-buffer-기반-ffi-전송) 문서를 참조하세요.
 
 ```typescript
 const buf = wb.getRowsBuffer('Sheet1');
@@ -1176,4 +1176,4 @@ const buf = wb.getRowsBuffer('Sheet1');
 | `getRowsBuffer()` + `SheetData` | ~50MB | Buffer만 유지, 필요 시 디코딩 |
 | `getRowsBuffer()` (raw) | ~30MB | Buffer만 유지, 디코딩 없음 |
 
-자세한 API 설명은 [API 레퍼런스](../api-reference/advanced.md#30-대량-데이터-전송)를 참조한다.
+자세한 API 설명은 [API 레퍼런스](../api-reference/advanced.md#30-대량-데이터-전송)를 참조하세요.

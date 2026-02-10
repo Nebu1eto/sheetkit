@@ -1,10 +1,10 @@
 ## 16. 틀 고정
 
-특정 행/열을 고정하여 스크롤 시에도 보이도록 하는 기능을 다룬다.
+특정 행/열을 고정하여 스크롤 시에도 보이도록 하는 기능을 다룹니다.
 
 ### `set_panes(sheet, cell)` / `setPanes(sheet, cell)`
 
-틀 고정을 설정한다. 셀 참조는 스크롤 가능한 영역의 왼쪽 상단 셀을 나타낸다.
+틀 고정을 설정합니다. 셀 참조는 스크롤 가능한 영역의 왼쪽 상단 셀을 나타냅니다.
 
 **Rust:**
 
@@ -29,7 +29,7 @@ wb.setPanes("Sheet1", "B2");  // freeze row 1 + column A
 
 ### `unset_panes(sheet)` / `unsetPanes(sheet)`
 
-틀 고정을 제거한다.
+틀 고정을 제거합니다.
 
 **Rust:**
 
@@ -45,7 +45,7 @@ wb.unsetPanes("Sheet1");
 
 ### `get_panes(sheet)` / `getPanes(sheet)`
 
-현재 틀 고정 설정을 조회한다. 설정이 없으면 None / null을 반환한다.
+현재 틀 고정 설정을 조회합니다. 설정이 없으면 None / null을 반환합니다.
 
 **Rust:**
 
@@ -68,11 +68,11 @@ if (pane) {
 
 ## 17. 페이지 레이아웃
 
-인쇄 관련 설정을 다룬다. 여백, 용지 크기, 방향, 배율, 머리글/바닥글, 인쇄 옵션, 페이지 나누기를 포함한다.
+인쇄 관련 설정을 다룹니다. 여백, 용지 크기, 방향, 배율, 머리글/바닥글, 인쇄 옵션, 페이지 나누기를 포함합니다.
 
 ### 여백 (Margins)
 
-`set_page_margins` / `get_page_margins`로 페이지 여백을 인치 단위로 설정하거나 조회한다.
+`set_page_margins` / `get_page_margins`로 페이지 여백을 인치 단위로 설정하거나 조회합니다.
 
 **Rust:**
 
@@ -108,7 +108,7 @@ const margins = wb.getPageMargins("Sheet1");
 
 ### 페이지 설정 (Page Setup)
 
-용지 크기, 방향, 배율, 페이지 맞춤 설정을 다룬다.
+용지 크기, 방향, 배율, 페이지 맞춤 설정을 다룹니다.
 
 **TypeScript:**
 
@@ -185,11 +185,11 @@ wb.remove_page_break("Sheet1", 20)?;
 
 ## 18. 정의된 이름
 
-워크북 내에서 셀 범위에 이름을 부여하는 기능을 다룬다. 워크북 범위(모든 시트에서 사용 가능) 또는 시트 범위(특정 시트에서만 사용 가능)로 정의할 수 있다.
+워크북 내에서 셀 범위에 이름을 부여하는 기능을 다룹니다. 워크북 범위(모든 시트에서 사용 가능) 또는 시트 범위(특정 시트에서만 사용 가능)로 정의할 수 있습니다.
 
 ### `set_defined_name` / `setDefinedName`
 
-정의된 이름을 추가하거나 업데이트한다. 동일한 이름과 범위를 가진 항목이 이미 존재하면 값과 주석이 업데이트된다(중복 생성 없음).
+정의된 이름을 추가하거나 업데이트합니다. 동일한 이름과 범위를 가진 항목이 이미 존재하면 값과 주석이 업데이트됩니다(중복 생성 없음).
 
 **Rust:**
 
@@ -218,7 +218,7 @@ wb.setDefinedName({
 
 ### `get_defined_name` / `getDefinedName`
 
-이름과 선택적 범위로 정의된 이름을 조회한다. 없으면 `None`/`null`을 반환한다.
+이름과 선택적 범위로 정의된 이름을 조회합니다. 없으면 `None`/`null`을 반환합니다.
 
 **Rust:**
 
@@ -246,7 +246,7 @@ const local = wb.getDefinedName("LocalRange", "Sheet1");
 
 ### `get_all_defined_names` / `getDefinedNames`
 
-워크북의 모든 정의된 이름을 반환한다.
+워크북의 모든 정의된 이름을 반환합니다.
 
 **Rust:**
 
@@ -268,7 +268,7 @@ for (const dn of names) {
 
 ### `delete_defined_name` / `deleteDefinedName`
 
-이름과 선택적 범위로 정의된 이름을 삭제한다. 해당 이름이 없으면 오류를 반환한다.
+이름과 선택적 범위로 정의된 이름을 삭제합니다. 해당 이름이 없으면 오류를 반환합니다.
 
 **Rust:**
 
@@ -293,17 +293,17 @@ wb.deleteDefinedName("LocalRange", "Sheet1");
 | `scope` | `DefinedNameScope` | `string?` | 시트 이름(시트 범위) 또는 `None`/`undefined`(워크북 범위) |
 | `comment` | `Option<String>` | `string?` | 선택적 주석 |
 
-> 정의된 이름에는 `\ / ? * [ ]` 문자를 사용할 수 없으며, 앞뒤 공백도 허용되지 않는다.
+> 정의된 이름에는 `\ / ? * [ ]` 문자를 사용할 수 없으며, 앞뒤 공백도 허용되지 않습니다.
 
 ---
 
 ## 19. 문서 속성
 
-워크북의 메타데이터를 설정하고 조회하는 기능을 다룬다. 핵심 속성, 앱 속성, 사용자 정의 속성의 세 가지 유형이 있다.
+워크북의 메타데이터를 설정하고 조회하는 기능을 다룹니다. 핵심 속성, 앱 속성, 사용자 정의 속성의 세 가지 유형이 있습니다.
 
 ### 핵심 속성 (Core Properties)
 
-제목, 작성자 등 표준 문서 메타데이터를 다룬다.
+제목, 작성자 등 표준 문서 메타데이터를 다룹니다.
 
 **Rust:**
 
@@ -365,7 +365,7 @@ const props = wb.getDocProps();
 
 ### 앱 속성 (App Properties)
 
-애플리케이션 관련 메타데이터를 다룬다.
+애플리케이션 관련 메타데이터를 다룹니다.
 
 **Rust:**
 
@@ -411,7 +411,7 @@ const appProps = wb.getAppProps();
 
 ### 사용자 정의 속성 (Custom Properties)
 
-키-값 쌍으로 사용자 정의 메타데이터를 저장한다. 값은 문자열, 숫자, 불리언 타입을 지원한다.
+키-값 쌍으로 사용자 정의 메타데이터를 저장합니다. 값은 문자열, 숫자, 불리언 타입을 지원합니다.
 
 **Rust:**
 
@@ -444,17 +444,17 @@ const val = wb.getCustomProperty("Department");
 const deleted: boolean = wb.deleteCustomProperty("Deprecated");
 ```
 
-> TypeScript에서 정수 값은 자동으로 Int로 변환되고, 소수점이 있는 숫자는 Float으로 저장된다.
+> TypeScript에서 정수 값은 자동으로 Int로 변환되고, 소수점이 있는 숫자는 Float으로 저장됩니다.
 
 ---
 
 ## 20. 워크북 보호
 
-워크북 구조(시트 추가/삭제/이름 변경)와 창 위치를 보호하는 기능을 다룬다. 선택적으로 비밀번호를 설정할 수 있다.
+워크북 구조(시트 추가/삭제/이름 변경)와 창 위치를 보호하는 기능을 다룹니다. 선택적으로 비밀번호를 설정할 수 있습니다.
 
 ### `protect_workbook(config)` / `protectWorkbook(config)`
 
-워크북 보호를 설정한다.
+워크북 보호를 설정합니다.
 
 **Rust:**
 
@@ -482,7 +482,7 @@ wb.protectWorkbook({
 
 ### `unprotect_workbook()` / `unprotectWorkbook()`
 
-워크북 보호를 해제한다.
+워크북 보호를 해제합니다.
 
 **Rust:**
 
@@ -498,7 +498,7 @@ wb.unprotectWorkbook();
 
 ### `is_workbook_protected()` / `isWorkbookProtected()`
 
-워크북이 보호되어 있는지 확인한다.
+워크북이 보호되어 있는지 확인합니다.
 
 **Rust:**
 
@@ -521,17 +521,17 @@ const isProtected: boolean = wb.isWorkbookProtected();
 | `lock_windows` / `lockWindows` | `bool` / `boolean?` | `false` | 창 위치/크기 변경 차단 |
 | `lock_revision` / `lockRevision` | `bool` / `boolean?` | `false` | 수정 추적 잠금 |
 
-> 비밀번호는 Excel의 레거시 16비트 해시 알고리즘으로 저장된다. 이 해시는 암호학적으로 안전하지 않다.
+> 비밀번호는 Excel의 레거시 16비트 해시 알고리즘으로 저장됩니다. 이 해시는 암호학적으로 안전하지 않습니다.
 
 ---
 
 ## 21. 시트 보호
 
-개별 시트의 편집을 제한하는 기능을 다룬다. 선택적으로 비밀번호를 설정하고 특정 작업을 허용할 수 있다.
+개별 시트의 편집을 제한하는 기능을 다룹니다. 선택적으로 비밀번호를 설정하고 특정 작업을 허용할 수 있습니다.
 
 ### `protect_sheet` / `protectSheet`
 
-시트를 보호한다. 모든 권한 불리언 값은 기본적으로 `false`(금지)이며, `true`로 설정하면 보호 상태에서도 해당 작업이 허용된다.
+시트를 보호합니다. 모든 권한 불리언 값은 기본적으로 `false`(금지)이며, `true`로 설정하면 보호 상태에서도 해당 작업이 허용됩니다.
 
 **Rust:**
 
@@ -563,7 +563,7 @@ wb.protectSheet("Sheet1");
 
 ### `unprotect_sheet` / `unprotectSheet`
 
-시트 보호를 해제한다.
+시트 보호를 해제합니다.
 
 **Rust:**
 
@@ -579,7 +579,7 @@ wb.unprotectSheet("Sheet1");
 
 ### `is_sheet_protected` / `isSheetProtected`
 
-시트가 보호되어 있는지 확인한다.
+시트가 보호되어 있는지 확인합니다.
 
 **Rust:**
 
@@ -612,17 +612,17 @@ const isProtected: boolean = wb.isSheetProtected("Sheet1");
 | `auto_filter` / `autoFilter` | `bool` | `boolean?` | `false` | 자동 필터 사용 허용 |
 | `pivot_tables` / `pivotTables` | `bool` | `boolean?` | `false` | 피벗 테이블 사용 허용 |
 
-> 비밀번호는 Excel의 레거시 16비트 해시 알고리즘으로 저장된다. 이 해시는 암호학적으로 안전하지 않다.
+> 비밀번호는 Excel의 레거시 16비트 해시 알고리즘으로 저장됩니다. 이 해시는 암호학적으로 안전하지 않습니다.
 
 ---
 
 ## 22. 수식 평가
 
-셀 수식을 파싱하고 실행하는 기능을 다룬다. nom 파서로 수식을 AST로 변환한 후 평가 엔진이 결과를 계산한다.
+셀 수식을 파싱하고 실행하는 기능을 다룹니다. nom 파서로 수식을 AST로 변환한 후 평가 엔진이 결과를 계산합니다.
 
 ### `set_cell_formula` / `setCellFormula`
 
-단일 셀에 수식을 설정한다.
+단일 셀에 수식을 설정합니다.
 
 **Rust:**
 
@@ -638,7 +638,7 @@ wb.setCellFormula("Sheet1", "C1", "SUM(A1:B1)");
 
 ### `fill_formula` / `fillFormula`
 
-단일 열 범위에 수식을 채우며, 각 행에 맞게 행 참조를 자동으로 조정한다. 절대 행 참조(`$1`)는 조정되지 않는다. 범위의 첫 번째 셀은 수식을 그대로 받고, 이후 셀들은 행 오프셋만큼 행 참조가 이동된다.
+단일 열 범위에 수식을 채우며, 각 행에 맞게 행 참조를 자동으로 조정합니다. 절대 행 참조(`$1`)는 조정되지 않습니다. 범위의 첫 번째 셀은 수식을 그대로 받고, 이후 셀들은 행 오프셋만큼 행 참조가 이동됩니다.
 
 **Rust:**
 
@@ -658,11 +658,11 @@ wb.fillFormula("Sheet1", "D2:D10", "SUM(A2:C2)");
 wb.fillFormula("Sheet1", "E2:E4", "$A$1*B2");
 ```
 
-> 단일 열 범위만 지원된다 (예: `"D2:D10"`). 다중 열 범위는 오류를 반환한다.
+> 단일 열 범위만 지원됩니다 (예: `"D2:D10"`). 다중 열 범위는 오류를 반환합니다.
 
 ### `evaluate_formula(sheet, formula)` / `evaluateFormula(sheet, formula)`
 
-주어진 시트 컨텍스트에서 수식 문자열을 평가하여 결과를 반환한다. 워크북의 현재 셀 데이터를 참조할 수 있다.
+주어진 시트 컨텍스트에서 수식 문자열을 평가하여 결과를 반환합니다. 워크북의 현재 셀 데이터를 참조할 수 있습니다.
 
 **Rust:**
 
@@ -686,7 +686,7 @@ const result = wb.evaluateFormula("Sheet1", "SUM(A1:A2)");
 
 ### `calculate_all()` / `calculateAll()`
 
-워크북의 모든 수식 셀을 재계산한다. 의존성 그래프를 구축하고 위상 정렬을 수행하여 올바른 순서로 평가한다.
+워크북의 모든 수식 셀을 재계산합니다. 의존성 그래프를 구축하고 위상 정렬을 수행하여 올바른 순서로 평가합니다.
 
 **Rust:**
 
@@ -700,7 +700,7 @@ wb.calculate_all()?;
 wb.calculateAll();
 ```
 
-> 순환 참조가 발견되면 오류가 발생한다. 최대 재귀 깊이는 256이다.
+> 순환 참조가 발견되면 오류가 발생합니다. 최대 재귀 깊이는 256입니다.
 
 ### 지원 함수 목록 (110개, 8개 카테고리)
 
@@ -858,11 +858,11 @@ wb.calculateAll();
 
 ## 23. 피벗 테이블
 
-피벗 테이블을 생성, 조회, 삭제하는 기능을 다룬다. 소스 데이터 범위로부터 행/열/데이터 필드를 지정하여 피벗 테이블을 구성한다.
+피벗 테이블을 생성, 조회, 삭제하는 기능을 다룹니다. 소스 데이터 범위로부터 행/열/데이터 필드를 지정하여 피벗 테이블을 구성합니다.
 
 ### `add_pivot_table(config)` / `addPivotTable(config)`
 
-피벗 테이블을 추가한다.
+피벗 테이블을 추가합니다.
 
 **Rust:**
 
@@ -920,11 +920,11 @@ wb.addPivotTable({
 });
 ```
 
-> Node.js에서 `data[].function`은 지원되는 집계 함수(`sum`, `count`, `average`, `max`, `min`, `product`, `countNums`, `stdDev`, `stdDevP`, `var`, `varP`)만 허용되며, 지원되지 않는 값은 오류를 반환한다.
+> Node.js에서 `data[].function`은 지원되는 집계 함수(`sum`, `count`, `average`, `max`, `min`, `product`, `countNums`, `stdDev`, `stdDevP`, `var`, `varP`)만 허용되며, 지원되지 않는 값은 오류를 반환합니다.
 
 ### `get_pivot_tables()` / `getPivotTables()`
 
-워크북의 모든 피벗 테이블 정보를 반환한다.
+워크북의 모든 피벗 테이블 정보를 반환합니다.
 
 **Rust:**
 
@@ -956,7 +956,7 @@ for (const t of tables) {
 
 ### `delete_pivot_table(name)` / `deletePivotTable(name)`
 
-이름으로 피벗 테이블을 삭제한다.
+이름으로 피벗 테이블을 삭제합니다.
 
 **Rust:**
 
@@ -1003,7 +1003,7 @@ wb.deletePivotTable("SalesPivot");
 
 ## 24. 스트림 라이터
 
-대용량 데이터를 메모리 효율적으로 쓰기 위한 스트리밍 API이다. 행은 오름차순으로만 쓸 수 있으며, 전체 워크시트 XML을 메모리에 구축하지 않고 직접 버퍼에 기록한다.
+대용량 데이터를 메모리 효율적으로 쓰기 위한 스트리밍 API입니다. 행은 오름차순으로만 쓸 수 있으며, 전체 워크시트 XML을 메모리에 구축하지 않고 직접 버퍼에 기록합니다.
 
 ### 사용 흐름
 
@@ -1077,31 +1077,31 @@ await wb.save("large_data.xlsx");
 
 #### `new_stream_writer(sheet_name)` / `newStreamWriter(sheetName)`
 
-새 시트를 위한 스트림 라이터를 생성한다.
+새 시트를 위한 스트림 라이터를 생성합니다.
 
 #### `write_row(row, values)` / `writeRow(row, values)`
 
-행 데이터를 기록한다. 행 번호는 1부터 시작하며 반드시 오름차순이어야 한다.
+행 데이터를 기록합니다. 행 번호는 1부터 시작하며 반드시 오름차순이어야 합니다.
 
 #### `set_col_width(col, width)` / `setColWidth(col, width)`
 
-열 너비를 설정한다. `col`은 1부터 시작하는 열 번호이다.
+열 너비를 설정합니다. `col`은 1부터 시작하는 열 번호입니다.
 
 #### `set_col_width_range(min_col, max_col, width)` / `setColWidthRange(minCol, maxCol, width)`
 
-열 범위의 너비를 한 번에 설정한다.
+열 범위의 너비를 한 번에 설정합니다.
 
 #### `add_merge_cell(reference)` / `addMergeCell(reference)`
 
-셀 병합을 추가한다 (예: "A1:C3").
+셀 병합을 추가합니다 (예: "A1:C3").
 
 #### `apply_stream_writer(writer)` / `applyStreamWriter(writer)`
 
-스트림 라이터의 결과를 워크북에 적용한다. 시트 인덱스를 반환한다. 적용 후 스트림 라이터는 소비(consumed)되어 더 이상 사용할 수 없다.
+스트림 라이터의 결과를 워크북에 적용합니다. 시트 인덱스를 반환합니다. 적용 후 스트림 라이터는 소비(consumed)되어 더 이상 사용할 수 없습니다.
 
 ### StreamRowOptions (Rust 전용)
 
-Rust에서는 `write_row_with_options`를 사용하여 행별 옵션을 지정할 수 있다.
+Rust에서는 `write_row_with_options`를 사용하여 행별 옵션을 지정할 수 있습니다.
 
 | 속성 | 타입 | 설명 |
 |------|------|------|
@@ -1114,11 +1114,11 @@ Rust에서는 `write_row_with_options`를 사용하여 행별 옵션을 지정�
 
 ## 25. 유틸리티 함수
 
-셀 참조 변환에 사용되는 유틸리티 함수들이다. Rust에서는 `sheetkit_core::utils::cell_ref` 모듈에서 제공한다.
+셀 참조 변환에 사용되는 유틸리티 함수들입니다. Rust에서는 `sheetkit_core::utils::cell_ref` 모듈에서 제공합니다.
 
 ### `cell_name_to_coordinates`
 
-A1 형식의 셀 참조를 (열, 행) 좌표로 변환한다. 열과 행 모두 1부터 시작한다.
+A1 형식의 셀 참조를 (열, 행) 좌표로 변환합니다. 열과 행 모두 1부터 시작합니다.
 
 **Rust:**
 
@@ -1134,7 +1134,7 @@ let (col, row) = cell_name_to_coordinates("$AB$100")?;
 
 ### `coordinates_to_cell_name`
 
-(열, 행) 좌표를 A1 형식의 셀 참조로 변환한다.
+(열, 행) 좌표를 A1 형식의 셀 참조로 변환합니다.
 
 **Rust:**
 
@@ -1150,7 +1150,7 @@ let name = coordinates_to_cell_name(28, 100)?;
 
 ### `column_name_to_number`
 
-열 이름을 1부터 시작하는 열 번호로 변환한다.
+열 이름을 1부터 시작하는 열 번호로 변환합니다.
 
 **Rust:**
 
@@ -1165,7 +1165,7 @@ assert_eq!(column_name_to_number("XFD")?, 16384);  // maximum column
 
 ### `column_number_to_name`
 
-1부터 시작하는 열 번호를 열 이름으로 변환한다.
+1부터 시작하는 열 번호를 열 이름으로 변환합니다.
 
 **Rust:**
 
@@ -1178,11 +1178,11 @@ assert_eq!(column_number_to_name(27)?, "AA");
 assert_eq!(column_number_to_name(16384)?, "XFD");
 ```
 
-> 유틸리티 함수는 현재 Rust 전용으로 제공된다. TypeScript에서는 문자열 기반 셀 참조("A1", "B2" 등)를 직접 사용한다.
+> 유틸리티 함수는 현재 Rust 전용으로 제공됩니다. TypeScript에서는 문자열 기반 셀 참조("A1", "B2" 등)를 직접 사용합니다.
 
 ### `is_date_num_fmt(num_fmt_id)` (Rust 전용)
 
-내장 숫자 서식 ID가 날짜/시간 서식인지 확인한다. ID 14-22 및 45-47에 대해 `true`를 반환한다.
+내장 숫자 서식 ID가 날짜/시간 서식인지 확인합니다. ID 14-22 및 45-47에 대해 `true`를 반환합니다.
 
 ```rust
 use sheetkit::is_date_num_fmt;
@@ -1195,7 +1195,7 @@ assert!(!is_date_num_fmt(49));  // @
 
 ### `is_date_format_code(code)` (Rust 전용)
 
-사용자 정의 숫자 서식 문자열이 날짜/시간 서식인지 확인한다. 따옴표로 감싸진 문자열과 이스케이프된 문자를 제외하고, 서식 코드에 날짜/시간 토큰(y, m, d, h, s)이 포함되어 있으면 `true`를 반환한다.
+사용자 정의 숫자 서식 문자열이 날짜/시간 서식인지 확인합니다. 따옴표로 감싸진 문자열과 이스케이프된 문자를 제외하고, 서식 코드에 날짜/시간 토큰(y, m, d, h, s)이 포함되어 있으면 `true`를 반환합니다.
 
 ```rust
 use sheetkit::is_date_format_code;
@@ -1225,9 +1225,9 @@ assert!(!is_date_format_code("0%"));
 
 ## 26. 스파크라인
 
-스파크라인은 워크시트 셀에 삽입되는 미니 차트이다. SheetKit은 Line, Column, Win/Loss 세 가지 스파크라인 유형을 지원한다. Excel은 36가지 스타일 프리셋(인덱스 0-35)을 정의한다.
+스파크라인은 워크시트 셀에 삽입되는 미니 차트입니다. SheetKit은 Line, Column, Win/Loss 세 가지 스파크라인 유형을 지원합니다. Excel은 36가지 스타일 프리셋(인덱스 0-35)을 정의합니다.
 
-스파크라인은 OOXML 패키지의 x14 워크시트 확장으로 저장되며 저장/열기 라운드트립을 통해 보존된다.
+스파크라인은 OOXML 패키지의 x14 워크시트 확장으로 저장되며 저장/열기 라운드트립을 통해 보존됩니다.
 
 ### 타입
 
@@ -1285,7 +1285,7 @@ const config = {
 
 ### Workbook.addSparkline / Workbook::add_sparkline
 
-워크시트에 스파크라인을 추가한다.
+워크시트에 스파크라인을 추가합니다.
 
 **Rust:**
 
@@ -1319,7 +1319,7 @@ wb.addSparkline('Sheet1', {
 
 ### Workbook.getSparklines / Workbook::get_sparklines
 
-워크시트의 모든 스파크라인을 조회한다.
+워크시트의 모든 스파크라인을 조회합니다.
 
 **Rust:**
 
@@ -1341,7 +1341,7 @@ for (const s of sparklines) {
 
 ### Workbook.removeSparkline / Workbook::remove_sparkline
 
-위치 셀 참조로 스파크라인을 제거한다.
+위치 셀 참조로 스파크라인을 제거합니다.
 
 **Rust:**
 
@@ -1357,13 +1357,13 @@ wb.removeSparkline('Sheet1', 'B1');
 
 ### 유효성 검사
 
-`validate_sparkline_config` 함수(Rust)는 다음을 확인한다:
+`validate_sparkline_config` 함수(Rust)는 다음을 확인합니다:
 - `data_range`가 비어 있지 않음
 - `location`이 비어 있지 않음
 - `line_weight`(설정된 경우) 양수 여부
 - `style`(설정된 경우) 0-35 범위 내 여부
 
-`add_sparkline` 호출 시 유효성 검사가 자동으로 적용된다.
+`add_sparkline` 호출 시 유효성 검사가 자동으로 적용됩니다.
 
 ```rust
 use sheetkit_core::sparkline::{SparklineConfig, validate_sparkline_config};
@@ -1374,7 +1374,7 @@ validate_sparkline_config(&config).unwrap(); // Ok
 
 ## 27. 테마 색상
 
-테마 색상 슬롯(dk1, lt1, dk2, lt2, accent1-6, hlink, folHlink)을 선택적 틴트 값과 함께 조회한다.
+테마 색상 슬롯(dk1, lt1, dk2, lt2, accent1-6, hlink, folHlink)을 선택적 틴트 값과 함께 조회합니다.
 
 ### Workbook.getThemeColor (Node.js) / Workbook::get_theme_color (Rust)
 
@@ -1498,11 +1498,11 @@ let style_id = wb.add_style(&Style {
 
 ## 28. 서식 있는 텍스트
 
-서식 있는 텍스트(Rich Text)를 사용하면 하나의 셀에 글꼴, 크기, 굵게, 기울임, 색상 등 서로 다른 서식을 가진 여러 텍스트 조각(run)을 넣을 수 있다.
+서식 있는 텍스트(Rich Text)를 사용하면 하나의 셀에 글꼴, 크기, 굵게, 기울임, 색상 등 서로 다른 서식을 가진 여러 텍스트 조각(run)을 넣을 수 있습니다.
 
 ### `RichTextRun` 타입
 
-각 run은 `RichTextRun`으로 기술된다.
+각 run은 `RichTextRun`으로 기술됩니다.
 
 **Rust:**
 
@@ -1532,7 +1532,7 @@ interface RichTextRun {
 
 ### `set_cell_rich_text` / `setCellRichText`
 
-셀에 여러 서식 run으로 구성된 서식 있는 텍스트를 설정한다.
+셀에 여러 서식 run으로 구성된 서식 있는 텍스트를 설정합니다.
 
 **Rust:**
 
@@ -1573,7 +1573,7 @@ wb.setCellRichText("Sheet1", "A1", [
 
 ### `get_cell_rich_text` / `getCellRichText`
 
-셀의 서식 있는 텍스트 run을 가져온다. 서식 있는 텍스트가 아닌 셀은 `None`/`null`을 반환한다.
+셀의 서식 있는 텍스트 run을 가져옵니다. 서식 있는 텍스트가 아닌 셀은 `None`/`null`을 반환합니다.
 
 **Rust:**
 
@@ -1599,7 +1599,7 @@ if (runs) {
 
 ### `CellValue::RichString` (Rust 전용)
 
-서식 있는 텍스트 셀은 `CellValue::RichString(Vec<RichTextRun>)` variant를 사용한다. `get_cell_value`로 읽으면 모든 run의 텍스트가 연결된 문자열로 표시된다.
+서식 있는 텍스트 셀은 `CellValue::RichString(Vec<RichTextRun>)` variant를 사용합니다. `get_cell_value`로 읽으면 모든 run의 텍스트가 연결된 문자열로 표시됩니다.
 
 ```rust
 match wb.get_cell_value("Sheet1", "A1")? {
@@ -1612,7 +1612,7 @@ match wb.get_cell_value("Sheet1", "A1")? {
 
 ### `rich_text_to_plain`
 
-서식 있는 텍스트 run 슬라이스에서 연결된 일반 텍스트를 추출하는 유틸리티 함수이다.
+서식 있는 텍스트 run 슬라이스에서 연결된 일반 텍스트를 추출하는 유틸리티 함수입니다.
 
 **Rust:**
 
@@ -1626,16 +1626,16 @@ let plain = rich_text_to_plain(&runs);
 
 ## 29. 파일 암호화
 
-파일 수준 암호화는 전체 .xlsx 파일을 비밀번호로 보호한다. 암호화된 파일은 일반 ZIP 아카이브가 아닌 OLE/CFB 복합 컨테이너를 사용한다. SheetKit은 다음을 지원한다:
+파일 수준 암호화는 전체 .xlsx 파일을 비밀번호로 보호합니다. 암호화된 파일은 일반 ZIP 아카이브가 아닌 OLE/CFB 복합 컨테이너를 사용합니다. SheetKit은 다음을 지원합니다:
 
 - **복호화**: Standard Encryption (Office 2007, AES-128-ECB + SHA-1) 및 Agile Encryption (Office 2010+, AES-256-CBC + SHA-512)
 - **암호화**: Agile Encryption (AES-256-CBC + SHA-512, 100,000회 반복)
 
-> Rust에서는 `encryption` feature가 필요하다: `sheetkit = { features = ["encryption"] }`. Node.js 바인딩에는 항상 암호화 지원이 포함된다.
+> Rust에서는 `encryption` feature가 필요합니다: `sheetkit = { features = ["encryption"] }`. Node.js 바인딩에는 항상 암호화 지원이 포함됩니다.
 
 ### `open_with_password(path, password)` / `openWithPasswordSync(path, password)`
 
-주어진 비밀번호로 암호화된 .xlsx 파일을 연다. 비밀번호가 틀리거나 지원하지 않는 암호화 방식이면 에러를 반환한다.
+주어진 비밀번호로 암호화된 .xlsx 파일을 엽니다. 비밀번호가 틀리거나 지원하지 않는 암호화 방식이면 에러를 반환합니다.
 
 **Rust:**
 
@@ -1655,7 +1655,7 @@ const wb2 = await Workbook.openWithPassword("encrypted.xlsx", "secret");
 
 ### `save_with_password(path, password)` / `saveWithPassword(path, password)`
 
-Agile Encryption을 사용하여 워크북을 암호화된 .xlsx 파일로 저장한다.
+Agile Encryption을 사용하여 워크북을 암호화된 .xlsx 파일로 저장합니다.
 
 **Rust:**
 
@@ -1683,7 +1683,7 @@ await wb.saveWithPassword("encrypted.xlsx", "secret");
 
 ### 암호화된 파일 감지
 
-`open()`이 암호화된 파일을 만나면 파싱을 시도하지 않고 `Error::FileEncrypted`를 반환한다. 이런 파일을 열려면 `open_with_password()`를 사용한다.
+`open()`이 암호화된 파일을 만나면 파싱을 시도하지 않고 `Error::FileEncrypted`를 반환합니다. 이런 파일을 열려면 `open_with_password()`를 사용합니다.
 
 **Rust:**
 
@@ -1724,11 +1724,11 @@ try {
 
 ## 30. 대량 데이터 전송
 
-SheetKit은 Node.js 바인딩에서 시트 데이터를 읽기 위한 세 가지 접근 방식을 제공하며, 각각 메모리와 성능 특성이 다르다. 세 가지 모두 내부적으로 동일한 바이너리 Buffer 프로토콜을 사용한다.
+SheetKit은 Node.js 바인딩에서 시트 데이터를 읽기 위한 세 가지 접근 방식을 제공하며, 각각 메모리와 성능 특성이 다릅니다. 세 가지 모두 내부적으로 동일한 바이너리 Buffer 프로토콜을 사용합니다.
 
 ### `getRows(sheet)` (TypeScript 전용)
 
-셀 데이터를 기존 `JsRowData[]` 형식으로 반환한다. 바이너리 Buffer가 투명하게 디코딩되므로 반환 타입은 이전 버전과 하위 호환된다. 각 행은 열 이름, 타입, 값을 가진 셀 객체 배열을 포함한다.
+셀 데이터를 기존 `JsRowData[]` 형식으로 반환합니다. 바이너리 Buffer가 투명하게 디코딩되므로 반환 타입은 이전 버전과 하위 호환됩니다. 각 행은 열 이름, 타입, 값을 가진 셀 객체 배열을 포함합니다.
 
 ```typescript
 const rows = wb.getRows('Sheet1');
@@ -1739,21 +1739,21 @@ for (const row of rows) {
 }
 ```
 
-가장 단순한 API로 기존 코드를 변경할 필요가 없다. Buffer 전송은 이전의 셀별 napi 객체 생성에 따른 FFI 오버헤드를 제거하지만, 디코더가 여전히 모든 셀에 대해 JS 객체를 생성한다.
+가장 단순한 API로 기존 코드를 변경할 필요가 없습니다. Buffer 전송은 이전의 셀별 napi 객체 생성에 따른 FFI 오버헤드를 제거하지만, 디코더가 여전히 모든 셀에 대해 JS 객체를 생성합니다.
 
 ### `getRowsBuffer(sheet)` (TypeScript 전용)
 
-Rust에서 생성된 raw 바이너리 `Buffer`를 반환한다. 가장 저수준 API이며, 커스텀 디코더에 데이터를 전달하거나, 네트워크로 전송하거나, `SheetData` 클래스와 함께 지연 접근에 사용할 때 유용하다.
+Rust에서 생성된 raw 바이너리 `Buffer`를 반환합니다. 가장 저수준 API이며, 커스텀 디코더에 데이터를 전달하거나, 네트워크로 전송하거나, `SheetData` 클래스와 함께 지연 접근에 사용할 때 유용합니다.
 
 ```typescript
 const buf: Buffer = wb.getRowsBuffer('Sheet1');
 ```
 
-Buffer는 [아키텍처](../architecture.md#6-buffer-기반-ffi-전송) 문서에 기술된 SKRD 바이너리 형식을 따른다.
+Buffer는 [아키텍처](../architecture.md#6-buffer-기반-ffi-전송) 문서에 기술된 SKRD 바이너리 형식을 따릅니다.
 
 ### `SheetData` 클래스 (TypeScript 전용)
 
-`SheetData` 클래스는 raw Buffer를 래핑하여 전체 시트를 디코딩하지 않고도 개별 셀이나 행에 O(1) 임의 접근을 제공한다. `@sheetkit/node/sheet-data`에서 임포트한다.
+`SheetData` 클래스는 raw Buffer를 래핑하여 전체 시트를 디코딩하지 않고도 개별 셀이나 행에 O(1) 임의 접근을 제공합니다. `@sheetkit/node/sheet-data`에서 임포트합니다.
 
 ```typescript
 import { SheetData } from '@sheetkit/node/sheet-data';
@@ -1773,7 +1773,7 @@ const sheet = new SheetData(buf);
 
 #### `getCell(row, col)`
 
-단일 셀의 디코딩된 값을 반환하며, 비어 있으면 `null`을 반환한다. 행과 열은 1부터 시작한다. 반환 타입은 셀 타입에 따라 달라진다: 숫자 및 날짜 셀은 `number`, 문자열/에러/수식 셀은 `string`, 불리언 셀은 `boolean`.
+단일 셀의 디코딩된 값을 반환하며, 비어 있으면 `null`을 반환합니다. 행과 열은 1부터 시작합니다. 반환 타입은 셀 타입에 따라 달라집니다: 숫자 및 날짜 셀은 `number`, 문자열/에러/수식 셀은 `string`, 불리언 셀은 `boolean`.
 
 ```typescript
 const value = sheet.getCell(1, 1);   // 1행, 1열 (A1)
@@ -1782,7 +1782,7 @@ const price = sheet.getCell(5, 3);   // 5행, 3열 (C5)
 
 #### `getCellType(row, col)`
 
-셀의 타입 이름을 문자열로 반환한다: `'empty'`, `'number'`, `'string'`, `'boolean'`, `'date'`, `'error'`, `'formula'`, 또는 `'string'` (서식 있는 텍스트).
+셀의 타입 이름을 문자열로 반환합니다: `'empty'`, `'number'`, `'string'`, `'boolean'`, `'date'`, `'error'`, `'formula'`, 또는 `'string'` (서식 있는 텍스트).
 
 ```typescript
 const type = sheet.getCellType(1, 1);  // 'string'
@@ -1793,7 +1793,7 @@ if (type === 'number') {
 
 #### `getRow(rowNum)`
 
-단일 행의 디코딩된 값 배열을 반환한다. 빈 셀은 `null`이다. 행 번호는 1부터 시작한다.
+단일 행의 디코딩된 값 배열을 반환합니다. 빈 셀은 `null`입니다. 행 번호는 1부터 시작합니다.
 
 ```typescript
 const row = sheet.getRow(1);  // [value, value, null, value, ...]
@@ -1801,7 +1801,7 @@ const row = sheet.getRow(1);  // [value, value, null, value, ...]
 
 #### `toArray()`
 
-모든 행을 디코딩하여 2차원 배열을 반환한다. 각 요소는 빈 행이면 `[]`이고, 그 외에는 빈 셀이 `null`인 값 배열이다.
+모든 행을 디코딩하여 2차원 배열을 반환합니다. 각 요소는 빈 행이면 `[]`이고, 그 외에는 빈 셀이 `null`인 값 배열입니다.
 
 ```typescript
 const data = sheet.toArray();
@@ -1812,7 +1812,7 @@ for (const row of data) {
 
 #### `rows()` (제너레이터)
 
-빈 행을 포함하여 각 행에 대해 `{ row: number, values: Array }` 객체를 yield한다. 스트리밍 방식의 반복에 유용하다.
+빈 행을 포함하여 각 행에 대해 `{ row: number, values: Array }` 객체를 yield합니다. 스트리밍 방식의 반복에 유용합니다.
 
 ```typescript
 for (const { row, values } of sheet.rows()) {
@@ -1822,7 +1822,7 @@ for (const { row, values } of sheet.rows()) {
 
 #### `columnName(colIndex)`
 
-0 기반 열 인덱스 (Buffer의 경계 사각형 기준)를 Excel 열 이름으로 변환한다.
+0 기반 열 인덱스 (Buffer의 경계 사각형 기준)를 Excel 열 이름으로 변환합니다.
 
 ```typescript
 sheet.columnName(0);   // 'A' (데이터가 A열에서 시작하는 경우)

@@ -1,10 +1,10 @@
 ## 4. 행 조작
 
-행의 삽입, 삭제, 복제 및 높이/가시성/아웃라인/스타일 설정을 다룬다. 모든 행 번호는 1부터 시작한다.
+행의 삽입, 삭제, 복제 및 높이/가시성/아웃라인/스타일 설정을 다룹니다. 모든 행 번호는 1부터 시작합니다.
 
 ### `insert_rows(sheet, start_row, count)` / `insertRows(sheet, startRow, count)`
 
-지정한 행 번호부터 빈 행을 삽입한다.
+지정한 행 번호부터 빈 행을 삽입합니다.
 
 **Rust:**
 
@@ -20,7 +20,7 @@ wb.insertRows("Sheet1", 3, 2);
 
 ### `remove_row(sheet, row)` / `removeRow(sheet, row)`
 
-행을 삭제한다. 아래쪽 행이 위로 이동한다.
+행을 삭제합니다. 아래쪽 행이 위로 이동합니다.
 
 **Rust:**
 
@@ -36,7 +36,7 @@ wb.removeRow("Sheet1", 5);
 
 ### `duplicate_row(sheet, row)` / `duplicateRow(sheet, row)`
 
-지정한 행을 바로 아래에 복제한다.
+지정한 행을 바로 아래에 복제합니다.
 
 **Rust:**
 
@@ -52,7 +52,7 @@ wb.duplicateRow("Sheet1", 2);
 
 ### `set_row_height` / `get_row_height`
 
-행 높이를 포인트 단위로 설정하거나 조회한다.
+행 높이를 포인트 단위로 설정하거나 조회합니다.
 
 **Rust:**
 
@@ -70,7 +70,7 @@ const height: number | null = wb.getRowHeight("Sheet1", 1);
 
 ### `set_row_visible` / `get_row_visible`
 
-행의 표시/숨김을 설정하거나 조회한다.
+행의 표시/숨김을 설정하거나 조회합니다.
 
 **Rust:**
 
@@ -88,7 +88,7 @@ const visible: boolean = wb.getRowVisible("Sheet1", 3);
 
 ### `set_row_outline_level` / `get_row_outline_level`
 
-행의 아웃라인(그룹) 수준을 설정하거나 조회한다. 범위는 0-7이다.
+행의 아웃라인(그룹) 수준을 설정하거나 조회합니다. 범위는 0-7입니다.
 
 **Rust:**
 
@@ -106,7 +106,7 @@ const level: number = wb.getRowOutlineLevel("Sheet1", 2);
 
 ### `set_row_style` / `get_row_style`
 
-행 전체에 스타일 ID를 적용하거나 조회한다.
+행 전체에 스타일 ID를 적용하거나 조회합니다.
 
 **Rust:**
 
@@ -128,11 +128,11 @@ const sid: number = wb.getRowStyle("Sheet1", 1);
 
 ## 5. 열 조작
 
-열의 너비, 가시성, 삽입, 삭제 및 아웃라인/스타일 설정을 다룬다. 열은 문자열("A", "B", "AA" 등)로 지정한다.
+열의 너비, 가시성, 삽입, 삭제 및 아웃라인/스타일 설정을 다룹니다. 열은 문자열("A", "B", "AA" 등)로 지정합니다.
 
 ### `set_col_width` / `get_col_width`
 
-열 너비를 문자 단위로 설정하거나 조회한다.
+열 너비를 문자 단위로 설정하거나 조회합니다.
 
 **Rust:**
 
@@ -150,7 +150,7 @@ const width: number | null = wb.getColWidth("Sheet1", "A");
 
 ### `set_col_visible` / `get_col_visible`
 
-열의 표시/숨김을 설정하거나 조회한다.
+열의 표시/숨김을 설정하거나 조회합니다.
 
 **Rust:**
 
@@ -168,7 +168,7 @@ const visible: boolean = wb.getColVisible("Sheet1", "B");
 
 ### `insert_cols(sheet, col, count)` / `insertCols(sheet, col, count)`
 
-지정한 열부터 빈 열을 삽입한다.
+지정한 열부터 빈 열을 삽입합니다.
 
 **Rust:**
 
@@ -184,7 +184,7 @@ wb.insertCols("Sheet1", "C", 3);
 
 ### `remove_col(sheet, col)` / `removeCol(sheet, col)`
 
-열을 삭제한다. 오른쪽 열이 왼쪽으로 이동한다.
+열을 삭제합니다. 오른쪽 열이 왼쪽으로 이동합니다.
 
 **Rust:**
 
@@ -200,7 +200,7 @@ wb.removeCol("Sheet1", "B");
 
 ### `set_col_outline_level` / `get_col_outline_level`
 
-열의 아웃라인(그룹) 수준을 설정하거나 조회한다. 범위는 0-7이다.
+열의 아웃라인(그룹) 수준을 설정하거나 조회합니다. 범위는 0-7입니다.
 
 **Rust:**
 
@@ -218,7 +218,7 @@ const level: number = wb.getColOutlineLevel("Sheet1", "A");
 
 ### `set_col_style` / `get_col_style`
 
-열 전체에 스타일 ID를 적용하거나 조회한다.
+열 전체에 스타일 ID를 적용하거나 조회합니다.
 
 **Rust:**
 
@@ -238,11 +238,11 @@ const sid: number = wb.getColStyle("Sheet1", "A");
 
 ## 6. 행/열 반복자
 
-시트의 모든 행 또는 열 데이터를 한 번에 조회한다. 데이터가 있는 행/열만 포함된다.
+시트의 모든 행 또는 열 데이터를 한 번에 조회합니다. 데이터가 있는 행/열만 포함됩니다.
 
 ### `get_rows(sheet)` / `getRows(sheet)`
 
-시트의 모든 행과 셀 데이터를 반환한다.
+시트의 모든 행과 셀 데이터를 반환합니다.
 
 **Rust:**
 
@@ -288,7 +288,7 @@ interface JsRowCell {
 
 ### `get_cols(sheet)` / `getCols(sheet)`
 
-시트의 모든 열과 셀 데이터를 반환한다.
+시트의 모든 열과 셀 데이터를 반환합니다.
 
 **Rust:**
 

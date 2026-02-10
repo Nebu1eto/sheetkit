@@ -1,10 +1,10 @@
 ## 3. 시트 관리
 
-시트의 생성, 삭제, 이름 변경, 복사 등 시트 단위 조작을 다룬다.
+시트의 생성, 삭제, 이름 변경, 복사 등 시트 단위 조작을 다룹니다.
 
 ### `new_sheet(name)` / `newSheet(name)`
 
-빈 시트를 추가한다. 0부터 시작하는 시트 인덱스를 반환한다.
+빈 시트를 추가합니다. 0부터 시작하는 시트 인덱스를 반환합니다.
 
 **Rust:**
 
@@ -20,7 +20,7 @@ const index: number = wb.newSheet("Data");
 
 ### `delete_sheet(name)` / `deleteSheet(name)`
 
-시트를 삭제한다. 마지막 시트는 삭제할 수 없다.
+시트를 삭제합니다. 마지막 시트는 삭제할 수 없습니다.
 
 **Rust:**
 
@@ -36,7 +36,7 @@ wb.deleteSheet("Data");
 
 ### `set_sheet_name(old, new)` / `setSheetName(old, new)`
 
-시트 이름을 변경한다.
+시트 이름을 변경합니다.
 
 **Rust:**
 
@@ -52,7 +52,7 @@ wb.setSheetName("Sheet1", "Summary");
 
 ### `copy_sheet(source, target)` / `copySheet(source, target)`
 
-기존 시트를 복사하여 새 시트를 생성한다. 새 시트의 0부터 시작하는 인덱스를 반환한다.
+기존 시트를 복사하여 새 시트를 생성합니다. 새 시트의 0부터 시작하는 인덱스를 반환합니다.
 
 **Rust:**
 
@@ -68,7 +68,7 @@ const index: number = wb.copySheet("Sheet1", "Sheet1_Copy");
 
 ### `get_sheet_index(name)` / `getSheetIndex(name)`
 
-시트의 0부터 시작하는 인덱스를 반환한다. 존재하지 않으면 None / null을 반환한다.
+시트의 0부터 시작하는 인덱스를 반환합니다. 존재하지 않으면 None / null을 반환합니다.
 
 **Rust:**
 
@@ -84,7 +84,7 @@ const index: number | null = wb.getSheetIndex("Sheet1");
 
 ### `get_active_sheet()` / `getActiveSheet()`
 
-현재 활성 시트의 이름을 반환한다.
+현재 활성 시트의 이름을 반환합니다.
 
 **Rust:**
 
@@ -100,7 +100,7 @@ const name: string = wb.getActiveSheet();
 
 ### `set_active_sheet(name)` / `setActiveSheet(name)`
 
-활성 시트를 변경한다.
+활성 시트를 변경합니다.
 
 **Rust:**
 

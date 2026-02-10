@@ -492,7 +492,7 @@ wb.addImage('Sheet1', {
 
 TypeScript 입력은 대소문자를 구분하지 않으며, 출력은 OOXML 규격에 맞는 camelCase를 사용: `"between"`, `"notBetween"`, `"lessThan"` 등.
 
-`sqref`는 유효한 셀 범위 참조여야 한다. `none` 이외의 타입에는 `formula1`이 필수이며, `between`/`notBetween` 연산자에는 `formula2`도 필수이다.
+`sqref`는 유효한 셀 범위 참조여야 합니다. `none` 이외의 타입에는 `formula1`이 필수이며, `between`/`notBetween` 연산자에는 `formula2`도 필수입니다.
 
 #### 오류 스타일
 

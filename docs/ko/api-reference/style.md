@@ -1,10 +1,10 @@
 ## 7. 스타일
 
-셀의 폰트, 채우기, 테두리, 정렬, 숫자 서식 및 보호 설정을 다룬다. 스타일은 먼저 `add_style`로 등록한 후 셀에 적용하는 2단계 방식이다. 동일한 스타일은 자동으로 중복 제거된다.
+셀의 폰트, 채우기, 테두리, 정렬, 숫자 서식 및 보호 설정을 다룹니다. 스타일은 먼저 `add_style`로 등록한 후 셀에 적용하는 2단계 방식입니다. 동일한 스타일은 자동으로 중복 제거됩니다.
 
 ### `add_style(style)` / `addStyle(style)`
 
-스타일을 등록하고 스타일 ID를 반환한다.
+스타일을 등록하고 스타일 ID를 반환합니다.
 
 **Rust:**
 
@@ -88,7 +88,7 @@ const styleId = wb.addStyle({
 
 ### `set_cell_style` / `get_cell_style`
 
-셀에 스타일 ID를 적용하거나 조회한다.
+셀에 스타일 ID를 적용하거나 조회합니다.
 
 **Rust:**
 
@@ -118,7 +118,7 @@ const sid: number | null = wb.getCellStyle("Sheet1", "A1");
 | `strikethrough` | `bool` / `boolean?` | 취소선 |
 | `color` | `StyleColor?` / `string?` | 폰트 색상 |
 
-> TypeScript에서 색상은 문자열로 지정한다: `"#RRGGBB"` (RGB), `"theme:N"` (테마), `"indexed:N"` (인덱스).
+> TypeScript에서 색상은 문자열로 지정합니다: `"#RRGGBB"` (RGB), `"theme:N"` (테마), `"indexed:N"` (인덱스).
 
 #### Fill (채우기)
 
@@ -149,7 +149,7 @@ const sid: number | null = wb.getCellStyle("Sheet1", "A1");
 | `bottom` | `BorderSideStyle?` | 아래쪽 테두리 |
 | `diagonal` | `BorderSideStyle?` | 대각선 테두리 |
 
-각 `BorderSideStyle`은 `style`과 `color`를 포함한다.
+각 `BorderSideStyle`은 `style`과 `color`를 포함합니다.
 
 **BorderLineStyle 값:**
 
@@ -186,11 +186,11 @@ const sid: number | null = wb.getCellStyle("Sheet1", "A1");
 
 #### NumFmt (숫자 서식)
 
-Rust에서는 `NumFmtStyle` 열거형을 사용한다:
+Rust에서는 `NumFmtStyle` 열거형을 사용합니다:
 - `NumFmtStyle::Builtin(id)` -- 내장 서식 ID 사용
 - `NumFmtStyle::Custom(code)` -- 사용자 정의 서식 코드
 
-TypeScript에서는 두 가지 방식으로 지정한다:
+TypeScript에서는 두 가지 방식으로 지정합니다:
 - `numFmtId: number` -- 내장 서식 ID
 - `customNumFmt: string` -- 사용자 정의 서식 코드 (우선 적용)
 
@@ -220,6 +220,6 @@ TypeScript에서는 두 가지 방식으로 지정한다:
 | `locked` | `bool` / `boolean?` | 셀 잠금 (기본값: true) |
 | `hidden` | `bool` / `boolean?` | 수식 숨기기 |
 
-> 셀 보호는 시트 보호가 활성화된 경우에만 효과가 있다.
+> 셀 보호는 시트 보호가 활성화된 경우에만 효과가 있습니다.
 
 ---

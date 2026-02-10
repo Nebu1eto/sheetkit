@@ -1,10 +1,10 @@
 ## 8. 셀 병합
 
-여러 셀을 하나로 병합하거나 해제하는 기능을 다룬다.
+여러 셀을 하나로 병합하거나 해제하는 기능을 다룹니다.
 
 ### `merge_cells(sheet, top_left, bottom_right)` / `mergeCells(sheet, topLeft, bottomRight)`
 
-셀 범위를 병합한다.
+셀 범위를 병합합니다.
 
 **Rust:**
 
@@ -20,7 +20,7 @@ wb.mergeCells("Sheet1", "A1", "D1");
 
 ### `unmerge_cell(sheet, reference)` / `unmergeCell(sheet, reference)`
 
-병합을 해제한다. 참조는 "A1:D1" 형식의 전체 범위 문자열이다.
+병합을 해제합니다. 참조는 "A1:D1" 형식의 전체 범위 문자열입니다.
 
 **Rust:**
 
@@ -36,7 +36,7 @@ wb.unmergeCell("Sheet1", "A1:D1");
 
 ### `get_merge_cells(sheet)` / `getMergeCells(sheet)`
 
-시트의 모든 병합 범위를 반환한다.
+시트의 모든 병합 범위를 반환합니다.
 
 **Rust:**
 
@@ -55,11 +55,11 @@ const merged: string[] = wb.getMergeCells("Sheet1");
 
 ## 9. 하이퍼링크
 
-셀에 하이퍼링크를 설정, 조회, 삭제하는 기능을 다룬다. 외부 URL, 내부 시트 참조, 이메일의 세 가지 유형을 지원한다.
+셀에 하이퍼링크를 설정, 조회, 삭제하는 기능을 다룹니다. 외부 URL, 내부 시트 참조, 이메일의 세 가지 유형을 지원합니다.
 
 ### `set_cell_hyperlink` / `setCellHyperlink`
 
-셀에 하이퍼링크를 설정한다.
+셀에 하이퍼링크를 설정합니다.
 
 **Rust:**
 
@@ -116,7 +116,7 @@ wb.setCellHyperlink("Sheet1", "A3", {
 
 ### `get_cell_hyperlink` / `getCellHyperlink`
 
-셀의 하이퍼링크 정보를 조회한다. 없으면 None / null을 반환한다.
+셀의 하이퍼링크 정보를 조회합니다. 없으면 None / null을 반환합니다.
 
 **Rust:**
 
@@ -148,7 +148,7 @@ interface JsHyperlinkInfo {
 
 ### `delete_cell_hyperlink` / `deleteCellHyperlink`
 
-셀의 하이퍼링크를 삭제한다.
+셀의 하이퍼링크를 삭제합니다.
 
 **Rust:**
 
@@ -162,17 +162,17 @@ wb.delete_cell_hyperlink("Sheet1", "A1")?;
 wb.deleteCellHyperlink("Sheet1", "A1");
 ```
 
-> 외부/이메일 하이퍼링크는 워크시트 .rels 파일에 저장되고, 내부 하이퍼링크는 location 속성만 사용한다.
+> 외부/이메일 하이퍼링크는 워크시트 .rels 파일에 저장되고, 내부 하이퍼링크는 location 속성만 사용합니다.
 
 ---
 
 ## 10. 차트
 
-43가지 차트 유형을 지원한다. `add_chart`로 시트에 차트를 추가하며, 셀 범위로 위치와 크기를 지정한다.
+43가지 차트 유형을 지원합니다. `add_chart`로 시트에 차트를 추가하며, 셀 범위로 위치와 크기를 지정합니다.
 
 ### `add_chart(sheet, from_cell, to_cell, config)` / `addChart(sheet, fromCell, toCell, config)`
 
-시트에 차트를 추가한다. `from_cell`은 차트의 왼쪽 상단, `to_cell`은 오른쪽 하단 위치를 나타낸다.
+시트에 차트를 추가합니다. `from_cell`은 차트의 왼쪽 상단, `to_cell`은 오른쪽 하단 위치를 나타냅니다.
 
 **Rust:**
 
@@ -225,7 +225,7 @@ wb.addChart("Sheet1", "E1", "L15", {
 
 ### View3DConfig 구조
 
-3D 차트의 시점을 설정한다. 3D 차트 유형에서는 지정하지 않으면 자동으로 기본값이 적용된다.
+3D 차트의 시점을 설정합니다. 3D 차트 유형에서는 지정하지 않으면 자동으로 기본값이 적용됩니다.
 
 | 속성 | 타입 | 설명 |
 |------|------|------|
@@ -334,11 +334,11 @@ wb.addChart("Sheet1", "E1", "L15", {
 
 ## 11. 이미지
 
-시트에 이미지를 삽입하는 기능을 다룬다. 11가지 형식을 지원한다: PNG, JPEG, GIF, BMP, ICO, TIFF, SVG, EMF, EMZ, WMF, WMZ.
+시트에 이미지를 삽입하는 기능을 다룹니다. 11가지 형식을 지원합니다: PNG, JPEG, GIF, BMP, ICO, TIFF, SVG, EMF, EMZ, WMF, WMZ.
 
 ### `add_image(sheet, config)` / `addImage(sheet, config)`
 
-시트에 이미지를 추가한다.
+시트에 이미지를 추가합니다.
 
 **Rust:**
 
@@ -384,11 +384,11 @@ wb.addImage("Sheet1", {
 
 ## 12. 데이터 유효성 검사
 
-셀에 입력 제한 규칙을 설정하여 사용자 입력을 검증하는 기능을 다룬다.
+셀에 입력 제한 규칙을 설정하여 사용자 입력을 검증하는 기능을 다룹니다.
 
 ### `add_data_validation` / `addDataValidation`
 
-데이터 유효성 검사 규칙을 추가한다.
+데이터 유효성 검사 규칙을 추가합니다.
 
 **Rust:**
 
@@ -460,11 +460,11 @@ wb.addDataValidation("Sheet1", {
 });
 ```
 
-> Node.js에서 `validationType`은 지원되는 값(`none`, `list`, `whole`, `decimal`, `date`, `time`, `textLength`, `custom`)만 허용되며, 지원되지 않는 값은 오류를 반환한다. `sqref`는 유효한 셀 범위여야 한다(예: `"A1:B10"`). `none` 이외의 타입에는 `formula1`이 필수이며, `between`/`notBetween` 연산자에는 `formula2`도 필수이다.
+> Node.js에서 `validationType`은 지원되는 값(`none`, `list`, `whole`, `decimal`, `date`, `time`, `textLength`, `custom`)만 허용되며, 지원되지 않는 값은 오류를 반환합니다. `sqref`는 유효한 셀 범위여야 합니다(예: `"A1:B10"`). `none` 이외의 타입에는 `formula1`이 필수이며, `between`/`notBetween` 연산자에는 `formula2`도 필수입니다.
 
 ### `get_data_validations` / `getDataValidations`
 
-시트의 모든 유효성 검사 규칙을 반환한다.
+시트의 모든 유효성 검사 규칙을 반환합니다.
 
 **Rust:**
 
@@ -480,7 +480,7 @@ const validations = wb.getDataValidations("Sheet1");
 
 ### `remove_data_validation` / `removeDataValidation`
 
-sqref로 유효성 검사를 제거한다.
+sqref로 유효성 검사를 제거합니다.
 
 **Rust:**
 
@@ -509,7 +509,7 @@ wb.removeDataValidation("Sheet1", "A1:A100");
 
 ### 연산자 (8종)
 
-TypeScript 입력은 대소문자를 구분하지 않으며, 출력은 OOXML 규격에 맞는 camelCase를 사용한다:
+TypeScript 입력은 대소문자를 구분하지 않으며, 출력은 OOXML 규격에 맞는 camelCase를 사용합니다:
 
 | 값 | 설명 |
 |----|------|
@@ -534,15 +534,15 @@ TypeScript 입력은 대소문자를 구분하지 않으며, 출력은 OOXML 규
 
 ## 13. 코멘트
 
-셀에 메모(코멘트)를 추가, 조회, 삭제하는 기능을 다룬다.
+셀에 메모(코멘트)를 추가, 조회, 삭제하는 기능을 다룹니다.
 
-코멘트를 추가하면 SheetKit이 자동으로 VML(Vector Markup Language) 드로잉 파트(`xl/drawings/vmlDrawingN.vml`)와 워크시트 XML의 `<legacyDrawing>` 참조를 생성한다. 이를 통해 Excel UI에서 코멘트 팝업 상자가 올바르게 렌더링된다.
+코멘트를 추가하면 SheetKit이 자동으로 VML(Vector Markup Language) 드로잉 파트(`xl/drawings/vmlDrawingN.vml`)와 워크시트 XML의 `<legacyDrawing>` 참조를 생성합니다. 이를 통해 Excel UI에서 코멘트 팝업 상자가 올바르게 렌더링됩니다.
 
-기존 VML 코멘트 드로잉이 포함된 워크북을 열면 SheetKit이 저장/열기 사이클을 통해 VML 파트를 보존한다. 시트의 모든 코멘트가 제거되면 관련 VML 파트와 관계가 자동으로 정리된다.
+기존 VML 코멘트 드로잉이 포함된 워크북을 열면 SheetKit이 저장/열기 사이클을 통해 VML 파트를 보존합니다. 시트의 모든 코멘트가 제거되면 관련 VML 파트와 관계가 자동으로 정리됩니다.
 
 ### `add_comment` / `addComment`
 
-셀에 코멘트를 추가한다.
+셀에 코멘트를 추가합니다.
 
 **Rust:**
 
@@ -568,7 +568,7 @@ wb.addComment("Sheet1", {
 
 ### `get_comments` / `getComments`
 
-시트의 모든 코멘트를 반환한다.
+시트의 모든 코멘트를 반환합니다.
 
 **Rust:**
 
@@ -590,7 +590,7 @@ for (const c of comments) {
 
 ### `remove_comment` / `removeComment`
 
-셀의 코멘트를 삭제한다.
+셀의 코멘트를 삭제합니다.
 
 **Rust:**
 
@@ -606,7 +606,7 @@ wb.removeComment("Sheet1", "A1");
 
 ### VML 호환성
 
-Excel은 코멘트 노트 상자를 렌더링하기 위해 VML(Vector Markup Language)을 사용한다. SheetKit은 다음을 자동으로 처리한다:
+Excel은 코멘트 노트 상자를 렌더링하기 위해 VML(Vector Markup Language)을 사용합니다. SheetKit은 다음을 자동으로 처리합니다:
 
 - 새 코멘트 생성 시 최소한의 VML 드로잉 파트 생성
 - 디스크에서 열린 워크북의 기존 VML 파트 보존
@@ -614,17 +614,17 @@ Excel은 코멘트 노트 상자를 렌더링하기 위해 VML(Vector Markup Lan
 - VML 파트에 대한 적절한 콘텐츠 타입 항목 추가
 - 시트의 모든 코멘트가 제거될 때 VML 파트 및 관계 정리
 
-추가적인 API 호출이 필요하지 않다. VML 처리는 사용자에게 투명하게 수행된다.
+추가적인 API 호출이 필요하지 않습니다. VML 처리는 사용자에게 투명하게 수행됩니다.
 
 ---
 
 ## 14. 자동 필터
 
-데이터 범위에 자동 필터를 설정하거나 제거하는 기능을 다룬다.
+데이터 범위에 자동 필터를 설정하거나 제거하는 기능을 다룹니다.
 
 ### `set_auto_filter(sheet, range)` / `setAutoFilter(sheet, range)`
 
-셀 범위에 자동 필터를 설정한다.
+셀 범위에 자동 필터를 설정합니다.
 
 **Rust:**
 
@@ -640,7 +640,7 @@ wb.setAutoFilter("Sheet1", "A1:D10");
 
 ### `remove_auto_filter(sheet)` / `removeAutoFilter(sheet)`
 
-시트의 자동 필터를 제거한다.
+시트의 자동 필터를 제거합니다.
 
 **Rust:**
 
@@ -658,11 +658,11 @@ wb.removeAutoFilter("Sheet1");
 
 ## 15. 조건부 서식
 
-셀 값이나 수식에 따라 자동으로 서식을 적용하는 17가지 규칙 유형을 지원한다.
+셀 값이나 수식에 따라 자동으로 서식을 적용하는 17가지 규칙 유형을 지원합니다.
 
 ### `set_conditional_format` / `setConditionalFormat`
 
-셀 범위에 조건부 서식 규칙을 설정한다.
+셀 범위에 조건부 서식 규칙을 설정합니다.
 
 **Rust:**
 
@@ -763,7 +763,7 @@ wb.setConditionalFormat("Sheet1", "D1:D100", [
 
 ### `get_conditional_formats` / `getConditionalFormats`
 
-시트의 모든 조건부 서식 규칙을 반환한다.
+시트의 모든 조건부 서식 규칙을 반환합니다.
 
 **Rust:**
 
@@ -785,7 +785,7 @@ for (const entry of formats) {
 
 ### `delete_conditional_format` / `deleteConditionalFormat`
 
-특정 셀 범위의 조건부 서식을 삭제한다.
+특정 셀 범위의 조건부 서식을 삭제합니다.
 
 **Rust:**
 

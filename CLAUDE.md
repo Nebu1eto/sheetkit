@@ -62,6 +62,7 @@ Always verify builds, lints, and formatting pass before declaring work complete.
 - All code must be written in English. This includes variable names, string literals, comments, and example data values.
 - Even in example or demo code, use English for all content (e.g., "Name", "Sales", "Employee List" instead of localized text).
 - Documentation prose may be in other languages (e.g., Korean guide), but all code blocks within documentation must use English.
+- Korean documentation (`docs/ko/`, `README.ko.md`) must use concise polite speech consistently: all sentences end with "~합니다/~됩니다/~입니다/~세요" forms. Never use plain/해체 endings like "~이다", "~한다", "~된다" in prose. Commonly used technical terms (serialize, buffer, FFI, SST, AST, enum, trait, crate, facade, napi, callback, offset, payload) should be kept as-is without forced translation.
 
 ### General
 

@@ -1,6 +1,6 @@
 ## 2. 셀 조작
 
-셀 값의 읽기와 쓰기를 다룬다. 셀 값은 다양한 타입으로 표현된다.
+셀 값의 읽기와 쓰기를 다룹니다. 셀 값은 다양한 타입으로 표현됩니다.
 
 ### CellValue 타입
 
@@ -17,7 +17,7 @@
 
 ### DateValue (TypeScript)
 
-날짜 셀을 표현하는 객체이다.
+날짜 셀을 표현하는 객체입니다.
 
 ```typescript
 interface DateValue {
@@ -27,11 +27,11 @@ interface DateValue {
 }
 ```
 
-> Excel은 내부적으로 날짜를 시리얼 번호(정수부: 날짜, 소수부: 시각)로 저장한다. 1900년 윤년 버그가 포함되어 있으며 SheetKit은 이를 올바르게 처리한다.
+> Excel은 내부적으로 날짜를 시리얼 번호(정수부: 날짜, 소수부: 시각)로 저장합니다. 1900년 윤년 버그가 포함되어 있으며 SheetKit은 이를 올바르게 처리합니다.
 
 ### `get_cell_value(sheet, cell)` / `getCellValue(sheet, cell)`
 
-지정한 셀의 값을 읽는다.
+지정한 셀의 값을 읽습니다.
 
 **Rust:**
 
@@ -57,7 +57,7 @@ const value = wb.getCellValue("Sheet1", "A1");
 
 ### `set_cell_value(sheet, cell, value)` / `setCellValue(sheet, cell, value)`
 
-셀에 값을 설정한다. null을 전달하면 셀이 비워진다.
+셀에 값을 설정합니다. null을 전달하면 셀이 비워집니다.
 
 **Rust:**
 
@@ -93,11 +93,11 @@ wb.setCellValue("Sheet1", "D1", null);      // clear
 wb.setCellValue("Sheet1", "E1", { type: "date", serial: 45458 });
 ```
 
-> 시트 이름이 존재하지 않거나 셀 참조가 유효하지 않으면 오류가 발생한다.
+> 시트 이름이 존재하지 않거나 셀 참조가 유효하지 않으면 오류가 발생합니다.
 
 ### `get_occupied_cells(sheet)` (Rust 전용)
 
-시트에서 값이 있는 모든 셀의 `(col, row)` 좌표 쌍을 반환한다. 두 값 모두 1부터 시작한다. 전체 그리드를 탐색하지 않고 데이터가 존재하는 셀만 순회할 때 유용하다.
+시트에서 값이 있는 모든 셀의 `(col, row)` 좌표 쌍을 반환합니다. 두 값 모두 1부터 시작합니다. 전체 그리드를 탐색하지 않고 데이터가 존재하는 셀만 순회할 때 유용합니다.
 
 ```rust
 let cells = wb.get_occupied_cells("Sheet1")?;
