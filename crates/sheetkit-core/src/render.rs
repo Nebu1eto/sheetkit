@@ -97,6 +97,13 @@ pub fn render_to_svg(
     stylesheet: &StyleSheet,
     options: &RenderOptions,
 ) -> Result<String> {
+    if options.scale <= 0.0 {
+        return Err(Error::InvalidArgument(format!(
+            "render scale must be positive, got {}",
+            options.scale
+        )));
+    }
+
     let (min_col, min_row, max_col, max_row) = compute_range(ws, sst, options)?;
 
     let col_widths = compute_col_widths(ws, min_col, max_col);
@@ -503,11 +510,15 @@ fn render_cell_text(
                 let hex = style_color_to_hex(color);
                 attrs.push_str(&format!(r#" fill="{hex}""#));
             }
+            let mut decorations = Vec::new();
             if f.underline {
-                attrs.push_str(r#" text-decoration="underline""#);
+                decorations.push("underline");
             }
             if f.strikethrough {
-                attrs.push_str(r#" text-decoration="line-through""#);
+                decorations.push("line-through");
+            }
+            if !decorations.is_empty() {
+                attrs.push_str(&format!(r#" text-decoration="{}""#, decorations.join(" ")));
             }
         }
 
@@ -579,14 +590,19 @@ fn find_cell_value(ws: &WorksheetXml, sst: &SharedStringTable, col: u32, row: u3
 }
 
 /// Convert a StyleColor to a CSS hex color string.
+///
+/// Handles several input formats: 8-char ARGB (`FF000000`), 6-char RGB
+/// (`000000`), and values already prefixed with `#`. Always returns a
+/// `#RRGGBB` string suitable for SVG attributes.
 fn style_color_to_hex(color: &StyleColor) -> String {
     match color {
         StyleColor::Rgb(rgb) => {
-            if rgb.len() == 8 {
-                // ARGB format (e.g. "FFFF0000") -> "#FF0000"
-                format!("#{}", &rgb[2..])
+            let stripped = rgb.strip_prefix('#').unwrap_or(rgb);
+            if stripped.len() == 8 {
+                // ARGB format (e.g. "FF000000") -> "#000000"
+                format!("#{}", &stripped[2..])
             } else {
-                format!("#{rgb}")
+                format!("#{stripped}")
             }
         }
         StyleColor::Theme(_) | StyleColor::Indexed(_) => "#000000".to_string(),
@@ -1198,6 +1214,89 @@ mod tests {
         assert!(
             svg.contains("text-decoration=\"line-through\""),
             "SVG should contain strikethrough text"
+        );
+    }
+
+    #[test]
+    fn test_style_color_to_hex_already_prefixed() {
+        let color = StyleColor::Rgb("#FF0000".to_string());
+        assert_eq!(style_color_to_hex(&color), "#FF0000");
+    }
+
+    #[test]
+    fn test_style_color_to_hex_prefixed_argb() {
+        let color = StyleColor::Rgb("#FFFF0000".to_string());
+        assert_eq!(style_color_to_hex(&color), "#FF0000");
+    }
+
+    #[test]
+    fn test_style_color_to_hex_no_double_hash() {
+        let color = StyleColor::Rgb("#00FF00".to_string());
+        let hex = style_color_to_hex(&color);
+        assert!(
+            !hex.starts_with("##"),
+            "should not produce double hash, got: {hex}"
+        );
+        assert_eq!(hex, "#00FF00");
+    }
+
+    #[test]
+    fn test_render_underline_and_strikethrough_merged() {
+        let (mut ws, sst) = simple_ws_and_sst();
+        let mut ss = StyleSheet::default();
+
+        let style = StyleBuilder::new()
+            .underline(true)
+            .strikethrough(true)
+            .build();
+        let style_id = add_style(&mut ss, &style).unwrap();
+
+        ws.sheet_data.rows[0].cells[0].s = Some(style_id);
+
+        let opts = default_options("Sheet1");
+        let svg = render_to_svg(&ws, &sst, &ss, &opts).unwrap();
+
+        assert!(
+            svg.contains(r#"text-decoration="underline line-through""#),
+            "both decorations should be merged in one attribute"
+        );
+        let count = svg.matches("text-decoration=").count();
+        // Only one text-decoration attribute for the cell A1 text element
+        assert_eq!(
+            count, 1,
+            "text-decoration should appear exactly once, found {count}"
+        );
+    }
+
+    #[test]
+    fn test_render_scale_zero_returns_error() {
+        let (ws, sst) = simple_ws_and_sst();
+        let ss = StyleSheet::default();
+        let mut opts = default_options("Sheet1");
+        opts.scale = 0.0;
+
+        let result = render_to_svg(&ws, &sst, &ss, &opts);
+        assert!(result.is_err(), "scale=0 should return an error");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("scale must be positive"),
+            "error should mention scale: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn test_render_scale_negative_returns_error() {
+        let (ws, sst) = simple_ws_and_sst();
+        let ss = StyleSheet::default();
+        let mut opts = default_options("Sheet1");
+        opts.scale = -1.0;
+
+        let result = render_to_svg(&ws, &sst, &ss, &opts);
+        assert!(result.is_err(), "negative scale should return an error");
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("scale must be positive"),
+            "error should mention scale: {err_msg}"
         );
     }
 }
