@@ -53,6 +53,9 @@ pub struct TwoCellAnchor {
     #[serde(rename = "xdr:pic", skip_serializing_if = "Option::is_none")]
     pub pic: Option<Picture>,
 
+    #[serde(rename = "xdr:sp", skip_serializing_if = "Option::is_none")]
+    pub shape: Option<Shape>,
+
     #[serde(rename = "xdr:clientData")]
     pub client_data: ClientData,
 }
@@ -263,6 +266,121 @@ pub struct SpPr {
 pub struct PrstGeom {
     #[serde(rename = "@prst")]
     pub prst: String,
+}
+
+/// Shape element (`<xdr:sp>`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Shape {
+    #[serde(rename = "xdr:nvSpPr")]
+    pub nv_sp_pr: NvSpPr,
+
+    #[serde(rename = "xdr:spPr")]
+    pub sp_pr: ShapeSpPr,
+
+    #[serde(rename = "xdr:txBody", skip_serializing_if = "Option::is_none")]
+    pub tx_body: Option<TxBody>,
+}
+
+/// Non-visual shape properties.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct NvSpPr {
+    #[serde(rename = "xdr:cNvPr")]
+    pub c_nv_pr: CNvPr,
+
+    #[serde(rename = "xdr:cNvSpPr")]
+    pub c_nv_sp_pr: CNvSpPr,
+}
+
+/// Non-visual shape-specific properties (empty marker).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CNvSpPr {}
+
+/// Shape properties with optional fill and line.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ShapeSpPr {
+    #[serde(rename = "a:xfrm")]
+    pub xfrm: Xfrm,
+
+    #[serde(rename = "a:prstGeom")]
+    pub prst_geom: PrstGeom,
+
+    #[serde(rename = "a:solidFill", skip_serializing_if = "Option::is_none")]
+    pub solid_fill: Option<SolidFill>,
+
+    #[serde(rename = "a:ln", skip_serializing_if = "Option::is_none")]
+    pub ln: Option<Ln>,
+}
+
+/// Solid fill with an sRGB color.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SolidFill {
+    #[serde(rename = "a:srgbClr")]
+    pub srgb_clr: SrgbClr,
+}
+
+/// sRGB color value.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SrgbClr {
+    #[serde(rename = "@val")]
+    pub val: String,
+}
+
+/// Line properties.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Ln {
+    #[serde(rename = "@w", skip_serializing_if = "Option::is_none")]
+    pub w: Option<u64>,
+
+    #[serde(rename = "a:solidFill", skip_serializing_if = "Option::is_none")]
+    pub solid_fill: Option<SolidFill>,
+}
+
+/// Text body element.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TxBody {
+    #[serde(rename = "a:bodyPr")]
+    pub body_pr: BodyPr,
+
+    #[serde(rename = "a:lstStyle")]
+    pub lst_style: LstStyle,
+
+    #[serde(rename = "a:p")]
+    pub paragraphs: Vec<Paragraph>,
+}
+
+/// Body properties for text (empty marker with optional attributes).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BodyPr {}
+
+/// List style for text (empty marker).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LstStyle {}
+
+/// A text paragraph.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Paragraph {
+    #[serde(rename = "a:r", default, skip_serializing_if = "Vec::is_empty")]
+    pub runs: Vec<TextRun>,
+}
+
+/// A text run within a paragraph.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TextRun {
+    #[serde(rename = "a:rPr", skip_serializing_if = "Option::is_none")]
+    pub r_pr: Option<RunProperties>,
+
+    #[serde(rename = "a:t")]
+    pub t: String,
+}
+
+/// Run-level text properties.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RunProperties {
+    #[serde(rename = "@lang", skip_serializing_if = "Option::is_none")]
+    pub lang: Option<String>,
+
+    #[serde(rename = "@sz", skip_serializing_if = "Option::is_none")]
+    pub sz: Option<u32>,
 }
 
 /// Client data (empty element required by spec).

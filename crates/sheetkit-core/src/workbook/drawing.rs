@@ -78,6 +78,30 @@ impl Workbook {
         Ok(())
     }
 
+    /// Add a shape to a sheet, anchored between two cells.
+    ///
+    /// The shape spans from `config.from_cell` to `config.to_cell`. Unlike
+    /// charts and images, shapes do not reference external parts and therefore
+    /// do not need a relationship entry.
+    pub fn add_shape(&mut self, sheet: &str, config: &crate::shape::ShapeConfig) -> Result<()> {
+        let sheet_idx =
+            crate::sheet::find_sheet_index(&self.worksheets, sheet).ok_or_else(|| {
+                Error::SheetNotFound {
+                    name: sheet.to_string(),
+                }
+            })?;
+
+        let drawing_idx = self.ensure_drawing_for_sheet(sheet_idx);
+
+        let drawing = &mut self.drawings[drawing_idx].1;
+        let shape_id = (drawing.one_cell_anchors.len() + drawing.two_cell_anchors.len() + 2) as u32;
+
+        let anchor = crate::shape::build_shape_anchor(config, shape_id)?;
+        drawing.two_cell_anchors.push(anchor);
+
+        Ok(())
+    }
+
     /// Add an image to a sheet from bytes.
     ///
     /// The image is anchored to the cell specified in `config.from_cell`.
@@ -569,6 +593,107 @@ mod tests {
         assert!(ext_defaults.contains(&"bmp"));
         assert!(ext_defaults.contains(&"svg"));
         assert!(ext_defaults.contains(&"wmf"));
+    }
+
+    #[test]
+    fn test_add_shape_basic() {
+        use crate::shape::{ShapeConfig, ShapeType};
+        let mut wb = Workbook::new();
+        let config = ShapeConfig {
+            shape_type: ShapeType::Rect,
+            from_cell: "B2".to_string(),
+            to_cell: "F10".to_string(),
+            text: Some("Test Shape".to_string()),
+            fill_color: Some("FF0000".to_string()),
+            line_color: None,
+            line_width: None,
+        };
+        wb.add_shape("Sheet1", &config).unwrap();
+
+        assert_eq!(wb.drawings.len(), 1);
+        assert_eq!(wb.drawings[0].1.two_cell_anchors.len(), 1);
+        let anchor = &wb.drawings[0].1.two_cell_anchors[0];
+        assert!(anchor.shape.is_some());
+        assert!(anchor.graphic_frame.is_none());
+        assert!(anchor.pic.is_none());
+    }
+
+    #[test]
+    fn test_add_multiple_shapes_same_sheet() {
+        use crate::shape::{ShapeConfig, ShapeType};
+        let mut wb = Workbook::new();
+        wb.add_shape(
+            "Sheet1",
+            &ShapeConfig {
+                shape_type: ShapeType::Rect,
+                from_cell: "A1".to_string(),
+                to_cell: "C3".to_string(),
+                text: None,
+                fill_color: None,
+                line_color: None,
+                line_width: None,
+            },
+        )
+        .unwrap();
+        wb.add_shape(
+            "Sheet1",
+            &ShapeConfig {
+                shape_type: ShapeType::Ellipse,
+                from_cell: "E1".to_string(),
+                to_cell: "H5".to_string(),
+                text: Some("Circle".to_string()),
+                fill_color: Some("00FF00".to_string()),
+                line_color: None,
+                line_width: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(wb.drawings.len(), 1);
+        assert_eq!(wb.drawings[0].1.two_cell_anchors.len(), 2);
+    }
+
+    #[test]
+    fn test_add_shape_and_chart_same_sheet() {
+        use crate::chart::{ChartConfig, ChartSeries, ChartType};
+        use crate::shape::{ShapeConfig, ShapeType};
+
+        let mut wb = Workbook::new();
+        wb.add_chart(
+            "Sheet1",
+            "E1",
+            "L10",
+            &ChartConfig {
+                chart_type: ChartType::Col,
+                title: Some("Chart".to_string()),
+                series: vec![ChartSeries {
+                    name: "S1".to_string(),
+                    categories: "Sheet1!$A$1:$A$3".to_string(),
+                    values: "Sheet1!$B$1:$B$3".to_string(),
+                    x_values: None,
+                    bubble_sizes: None,
+                }],
+                show_legend: true,
+                view_3d: None,
+            },
+        )
+        .unwrap();
+        wb.add_shape(
+            "Sheet1",
+            &ShapeConfig {
+                shape_type: ShapeType::Rect,
+                from_cell: "A12".to_string(),
+                to_cell: "D18".to_string(),
+                text: Some("Label".to_string()),
+                fill_color: None,
+                line_color: None,
+                line_width: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(wb.drawings.len(), 1);
+        assert_eq!(wb.drawings[0].1.two_cell_anchors.len(), 2);
     }
 
     #[test]

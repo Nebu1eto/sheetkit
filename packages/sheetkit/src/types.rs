@@ -508,6 +508,25 @@ pub struct JsSheetViewOptions {
     pub top_left_cell: Option<String>,
 }
 
+/// Configuration for inserting a shape into a worksheet.
+#[napi(object)]
+pub struct JsShapeConfig {
+    /// Shape type string (e.g., "rect", "ellipse", "roundRect", "diamond").
+    pub shape_type: String,
+    /// Top-left anchor cell (e.g., "B2").
+    pub from_cell: String,
+    /// Bottom-right anchor cell (e.g., "F10").
+    pub to_cell: String,
+    /// Optional text content displayed inside the shape.
+    pub text: Option<String>,
+    /// Optional fill color as a hex string (e.g., "4472C4").
+    pub fill_color: Option<String>,
+    /// Optional line/border color as a hex string (e.g., "2F528F").
+    pub line_color: Option<String>,
+    /// Optional line width in points.
+    pub line_width: Option<f64>,
+}
+
 /// A single formatted text segment within a rich text cell.
 #[napi(object)]
 pub struct JsRichTextRun {

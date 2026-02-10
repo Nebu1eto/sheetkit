@@ -3203,6 +3203,137 @@ describe('Table CRUD', () => {
   });
 });
 
+describe('Shapes', () => {
+  const out = tmpFile('test-shape.xlsx');
+  afterEach(async () => cleanup(out));
+
+  it('should add a basic rectangle shape', async () => {
+    const wb = new Workbook();
+    wb.addShape('Sheet1', {
+      shapeType: 'rect',
+      fromCell: 'B2',
+      toCell: 'F10',
+    });
+    await wb.save(out);
+    await expect(access(out)).resolves.toBeUndefined();
+  });
+
+  it('should add a shape with text', async () => {
+    const wb = new Workbook();
+    wb.addShape('Sheet1', {
+      shapeType: 'ellipse',
+      fromCell: 'A1',
+      toCell: 'D5',
+      text: 'Hello World',
+    });
+    await wb.save(out);
+    const wb2 = await Workbook.open(out);
+    expect(wb2.sheetNames).toEqual(['Sheet1']);
+  });
+
+  it('should add a shape with fill and line styling', async () => {
+    const wb = new Workbook();
+    wb.addShape('Sheet1', {
+      shapeType: 'roundRect',
+      fromCell: 'B2',
+      toCell: 'H12',
+      text: 'Styled Shape',
+      fillColor: '4472C4',
+      lineColor: '2F528F',
+      lineWidth: 2.0,
+    });
+    await wb.save(out);
+    await expect(access(out)).resolves.toBeUndefined();
+  });
+
+  it('should add multiple shapes on one sheet', async () => {
+    const wb = new Workbook();
+    wb.addShape('Sheet1', {
+      shapeType: 'rect',
+      fromCell: 'A1',
+      toCell: 'C3',
+    });
+    wb.addShape('Sheet1', {
+      shapeType: 'diamond',
+      fromCell: 'E1',
+      toCell: 'H5',
+      fillColor: 'FF0000',
+    });
+    wb.addShape('Sheet1', {
+      shapeType: 'star5',
+      fromCell: 'A6',
+      toCell: 'D10',
+      text: 'Star',
+    });
+    await wb.save(out);
+    await expect(access(out)).resolves.toBeUndefined();
+  });
+
+  it('should add shapes on different sheets', async () => {
+    const wb = new Workbook();
+    wb.newSheet('Sheet2');
+    wb.addShape('Sheet1', {
+      shapeType: 'rect',
+      fromCell: 'A1',
+      toCell: 'C3',
+      text: 'Sheet1 Shape',
+    });
+    wb.addShape('Sheet2', {
+      shapeType: 'ellipse',
+      fromCell: 'B2',
+      toCell: 'E6',
+      text: 'Sheet2 Shape',
+      fillColor: '00FF00',
+    });
+    await wb.save(out);
+    const wb2 = await Workbook.open(out);
+    expect(wb2.sheetNames).toContain('Sheet1');
+    expect(wb2.sheetNames).toContain('Sheet2');
+  });
+
+  it('should throw for unknown shape type', () => {
+    const wb = new Workbook();
+    expect(() =>
+      wb.addShape('Sheet1', {
+        shapeType: 'nonexistent',
+        fromCell: 'A1',
+        toCell: 'C3',
+      }),
+    ).toThrow();
+  });
+
+  it('should throw for nonexistent sheet', () => {
+    const wb = new Workbook();
+    expect(() =>
+      wb.addShape('NoSheet', {
+        shapeType: 'rect',
+        fromCell: 'A1',
+        toCell: 'C3',
+      }),
+    ).toThrow();
+  });
+
+  it('should coexist with charts on the same sheet', async () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'Category');
+    wb.setCellValue('Sheet1', 'B1', 'Value');
+    wb.setCellValue('Sheet1', 'A2', 'A');
+    wb.setCellValue('Sheet1', 'B2', 10);
+    wb.addChart('Sheet1', 'E1', 'L10', {
+      chartType: 'col',
+      series: [{ name: 'S1', categories: 'Sheet1!$A$2:$A$2', values: 'Sheet1!$B$2:$B$2' }],
+    });
+    wb.addShape('Sheet1', {
+      shapeType: 'rect',
+      fromCell: 'A12',
+      toCell: 'D16',
+      text: 'Annotation',
+    });
+    await wb.save(out);
+    await expect(access(out)).resolves.toBeUndefined();
+  });
+});
+
 describe('Cross-feature integration', () => {
   const out = tmpFile('test-integration.xlsx');
   afterEach(async () => cleanup(out));

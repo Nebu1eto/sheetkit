@@ -128,6 +128,8 @@ export declare class Workbook {
   getColStyle(sheet: string, col: string): number
   /** Add a chart to a sheet. */
   addChart(sheet: string, fromCell: string, toCell: string, config: JsChartConfig): void
+  /** Add a shape to a sheet. */
+  addShape(sheet: string, config: JsShapeConfig): void
   /** Add an image to a sheet. */
   addImage(sheet: string, config: JsImageConfig): void
   /** Merge a range of cells on a sheet. */
@@ -701,6 +703,24 @@ export interface JsRowData {
   row: number
   /** Cells with data in this row. */
   cells: Array<JsRowCell>
+}
+
+/** Configuration for inserting a shape into a worksheet. */
+export interface JsShapeConfig {
+  /** Shape type string (e.g., "rect", "ellipse", "roundRect", "diamond"). */
+  shapeType: string
+  /** Top-left anchor cell (e.g., "B2"). */
+  fromCell: string
+  /** Bottom-right anchor cell (e.g., "F10"). */
+  toCell: string
+  /** Optional text content displayed inside the shape. */
+  text?: string
+  /** Optional fill color as a hex string (e.g., "4472C4"). */
+  fillColor?: string
+  /** Optional line/border color as a hex string (e.g., "2F528F"). */
+  lineColor?: string
+  /** Optional line width in points. */
+  lineWidth?: number
 }
 
 /** Configuration for sheet protection. */
