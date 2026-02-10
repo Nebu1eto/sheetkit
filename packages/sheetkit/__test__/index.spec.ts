@@ -4825,9 +4825,7 @@ describe('Form Controls', () => {
 
   it('should throw for invalid control type', () => {
     const wb = new Workbook();
-    expect(() =>
-      wb.addFormControl('Sheet1', { controlType: 'invalid', cell: 'A1' }),
-    ).toThrow();
+    expect(() => wb.addFormControl('Sheet1', { controlType: 'invalid', cell: 'A1' })).toThrow();
   });
 
   it('should save and re-open with form controls preserved', async () => {
