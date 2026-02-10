@@ -11,6 +11,20 @@ export default withMermaid(
       root: { label: 'English', ...en },
       ko: { label: '한국어', ...ko },
     },
-    mermaid: {},
+    mermaid: {
+      startOnLoad: false,
+      flowchart: {
+        useMaxWidth: true,
+        htmlLabels: true,
+        wrappingWidth: 140,
+        nodeSpacing: 28,
+        rankSpacing: 44,
+        curve: 'linear',
+      },
+      themeVariables: {
+        fontSize: '16px',
+        edgeLabelBackground: 'transparent',
+      },
+    },
   }),
 );
