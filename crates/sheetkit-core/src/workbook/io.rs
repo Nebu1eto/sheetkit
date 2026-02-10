@@ -410,6 +410,9 @@ impl Workbook {
 
         // Load VBA project binary blob if present (macro-enabled files).
         let vba_blob = read_bytes_part(archive, "xl/vbaProject.bin").ok();
+        if vba_blob.is_some() {
+            known_paths.insert("xl/vbaProject.bin".to_string());
+        }
 
         // Parse table parts referenced from worksheet relationships.
         let mut tables: Vec<(String, sheetkit_xml::table::TableXml, usize)> = Vec::new();
@@ -425,6 +428,7 @@ impl Workbook {
                 if let Ok(table_xml) =
                     read_xml_part::<sheetkit_xml::table::TableXml, _>(archive, &table_path)
                 {
+                    known_paths.insert(table_path.clone());
                     tables.push((table_path, table_xml, sheet_idx));
                 }
             }
@@ -441,6 +445,7 @@ impl Workbook {
             if let Ok(table_xml) =
                 read_xml_part::<sheetkit_xml::table::TableXml, _>(archive, &table_path)
             {
+                known_paths.insert(table_path.clone());
                 tables.push((table_path, table_xml, 0));
             }
         }
