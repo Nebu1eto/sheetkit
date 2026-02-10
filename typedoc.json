@@ -1,0 +1,10 @@
+{
+  "$schema": "https://typedoc.org/schema.json",
+  "entryPoints": ["packages/sheetkit/index.ts"],
+  "tsconfig": "packages/sheetkit/tsconfig.json",
+  "out": "docs/typescript-api",
+  "plugin": ["typedoc-plugin-markdown", "typedoc-vitepress-theme"],
+  "skipErrorChecking": true,
+  "excludePrivate": true,
+  "excludeInternal": true
+}

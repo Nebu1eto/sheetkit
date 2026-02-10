@@ -36,6 +36,12 @@ packages/sheetkit/sheet-data2.js
 packages/sheetkit/*.js.map
 packages/sheetkit/*.d.ts.map
 
+# Documentation (generated at build time)
+docs/public/rustdoc/
+docs/typescript-api/
+docs/.vitepress/dist/
+docs/.vitepress/cache/
+
 # Environment
 .env
 .env.local
