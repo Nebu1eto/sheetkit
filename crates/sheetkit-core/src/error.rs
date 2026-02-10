@@ -124,6 +124,14 @@ pub enum Error {
     #[error("pivot table '{name}' already exists")]
     PivotTableAlreadyExists { name: String },
 
+    /// The specified table was not found.
+    #[error("table '{name}' not found")]
+    TableNotFound { name: String },
+
+    /// A table with the given name already exists.
+    #[error("table '{name}' already exists")]
+    TableAlreadyExists { name: String },
+
     /// The source data range for a pivot table is invalid.
     #[error("invalid source range: {0}")]
     InvalidSourceRange(String),
