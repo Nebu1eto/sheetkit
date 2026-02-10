@@ -14,6 +14,64 @@ use sheetkit_xml::comments::Comments;
 use sheetkit_xml::content_types::{
     mime_types, ContentTypeDefault, ContentTypeOverride, ContentTypes,
 };
+
+/// The OOXML package format, determined by the workbook content type in
+/// `[Content_Types].xml`. Controls which content type string is emitted for
+/// `xl/workbook.xml` on save.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum WorkbookFormat {
+    /// Standard spreadsheet (.xlsx).
+    #[default]
+    Xlsx,
+    /// Macro-enabled spreadsheet (.xlsm).
+    Xlsm,
+    /// Template (.xltx).
+    Xltx,
+    /// Macro-enabled template (.xltm).
+    Xltm,
+    /// Macro-enabled add-in (.xlam).
+    Xlam,
+}
+
+impl WorkbookFormat {
+    /// Infer the format from a workbook content type string found in
+    /// `[Content_Types].xml`.
+    pub fn from_content_type(ct: &str) -> Option<Self> {
+        match ct {
+            mime_types::WORKBOOK => Some(Self::Xlsx),
+            mime_types::WORKBOOK_MACRO => Some(Self::Xlsm),
+            mime_types::WORKBOOK_TEMPLATE => Some(Self::Xltx),
+            mime_types::WORKBOOK_TEMPLATE_MACRO => Some(Self::Xltm),
+            mime_types::WORKBOOK_ADDIN_MACRO => Some(Self::Xlam),
+            _ => None,
+        }
+    }
+
+    /// Infer the format from a file extension (case-insensitive, without the
+    /// leading dot). Returns `None` for unrecognized extensions.
+    pub fn from_extension(ext: &str) -> Option<Self> {
+        match ext.to_ascii_lowercase().as_str() {
+            "xlsx" => Some(Self::Xlsx),
+            "xlsm" => Some(Self::Xlsm),
+            "xltx" => Some(Self::Xltx),
+            "xltm" => Some(Self::Xltm),
+            "xlam" => Some(Self::Xlam),
+            _ => None,
+        }
+    }
+
+    /// Return the OOXML content type string for this format.
+    pub fn content_type(self) -> &'static str {
+        match self {
+            Self::Xlsx => mime_types::WORKBOOK,
+            Self::Xlsm => mime_types::WORKBOOK_MACRO,
+            Self::Xltx => mime_types::WORKBOOK_TEMPLATE,
+            Self::Xltm => mime_types::WORKBOOK_TEMPLATE_MACRO,
+            Self::Xlam => mime_types::WORKBOOK_ADDIN_MACRO,
+        }
+    }
+}
+
 use sheetkit_xml::drawing::{MarkerType, WsDr};
 use sheetkit_xml::relationships::{self, rel_types, Relationship, Relationships};
 use sheetkit_xml::shared_strings::Sst;
@@ -53,6 +111,7 @@ const XML_DECLARATION: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone
 
 /// In-memory representation of an `.xlsx` workbook.
 pub struct Workbook {
+    format: WorkbookFormat,
     content_types: ContentTypes,
     package_rels: Relationships,
     workbook_xml: WorkbookXml,
@@ -101,12 +160,28 @@ pub struct Workbook {
     /// ZIP entries not recognized by the parser, preserved for round-trip fidelity.
     /// Each entry is (zip_path, raw_bytes).
     unknown_parts: Vec<(String, Vec<u8>)>,
+    /// Raw VBA project binary blob (`xl/vbaProject.bin`), preserved opaquely for round-trip.
+    /// `None` for non-macro workbooks.
+    vba_blob: Option<Vec<u8>>,
+    /// Table parts: (zip path like "xl/tables/table1.xml", TableXml data, sheet_index).
+    tables: Vec<(String, sheetkit_xml::table::TableXml, usize)>,
     /// O(1) sheet name -> index lookup cache. Must be kept in sync with
     /// `worksheets` via [`rebuild_sheet_index`].
     sheet_name_index: HashMap<String, usize>,
 }
 
 impl Workbook {
+    /// Return the detected or assigned workbook format.
+    pub fn format(&self) -> WorkbookFormat {
+        self.format
+    }
+
+    /// Set the workbook format. This determines the content type written for
+    /// `xl/workbook.xml` on save.
+    pub fn set_format(&mut self, format: WorkbookFormat) {
+        self.format = format;
+    }
+
     /// Get the 0-based index of a sheet by name. O(1) via HashMap.
     pub(crate) fn sheet_index(&self, sheet: &str) -> Result<usize> {
         self.sheet_name_index

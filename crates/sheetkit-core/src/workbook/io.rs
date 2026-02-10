@@ -1,5 +1,12 @@
 use super::*;
 
+/// VBA project relationship type URI.
+const VBA_PROJECT_REL_TYPE: &str =
+    "http://schemas.microsoft.com/office/2006/relationships/vbaProject";
+
+/// VBA project content type.
+const VBA_PROJECT_CONTENT_TYPE: &str = "application/vnd.ms-office.vbaProject";
+
 impl Workbook {
     /// Create a new empty workbook containing a single empty sheet named "Sheet1".
     pub fn new() -> Self {
@@ -7,6 +14,7 @@ impl Workbook {
         let mut sheet_name_index = HashMap::new();
         sheet_name_index.insert("Sheet1".to_string(), 0);
         Self {
+            format: WorkbookFormat::default(),
             content_types: ContentTypes::default(),
             package_rels: relationships::package_rels(),
             workbook_xml: WorkbookXml::default(),
@@ -30,10 +38,12 @@ impl Workbook {
             pivot_cache_records: vec![],
             theme_xml: None,
             theme_colors: crate::theme::default_theme_colors(),
+            sheet_name_index,
             sheet_sparklines: vec![vec![]],
             sheet_vml: vec![None],
             unknown_parts: vec![],
-            sheet_name_index,
+            vba_blob: None,
+            tables: vec![],
         }
     }
 
@@ -70,6 +80,14 @@ impl Workbook {
         // Parse [Content_Types].xml
         let content_types: ContentTypes = read_xml_part(archive, "[Content_Types].xml")?;
         known_paths.insert("[Content_Types].xml".to_string());
+
+        // Infer the workbook format from the content type of xl/workbook.xml.
+        let format = content_types
+            .overrides
+            .iter()
+            .find(|o| o.part_name == "/xl/workbook.xml")
+            .and_then(|o| WorkbookFormat::from_content_type(&o.content_type))
+            .unwrap_or_default();
 
         // Parse _rels/.rels
         let package_rels: Relationships = read_xml_part(archive, "_rels/.rels")?;
@@ -345,6 +363,43 @@ impl Workbook {
             }
         }
 
+        // Load VBA project binary blob if present (macro-enabled files).
+        let vba_blob = read_bytes_part(archive, "xl/vbaProject.bin").ok();
+
+        // Parse table parts referenced from worksheet relationships.
+        let mut tables: Vec<(String, sheetkit_xml::table::TableXml, usize)> = Vec::new();
+        for (sheet_idx, sheet_path) in worksheet_paths.iter().enumerate() {
+            let Some(rels) = worksheet_rels.get(&sheet_idx) else {
+                continue;
+            };
+            for rel in &rels.relationships {
+                if rel.rel_type != rel_types::TABLE {
+                    continue;
+                }
+                let table_path = resolve_relationship_target(sheet_path, &rel.target);
+                if let Ok(table_xml) =
+                    read_xml_part::<sheetkit_xml::table::TableXml, _>(archive, &table_path)
+                {
+                    tables.push((table_path, table_xml, sheet_idx));
+                }
+            }
+        }
+        // Fallback: load table parts from content type overrides if not found via rels.
+        for ovr in &content_types.overrides {
+            if ovr.content_type != mime_types::TABLE {
+                continue;
+            }
+            let table_path = ovr.part_name.trim_start_matches('/').to_string();
+            if tables.iter().any(|(p, _, _)| p == &table_path) {
+                continue;
+            }
+            if let Ok(table_xml) =
+                read_xml_part::<sheetkit_xml::table::TableXml, _>(archive, &table_path)
+            {
+                tables.push((table_path, table_xml, 0));
+            }
+        }
+
         // Build sheet name -> index lookup.
         let mut sheet_name_index = HashMap::with_capacity(worksheets.len());
         for (i, (name, _)) in worksheets.iter().enumerate() {
@@ -381,6 +436,7 @@ impl Workbook {
         }
 
         Ok(Self {
+            format,
             content_types,
             package_rels,
             workbook_xml,
@@ -404,26 +460,40 @@ impl Workbook {
             pivot_cache_records,
             theme_xml,
             theme_colors,
+            sheet_name_index,
             sheet_sparklines,
             sheet_vml,
             unknown_parts,
-            sheet_name_index,
+            vba_blob,
+            tables,
         })
     }
 
-    /// Save the workbook to a `.xlsx` file at the given path.
+    /// Save the workbook to a file at the given path.
+    ///
+    /// The target format is inferred from the file extension. Supported
+    /// extensions are `.xlsx`, `.xlsm`, `.xltx`, `.xltm`, and `.xlam`.
+    /// An unsupported extension returns [`Error::UnsupportedFileExtension`].
+    ///
+    /// The inferred format overrides the workbook's stored format so that
+    /// the content type in the output always matches the extension.
     pub fn save<P: AsRef<Path>>(&self, path: P) -> Result<()> {
+        let path = path.as_ref();
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let target_format = WorkbookFormat::from_extension(ext)
+            .ok_or_else(|| Error::UnsupportedFileExtension(ext.to_string()))?;
+
         let file = std::fs::File::create(path)?;
         let mut zip = zip::ZipWriter::new(file);
         let options = SimpleFileOptions::default()
             .compression_method(CompressionMethod::Deflated)
             .compression_level(Some(1));
-        self.write_zip_contents(&mut zip, options)?;
+        self.write_zip_contents(&mut zip, options, Some(target_format))?;
         zip.finish().map_err(|e| Error::Zip(e.to_string()))?;
         Ok(())
     }
 
-    /// Serialize the workbook to an in-memory `.xlsx` buffer.
+    /// Serialize the workbook to an in-memory buffer using the stored format.
     pub fn save_to_buffer(&self) -> Result<Vec<u8>> {
         // Estimate compressed output size to reduce reallocations.
         let estimated = self.worksheets.len() * 4000
@@ -436,7 +506,7 @@ impl Workbook {
             let mut zip = zip::ZipWriter::new(cursor);
             let options =
                 SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
-            self.write_zip_contents(&mut zip, options)?;
+            self.write_zip_contents(&mut zip, options, None)?;
             zip.finish().map_err(|e| Error::Zip(e.to_string()))?;
         }
         Ok(buf)
@@ -484,7 +554,7 @@ impl Workbook {
             let mut zip = zip::ZipWriter::new(cursor);
             let options =
                 SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
-            self.write_zip_contents(&mut zip, options)?;
+            self.write_zip_contents(&mut zip, options, None)?;
             zip.finish().map_err(|e| Error::Zip(e.to_string()))?;
         }
 
@@ -495,12 +565,71 @@ impl Workbook {
     }
 
     /// Write all workbook parts into the given ZIP writer.
+    ///
+    /// When `format_override` is `Some`, that format is used for the workbook
+    /// content type instead of the stored `self.format`. This allows `save()`
+    /// to infer the format from the file extension without mutating `self`.
     fn write_zip_contents<W: std::io::Write + std::io::Seek>(
         &self,
         zip: &mut zip::ZipWriter<W>,
         options: SimpleFileOptions,
+        format_override: Option<WorkbookFormat>,
     ) -> Result<()> {
+        let effective_format = format_override.unwrap_or(self.format);
         let mut content_types = self.content_types.clone();
+
+        // Ensure the workbook override content type matches the effective format.
+        if let Some(wb_override) = content_types
+            .overrides
+            .iter_mut()
+            .find(|o| o.part_name == "/xl/workbook.xml")
+        {
+            wb_override.content_type = effective_format.content_type().to_string();
+        }
+
+        // Ensure VBA project content type override and workbook relationship are
+        // present when a VBA blob exists, and absent when it does not.
+        let mut workbook_rels = self.workbook_rels.clone();
+        if self.vba_blob.is_some() {
+            let vba_part_name = "/xl/vbaProject.bin";
+            if !content_types
+                .overrides
+                .iter()
+                .any(|o| o.part_name == vba_part_name)
+            {
+                content_types.overrides.push(ContentTypeOverride {
+                    part_name: vba_part_name.to_string(),
+                    content_type: VBA_PROJECT_CONTENT_TYPE.to_string(),
+                });
+            }
+            if !content_types.defaults.iter().any(|d| d.extension == "bin") {
+                content_types.defaults.push(ContentTypeDefault {
+                    extension: "bin".to_string(),
+                    content_type: VBA_PROJECT_CONTENT_TYPE.to_string(),
+                });
+            }
+            if !workbook_rels
+                .relationships
+                .iter()
+                .any(|r| r.rel_type == VBA_PROJECT_REL_TYPE)
+            {
+                let rid = crate::sheet::next_rid(&workbook_rels.relationships);
+                workbook_rels.relationships.push(Relationship {
+                    id: rid,
+                    rel_type: VBA_PROJECT_REL_TYPE.to_string(),
+                    target: "vbaProject.bin".to_string(),
+                    target_mode: None,
+                });
+            }
+        } else {
+            content_types
+                .overrides
+                .retain(|o| o.content_type != VBA_PROJECT_CONTENT_TYPE);
+            workbook_rels
+                .relationships
+                .retain(|r| r.rel_type != VBA_PROJECT_REL_TYPE);
+        }
+
         let mut worksheet_rels = self.worksheet_rels.clone();
 
         // Synchronize comment and VML parts with worksheet relationships/content types.
@@ -607,6 +736,43 @@ impl Workbook {
             });
         }
 
+        // Synchronize table parts with worksheet relationships and content types.
+        // Also build tableParts references for each worksheet.
+        let mut table_parts_by_sheet: HashMap<usize, Vec<String>> = HashMap::new();
+        for (sheet_idx, _) in self.worksheets.iter().enumerate() {
+            if let Some(rels) = worksheet_rels.get_mut(&sheet_idx) {
+                rels.relationships
+                    .retain(|r| r.rel_type != rel_types::TABLE);
+            }
+        }
+        content_types
+            .overrides
+            .retain(|o| o.content_type != mime_types::TABLE);
+        for (table_path, _table_xml, sheet_idx) in &self.tables {
+            let part_name = format!("/{table_path}");
+            content_types.overrides.push(ContentTypeOverride {
+                part_name,
+                content_type: mime_types::TABLE.to_string(),
+            });
+
+            let sheet_path = self.sheet_part_path(*sheet_idx);
+            let target = relative_relationship_target(&sheet_path, table_path);
+            let rels = worksheet_rels
+                .entry(*sheet_idx)
+                .or_insert_with(default_relationships);
+            let rid = crate::sheet::next_rid(&rels.relationships);
+            rels.relationships.push(Relationship {
+                id: rid.clone(),
+                rel_type: rel_types::TABLE.to_string(),
+                target,
+                target_mode: None,
+            });
+            table_parts_by_sheet
+                .entry(*sheet_idx)
+                .or_default()
+                .push(rid);
+        }
+
         // [Content_Types].xml
         write_xml_part(zip, "[Content_Types].xml", &content_types, options)?;
 
@@ -617,12 +783,7 @@ impl Workbook {
         write_xml_part(zip, "xl/workbook.xml", &self.workbook_xml, options)?;
 
         // xl/_rels/workbook.xml.rels
-        write_xml_part(
-            zip,
-            "xl/_rels/workbook.xml.rels",
-            &self.workbook_rels,
-            options,
-        )?;
+        write_xml_part(zip, "xl/_rels/workbook.xml.rels", &workbook_rels, options)?;
 
         // xl/worksheets/sheet{N}.xml
         for (i, (_name, ws)) in self.worksheets.iter().enumerate() {
@@ -630,13 +791,42 @@ impl Workbook {
             let empty_sparklines: Vec<crate::sparkline::SparklineConfig> = vec![];
             let sparklines = self.sheet_sparklines.get(i).unwrap_or(&empty_sparklines);
             let legacy_rid = legacy_drawing_rids.get(&i).map(|s| s.as_str());
+            let sheet_table_rids = table_parts_by_sheet.get(&i);
+            let stale_table_parts = sheet_table_rids.is_none() && ws.table_parts.is_some();
+            let has_extras = legacy_rid.is_some()
+                || !sparklines.is_empty()
+                || sheet_table_rids.is_some()
+                || stale_table_parts;
 
-            if legacy_rid.is_none() && sparklines.is_empty() {
+            if !has_extras {
                 write_xml_part(zip, &entry_name, ws, options)?;
             } else {
-                // Serialize worksheet to XML and inject extras via string manipulation,
-                // avoiding a full WorksheetXml clone.
-                let xml = serialize_worksheet_with_extras(ws, sparklines, legacy_rid)?;
+                let ws_to_serialize;
+                let ws_ref = if let Some(rids) = sheet_table_rids {
+                    ws_to_serialize = {
+                        let mut cloned = ws.clone();
+                        use sheetkit_xml::worksheet::{TablePart, TableParts};
+                        cloned.table_parts = Some(TableParts {
+                            count: Some(rids.len() as u32),
+                            table_parts: rids
+                                .iter()
+                                .map(|rid| TablePart { r_id: rid.clone() })
+                                .collect(),
+                        });
+                        cloned
+                    };
+                    &ws_to_serialize
+                } else if stale_table_parts {
+                    ws_to_serialize = {
+                        let mut cloned = ws.clone();
+                        cloned.table_parts = None;
+                        cloned
+                    };
+                    &ws_to_serialize
+                } else {
+                    ws
+                };
+                let xml = serialize_worksheet_with_extras(ws_ref, sparklines, legacy_rid)?;
                 zip.start_file(&entry_name, options)
                     .map_err(|e| Error::Zip(e.to_string()))?;
                 zip.write_all(xml.as_bytes())?;
@@ -720,6 +910,11 @@ impl Workbook {
             write_xml_part(zip, path, pcr, options)?;
         }
 
+        // xl/tables/table{N}.xml
+        for (path, table_xml, _sheet_idx) in &self.tables {
+            write_xml_part(zip, path, table_xml, options)?;
+        }
+
         // xl/theme/theme1.xml
         {
             let default_theme = crate::theme::default_theme_xml();
@@ -727,6 +922,13 @@ impl Workbook {
             zip.start_file("xl/theme/theme1.xml", options)
                 .map_err(|e| Error::Zip(e.to_string()))?;
             zip.write_all(theme_bytes)?;
+        }
+
+        // xl/vbaProject.bin -- write VBA blob if present
+        if let Some(ref blob) = self.vba_blob {
+            zip.start_file("xl/vbaProject.bin", options)
+                .map_err(|e| Error::Zip(e.to_string()))?;
+            zip.write_all(blob)?;
         }
 
         // docProps/core.xml
@@ -1500,5 +1702,603 @@ mod tests {
 
         let result = Workbook::open(&path);
         assert!(matches!(result, Err(Error::FileEncrypted)))
+    }
+
+    #[test]
+    fn test_workbook_format_from_content_type() {
+        use sheetkit_xml::content_types::mime_types;
+        assert_eq!(
+            WorkbookFormat::from_content_type(mime_types::WORKBOOK),
+            Some(WorkbookFormat::Xlsx)
+        );
+        assert_eq!(
+            WorkbookFormat::from_content_type(mime_types::WORKBOOK_MACRO),
+            Some(WorkbookFormat::Xlsm)
+        );
+        assert_eq!(
+            WorkbookFormat::from_content_type(mime_types::WORKBOOK_TEMPLATE),
+            Some(WorkbookFormat::Xltx)
+        );
+        assert_eq!(
+            WorkbookFormat::from_content_type(mime_types::WORKBOOK_TEMPLATE_MACRO),
+            Some(WorkbookFormat::Xltm)
+        );
+        assert_eq!(
+            WorkbookFormat::from_content_type(mime_types::WORKBOOK_ADDIN_MACRO),
+            Some(WorkbookFormat::Xlam)
+        );
+        assert_eq!(
+            WorkbookFormat::from_content_type("application/unknown"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_workbook_format_content_type_roundtrip() {
+        for fmt in [
+            WorkbookFormat::Xlsx,
+            WorkbookFormat::Xlsm,
+            WorkbookFormat::Xltx,
+            WorkbookFormat::Xltm,
+            WorkbookFormat::Xlam,
+        ] {
+            let ct = fmt.content_type();
+            assert_eq!(WorkbookFormat::from_content_type(ct), Some(fmt));
+        }
+    }
+
+    #[test]
+    fn test_new_workbook_defaults_to_xlsx_format() {
+        let wb = Workbook::new();
+        assert_eq!(wb.format(), WorkbookFormat::Xlsx);
+    }
+
+    #[test]
+    fn test_xlsx_roundtrip_preserves_format() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("roundtrip_format.xlsx");
+
+        let wb = Workbook::new();
+        assert_eq!(wb.format(), WorkbookFormat::Xlsx);
+        wb.save(&path).unwrap();
+
+        let wb2 = Workbook::open(&path).unwrap();
+        assert_eq!(wb2.format(), WorkbookFormat::Xlsx);
+    }
+
+    #[test]
+    fn test_save_writes_correct_content_type_for_each_extension() {
+        let dir = TempDir::new().unwrap();
+
+        let cases = [
+            (WorkbookFormat::Xlsx, "test.xlsx"),
+            (WorkbookFormat::Xlsm, "test.xlsm"),
+            (WorkbookFormat::Xltx, "test.xltx"),
+            (WorkbookFormat::Xltm, "test.xltm"),
+            (WorkbookFormat::Xlam, "test.xlam"),
+        ];
+
+        for (expected_fmt, filename) in cases {
+            let path = dir.path().join(filename);
+            let wb = Workbook::new();
+            wb.save(&path).unwrap();
+
+            let file = std::fs::File::open(&path).unwrap();
+            let mut archive = zip::ZipArchive::new(file).unwrap();
+
+            let ct: ContentTypes = read_xml_part(&mut archive, "[Content_Types].xml").unwrap();
+            let wb_override = ct
+                .overrides
+                .iter()
+                .find(|o| o.part_name == "/xl/workbook.xml")
+                .expect("workbook override must exist");
+            assert_eq!(
+                wb_override.content_type,
+                expected_fmt.content_type(),
+                "content type mismatch for {}",
+                filename
+            );
+        }
+    }
+
+    #[test]
+    fn test_set_format_changes_workbook_format() {
+        let mut wb = Workbook::new();
+        assert_eq!(wb.format(), WorkbookFormat::Xlsx);
+
+        wb.set_format(WorkbookFormat::Xlsm);
+        assert_eq!(wb.format(), WorkbookFormat::Xlsm);
+    }
+
+    #[test]
+    fn test_save_buffer_roundtrip_with_xlsm_format() {
+        let mut wb = Workbook::new();
+        wb.set_format(WorkbookFormat::Xlsm);
+        wb.set_cell_value("Sheet1", "A1", CellValue::String("test".to_string()))
+            .unwrap();
+
+        let buf = wb.save_to_buffer().unwrap();
+        let wb2 = Workbook::open_from_buffer(&buf).unwrap();
+        assert_eq!(wb2.format(), WorkbookFormat::Xlsm);
+        assert_eq!(
+            wb2.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("test".to_string())
+        );
+    }
+
+    #[test]
+    fn test_format_inference_from_content_types_overrides() {
+        use sheetkit_xml::content_types::mime_types;
+
+        // Simulate a content_types with xlsm workbook type.
+        let ct = ContentTypes {
+            xmlns: "http://schemas.openxmlformats.org/package/2006/content-types".to_string(),
+            defaults: vec![],
+            overrides: vec![ContentTypeOverride {
+                part_name: "/xl/workbook.xml".to_string(),
+                content_type: mime_types::WORKBOOK_MACRO.to_string(),
+            }],
+        };
+
+        let detected = ct
+            .overrides
+            .iter()
+            .find(|o| o.part_name == "/xl/workbook.xml")
+            .and_then(|o| WorkbookFormat::from_content_type(&o.content_type))
+            .unwrap_or_default();
+        assert_eq!(detected, WorkbookFormat::Xlsm);
+    }
+
+    #[test]
+    fn test_workbook_format_default_is_xlsx() {
+        assert_eq!(WorkbookFormat::default(), WorkbookFormat::Xlsx);
+    }
+
+    fn build_xlsm_with_vba(vba_bytes: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let mut buf = Vec::new();
+        {
+            let cursor = std::io::Cursor::new(&mut buf);
+            let mut zip = zip::ZipWriter::new(cursor);
+            let opts = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+
+            let ct_xml = format!(
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Default Extension="bin" ContentType="application/vnd.ms-office.vbaProject"/>
+  <Override PartName="/xl/workbook.xml" ContentType="{wb_ct}"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="{ws_ct}"/>
+  <Override PartName="/xl/styles.xml" ContentType="{st_ct}"/>
+  <Override PartName="/xl/sharedStrings.xml" ContentType="{sst_ct}"/>
+  <Override PartName="/xl/vbaProject.bin" ContentType="application/vnd.ms-office.vbaProject"/>
+</Types>"#,
+                wb_ct = mime_types::WORKBOOK_MACRO,
+                ws_ct = mime_types::WORKSHEET,
+                st_ct = mime_types::STYLES,
+                sst_ct = mime_types::SHARED_STRINGS,
+            );
+            zip.start_file("[Content_Types].xml", opts).unwrap();
+            zip.write_all(ct_xml.as_bytes()).unwrap();
+
+            let pkg_rels = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>"#;
+            zip.start_file("_rels/.rels", opts).unwrap();
+            zip.write_all(pkg_rels.as_bytes()).unwrap();
+
+            let wb_rels = format!(
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="{ws_rel}" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="{st_rel}" Target="styles.xml"/>
+  <Relationship Id="rId3" Type="{sst_rel}" Target="sharedStrings.xml"/>
+  <Relationship Id="rId4" Type="{vba_rel}" Target="vbaProject.bin"/>
+</Relationships>"#,
+                ws_rel = rel_types::WORKSHEET,
+                st_rel = rel_types::STYLES,
+                sst_rel = rel_types::SHARED_STRINGS,
+                vba_rel = VBA_PROJECT_REL_TYPE,
+            );
+            zip.start_file("xl/_rels/workbook.xml.rels", opts).unwrap();
+            zip.write_all(wb_rels.as_bytes()).unwrap();
+
+            let wb_xml = concat!(
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
+                r#"<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main""#,
+                r#" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">"#,
+                r#"<sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets>"#,
+                r#"</workbook>"#,
+            );
+            zip.start_file("xl/workbook.xml", opts).unwrap();
+            zip.write_all(wb_xml.as_bytes()).unwrap();
+
+            let ws_xml = concat!(
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
+                r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main""#,
+                r#" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">"#,
+                r#"<sheetData/>"#,
+                r#"</worksheet>"#,
+            );
+            zip.start_file("xl/worksheets/sheet1.xml", opts).unwrap();
+            zip.write_all(ws_xml.as_bytes()).unwrap();
+
+            let styles_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts>
+  <fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>
+  <borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>
+  <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+  <cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/></cellXfs>
+</styleSheet>"#;
+            zip.start_file("xl/styles.xml", opts).unwrap();
+            zip.write_all(styles_xml.as_bytes()).unwrap();
+
+            let sst_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="0" uniqueCount="0"/>"#;
+            zip.start_file("xl/sharedStrings.xml", opts).unwrap();
+            zip.write_all(sst_xml.as_bytes()).unwrap();
+
+            zip.start_file("xl/vbaProject.bin", opts).unwrap();
+            zip.write_all(vba_bytes).unwrap();
+
+            zip.finish().unwrap();
+        }
+        buf
+    }
+
+    #[test]
+    fn test_vba_blob_loaded_when_present() {
+        let vba_data = b"FAKE_VBA_PROJECT_BINARY_DATA_1234567890";
+        let xlsm = build_xlsm_with_vba(vba_data);
+        let wb = Workbook::open_from_buffer(&xlsm).unwrap();
+        assert!(wb.vba_blob.is_some());
+        assert_eq!(wb.vba_blob.as_deref().unwrap(), vba_data);
+    }
+
+    #[test]
+    fn test_vba_blob_none_for_plain_xlsx() {
+        let wb = Workbook::new();
+        assert!(wb.vba_blob.is_none());
+
+        let buf = wb.save_to_buffer().unwrap();
+        let wb2 = Workbook::open_from_buffer(&buf).unwrap();
+        assert!(wb2.vba_blob.is_none());
+    }
+
+    #[test]
+    fn test_vba_blob_survives_roundtrip_with_identical_bytes() {
+        let vba_data: Vec<u8> = (0..=255).cycle().take(1024).collect();
+        let xlsm = build_xlsm_with_vba(&vba_data);
+
+        let wb = Workbook::open_from_buffer(&xlsm).unwrap();
+        assert_eq!(wb.vba_blob.as_deref().unwrap(), &vba_data[..]);
+
+        let saved = wb.save_to_buffer().unwrap();
+        let cursor = std::io::Cursor::new(&saved);
+        let mut archive = zip::ZipArchive::new(cursor).unwrap();
+
+        let mut roundtripped = Vec::new();
+        std::io::Read::read_to_end(
+            &mut archive.by_name("xl/vbaProject.bin").unwrap(),
+            &mut roundtripped,
+        )
+        .unwrap();
+        assert_eq!(roundtripped, vba_data);
+    }
+
+    #[test]
+    fn test_vba_relationship_preserved_on_roundtrip() {
+        let vba_data = b"VBA_BLOB";
+        let xlsm = build_xlsm_with_vba(vba_data);
+
+        let wb = Workbook::open_from_buffer(&xlsm).unwrap();
+        let saved = wb.save_to_buffer().unwrap();
+
+        let cursor = std::io::Cursor::new(&saved);
+        let mut archive = zip::ZipArchive::new(cursor).unwrap();
+
+        let rels: Relationships =
+            read_xml_part(&mut archive, "xl/_rels/workbook.xml.rels").unwrap();
+        let vba_rel = rels
+            .relationships
+            .iter()
+            .find(|r| r.rel_type == VBA_PROJECT_REL_TYPE);
+        assert!(vba_rel.is_some(), "VBA relationship must be preserved");
+        assert_eq!(vba_rel.unwrap().target, "vbaProject.bin");
+    }
+
+    #[test]
+    fn test_vba_content_type_preserved_on_roundtrip() {
+        let vba_data = b"VBA_BLOB";
+        let xlsm = build_xlsm_with_vba(vba_data);
+
+        let wb = Workbook::open_from_buffer(&xlsm).unwrap();
+        let saved = wb.save_to_buffer().unwrap();
+
+        let cursor = std::io::Cursor::new(&saved);
+        let mut archive = zip::ZipArchive::new(cursor).unwrap();
+
+        let ct: ContentTypes = read_xml_part(&mut archive, "[Content_Types].xml").unwrap();
+        let vba_override = ct
+            .overrides
+            .iter()
+            .find(|o| o.part_name == "/xl/vbaProject.bin");
+        assert!(
+            vba_override.is_some(),
+            "VBA content type override must be preserved"
+        );
+        assert_eq!(vba_override.unwrap().content_type, VBA_PROJECT_CONTENT_TYPE);
+    }
+
+    #[test]
+    fn test_non_vba_save_has_no_vba_entries() {
+        let wb = Workbook::new();
+        let buf = wb.save_to_buffer().unwrap();
+
+        let cursor = std::io::Cursor::new(&buf);
+        let mut archive = zip::ZipArchive::new(cursor).unwrap();
+
+        assert!(
+            archive.by_name("xl/vbaProject.bin").is_err(),
+            "plain xlsx must not contain vbaProject.bin"
+        );
+
+        let rels: Relationships =
+            read_xml_part(&mut archive, "xl/_rels/workbook.xml.rels").unwrap();
+        assert!(
+            !rels
+                .relationships
+                .iter()
+                .any(|r| r.rel_type == VBA_PROJECT_REL_TYPE),
+            "plain xlsx must not have VBA relationship"
+        );
+
+        let ct: ContentTypes = read_xml_part(&mut archive, "[Content_Types].xml").unwrap();
+        assert!(
+            !ct.overrides
+                .iter()
+                .any(|o| o.content_type == VBA_PROJECT_CONTENT_TYPE),
+            "plain xlsx must not have VBA content type override"
+        );
+    }
+
+    #[test]
+    fn test_xlsm_format_detected_with_vba() {
+        let vba_data = b"VBA_BLOB";
+        let xlsm = build_xlsm_with_vba(vba_data);
+        let wb = Workbook::open_from_buffer(&xlsm).unwrap();
+        assert_eq!(wb.format(), WorkbookFormat::Xlsm);
+    }
+
+    #[test]
+    fn test_from_extension_recognized() {
+        assert_eq!(
+            WorkbookFormat::from_extension("xlsx"),
+            Some(WorkbookFormat::Xlsx)
+        );
+        assert_eq!(
+            WorkbookFormat::from_extension("xlsm"),
+            Some(WorkbookFormat::Xlsm)
+        );
+        assert_eq!(
+            WorkbookFormat::from_extension("xltx"),
+            Some(WorkbookFormat::Xltx)
+        );
+        assert_eq!(
+            WorkbookFormat::from_extension("xltm"),
+            Some(WorkbookFormat::Xltm)
+        );
+        assert_eq!(
+            WorkbookFormat::from_extension("xlam"),
+            Some(WorkbookFormat::Xlam)
+        );
+    }
+
+    #[test]
+    fn test_from_extension_case_insensitive() {
+        assert_eq!(
+            WorkbookFormat::from_extension("XLSX"),
+            Some(WorkbookFormat::Xlsx)
+        );
+        assert_eq!(
+            WorkbookFormat::from_extension("Xlsm"),
+            Some(WorkbookFormat::Xlsm)
+        );
+        assert_eq!(
+            WorkbookFormat::from_extension("XLTX"),
+            Some(WorkbookFormat::Xltx)
+        );
+    }
+
+    #[test]
+    fn test_from_extension_unrecognized() {
+        assert_eq!(WorkbookFormat::from_extension("csv"), None);
+        assert_eq!(WorkbookFormat::from_extension("xls"), None);
+        assert_eq!(WorkbookFormat::from_extension("txt"), None);
+        assert_eq!(WorkbookFormat::from_extension("pdf"), None);
+        assert_eq!(WorkbookFormat::from_extension(""), None);
+    }
+
+    #[test]
+    fn test_save_unsupported_extension_csv() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("output.csv");
+        let wb = Workbook::new();
+        let result = wb.save(&path);
+        assert!(matches!(result, Err(Error::UnsupportedFileExtension(ext)) if ext == "csv"));
+    }
+
+    #[test]
+    fn test_save_unsupported_extension_xls() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("output.xls");
+        let wb = Workbook::new();
+        let result = wb.save(&path);
+        assert!(matches!(result, Err(Error::UnsupportedFileExtension(ext)) if ext == "xls"));
+    }
+
+    #[test]
+    fn test_save_unsupported_extension_unknown() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("output.foo");
+        let wb = Workbook::new();
+        let result = wb.save(&path);
+        assert!(matches!(result, Err(Error::UnsupportedFileExtension(ext)) if ext == "foo"));
+    }
+
+    #[test]
+    fn test_save_no_extension_fails() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("noext");
+        let wb = Workbook::new();
+        let result = wb.save(&path);
+        assert!(matches!(
+            result,
+            Err(Error::UnsupportedFileExtension(ext)) if ext.is_empty()
+        ));
+    }
+
+    #[test]
+    fn test_save_as_xlsm_writes_xlsm_content_type() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("output.xlsm");
+        let wb = Workbook::new();
+        wb.save(&path).unwrap();
+
+        let file = std::fs::File::open(&path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let ct: ContentTypes = read_xml_part(&mut archive, "[Content_Types].xml").unwrap();
+        let wb_ct = ct
+            .overrides
+            .iter()
+            .find(|o| o.part_name == "/xl/workbook.xml")
+            .expect("workbook override must exist");
+        assert_eq!(wb_ct.content_type, WorkbookFormat::Xlsm.content_type());
+    }
+
+    #[test]
+    fn test_save_as_xltx_writes_template_content_type() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("output.xltx");
+        let wb = Workbook::new();
+        wb.save(&path).unwrap();
+
+        let file = std::fs::File::open(&path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let ct: ContentTypes = read_xml_part(&mut archive, "[Content_Types].xml").unwrap();
+        let wb_ct = ct
+            .overrides
+            .iter()
+            .find(|o| o.part_name == "/xl/workbook.xml")
+            .expect("workbook override must exist");
+        assert_eq!(wb_ct.content_type, WorkbookFormat::Xltx.content_type());
+    }
+
+    #[test]
+    fn test_save_as_xltm_writes_template_macro_content_type() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("output.xltm");
+        let wb = Workbook::new();
+        wb.save(&path).unwrap();
+
+        let file = std::fs::File::open(&path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let ct: ContentTypes = read_xml_part(&mut archive, "[Content_Types].xml").unwrap();
+        let wb_ct = ct
+            .overrides
+            .iter()
+            .find(|o| o.part_name == "/xl/workbook.xml")
+            .expect("workbook override must exist");
+        assert_eq!(wb_ct.content_type, WorkbookFormat::Xltm.content_type());
+    }
+
+    #[test]
+    fn test_save_as_xlam_writes_addin_content_type() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("output.xlam");
+        let wb = Workbook::new();
+        wb.save(&path).unwrap();
+
+        let file = std::fs::File::open(&path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let ct: ContentTypes = read_xml_part(&mut archive, "[Content_Types].xml").unwrap();
+        let wb_ct = ct
+            .overrides
+            .iter()
+            .find(|o| o.part_name == "/xl/workbook.xml")
+            .expect("workbook override must exist");
+        assert_eq!(wb_ct.content_type, WorkbookFormat::Xlam.content_type());
+    }
+
+    #[test]
+    fn test_save_extension_overrides_stored_format() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("output.xlsm");
+
+        // Workbook has Xlsx format stored, but saved as .xlsm
+        let wb = Workbook::new();
+        assert_eq!(wb.format(), WorkbookFormat::Xlsx);
+        wb.save(&path).unwrap();
+
+        let file = std::fs::File::open(&path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let ct: ContentTypes = read_xml_part(&mut archive, "[Content_Types].xml").unwrap();
+        let wb_ct = ct
+            .overrides
+            .iter()
+            .find(|o| o.part_name == "/xl/workbook.xml")
+            .expect("workbook override must exist");
+        assert_eq!(
+            wb_ct.content_type,
+            WorkbookFormat::Xlsm.content_type(),
+            "extension .xlsm must override stored Xlsx format"
+        );
+    }
+
+    #[test]
+    fn test_save_to_buffer_preserves_stored_format() {
+        let mut wb = Workbook::new();
+        wb.set_format(WorkbookFormat::Xltx);
+
+        let buf = wb.save_to_buffer().unwrap();
+        let wb2 = Workbook::open_from_buffer(&buf).unwrap();
+        assert_eq!(
+            wb2.format(),
+            WorkbookFormat::Xltx,
+            "save_to_buffer must use the stored format, not infer from extension"
+        );
+    }
+
+    #[test]
+    fn test_save_xlsx_preserves_existing_behavior() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("preserved.xlsx");
+
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", CellValue::String("hello".to_string()))
+            .unwrap();
+        wb.save(&path).unwrap();
+
+        let wb2 = Workbook::open(&path).unwrap();
+        assert_eq!(wb2.format(), WorkbookFormat::Xlsx);
+        assert_eq!(wb2.sheet_names(), vec!["Sheet1"]);
+        assert_eq!(
+            wb2.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("hello".to_string())
+        );
+    }
+
+    #[test]
+    fn test_save_does_not_mutate_stored_format() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.xlsm");
+        let wb = Workbook::new();
+        assert_eq!(wb.format(), WorkbookFormat::Xlsx);
+        wb.save(&path).unwrap();
+        // The save call takes &self, so the stored format is unchanged.
+        assert_eq!(wb.format(), WorkbookFormat::Xlsx);
     }
 }

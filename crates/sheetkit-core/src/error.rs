@@ -124,6 +124,14 @@ pub enum Error {
     #[error("pivot table '{name}' already exists")]
     PivotTableAlreadyExists { name: String },
 
+    /// The specified table was not found.
+    #[error("table '{name}' not found")]
+    TableNotFound { name: String },
+
+    /// A table with the given name already exists.
+    #[error("table '{name}' already exists")]
+    TableAlreadyExists { name: String },
+
     /// The source data range for a pivot table is invalid.
     #[error("invalid source range: {0}")]
     InvalidSourceRange(String),
@@ -159,6 +167,10 @@ pub enum Error {
     /// A function argument or configuration value is invalid.
     #[error("invalid argument: {0}")]
     InvalidArgument(String),
+
+    /// The file extension is not a supported OOXML spreadsheet format.
+    #[error("unsupported file extension: {0}")]
+    UnsupportedFileExtension(String),
 
     /// An internal or otherwise unclassified error.
     #[error("internal error: {0}")]
@@ -262,6 +274,12 @@ mod tests {
     fn test_error_display_invalid_merge_cell_reference() {
         let err = Error::InvalidMergeCellReference("bad ref".to_string());
         assert_eq!(err.to_string(), "invalid merge cell reference: bad ref");
+    }
+
+    #[test]
+    fn test_error_display_unsupported_file_extension() {
+        let err = Error::UnsupportedFileExtension("csv".to_string());
+        assert_eq!(err.to_string(), "unsupported file extension: csv");
     }
 
     #[test]

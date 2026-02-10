@@ -105,8 +105,23 @@ pub struct SheetView {
     #[serde(rename = "@tabSelected", skip_serializing_if = "Option::is_none")]
     pub tab_selected: Option<bool>,
 
+    #[serde(rename = "@showGridLines", skip_serializing_if = "Option::is_none")]
+    pub show_grid_lines: Option<bool>,
+
+    #[serde(rename = "@showFormulas", skip_serializing_if = "Option::is_none")]
+    pub show_formulas: Option<bool>,
+
+    #[serde(rename = "@showRowColHeaders", skip_serializing_if = "Option::is_none")]
+    pub show_row_col_headers: Option<bool>,
+
     #[serde(rename = "@zoomScale", skip_serializing_if = "Option::is_none")]
     pub zoom_scale: Option<u32>,
+
+    #[serde(rename = "@view", skip_serializing_if = "Option::is_none")]
+    pub view: Option<String>,
+
+    #[serde(rename = "@topLeftCell", skip_serializing_if = "Option::is_none")]
+    pub top_left_cell: Option<String>,
 
     #[serde(rename = "@workbookViewId")]
     pub workbook_view_id: u32,

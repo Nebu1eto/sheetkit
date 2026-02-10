@@ -866,6 +866,109 @@ wb.unprotectSheet('Sheet1');
 
 ---
 
+### Sheet View Options
+
+Sheet view options control the visual display of a worksheet, including gridlines, formula display, zoom level, and view mode. Setting options does not affect freeze pane settings.
+
+#### Rust
+
+```rust
+use sheetkit::sheet::{SheetViewOptions, ViewMode};
+
+let mut wb = Workbook::new();
+
+// Hide gridlines and set zoom to 150%
+wb.set_sheet_view_options("Sheet1", &SheetViewOptions {
+    show_gridlines: Some(false),
+    zoom_scale: Some(150),
+    ..Default::default()
+})?;
+
+// Switch to page break preview
+wb.set_sheet_view_options("Sheet1", &SheetViewOptions {
+    view_mode: Some(ViewMode::PageBreak),
+    ..Default::default()
+})?;
+
+// Read current settings
+let opts = wb.get_sheet_view_options("Sheet1")?;
+```
+
+#### TypeScript
+
+```typescript
+const wb = new Workbook();
+
+// Hide gridlines and set zoom to 150%
+wb.setSheetViewOptions("Sheet1", {
+    showGridlines: false,
+    zoomScale: 150,
+});
+
+// Switch to page break preview
+wb.setSheetViewOptions("Sheet1", {
+    viewMode: "pageBreak",
+});
+
+// Read current settings
+const opts = wb.getSheetViewOptions("Sheet1");
+```
+
+View modes: `"normal"` (default), `"pageBreak"`, `"pageLayout"`. Zoom range: 10-400.
+
+For full API details, see the [API Reference](../api-reference/advanced.md#31-sheet-view-options).
+
+---
+
+### Sheet Visibility
+
+Control whether sheet tabs appear in the Excel UI. Three visibility states are available: visible (default), hidden (user can unhide via the UI), and very hidden (can only be unhidden programmatically). At least one sheet must remain visible at all times.
+
+#### Rust
+
+```rust
+use sheetkit::sheet::SheetVisibility;
+
+let mut wb = Workbook::new();
+wb.new_sheet("Config")?;
+wb.new_sheet("Internal")?;
+
+// Hide the Config sheet (user can unhide via Excel UI)
+wb.set_sheet_visibility("Config", SheetVisibility::Hidden)?;
+
+// Make Internal sheet very hidden (only code can unhide)
+wb.set_sheet_visibility("Internal", SheetVisibility::VeryHidden)?;
+
+// Check visibility
+let vis = wb.get_sheet_visibility("Config")?;
+assert_eq!(vis, SheetVisibility::Hidden);
+
+// Make visible again
+wb.set_sheet_visibility("Config", SheetVisibility::Visible)?;
+```
+
+#### TypeScript
+
+```typescript
+const wb = new Workbook();
+wb.newSheet("Config");
+wb.newSheet("Internal");
+
+// Hide sheets
+wb.setSheetVisibility("Config", "hidden");
+wb.setSheetVisibility("Internal", "veryHidden");
+
+// Check visibility
+const vis = wb.getSheetVisibility("Config"); // "hidden"
+
+// Make visible again
+wb.setSheetVisibility("Config", "visible");
+```
+
+For full API details, see the [API Reference](../api-reference/advanced.md#32-sheet-visibility).
+
+---
+
 ## Examples
 
 Complete example projects demonstrating all features are available in the repository:

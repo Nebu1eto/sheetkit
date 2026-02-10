@@ -779,3 +779,218 @@ wb.setConditionalFormat("Sheet1", "A1:A100", [{
 ```
 
 ---
+
+## 16. Tables
+
+Tables are structured data ranges with headers, styling, and optional auto-filter. Tables are stored as separate OOXML parts (`xl/tables/tableN.xml`) with full relationship and content-type wiring.
+
+### `add_table(sheet, config)` / `addTable(sheet, config)`
+
+Create a table on a sheet. The table name must be unique across the entire workbook. Returns an error if the name is already taken, the configuration is invalid, or the sheet does not exist.
+
+**Rust:**
+
+```rust
+use sheetkit::table::{TableConfig, TableColumn};
+
+let config = TableConfig {
+    name: "Sales".to_string(),
+    display_name: "Sales".to_string(),
+    range: "A1:C10".to_string(),
+    columns: vec![
+        TableColumn { name: "Product".to_string(), totals_row_function: None, totals_row_label: None },
+        TableColumn { name: "Quantity".to_string(), totals_row_function: None, totals_row_label: None },
+        TableColumn { name: "Price".to_string(), totals_row_function: None, totals_row_label: None },
+    ],
+    show_header_row: true,
+    style_name: Some("TableStyleMedium2".to_string()),
+    auto_filter: true,
+    ..TableConfig::default()
+};
+wb.add_table("Sheet1", &config)?;
+```
+
+**TypeScript:**
+
+```typescript
+wb.addTable("Sheet1", {
+    name: "Sales",
+    displayName: "Sales",
+    range: "A1:C10",
+    columns: [
+        { name: "Product" },
+        { name: "Quantity" },
+        { name: "Price" },
+    ],
+    showHeaderRow: true,
+    styleName: "TableStyleMedium2",
+    autoFilter: true,
+});
+```
+
+### `get_tables(sheet)` / `getTables(sheet)`
+
+List all tables on a sheet. Returns metadata for each table.
+
+**Rust:**
+
+```rust
+let tables = wb.get_tables("Sheet1")?;
+for t in &tables {
+    println!("{}: {} ({})", t.name, t.range, t.columns.join(", "));
+}
+```
+
+**TypeScript:**
+
+```typescript
+const tables = wb.getTables("Sheet1");
+for (const t of tables) {
+    console.log(`${t.name}: ${t.range}`);
+}
+```
+
+### `delete_table(sheet, name)` / `deleteTable(sheet, name)`
+
+Remove a table from a sheet by name. Returns an error if the table is not found on the specified sheet.
+
+**Rust:**
+
+```rust
+wb.delete_table("Sheet1", "Sales")?;
+```
+
+**TypeScript:**
+
+```typescript
+wb.deleteTable("Sheet1", "Sales");
+```
+
+### TableConfig
+
+| Field | Rust Type | TS Type | Description |
+|---|---|---|---|
+| `name` | `String` | `string` | Internal table name (must be unique in workbook) |
+| `display_name` | `String` | `string` | Display name shown in the UI |
+| `range` | `String` | `string` | Cell range (e.g. "A1:D10") |
+| `columns` | `Vec<TableColumn>` | `TableColumn[]` | Column definitions |
+| `show_header_row` | `bool` | `boolean?` | Show header row (default: true) |
+| `style_name` | `Option<String>` | `string?` | Table style (e.g. "TableStyleMedium2") |
+| `auto_filter` | `bool` | `boolean?` | Enable auto-filter (default: true) |
+| `show_first_column` | `bool` | `boolean?` | Highlight first column (default: false) |
+| `show_last_column` | `bool` | `boolean?` | Highlight last column (default: false) |
+| `show_row_stripes` | `bool` | `boolean?` | Show row stripes (default: true) |
+| `show_column_stripes` | `bool` | `boolean?` | Show column stripes (default: false) |
+
+### TableColumn
+
+| Field | Rust Type | TS Type | Description |
+|---|---|---|---|
+| `name` | `String` | `string` | Column header name |
+| `totals_row_function` | `Option<String>` | `string?` | Totals row function (e.g. "sum", "count", "average") |
+| `totals_row_label` | `Option<String>` | `string?` | Totals row label (for the first column) |
+
+### TableInfo (returned by `get_tables`)
+
+| Field | Rust Type | TS Type | Description |
+|---|---|---|---|
+| `name` | `String` | `string` | Table name |
+| `display_name` | `String` | `string` | Display name |
+| `range` | `String` | `string` | Cell range |
+| `show_header_row` | `bool` | `boolean` | Whether header row is shown |
+| `auto_filter` | `bool` | `boolean` | Whether auto-filter is enabled |
+| `columns` | `Vec<String>` | `string[]` | Column header names |
+| `style_name` | `Option<String>` | `string \| null` | Table style name |
+
+> Note: Table names must be unique across the entire workbook, not just within a single sheet. When a sheet is deleted, all tables on that sheet are removed automatically.
+
+---
+
+## 17. Data Conversion Utilities (Node.js only)
+
+These convenience methods convert between sheet data and common formats. They are available only in the TypeScript/Node.js bindings.
+
+### `toJSON(sheet, options?)`
+
+Convert a sheet to an array of objects. Each object maps column headers (from the first row) to cell values.
+
+```typescript
+const wb = await Workbook.open("data.xlsx");
+const records = wb.toJSON("Sheet1");
+// [{ Name: "Alice", Age: 30, City: "Seoul" }, ...]
+
+// With options
+const records2 = wb.toJSON("Sheet1", { headerRow: 2, range: "A2:C100" });
+```
+
+### `toCSV(sheet, options?)`
+
+Convert a sheet to a CSV string. Values are quoted as needed and separated by commas.
+
+```typescript
+const csv = wb.toCSV("Sheet1");
+// "Name,Age,City\nAlice,30,Seoul\n..."
+
+// With custom separator
+const tsv = wb.toCSV("Sheet1", { separator: "\t" });
+```
+
+### `toHTML(sheet, options?)`
+
+Convert a sheet to an HTML `<table>` string. All text content is XSS-safe (HTML-escaped).
+
+```typescript
+const html = wb.toHTML("Sheet1");
+// "<table><thead><tr><th>Name</th>..."
+
+// With CSS class
+const html2 = wb.toHTML("Sheet1", { tableClass: "data-table" });
+```
+
+### `fromJSON(sheet, data, options?)`
+
+Write an array of objects to a sheet. Keys become the header row, values fill the data rows.
+
+```typescript
+const wb = new Workbook();
+wb.fromJSON("Sheet1", [
+    { Name: "Alice", Age: 30, City: "Seoul" },
+    { Name: "Bob", Age: 25, City: "Busan" },
+]);
+await wb.save("output.xlsx");
+
+// With options
+wb.fromJSON("Sheet1", data, { startCell: "B2", writeHeaders: true });
+```
+
+### Conversion Options
+
+**ToJSONOptions:**
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `headerRow` | `number` | `1` | Row number to use as column headers (1-based) |
+| `range` | `string?` | `undefined` | Limit to a specific cell range |
+
+**ToCSVOptions:**
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `separator` | `string` | `","` | Field separator |
+| `lineEnding` | `string` | `"\n"` | Line ending |
+
+**ToHTMLOptions:**
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `tableClass` | `string?` | `undefined` | CSS class for the `<table>` element |
+| `includeHeaders` | `boolean` | `true` | Include a `<thead>` section |
+
+**FromJSONOptions:**
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `startCell` | `string` | `"A1"` | Top-left cell to start writing |
+| `writeHeaders` | `boolean` | `true` | Write object keys as the header row |
+
+---
