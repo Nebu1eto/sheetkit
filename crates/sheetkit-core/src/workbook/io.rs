@@ -32,6 +32,7 @@ impl Workbook {
             theme_colors: crate::theme::default_theme_colors(),
             sheet_sparklines: vec![vec![]],
             sheet_vml: vec![None],
+            tables: vec![],
             sheet_name_index,
         }
     }
@@ -311,6 +312,40 @@ impl Workbook {
             }
         }
 
+        // Parse table parts referenced from worksheet relationships.
+        let mut tables: Vec<(String, sheetkit_xml::table::TableXml, usize)> = Vec::new();
+        for (sheet_idx, sheet_path) in worksheet_paths.iter().enumerate() {
+            let Some(rels) = worksheet_rels.get(&sheet_idx) else {
+                continue;
+            };
+            for rel in &rels.relationships {
+                if rel.rel_type != rel_types::TABLE {
+                    continue;
+                }
+                let table_path = resolve_relationship_target(sheet_path, &rel.target);
+                if let Ok(table_xml) =
+                    read_xml_part::<sheetkit_xml::table::TableXml, _>(archive, &table_path)
+                {
+                    tables.push((table_path, table_xml, sheet_idx));
+                }
+            }
+        }
+        // Fallback: load table parts from content type overrides if not found via rels.
+        for ovr in &content_types.overrides {
+            if ovr.content_type != mime_types::TABLE {
+                continue;
+            }
+            let table_path = ovr.part_name.trim_start_matches('/').to_string();
+            if tables.iter().any(|(p, _, _)| p == &table_path) {
+                continue;
+            }
+            if let Ok(table_xml) =
+                read_xml_part::<sheetkit_xml::table::TableXml, _>(archive, &table_path)
+            {
+                tables.push((table_path, table_xml, 0));
+            }
+        }
+
         // Build sheet name -> index lookup.
         let mut sheet_name_index = HashMap::with_capacity(worksheets.len());
         for (i, (name, _)) in worksheets.iter().enumerate() {
@@ -357,6 +392,7 @@ impl Workbook {
             theme_colors,
             sheet_sparklines,
             sheet_vml,
+            tables,
             sheet_name_index,
         })
     }
@@ -557,6 +593,43 @@ impl Workbook {
             });
         }
 
+        // Synchronize table parts with worksheet relationships and content types.
+        // Also build tableParts references for each worksheet.
+        let mut table_parts_by_sheet: HashMap<usize, Vec<String>> = HashMap::new();
+        for (sheet_idx, _) in self.worksheets.iter().enumerate() {
+            if let Some(rels) = worksheet_rels.get_mut(&sheet_idx) {
+                rels.relationships
+                    .retain(|r| r.rel_type != rel_types::TABLE);
+            }
+        }
+        content_types
+            .overrides
+            .retain(|o| o.content_type != mime_types::TABLE);
+        for (table_path, _table_xml, sheet_idx) in &self.tables {
+            let part_name = format!("/{table_path}");
+            content_types.overrides.push(ContentTypeOverride {
+                part_name,
+                content_type: mime_types::TABLE.to_string(),
+            });
+
+            let sheet_path = self.sheet_part_path(*sheet_idx);
+            let target = relative_relationship_target(&sheet_path, table_path);
+            let rels = worksheet_rels
+                .entry(*sheet_idx)
+                .or_insert_with(default_relationships);
+            let rid = crate::sheet::next_rid(&rels.relationships);
+            rels.relationships.push(Relationship {
+                id: rid.clone(),
+                rel_type: rel_types::TABLE.to_string(),
+                target,
+                target_mode: None,
+            });
+            table_parts_by_sheet
+                .entry(*sheet_idx)
+                .or_default()
+                .push(rid);
+        }
+
         // [Content_Types].xml
         write_xml_part(zip, "[Content_Types].xml", &content_types, options)?;
 
@@ -580,13 +653,33 @@ impl Workbook {
             let empty_sparklines: Vec<crate::sparkline::SparklineConfig> = vec![];
             let sparklines = self.sheet_sparklines.get(i).unwrap_or(&empty_sparklines);
             let legacy_rid = legacy_drawing_rids.get(&i).map(|s| s.as_str());
+            let sheet_table_rids = table_parts_by_sheet.get(&i);
+            let has_extras =
+                legacy_rid.is_some() || !sparklines.is_empty() || sheet_table_rids.is_some();
 
-            if legacy_rid.is_none() && sparklines.is_empty() {
+            if !has_extras {
                 write_xml_part(zip, &entry_name, ws, options)?;
             } else {
-                // Serialize worksheet to XML and inject extras via string manipulation,
-                // avoiding a full WorksheetXml clone.
-                let xml = serialize_worksheet_with_extras(ws, sparklines, legacy_rid)?;
+                // Build a worksheet with table_parts set if needed.
+                let ws_to_serialize;
+                let ws_ref = if let Some(rids) = sheet_table_rids {
+                    ws_to_serialize = {
+                        let mut cloned = ws.clone();
+                        use sheetkit_xml::worksheet::{TablePart, TableParts};
+                        cloned.table_parts = Some(TableParts {
+                            count: Some(rids.len() as u32),
+                            table_parts: rids
+                                .iter()
+                                .map(|rid| TablePart { r_id: rid.clone() })
+                                .collect(),
+                        });
+                        cloned
+                    };
+                    &ws_to_serialize
+                } else {
+                    ws
+                };
+                let xml = serialize_worksheet_with_extras(ws_ref, sparklines, legacy_rid)?;
                 zip.start_file(&entry_name, options)
                     .map_err(|e| Error::Zip(e.to_string()))?;
                 zip.write_all(xml.as_bytes())?;
@@ -668,6 +761,11 @@ impl Workbook {
         // xl/pivotCache/pivotCacheRecords{N}.xml
         for (path, pcr) in &self.pivot_cache_records {
             write_xml_part(zip, path, pcr, options)?;
+        }
+
+        // xl/tables/table{N}.xml
+        for (path, table_xml, _sheet_idx) in &self.tables {
+            write_xml_part(zip, path, table_xml, options)?;
         }
 
         // xl/theme/theme1.xml

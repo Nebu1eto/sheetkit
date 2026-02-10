@@ -25,6 +25,7 @@ pub mod relationships;
 pub mod shared_strings;
 pub mod sparkline;
 pub mod styles;
+pub mod table;
 pub mod theme;
 pub mod workbook;
 pub mod worksheet;
