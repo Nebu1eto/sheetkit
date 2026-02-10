@@ -865,8 +865,7 @@ impl Workbook {
                 let comment_vml =
                     if let Some(bytes) = self.sheet_vml.get(sheet_idx).and_then(|v| v.as_ref()) {
                         bytes.clone()
-                    } else {
-                        let comments = self.sheet_comments[sheet_idx].as_ref().unwrap();
+                    } else if let Some(Some(comments)) = self.sheet_comments.get(sheet_idx) {
                         let cells: Vec<&str> = comments
                             .comment_list
                             .comments
@@ -874,6 +873,8 @@ impl Workbook {
                             .map(|c| c.r#ref.as_str())
                             .collect();
                         crate::vml::build_vml_drawing(&cells).into_bytes()
+                    } else {
+                        continue;
                     };
                 let shape_count = crate::control::count_vml_shapes(&comment_vml);
                 let start_id = 1025 + shape_count;
@@ -882,8 +883,7 @@ impl Workbook {
             } else if has_comments {
                 if let Some(bytes) = self.sheet_vml.get(sheet_idx).and_then(|v| v.as_ref()) {
                     bytes.clone()
-                } else {
-                    let comments = self.sheet_comments[sheet_idx].as_ref().unwrap();
+                } else if let Some(Some(comments)) = self.sheet_comments.get(sheet_idx) {
                     let cells: Vec<&str> = comments
                         .comment_list
                         .comments
@@ -891,14 +891,18 @@ impl Workbook {
                         .map(|c| c.r#ref.as_str())
                         .collect();
                     crate::vml::build_vml_drawing(&cells).into_bytes()
+                } else {
+                    continue;
                 }
             } else if has_form_controls {
                 // Hydrated form controls only (no comments).
                 let form_controls = &self.sheet_form_controls[sheet_idx];
                 crate::control::build_form_control_vml(form_controls, 1025).into_bytes()
-            } else {
+            } else if let Some(Some(vml)) = self.sheet_vml.get(sheet_idx) {
                 // Preserved VML bytes only (controls not hydrated, no comments).
-                self.sheet_vml[sheet_idx].as_ref().unwrap().clone()
+                vml.clone()
+            } else {
+                continue;
             };
 
             let vml_part_name = format!("/{}", vml_path);
