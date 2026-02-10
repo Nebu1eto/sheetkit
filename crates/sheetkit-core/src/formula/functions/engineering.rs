@@ -155,8 +155,9 @@ pub fn fn_oct2bin(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
         return Ok(CellValue::Error("#NUM!".to_string()));
     }
     let val = i64::from_str_radix(s, 8).unwrap_or(0);
-    let result = if val > 0x3FFFFFFF {
-        val - 0x40000000_i64 * 2
+    // 30-bit two's complement: values above 2^29-1 are negative.
+    let result = if val > 0x1FFFFFFF {
+        val - 0x40000000
     } else {
         val
     };
@@ -175,8 +176,9 @@ pub fn fn_oct2dec(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
         return Ok(CellValue::Error("#NUM!".to_string()));
     }
     let val = i64::from_str_radix(s, 8).unwrap_or(0);
-    let result = if val > 0x3FFFFFFF {
-        val - 0x40000000_i64 * 2
+    // 30-bit two's complement: values above 2^29-1 are negative.
+    let result = if val > 0x1FFFFFFF {
+        val - 0x40000000
     } else {
         val
     };
@@ -192,8 +194,9 @@ pub fn fn_oct2hex(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
         return Ok(CellValue::Error("#NUM!".to_string()));
     }
     let val = i64::from_str_radix(s, 8).unwrap_or(0);
-    let result = if val > 0x3FFFFFFF {
-        val - 0x40000000_i64 * 2
+    // 30-bit two's complement: values above 2^29-1 are negative.
+    let result = if val > 0x1FFFFFFF {
+        val - 0x40000000
     } else {
         val
     };
@@ -975,8 +978,43 @@ mod tests {
     }
 
     #[test]
+    fn oct2bin_negative() {
+        // 7777777000 octal = -512 decimal -> 10-bit binary 1000000000
+        assert_eq!(
+            eval("OCT2BIN(\"7777777000\")"),
+            CellValue::String("1000000000".to_string())
+        );
+        // 7777777776 octal = -2 decimal -> 1111111110
+        assert_eq!(
+            eval("OCT2BIN(\"7777777776\")"),
+            CellValue::String("1111111110".to_string())
+        );
+        // 7777777777 octal = -1 decimal -> 1111111111
+        assert_eq!(
+            eval("OCT2BIN(\"7777777777\")"),
+            CellValue::String("1111111111".to_string())
+        );
+    }
+
+    #[test]
     fn oct2dec_basic() {
         assert_approx(eval("OCT2DEC(\"54\")"), 44.0, 0.01);
+    }
+
+    #[test]
+    fn oct2dec_negative() {
+        // 7777777777 octal = -1 decimal (30-bit two's complement)
+        assert_approx(eval("OCT2DEC(\"7777777777\")"), -1.0, 0.01);
+        // 4000000000 octal = -536870912 decimal
+        assert_approx(eval("OCT2DEC(\"4000000000\")"), -536_870_912.0, 0.01);
+        // 7777777000 octal = -512 decimal
+        assert_approx(eval("OCT2DEC(\"7777777000\")"), -512.0, 0.01);
+    }
+
+    #[test]
+    fn oct2dec_positive_boundary() {
+        // 3777777777 octal = 536870911 (max positive in 30-bit two's complement)
+        assert_approx(eval("OCT2DEC(\"3777777777\")"), 536_870_911.0, 0.01);
     }
 
     #[test]
@@ -984,6 +1022,20 @@ mod tests {
         assert_eq!(
             eval("OCT2HEX(\"100\",4)"),
             CellValue::String("0040".to_string())
+        );
+    }
+
+    #[test]
+    fn oct2hex_negative() {
+        // 7777777777 octal = -1 decimal -> FFFFFFFFFF hex
+        assert_eq!(
+            eval("OCT2HEX(\"7777777777\")"),
+            CellValue::String("FFFFFFFFFF".to_string())
+        );
+        // 4000000000 octal = -536870912 decimal -> FFE0000000 hex
+        assert_eq!(
+            eval("OCT2HEX(\"4000000000\")"),
+            CellValue::String("FFE0000000".to_string())
         );
     }
 
