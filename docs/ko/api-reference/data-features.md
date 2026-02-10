@@ -974,7 +974,7 @@ const wb = await Workbook.open("data.xlsx");
 const records = wb.toJSON("Sheet1");
 // [{ Name: "Alice", Age: 30, City: "Seoul" }, ...]
 
-// 옵션 사용
+// With options
 const records2 = wb.toJSON("Sheet1", { headerRow: 2, range: "A2:C100" });
 ```
 
@@ -986,7 +986,7 @@ const records2 = wb.toJSON("Sheet1", { headerRow: 2, range: "A2:C100" });
 const csv = wb.toCSV("Sheet1");
 // "Name,Age,City\nAlice,30,Seoul\n..."
 
-// 사용자 정의 구분자 사용
+// Custom separator
 const tsv = wb.toCSV("Sheet1", { separator: "\t" });
 ```
 
@@ -998,7 +998,7 @@ const tsv = wb.toCSV("Sheet1", { separator: "\t" });
 const html = wb.toHTML("Sheet1");
 // "<table><thead><tr><th>Name</th>..."
 
-// CSS 클래스 적용
+// Apply CSS class
 const html2 = wb.toHTML("Sheet1", { tableClass: "data-table" });
 ```
 
@@ -1014,7 +1014,7 @@ wb.fromJSON("Sheet1", [
 ]);
 await wb.save("output.xlsx");
 
-// 옵션 사용
+// With options
 wb.fromJSON("Sheet1", data, { startCell: "B2", writeHeaders: true });
 ```
 

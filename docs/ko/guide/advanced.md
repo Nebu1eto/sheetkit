@@ -11,14 +11,14 @@ use sheetkit::{CellValue, Workbook};
 
 let mut wb = Workbook::new();
 
-// 새 시트를 위한 스트림 라이터 생성
+// Create a stream writer for a new sheet
 let mut sw = wb.new_stream_writer("LargeSheet")?;
 
-// 열 너비 설정 (행 작성 전에 해야 함)
-sw.set_col_width(1, 20.0)?;     // 1번 열 (A)
-sw.set_col_width(2, 15.0)?;     // 2번 열 (B)
+// Set column widths (must be done before writing rows)
+sw.set_col_width(1, 20.0)?;     // Column 1 (A)
+sw.set_col_width(2, 15.0)?;     // Column 2 (B)
 
-// 오름차순으로 행 작성 (1부터 시작)
+// Write rows in ascending order (starting from 1)
 sw.write_row(1, &[
     CellValue::from("Name"),
     CellValue::from("Score"),
@@ -30,10 +30,10 @@ for i in 2..=10_000 {
     ])?;
 }
 
-// 셀 병합 추가 (선택 사항)
+// Add merge cell (optional)
 sw.add_merge_cell("A1:B1")?;
 
-// 스트림 라이터를 워크북에 적용
+// Apply stream writer to the workbook
 wb.apply_stream_writer(sw)?;
 
 wb.save("large_file.xlsx")?;
@@ -44,23 +44,23 @@ wb.save("large_file.xlsx")?;
 ```typescript
 const wb = new Workbook();
 
-// 새 시트를 위한 스트림 라이터 생성
+// Create a stream writer for a new sheet
 const sw = wb.newStreamWriter('LargeSheet');
 
-// 열 너비 설정 (행 작성 전에 해야 함)
-sw.setColWidth(1, 20);     // 1번 열 (A)
-sw.setColWidth(2, 15);     // 2번 열 (B)
+// Set column widths (must be done before writing rows)
+sw.setColWidth(1, 20);     // Column 1 (A)
+sw.setColWidth(2, 15);     // Column 2 (B)
 
-// 오름차순으로 행 작성 (1부터 시작)
+// Write rows in ascending order (starting from 1)
 sw.writeRow(1, ['Name', 'Score']);
 for (let i = 2; i <= 10000; i++) {
     sw.writeRow(i, [`User_${i - 1}`, i * 1.5]);
 }
 
-// 셀 병합 추가 (선택 사항)
+// Add merge cell (optional)
 sw.addMergeCell('A1:B1');
 
-// 스트림 라이터를 워크북에 적용
+// Apply stream writer to the workbook
 wb.applyStreamWriter(sw);
 
 await wb.save('large_file.xlsx');
@@ -94,7 +94,7 @@ use sheetkit::{AppProperties, CustomPropertyValue, DocProperties, Workbook};
 
 let mut wb = Workbook::new();
 
-// 핵심 문서 속성
+// Core document properties
 wb.set_doc_props(DocProperties {
     title: Some("Annual Report".into()),
     creator: Some("SheetKit".into()),
@@ -103,7 +103,7 @@ wb.set_doc_props(DocProperties {
 });
 let props = wb.get_doc_props();
 
-// 애플리케이션 속성
+// Application properties
 wb.set_app_props(AppProperties {
     application: Some("SheetKit".into()),
     company: Some("Acme Corp".into()),
@@ -111,7 +111,7 @@ wb.set_app_props(AppProperties {
 });
 let app_props = wb.get_app_props();
 
-// 사용자 정의 속성 (문자열, 정수, 실수, 불리언, 날짜시간)
+// Custom properties (string, int, float, boolean, datetime)
 wb.set_custom_property("Project", CustomPropertyValue::String("SheetKit".into()));
 wb.set_custom_property("Version", CustomPropertyValue::Int(1));
 wb.set_custom_property("Released", CustomPropertyValue::Bool(false));
@@ -123,7 +123,7 @@ let deleted = wb.delete_custom_property("Version");
 #### TypeScript
 
 ```typescript
-// 핵심 문서 속성
+// Core document properties
 wb.setDocProps({
     title: 'Annual Report',
     creator: 'SheetKit',
@@ -131,14 +131,14 @@ wb.setDocProps({
 });
 const props = wb.getDocProps();
 
-// 애플리케이션 속성
+// Application properties
 wb.setAppProps({
     application: 'SheetKit',
     company: 'Acme Corp',
 });
 const appProps = wb.getAppProps();
 
-// 사용자 정의 속성 (문자열, 숫자, 불리언)
+// Custom properties (string, number, boolean)
 wb.setCustomProperty('Project', 'SheetKit');
 wb.setCustomProperty('Version', 1);
 wb.setCustomProperty('Released', false);
@@ -187,25 +187,25 @@ use sheetkit::{Workbook, WorkbookProtectionConfig};
 
 let mut wb = Workbook::new();
 
-// 워크북 보호
+// Protect workbook
 wb.protect_workbook(WorkbookProtectionConfig {
     password: Some("secret".into()),
-    lock_structure: true,    // 시트 추가/삭제/이름 변경 방지
-    lock_windows: false,     // 창 크기 조정 허용
-    lock_revision: false,    // 수정 내용 추적 변경 허용
+    lock_structure: true,    // Prevent adding/deleting/renaming sheets
+    lock_windows: false,     // Allow window resizing
+    lock_revision: false,    // Allow revision tracking changes
 });
 
-// 보호 상태 확인
+// Check protection status
 let is_protected: bool = wb.is_workbook_protected();
 
-// 보호 해제
+// Remove protection
 wb.unprotect_workbook();
 ```
 
 #### TypeScript
 
 ```typescript
-// 워크북 보호
+// Protect workbook
 wb.protectWorkbook({
     password: 'secret',
     lockStructure: true,
@@ -213,10 +213,10 @@ wb.protectWorkbook({
     lockRevision: false,
 });
 
-// 보호 상태 확인
+// Check protection status
 const isProtected: boolean = wb.isWorkbookProtected();
 
-// 보호 해제
+// Remove protection
 wb.unprotectWorkbook();
 ```
 
@@ -263,28 +263,28 @@ use sheetkit::hyperlink::HyperlinkType;
 
 let mut wb = Workbook::new();
 
-// 외부 URL
+// External URL
 wb.set_cell_hyperlink(
     "Sheet1", "A1",
     HyperlinkType::External("https://example.com".into()),
     Some("Example Site"), Some("Click here"),
 )?;
 
-// 이메일
+// Email
 wb.set_cell_hyperlink(
     "Sheet1", "A2",
     HyperlinkType::Email("mailto:user@example.com".into()),
     Some("Send email"), None,
 )?;
 
-// 내부 시트 참조
+// Internal sheet reference
 wb.set_cell_hyperlink(
     "Sheet1", "A3",
     HyperlinkType::Internal("Sheet2!A1".into()),
     None, None,
 )?;
 
-// 조회 및 삭제
+// Get and delete
 let info = wb.get_cell_hyperlink("Sheet1", "A1")?;
 wb.delete_cell_hyperlink("Sheet1", "A1")?;
 ```
@@ -294,7 +294,7 @@ wb.delete_cell_hyperlink("Sheet1", "A1")?;
 ```typescript
 const wb = new Workbook();
 
-// 외부 URL
+// External URL
 wb.setCellHyperlink('Sheet1', 'A1', {
     linkType: 'external',
     target: 'https://example.com',
@@ -302,20 +302,20 @@ wb.setCellHyperlink('Sheet1', 'A1', {
     tooltip: 'Click here',
 });
 
-// 이메일
+// Email
 wb.setCellHyperlink('Sheet1', 'A2', {
     linkType: 'email',
     target: 'mailto:user@example.com',
     display: 'Send email',
 });
 
-// 내부 시트 참조
+// Internal sheet reference
 wb.setCellHyperlink('Sheet1', 'A3', {
     linkType: 'internal',
     target: 'Sheet2!A1',
 });
 
-// 조회 및 삭제
+// Get and delete
 const info = wb.getCellHyperlink('Sheet1', 'A1');
 wb.deleteCellHyperlink('Sheet1', 'A1');
 ```
@@ -415,9 +415,9 @@ wb.deleteConditionalFormat('Sheet1', 'A1:A100');
 ```rust
 let mut wb = Workbook::new();
 
-wb.set_panes("Sheet1", "A2")?;    // 첫 행 고정
-wb.set_panes("Sheet1", "B1")?;    // 첫 열 고정
-wb.set_panes("Sheet1", "B2")?;    // 첫 행 + 첫 열 고정
+wb.set_panes("Sheet1", "A2")?;    // Freeze first row
+wb.set_panes("Sheet1", "B1")?;    // Freeze first column
+wb.set_panes("Sheet1", "B2")?;    // Freeze first row + first column
 
 let pane = wb.get_panes("Sheet1")?;
 wb.unset_panes("Sheet1")?;
@@ -428,8 +428,8 @@ wb.unset_panes("Sheet1")?;
 ```typescript
 const wb = new Workbook();
 
-wb.setPanes('Sheet1', 'A2');       // 첫 행 고정
-wb.setPanes('Sheet1', 'B2');       // 첫 행 + 첫 열 고정
+wb.setPanes('Sheet1', 'A2');       // Freeze first row
+wb.setPanes('Sheet1', 'B2');       // Freeze first row + first column
 
 const pane = wb.getPanes('Sheet1');
 wb.unsetPanes('Sheet1');
@@ -448,18 +448,18 @@ use sheetkit::page_layout::*;
 
 let mut wb = Workbook::new();
 
-// 여백 (인치 단위)
+// Margins (in inches)
 wb.set_page_margins("Sheet1", &PageMarginsConfig {
     left: 0.7, right: 0.7, top: 0.75, bottom: 0.75, header: 0.3, footer: 0.3,
 })?;
 
-// 페이지 설정
+// Page setup
 wb.set_page_setup("Sheet1", Some(Orientation::Landscape), Some(PaperSize::A4), Some(100), None, None)?;
 
-// 머리글/바닥글
+// Header/footer
 wb.set_header_footer("Sheet1", Some("&CMonthly Report"), Some("&LPage &P of &N"))?;
 
-// 페이지 나누기
+// Page break
 wb.insert_page_break("Sheet1", 20)?;
 ```
 
@@ -468,23 +468,23 @@ wb.insert_page_break("Sheet1", 20)?;
 ```typescript
 const wb = new Workbook();
 
-// 여백 (인치 단위)
+// Margins (in inches)
 wb.setPageMargins('Sheet1', {
     left: 0.7, right: 0.7, top: 0.75, bottom: 0.75, header: 0.3, footer: 0.3,
 });
 
-// 페이지 설정
+// Page setup
 wb.setPageSetup('Sheet1', {
     paperSize: 'a4', orientation: 'landscape', scale: 100,
 });
 
-// 인쇄 옵션
+// Print options
 wb.setPrintOptions('Sheet1', { gridLines: true, horizontalCentered: true });
 
-// 머리글/바닥글
+// Header/footer
 wb.setHeaderFooter('Sheet1', '&CMonthly Report', '&LPage &P of &N');
 
-// 페이지 나누기
+// Page break
 wb.insertPageBreak('Sheet1', 20);
 ```
 
@@ -499,7 +499,7 @@ wb.insertPageBreak('Sheet1', 20);
 ```rust
 let wb = Workbook::open("data.xlsx")?;
 
-// 모든 행 조회
+// Get all rows
 let rows = wb.get_rows("Sheet1")?;
 for (row_num, cells) in &rows {
     for (col, val) in cells {
@@ -507,7 +507,7 @@ for (row_num, cells) in &rows {
     }
 }
 
-// 모든 열 조회
+// Get all columns
 let cols = wb.get_cols("Sheet1")?;
 ```
 
@@ -537,14 +537,14 @@ const cols = wb.getCols('Sheet1');
 ```rust
 let mut wb = Workbook::new();
 
-// 아웃라인 수준
+// Outline level
 wb.set_row_outline_level("Sheet1", 2, 1)?;
 let level: u8 = wb.get_row_outline_level("Sheet1", 2)?;
 
 wb.set_col_outline_level("Sheet1", "B", 2)?;
 let col_level: u8 = wb.get_col_outline_level("Sheet1", "B")?;
 
-// 행/열 스타일
+// Row/column style
 let style_id = wb.add_style(&style)?;
 wb.set_row_style("Sheet1", 1, style_id)?;
 wb.set_col_style("Sheet1", "A", style_id)?;
@@ -555,14 +555,14 @@ wb.set_col_style("Sheet1", "A", style_id)?;
 ```typescript
 const wb = new Workbook();
 
-// 아웃라인 수준
+// Outline level
 wb.setRowOutlineLevel('Sheet1', 2, 1);
 const level: number = wb.getRowOutlineLevel('Sheet1', 2);
 
 wb.setColOutlineLevel('Sheet1', 'B', 2);
 const colLevel: number = wb.getColOutlineLevel('Sheet1', 'B');
 
-// 행/열 스타일
+// Row/column style
 const styleId = wb.addStyle({ font: { bold: true } });
 wb.setRowStyle('Sheet1', 1, styleId);
 wb.setColStyle('Sheet1', 'A', styleId);
@@ -679,14 +679,14 @@ use sheetkit::Workbook;
 let mut wb = Workbook::new();
 wb.set_cell_value("Sheet1", "A1", CellValue::from("Confidential"))?;
 
-// 비밀번호로 저장 (Agile Encryption)
+// Save with password (Agile Encryption)
 wb.save_with_password("encrypted.xlsx", "mypassword")?;
 
-// 암호화된 파일 열기
+// Open encrypted file
 let wb2 = Workbook::open_with_password("encrypted.xlsx", "mypassword")?;
 let val = wb2.get_cell_value("Sheet1", "A1")?;
 
-// 비밀번호 없이 열면 FileEncrypted 에러 반환
+// Opening without password returns FileEncrypted error
 match Workbook::open("encrypted.xlsx") {
     Err(sheetkit::Error::FileEncrypted) => {
         println!("Password required");
@@ -703,14 +703,14 @@ import { Workbook } from '@sheetkit/node';
 const wb = new Workbook();
 wb.setCellValue('Sheet1', 'A1', 'Confidential');
 
-// 비밀번호로 저장 (Agile Encryption)
+// Save with password (Agile Encryption)
 wb.saveWithPassword('encrypted.xlsx', 'mypassword');
 
-// 암호화된 파일 열기 (동기)
+// Open encrypted file (sync)
 const wb2 = Workbook.openWithPasswordSync('encrypted.xlsx', 'mypassword');
 const val = wb2.getCellValue('Sheet1', 'A1');
 
-// 비동기 방식
+// Async version
 const wb3 = await Workbook.openWithPassword('encrypted.xlsx', 'mypassword');
 await wb3.saveWithPassword('encrypted_copy.xlsx', 'newpassword');
 ```
@@ -730,12 +730,12 @@ use sheetkit::{SparklineConfig, SparklineType, Workbook};
 
 let mut wb = Workbook::new();
 
-// 데이터 입력
+// Enter data
 for i in 1..=10 {
     wb.set_cell_value("Sheet1", &format!("A{i}"), CellValue::from(i as f64 * 1.5))?;
 }
 
-// B1 셀에 컬럼 스파크라인 추가
+// Add column sparkline to cell B1
 let mut config = SparklineConfig::new("Sheet1!A1:A10", "B1");
 config.sparkline_type = SparklineType::Column;
 config.high_point = true;
@@ -744,10 +744,10 @@ config.style = Some(5);
 
 wb.add_sparkline("Sheet1", &config)?;
 
-// 스파크라인 조회
+// Get sparklines
 let sparklines = wb.get_sparklines("Sheet1")?;
 
-// 위치 기준으로 스파크라인 삭제
+// Remove sparkline by location
 wb.remove_sparkline("Sheet1", "B1")?;
 ```
 
@@ -756,12 +756,12 @@ wb.remove_sparkline("Sheet1", "B1")?;
 ```typescript
 const wb = new Workbook();
 
-// 데이터 입력
+// Enter data
 for (let i = 1; i <= 10; i++) {
     wb.setCellValue('Sheet1', `A${i}`, i * 1.5);
 }
 
-// B1 셀에 컬럼 스파크라인 추가
+// Add column sparkline to cell B1
 wb.addSparkline('Sheet1', {
     dataRange: 'Sheet1!A1:A10',
     location: 'B1',
@@ -771,10 +771,10 @@ wb.addSparkline('Sheet1', {
     style: 5,
 });
 
-// 스파크라인 조회
+// Get sparklines
 const sparklines = wb.getSparklines('Sheet1');
 
-// 위치 기준으로 스파크라인 삭제
+// Remove sparkline by location
 wb.removeSparkline('Sheet1', 'B1');
 ```
 
@@ -808,24 +808,24 @@ use sheetkit::Workbook;
 
 let mut wb = Workbook::new();
 
-// 워크북 범위 이름
+// Workbook-scoped name
 wb.set_defined_name("SalesTotal", "Sheet1!$B$10", None, None)?;
 
-// 시트 범위 이름 (주석 포함)
+// Sheet-scoped name (with comment)
 wb.set_defined_name(
     "LocalRange", "Sheet1!$A$1:$D$10",
     Some("Sheet1"), Some("Local data range"),
 )?;
 
-// 정의된 이름 조회
+// Get defined name
 if let Some(info) = wb.get_defined_name("SalesTotal", None)? {
     println!("Value: {}", info.value);
 }
 
-// 모든 정의된 이름 목록
+// List all defined names
 let names = wb.get_all_defined_names();
 
-// 정의된 이름 삭제
+// Delete defined name
 wb.delete_defined_name("SalesTotal", None)?;
 ```
 
@@ -834,13 +834,13 @@ wb.delete_defined_name("SalesTotal", None)?;
 ```typescript
 const wb = new Workbook();
 
-// 워크북 범위 이름
+// Workbook-scoped name
 wb.setDefinedName({
     name: 'SalesTotal',
     value: 'Sheet1!$B$10',
 });
 
-// 시트 범위 이름 (주석 포함)
+// Sheet-scoped name (with comment)
 wb.setDefinedName({
     name: 'LocalRange',
     value: 'Sheet1!$A$1:$D$10',
@@ -848,13 +848,13 @@ wb.setDefinedName({
     comment: 'Local data range',
 });
 
-// 정의된 이름 조회 (null = 워크북 범위)
+// Get defined name (null = workbook scope)
 const info = wb.getDefinedName('SalesTotal', null);
 
-// 모든 정의된 이름 목록
+// List all defined names
 const names = wb.getDefinedNames();
 
-// 정의된 이름 삭제
+// Delete defined name
 wb.deleteDefinedName('SalesTotal', null);
 ```
 
@@ -872,7 +872,7 @@ use sheetkit::sheet::SheetProtectionConfig;
 
 let mut wb = Workbook::new();
 
-// 비밀번호로 시트 보호 (정렬 허용)
+// Protect sheet with password (allow sorting)
 wb.protect_sheet("Sheet1", SheetProtectionConfig {
     password: Some("secret".into()),
     sort: true,
@@ -880,10 +880,10 @@ wb.protect_sheet("Sheet1", SheetProtectionConfig {
     ..Default::default()
 })?;
 
-// 시트 보호 여부 확인
+// Check if sheet is protected
 let is_protected: bool = wb.is_sheet_protected("Sheet1")?;
 
-// 보호 해제
+// Remove protection
 wb.unprotect_sheet("Sheet1")?;
 ```
 
@@ -892,17 +892,17 @@ wb.unprotect_sheet("Sheet1")?;
 ```typescript
 const wb = new Workbook();
 
-// 비밀번호로 시트 보호 (정렬 허용)
+// Protect sheet with password (allow sorting)
 wb.protectSheet('Sheet1', {
     password: 'secret',
     sort: true,
     autoFilter: true,
 });
 
-// 시트 보호 여부 확인
+// Check if sheet is protected
 const isProtected: boolean = wb.isSheetProtected('Sheet1');
 
-// 보호 해제
+// Remove protection
 wb.unprotectSheet('Sheet1');
 ```
 
@@ -938,20 +938,20 @@ use sheetkit::sheet::{SheetViewOptions, ViewMode};
 
 let mut wb = Workbook::new();
 
-// 눈금선 숨기고 확대/축소를 150%로 설정
+// Hide gridlines and set zoom to 150%
 wb.set_sheet_view_options("Sheet1", &SheetViewOptions {
     show_gridlines: Some(false),
     zoom_scale: Some(150),
     ..Default::default()
 })?;
 
-// 페이지 나누기 미리 보기로 전환
+// Switch to page break preview
 wb.set_sheet_view_options("Sheet1", &SheetViewOptions {
     view_mode: Some(ViewMode::PageBreak),
     ..Default::default()
 })?;
 
-// 현재 설정 읽기
+// Read current settings
 let opts = wb.get_sheet_view_options("Sheet1")?;
 ```
 
@@ -960,18 +960,18 @@ let opts = wb.get_sheet_view_options("Sheet1")?;
 ```typescript
 const wb = new Workbook();
 
-// 눈금선 숨기고 확대/축소를 150%로 설정
+// Hide gridlines and set zoom to 150%
 wb.setSheetViewOptions("Sheet1", {
     showGridlines: false,
     zoomScale: 150,
 });
 
-// 페이지 나누기 미리 보기로 전환
+// Switch to page break preview
 wb.setSheetViewOptions("Sheet1", {
     viewMode: "pageBreak",
 });
 
-// 현재 설정 읽기
+// Read current settings
 const opts = wb.getSheetViewOptions("Sheet1");
 ```
 
@@ -994,17 +994,17 @@ let mut wb = Workbook::new();
 wb.new_sheet("Config")?;
 wb.new_sheet("Internal")?;
 
-// Config 시트 숨기기 (사용자가 Excel UI에서 숨김 해제 가능)
+// Hide Config sheet (user can unhide via Excel UI)
 wb.set_sheet_visibility("Config", SheetVisibility::Hidden)?;
 
-// Internal 시트를 매우 숨김으로 설정 (코드로만 숨김 해제 가능)
+// Set Internal sheet to very hidden (only unhidable via code)
 wb.set_sheet_visibility("Internal", SheetVisibility::VeryHidden)?;
 
-// 표시 상태 확인
+// Check visibility status
 let vis = wb.get_sheet_visibility("Config")?;
 assert_eq!(vis, SheetVisibility::Hidden);
 
-// 다시 표시
+// Make visible again
 wb.set_sheet_visibility("Config", SheetVisibility::Visible)?;
 ```
 
@@ -1015,14 +1015,14 @@ const wb = new Workbook();
 wb.newSheet("Config");
 wb.newSheet("Internal");
 
-// 시트 숨기기
+// Hide sheets
 wb.setSheetVisibility("Config", "hidden");
 wb.setSheetVisibility("Internal", "veryHidden");
 
-// 표시 상태 확인
+// Check visibility status
 const vis = wb.getSheetVisibility("Config"); // "hidden"
 
-// 다시 표시
+// Make visible again
 wb.setSheetVisibility("Config", "visible");
 ```
 
@@ -1048,16 +1048,16 @@ SheetKit은 셀 참조 변환을 위한 도우미 함수도 제공합니다:
 ```rust
 use sheetkit::utils::cell_ref;
 
-// 셀 이름을 (열, 행) 좌표로 변환
+// Convert cell name to (column, row) coordinates
 let (col, row) = cell_ref::cell_name_to_coordinates("B3")?;  // (2, 3)
 
-// 좌표를 셀 이름으로 변환
+// Convert coordinates to cell name
 let name = cell_ref::coordinates_to_cell_name(2, 3)?;  // "B3"
 
-// 열 이름을 번호로 변환
+// Convert column name to number
 let num = cell_ref::column_name_to_number("AA")?;  // 27
 
-// 열 번호를 이름으로 변환
+// Convert column number to name
 let name = cell_ref::column_number_to_name(27)?;  // "AA"
 ```
 
@@ -1074,13 +1074,13 @@ use sheetkit::Workbook;
 
 let wb = Workbook::new();
 
-// accent1 색상 가져오기 (틴트 없음)
+// Get accent1 color (no tint)
 let color = wb.get_theme_color(4, None); // Some("FF4472C4")
 
-// 검정(인덱스 0)을 50% 밝게
+// Lighten black (index 0) by 50%
 let lightened = wb.get_theme_color(0, Some(0.5)); // Some("FF7F7F7F")
 
-// 범위 밖이면 None 반환
+// Out of range returns None
 let invalid = wb.get_theme_color(99, None); // None
 ```
 
@@ -1089,16 +1089,16 @@ let invalid = wb.get_theme_color(99, None); // None
 ```typescript
 const wb = new Workbook();
 
-// accent1 색상 가져오기 (틴트 없음)
+// Get accent1 color (no tint)
 const color = wb.getThemeColor(4, null); // "FF4472C4"
 
-// 검정을 50% 밝게
+// Lighten black by 50%
 const lightened = wb.getThemeColor(0, 0.5); // "FF7F7F7F"
 
-// 흰색을 50% 어둡게
+// Darken white by 50%
 const darkened = wb.getThemeColor(1, -0.5); // "FF7F7F7F"
 
-// 범위 밖이면 null 반환
+// Out of range returns null
 const invalid = wb.getThemeColor(99, null); // null
 ```
 
@@ -1119,7 +1119,7 @@ use sheetkit::{Workbook, RichTextRun};
 
 let mut wb = Workbook::new();
 
-// 여러 서식 run으로 서식 있는 텍스트 설정
+// Set rich text with multiple formatted runs
 wb.set_cell_rich_text("Sheet1", "A1", vec![
     RichTextRun {
         text: "Bold red".to_string(),
@@ -1139,7 +1139,7 @@ wb.set_cell_rich_text("Sheet1", "A1", vec![
     },
 ])?;
 
-// 서식 있는 텍스트 읽기
+// Read rich text
 if let Some(runs) = wb.get_cell_rich_text("Sheet1", "A1")? {
     for run in &runs {
         println!("Text: {:?}, Bold: {}", run.text, run.bold);
@@ -1152,13 +1152,13 @@ if let Some(runs) = wb.get_cell_rich_text("Sheet1", "A1")? {
 ```typescript
 const wb = new Workbook();
 
-// 여러 서식 run으로 서식 있는 텍스트 설정
+// Set rich text with multiple formatted runs
 wb.setCellRichText('Sheet1', 'A1', [
   { text: 'Bold red', font: 'Arial', size: 14, bold: true, color: '#FF0000' },
   { text: ' normal text' },
 ]);
 
-// 서식 있는 텍스트 읽기
+// Read rich text
 const runs = wb.getCellRichText('Sheet1', 'A1');
 if (runs) {
   for (const run of runs) {
@@ -1182,16 +1182,16 @@ if (runs) {
 ```rust
 use sheetkit::Workbook;
 
-// 비밀번호로 저장 (Agile Encryption, AES-256-CBC)
+// Save with password (Agile Encryption, AES-256-CBC)
 let mut wb = Workbook::new();
 wb.save_with_password("encrypted.xlsx", "secret")?;
 
-// 비밀번호로 열기
+// Open with password
 let wb2 = Workbook::open_with_password("encrypted.xlsx", "secret")?;
 
-// 암호화된 파일 감지
+// Detect encrypted file
 match Workbook::open("file.xlsx") {
-    Ok(wb) => { /* 암호화되지 않은 파일 */ }
+    Ok(wb) => { /* Unencrypted file */ }
     Err(sheetkit::Error::FileEncrypted) => {
         let wb = Workbook::open_with_password("file.xlsx", "password")?;
     }
@@ -1204,13 +1204,13 @@ match Workbook::open("file.xlsx") {
 ```typescript
 const wb = new Workbook();
 
-// 비밀번호로 저장
+// Save with password
 wb.saveWithPassword('encrypted.xlsx', 'secret');
 
-// 비밀번호로 열기 (동기)
+// Open with password (sync)
 const wb2 = Workbook.openWithPasswordSync('encrypted.xlsx', 'secret');
 
-// 비밀번호로 열기 (비동기)
+// Open with password (async)
 const wb3 = await Workbook.openWithPassword('encrypted.xlsx', 'secret');
 ```
 
@@ -1246,16 +1246,16 @@ const wb = Workbook.openSync('large.xlsx');
 const buf = wb.getRowsBuffer('Sheet1');
 const sheet = new SheetData(buf);
 
-// 특정 셀 접근 (1 기반 행/열)
+// Access specific cells (1-based row/column)
 const header = sheet.getRow(1);
 const value = sheet.getCell(100, 3);  // 100행, C열
 
-// 모든 행 순회
+// Iterate over all rows
 for (const { row, values } of sheet.rows()) {
-  // row: 행 번호, values: 값 배열
+  // row: row number, values: value array
 }
 
-// 2차원 배열로 변환
+// Convert to 2D array
 const data = sheet.toArray();
 ```
 
@@ -1265,7 +1265,7 @@ raw Buffer를 직접 사용하여 커스텀 디코더를 구현하거나 네트�
 
 ```typescript
 const buf = wb.getRowsBuffer('Sheet1');
-// 커스텀 디코더에 전달, 네트워크 전송, 캐시 저장 등
+// Pass to custom decoder, send over network, cache, etc.
 ```
 
 #### 메모리 비교

@@ -27,23 +27,23 @@ npm install @sheetkit/node
 use sheetkit::{CellValue, Workbook};
 
 fn main() -> sheetkit::Result<()> {
-    // 새 워크북 생성 (기본적으로 "Sheet1" 포함)
+    // Create new workbook (includes "Sheet1" by default)
     let mut wb = Workbook::new();
 
-    // 셀 값 쓰기
+    // Write cell values
     wb.set_cell_value("Sheet1", "A1", CellValue::String("Name".into()))?;
     wb.set_cell_value("Sheet1", "B1", CellValue::String("Age".into()))?;
     wb.set_cell_value("Sheet1", "A2", CellValue::String("John Doe".into()))?;
     wb.set_cell_value("Sheet1", "B2", CellValue::Number(30.0))?;
 
-    // 셀 값 읽기
+    // Read cell value
     let val = wb.get_cell_value("Sheet1", "A1")?;
     println!("A1 = {:?}", val);
 
-    // 파일로 저장
+    // Save to file
     wb.save("output.xlsx")?;
 
-    // 기존 파일 열기
+    // Open existing file
     let wb2 = Workbook::open("output.xlsx")?;
     println!("Sheets: {:?}", wb2.sheet_names());
 
@@ -56,23 +56,23 @@ fn main() -> sheetkit::Result<()> {
 ```typescript
 import { Workbook } from '@sheetkit/node';
 
-// 새 워크북 생성 (기본적으로 "Sheet1" 포함)
+// Create new workbook (includes "Sheet1" by default)
 const wb = new Workbook();
 
-// 셀 값 쓰기
+// Write cell values
 wb.setCellValue('Sheet1', 'A1', 'Name');
 wb.setCellValue('Sheet1', 'B1', 'Age');
 wb.setCellValue('Sheet1', 'A2', 'John Doe');
 wb.setCellValue('Sheet1', 'B2', 30);
 
-// 셀 값 읽기
+// Read cell value
 const val = wb.getCellValue('Sheet1', 'A1');
 console.log('A1 =', val);
 
-// 파일로 저장
+// Save to file
 await wb.save('output.xlsx');
 
-// 기존 파일 열기
+// Open existing file
 const wb2 = await Workbook.open('output.xlsx');
 console.log('Sheets:', wb2.sheetNames);
 ```
@@ -90,16 +90,16 @@ console.log('Sheets:', wb2.sheetNames);
 ```rust
 use sheetkit::Workbook;
 
-// "Sheet1"이 포함된 빈 워크북 생성
+// Create empty workbook with "Sheet1"
 let mut wb = Workbook::new();
 
-// 기존 .xlsx 파일 열기
+// Open existing .xlsx file
 let wb = Workbook::open("input.xlsx")?;
 
-// .xlsx 파일로 저장
+// Save as .xlsx file
 wb.save("output.xlsx")?;
 
-// 모든 시트 이름 조회
+// Get all sheet names
 let names: Vec<&str> = wb.sheet_names();
 ```
 
@@ -108,16 +108,16 @@ let names: Vec<&str> = wb.sheet_names();
 ```typescript
 import { Workbook } from '@sheetkit/node';
 
-// "Sheet1"이 포함된 빈 워크북 생성
+// Create empty workbook with "Sheet1"
 const wb = new Workbook();
 
-// 기존 .xlsx 파일 열기
+// Open existing .xlsx file
 const wb2 = await Workbook.open('input.xlsx');
 
-// .xlsx 파일로 저장
+// Save as .xlsx file
 await wb.save('output.xlsx');
 
-// 모든 시트 이름 조회
+// Get all sheet names
 const names: string[] = wb.sheetNames;
 ```
 
@@ -128,23 +128,23 @@ const names: string[] = wb.sheetNames;
 **Rust:**
 
 ```rust
-// 버퍼로 저장
+// Save to buffer
 let buf: Vec<u8> = wb.save_to_buffer()?;
 
-// 버퍼에서 열기
+// Open from buffer
 let wb2 = Workbook::open_from_buffer(&buf)?;
 ```
 
 **TypeScript:**
 
 ```typescript
-// 버퍼로 저장
+// Save to buffer
 const buf: Buffer = wb.writeBufferSync();
 
-// 버퍼에서 열기
+// Open from buffer
 const wb2 = Workbook.openBufferSync(buf);
 
-// 비동기 버전
+// Async version
 const buf2: Buffer = await wb.writeBuffer();
 const wb3 = await Workbook.openBuffer(buf2);
 ```
@@ -170,35 +170,35 @@ SheetKit은 표준 `.xlsx` 외에도 다양한 Excel 파일 형식을 지원합�
 ```rust
 use sheetkit::{Workbook, WorkbookFormat};
 
-// 열 때 형식이 자동 감지됩니다
+// Format is auto-detected when opening
 let wb = Workbook::open("macros.xlsm")?;
 assert_eq!(wb.format(), WorkbookFormat::Xlsm);
 
-// 저장 시 확장자에서 형식이 유추됩니다
+// Format is inferred from file extension when saving
 let mut wb2 = Workbook::new();
-wb2.save("template.xltx")?;  // 템플릿 형식으로 저장됩니다
+wb2.save("template.xltx")?;  // Saved as template format
 
-// 명시적 형식 제어
+// Explicit format control
 let mut wb3 = Workbook::new();
 wb3.set_format(WorkbookFormat::Xlsm);
-wb3.save_to_buffer()?;  // Buffer에 xlsm 콘텐츠 타입이 사용됩니다
+wb3.save_to_buffer()?;  // Buffer uses xlsm content type
 ```
 
 #### TypeScript
 
 ```typescript
-// 열 때 형식이 자동 감지됩니다
+// Format is auto-detected when opening
 const wb = await Workbook.open("macros.xlsm");
 console.log(wb.format);  // "xlsm"
 
-// 저장 시 확장자에서 형식이 유추됩니다
+// Format is inferred from file extension when saving
 const wb2 = new Workbook();
-await wb2.save("template.xltx");  // 템플릿 형식으로 저장됩니다
+await wb2.save("template.xltx");  // Saved as template format
 
-// 명시적 형식 제어
+// Explicit format control
 const wb3 = new Workbook();
 wb3.format = "xlsm";
-const buf = wb3.writeBufferSync();  // Buffer에 xlsm 콘텐츠 타입이 사용됩니다
+const buf = wb3.writeBufferSync();  // Buffer uses xlsm content type
 ```
 
 #### VBA 보존
@@ -208,7 +208,7 @@ const buf = wb3.writeBufferSync();  // Buffer에 xlsm 콘텐츠 타입이 사용
 ```typescript
 const wb = await Workbook.open("with_macros.xlsm");
 wb.setCellValue("Sheet1", "A1", "Updated");
-await wb.save("with_macros.xlsm");  // 매크로가 보존됩니다
+await wb.save("with_macros.xlsm");  // Macros are preserved
 ```
 
 자세한 API 설명은 [API 레퍼런스](../api-reference/workbook.md)를 참조하세요.
@@ -237,18 +237,18 @@ use sheetkit::{CellValue, Workbook};
 
 let mut wb = Workbook::new();
 
-// 다양한 타입의 값 설정
+// Set values of various types
 wb.set_cell_value("Sheet1", "A1", CellValue::String("Hello".into()))?;
 wb.set_cell_value("Sheet1", "B1", CellValue::Number(42.0))?;
 wb.set_cell_value("Sheet1", "C1", CellValue::Bool(true))?;
 wb.set_cell_value("Sheet1", "D1", CellValue::Empty)?;
 
-// From 트레이트를 활용한 편리한 변환
+// Convenient conversion using From trait
 wb.set_cell_value("Sheet1", "A2", CellValue::from("Text"))?;
 wb.set_cell_value("Sheet1", "B2", CellValue::from(100i32))?;
 wb.set_cell_value("Sheet1", "C2", CellValue::from(3.14))?;
 
-// 셀 값 읽기
+// Read cell value
 let val = wb.get_cell_value("Sheet1", "A1")?;
 match val {
     CellValue::String(s) => println!("String: {}", s),
@@ -262,13 +262,13 @@ match val {
 #### TypeScript
 
 ```typescript
-// 값 설정 -- JavaScript 값의 타입에 따라 자동으로 결정됨
+// Set values -- type is automatically determined from JavaScript value type
 wb.setCellValue('Sheet1', 'A1', 'Hello');       // string
 wb.setCellValue('Sheet1', 'B1', 42);            // number
 wb.setCellValue('Sheet1', 'C1', true);          // boolean
-wb.setCellValue('Sheet1', 'D1', null);          // 셀 비우기
+wb.setCellValue('Sheet1', 'D1', null);          // Clear cell
 
-// 셀 값 읽기 -- string | number | boolean | null 반환
+// Read cell value -- returns string | number | boolean | null
 const val = wb.getCellValue('Sheet1', 'A1');
 ```
 

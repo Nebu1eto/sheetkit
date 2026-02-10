@@ -7,22 +7,22 @@
 ```rust
 let mut wb = Workbook::new();
 
-// 새 시트 생성 (0부터 시작하는 인덱스 반환)
+// Create new sheet (returns 0-based index)
 let idx: usize = wb.new_sheet("Sales")?;
 
-// 시트 삭제
+// Delete sheet
 wb.delete_sheet("Sales")?;
 
-// 시트 이름 변경
+// Rename sheet
 wb.set_sheet_name("Sheet1", "Main")?;
 
-// 시트 복사 (새 시트의 인덱스 반환)
+// Copy sheet (returns index of new sheet)
 let idx: usize = wb.copy_sheet("Main", "Main_Copy")?;
 
-// 시트 인덱스 조회 (없으면 None)
+// Get sheet index (None if not found)
 let idx: Option<usize> = wb.get_sheet_index("Main");
 
-// 활성 시트 조회/설정
+// Get/set active sheet
 let active: &str = wb.get_active_sheet();
 wb.set_active_sheet("Main")?;
 ```
@@ -32,22 +32,22 @@ wb.set_active_sheet("Main")?;
 ```typescript
 const wb = new Workbook();
 
-// 새 시트 생성 (0부터 시작하는 인덱스 반환)
+// Create new sheet (returns 0-based index)
 const idx: number = wb.newSheet('Sales');
 
-// 시트 삭제
+// Delete sheet
 wb.deleteSheet('Sales');
 
-// 시트 이름 변경
+// Rename sheet
 wb.setSheetName('Sheet1', 'Main');
 
-// 시트 복사 (새 시트의 인덱스 반환)
+// Copy sheet (returns index of new sheet)
 const copyIdx: number = wb.copySheet('Main', 'Main_Copy');
 
-// 시트 인덱스 조회 (없으면 null)
+// Get sheet index (null if not found)
 const sheetIdx: number | null = wb.getSheetIndex('Main');
 
-// 활성 시트 조회/설정
+// Get/set active sheet
 const active: string = wb.getActiveSheet();
 wb.setActiveSheet('Main');
 ```
@@ -63,37 +63,37 @@ wb.setActiveSheet('Main');
 ```rust
 let mut wb = Workbook::new();
 
-// -- 행 (1부터 시작하는 행 번호) --
+// -- Rows (1-based row numbers) --
 
-// 2번 행부터 3개의 빈 행 삽입
+// Insert 3 empty rows starting at row 2
 wb.insert_rows("Sheet1", 2, 3)?;
 
-// 5번 행 삭제
+// Delete row 5
 wb.remove_row("Sheet1", 5)?;
 
-// 1번 행 복제 (아래에 복사본 삽입)
+// Duplicate row 1 (inserts copy below)
 wb.duplicate_row("Sheet1", 1)?;
 
-// 행 높이 설정/조회
+// Set/get row height
 wb.set_row_height("Sheet1", 1, 25.0)?;
 let height: Option<f64> = wb.get_row_height("Sheet1", 1)?;
 
-// 행 표시/숨김
+// Show/hide row
 wb.set_row_visible("Sheet1", 3, false)?;
 
-// -- 열 (알파벳 기반, 예: "A", "B", "AA") --
+// -- Columns (letter-based, e.g., "A", "B", "AA") --
 
-// 열 너비 설정/조회
+// Set/get column width
 wb.set_col_width("Sheet1", "A", 20.0)?;
 let width: Option<f64> = wb.get_col_width("Sheet1", "A")?;
 
-// 열 표시/숨김
+// Show/hide column
 wb.set_col_visible("Sheet1", "B", false)?;
 
-// "C" 열부터 2개의 빈 열 삽입
+// Insert 2 empty columns starting at column "C"
 wb.insert_cols("Sheet1", "C", 2)?;
 
-// "D" 열 삭제
+// Delete column "D"
 wb.remove_col("Sheet1", "D")?;
 ```
 
@@ -102,7 +102,7 @@ wb.remove_col("Sheet1", "D")?;
 ```typescript
 const wb = new Workbook();
 
-// -- 행 (1부터 시작하는 행 번호) --
+// -- Rows (1-based row numbers) --
 wb.insertRows('Sheet1', 2, 3);
 wb.removeRow('Sheet1', 5);
 wb.duplicateRow('Sheet1', 1);
@@ -110,7 +110,7 @@ wb.setRowHeight('Sheet1', 1, 25);
 const height: number | null = wb.getRowHeight('Sheet1', 1);
 wb.setRowVisible('Sheet1', 3, false);
 
-// -- 열 (알파벳 기반) --
+// -- Columns (letter-based) --
 wb.setColWidth('Sheet1', 'A', 20);
 const width: number | null = wb.getColWidth('Sheet1', 'A');
 wb.setColVisible('Sheet1', 'B', false);
@@ -137,7 +137,7 @@ use sheetkit::{
 
 let mut wb = Workbook::new();
 
-// 스타일 등록
+// Register style
 let style_id = wb.add_style(&Style {
     font: Some(FontStyle {
         name: Some("Arial".into()),
@@ -169,17 +169,17 @@ let style_id = wb.add_style(&Style {
     ..Default::default()
 })?;
 
-// 셀에 스타일 적용
+// Apply style to cell
 wb.set_cell_style("Sheet1", "A1", style_id)?;
 
-// 셀의 스타일 ID 조회 (기본 스타일이면 None)
+// Get cell style ID (None if default style)
 let current_style: Option<u32> = wb.get_cell_style("Sheet1", "A1")?;
 ```
 
 #### TypeScript
 
 ```typescript
-// 스타일 등록
+// Register style
 const styleId = wb.addStyle({
     font: {
         name: 'Arial',
@@ -201,10 +201,10 @@ const styleId = wb.addStyle({
     },
 });
 
-// 셀에 스타일 적용
+// Apply style to cell
 wb.setCellStyle('Sheet1', 'A1', styleId);
 
-// 셀의 스타일 ID 조회 (기본 스타일이면 null)
+// Get cell style ID (null if default style)
 const currentStyle: number | null = wb.getCellStyle('Sheet1', 'A1');
 ```
 
@@ -260,10 +260,10 @@ VerticalAlign 값: `Top`, `Center`, `Bottom`, `Justify`, `Distributed`.
 ```rust
 use sheetkit::style::NumFmtStyle;
 
-// 기본 제공 형식 (예: 퍼센트, 날짜, 통화)
+// Built-in format (e.g., percent, date, currency)
 NumFmtStyle::Builtin(9)  // 0%
 
-// 사용자 정의 형식 문자열
+// Custom format string
 NumFmtStyle::Custom("#,##0.00".to_string())
 ```
 
@@ -384,16 +384,16 @@ use sheetkit::{ChartConfig, ChartSeries, ChartType, Workbook};
 
 let mut wb = Workbook::new();
 
-// 먼저 데이터를 채웁니다...
+// First, populate data...
 wb.set_cell_value("Sheet1", "A1", CellValue::String("Q1".into()))?;
 wb.set_cell_value("Sheet1", "B1", CellValue::Number(1500.0))?;
-// ... 더 많은 데이터 행 ...
+// ... more data rows ...
 
-// D1~K15 영역에 차트 추가
+// Add chart in D1:K15 area
 wb.add_chart(
     "Sheet1",
-    "D1",   // 좌상단 앵커 셀
-    "K15",  // 우하단 앵커 셀
+    "D1",   // Top-left anchor cell
+    "K15",  // Bottom-right anchor cell
     &ChartConfig {
         chart_type: ChartType::Col,
         title: Some("Quarterly Revenue".into()),
@@ -505,7 +505,7 @@ use sheetkit::{DataValidationConfig, ErrorStyle, ValidationType, Workbook};
 
 let mut wb = Workbook::new();
 
-// 드롭다운 목록 유효성 검사
+// Dropdown list validation
 wb.add_data_validation(
     "Sheet1",
     &DataValidationConfig {
@@ -525,17 +525,17 @@ wb.add_data_validation(
     },
 )?;
 
-// 시트의 모든 유효성 검사 조회
+// Get all validations for the sheet
 let validations = wb.get_data_validations("Sheet1")?;
 
-// 셀 범위 참조로 유효성 검사 제거
+// Remove validation by cell range reference
 wb.remove_data_validation("Sheet1", "C2:C100")?;
 ```
 
 #### TypeScript
 
 ```typescript
-// 드롭다운 목록 유효성 검사
+// Dropdown list validation
 wb.addDataValidation('Sheet1', {
     sqref: 'C2:C100',
     validationType: 'list',
@@ -550,10 +550,10 @@ wb.addDataValidation('Sheet1', {
     errorMessage: 'Please select from the list',
 });
 
-// 시트의 모든 유효성 검사 조회
+// Get all validations for the sheet
 const validations = wb.getDataValidations('Sheet1');
 
-// 셀 범위 참조로 유효성 검사 제거
+// Remove validation by cell range reference
 wb.removeDataValidation('Sheet1', 'C2:C100');
 ```
 
@@ -570,7 +570,7 @@ use sheetkit::{CommentConfig, Workbook};
 
 let mut wb = Workbook::new();
 
-// 코멘트 추가
+// Add comment
 wb.add_comment(
     "Sheet1",
     &CommentConfig {
@@ -580,27 +580,27 @@ wb.add_comment(
     },
 )?;
 
-// 시트의 모든 코멘트 조회
+// Get all comments for the sheet
 let comments: Vec<CommentConfig> = wb.get_comments("Sheet1")?;
 
-// 특정 셀의 코멘트 삭제
+// Delete comment for a specific cell
 wb.remove_comment("Sheet1", "A1")?;
 ```
 
 #### TypeScript
 
 ```typescript
-// 코멘트 추가
+// Add comment
 wb.addComment('Sheet1', {
     cell: 'A1',
     author: 'Admin',
     text: 'This cell contains the project name.',
 });
 
-// 시트의 모든 코멘트 조회
+// Get all comments for the sheet
 const comments = wb.getComments('Sheet1');
 
-// 특정 셀의 코멘트 삭제
+// Delete comment for a specific cell
 wb.removeComment('Sheet1', 'A1');
 ```
 
@@ -613,20 +613,20 @@ wb.removeComment('Sheet1', 'A1');
 #### Rust
 
 ```rust
-// 범위에 자동 필터 설정
+// Set auto filter on range
 wb.set_auto_filter("Sheet1", "A1:D100")?;
 
-// 자동 필터 제거
+// Remove auto filter
 wb.remove_auto_filter("Sheet1")?;
 ```
 
 #### TypeScript
 
 ```typescript
-// 범위에 자동 필터 설정
+// Set auto filter on range
 wb.setAutoFilter('Sheet1', 'A1:D100');
 
-// 자동 필터 제거
+// Remove auto filter
 wb.removeAutoFilter('Sheet1');
 ```
 
@@ -643,7 +643,7 @@ use sheetkit::table::{TableConfig, TableColumn};
 
 let mut wb = Workbook::new();
 
-// 테이블 생성
+// Create table
 let config = TableConfig {
     name: "EmployeeList".to_string(),
     display_name: "EmployeeList".to_string(),
@@ -658,10 +658,10 @@ let config = TableConfig {
 };
 wb.add_table("Sheet1", &config)?;
 
-// 테이블 목록 조회
+// List tables
 let tables = wb.get_tables("Sheet1")?;
 
-// 테이블 삭제
+// Delete table
 wb.delete_table("Sheet1", "EmployeeList")?;
 ```
 
@@ -670,7 +670,7 @@ wb.delete_table("Sheet1", "EmployeeList")?;
 ```typescript
 const wb = new Workbook();
 
-// 테이블 생성
+// Create table
 wb.addTable("Sheet1", {
     name: "EmployeeList",
     displayName: "EmployeeList",
@@ -683,10 +683,10 @@ wb.addTable("Sheet1", {
     styleName: "TableStyleMedium2",
 });
 
-// 테이블 목록 조회
+// List tables
 const tables = wb.getTables("Sheet1");
 
-// 테이블 삭제
+// Delete table
 wb.deleteTable("Sheet1", "EmployeeList");
 ```
 
@@ -703,12 +703,12 @@ SheetKit은 시트 데이터와 JSON, CSV, HTML 등 일반적인 형식 간의 �
 ```typescript
 import { Workbook } from '@sheetkit/node';
 
-// 시트를 객체 배열로 읽기
+// Read sheet as array of objects
 const wb = await Workbook.open("data.xlsx");
 const records = wb.toJSON("Sheet1");
 // [{ Name: "Alice", Age: 30 }, { Name: "Bob", Age: 25 }, ...]
 
-// 객체 배열을 시트에 쓰기
+// Write array of objects to sheet
 const wb2 = new Workbook();
 wb2.fromJSON("Sheet1", [
     { Name: "Alice", Age: 30, City: "Seoul" },
@@ -723,7 +723,7 @@ await wb2.save("output.xlsx");
 const csv = wb.toCSV("Sheet1");
 // "Name,Age,City\nAlice,30,Seoul\n..."
 
-// 탭 구분 값
+// Tab-separated values
 const tsv = wb.toCSV("Sheet1", { separator: "\t" });
 ```
 
