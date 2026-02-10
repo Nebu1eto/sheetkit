@@ -302,15 +302,59 @@ impl Workbook {
         })
     }
 
-    /// Remove image data, relationship, and content type for a picture reference.
+    /// Remove the relationship for a picture and clean up the image data only
+    /// when no other relationship across any drawing still references it.
     fn remove_picture_data(&mut self, drawing_idx: usize, image_rid: &str) {
-        if let Some(image_path) = self.resolve_drawing_rel_target(drawing_idx, image_rid) {
-            self.images.retain(|(path, _)| path != &image_path);
-        }
+        let image_path = self.resolve_drawing_rel_target(drawing_idx, image_rid);
 
+        // Remove the relationship entry for this specific picture.
         if let Some(rels) = self.drawing_rels.get_mut(&drawing_idx) {
             rels.relationships.retain(|r| r.id != image_rid);
         }
+
+        // Only remove the actual image bytes when no remaining relationship
+        // across ALL drawings still targets the same media path.
+        if let Some(path) = image_path {
+            if !self.any_drawing_rel_targets_path(&path) {
+                self.images.retain(|(p, _)| p != &path);
+            }
+        }
+    }
+
+    /// Check whether any relationship in any drawing targets the given
+    /// resolved media path.
+    fn any_drawing_rel_targets_path(&self, target_path: &str) -> bool {
+        for (&di, rels) in &self.drawing_rels {
+            let drawing_path = match self.drawings.get(di) {
+                Some((p, _)) => p,
+                None => continue,
+            };
+            let base_dir = drawing_path
+                .rfind('/')
+                .map(|i| &drawing_path[..i])
+                .unwrap_or("");
+
+            for rel in &rels.relationships {
+                if rel.rel_type != rel_types::IMAGE {
+                    continue;
+                }
+                let resolved = if rel.target.starts_with("../") {
+                    let rel_target = rel.target.trim_start_matches("../");
+                    let parent = base_dir.rfind('/').map(|i| &base_dir[..i]).unwrap_or("");
+                    if parent.is_empty() {
+                        rel_target.to_string()
+                    } else {
+                        format!("{}/{}", parent, rel_target)
+                    }
+                } else {
+                    format!("{}/{}", base_dir, rel.target)
+                };
+                if resolved == target_path {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// Resolve a relationship target to a full zip path.
@@ -1460,5 +1504,234 @@ mod tests {
         assert_eq!(wb.charts.len(), 1);
         assert_eq!(wb.drawings[0].1.two_cell_anchors.len(), 1);
         assert_eq!(wb.drawings[0].1.one_cell_anchors.len(), 0);
+    }
+
+    // Helper: add a second anchor that references an existing media path,
+    // simulating shared media as found in real .xlsx files.
+    fn add_shared_media_anchor(
+        wb: &mut Workbook,
+        drawing_idx: usize,
+        media_rel_target: &str,
+        from_col: u32,
+        from_row: u32,
+        pic_id: u32,
+    ) -> String {
+        use sheetkit_xml::drawing::*;
+        use sheetkit_xml::relationships::Relationship;
+
+        let rid = wb.next_drawing_rid(drawing_idx);
+
+        let rels = wb
+            .drawing_rels
+            .entry(drawing_idx)
+            .or_insert_with(|| Relationships {
+                xmlns: sheetkit_xml::namespaces::PACKAGE_RELATIONSHIPS.to_string(),
+                relationships: vec![],
+            });
+        rels.relationships.push(Relationship {
+            id: rid.clone(),
+            rel_type: rel_types::IMAGE.to_string(),
+            target: media_rel_target.to_string(),
+            target_mode: None,
+        });
+
+        let pic = Picture {
+            nv_pic_pr: NvPicPr {
+                c_nv_pr: CNvPr {
+                    id: pic_id,
+                    name: format!("Picture {}", pic_id - 1),
+                },
+                c_nv_pic_pr: CNvPicPr {},
+            },
+            blip_fill: BlipFill {
+                blip: Blip {
+                    r_embed: rid.clone(),
+                },
+                stretch: Stretch {
+                    fill_rect: FillRect {},
+                },
+            },
+            sp_pr: SpPr {
+                xfrm: Xfrm {
+                    off: Offset { x: 0, y: 0 },
+                    ext: AExt {
+                        cx: 100 * crate::image::EMU_PER_PIXEL as u64,
+                        cy: 100 * crate::image::EMU_PER_PIXEL as u64,
+                    },
+                },
+                prst_geom: PrstGeom {
+                    prst: "rect".to_string(),
+                },
+            },
+        };
+
+        wb.drawings[drawing_idx]
+            .1
+            .one_cell_anchors
+            .push(OneCellAnchor {
+                from: MarkerType {
+                    col: from_col,
+                    col_off: 0,
+                    row: from_row,
+                    row_off: 0,
+                },
+                ext: Extent {
+                    cx: 100 * crate::image::EMU_PER_PIXEL as u64,
+                    cy: 100 * crate::image::EMU_PER_PIXEL as u64,
+                },
+                pic: Some(pic),
+                client_data: ClientData {},
+            });
+
+        rid
+    }
+
+    #[test]
+    fn test_delete_shared_media_keeps_other_picture() {
+        use crate::image::{ImageConfig, ImageFormat};
+
+        let mut wb = Workbook::new();
+        let image_data = vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A];
+        wb.add_image(
+            "Sheet1",
+            &ImageConfig {
+                data: image_data.clone(),
+                format: ImageFormat::Png,
+                from_cell: "B2".to_string(),
+                width_px: 200,
+                height_px: 150,
+            },
+        )
+        .unwrap();
+
+        // Add a second anchor sharing the same media (simulates opened .xlsx).
+        let drawing_idx = *wb.worksheet_drawings.get(&0).unwrap();
+        add_shared_media_anchor(&mut wb, drawing_idx, "../media/image1.png", 3, 3, 3);
+
+        assert_eq!(wb.images.len(), 1);
+        assert_eq!(wb.drawings[0].1.one_cell_anchors.len(), 2);
+
+        // Delete the first picture (B2 = col 1, row 1 in 0-based).
+        wb.delete_picture("Sheet1", "B2").unwrap();
+
+        // The media must survive because the second anchor still references it.
+        assert_eq!(wb.images.len(), 1);
+        assert_eq!(wb.images[0].0, "xl/media/image1.png");
+        assert_eq!(wb.drawings[0].1.one_cell_anchors.len(), 1);
+
+        // The surviving picture should still be retrievable.
+        let pics = wb.get_pictures("Sheet1", "D4").unwrap();
+        assert_eq!(pics.len(), 1);
+        assert_eq!(pics[0].data, image_data);
+    }
+
+    #[test]
+    fn test_delete_both_shared_media_pictures_cleans_up() {
+        use crate::image::{ImageConfig, ImageFormat};
+
+        let mut wb = Workbook::new();
+        wb.add_image(
+            "Sheet1",
+            &ImageConfig {
+                data: vec![0x89, 0x50, 0x4E, 0x47],
+                format: ImageFormat::Png,
+                from_cell: "B2".to_string(),
+                width_px: 100,
+                height_px: 100,
+            },
+        )
+        .unwrap();
+
+        let drawing_idx = *wb.worksheet_drawings.get(&0).unwrap();
+        add_shared_media_anchor(&mut wb, drawing_idx, "../media/image1.png", 3, 3, 3);
+
+        assert_eq!(wb.images.len(), 1);
+        assert_eq!(wb.drawings[0].1.one_cell_anchors.len(), 2);
+
+        // Delete first picture.
+        wb.delete_picture("Sheet1", "B2").unwrap();
+        assert_eq!(wb.images.len(), 1);
+
+        // Delete second picture -- now the media should be removed.
+        wb.delete_picture("Sheet1", "D4").unwrap();
+        assert_eq!(wb.images.len(), 0);
+        assert_eq!(wb.drawings[0].1.one_cell_anchors.len(), 0);
+    }
+
+    #[test]
+    fn test_cross_sheet_shared_media_survives_single_delete() {
+        use crate::image::{ImageConfig, ImageFormat};
+
+        let mut wb = Workbook::new();
+        wb.new_sheet("Sheet2").unwrap();
+
+        let image_data = vec![0x89, 0x50, 0x4E, 0x47, 0x0D];
+        wb.add_image(
+            "Sheet1",
+            &ImageConfig {
+                data: image_data.clone(),
+                format: ImageFormat::Png,
+                from_cell: "A1".to_string(),
+                width_px: 100,
+                height_px: 100,
+            },
+        )
+        .unwrap();
+
+        // Add an image to Sheet2 that shares the same media path.
+        let drawing_idx_s2 = wb.ensure_drawing_for_sheet(1);
+        add_shared_media_anchor(&mut wb, drawing_idx_s2, "../media/image1.png", 0, 0, 2);
+
+        assert_eq!(wb.images.len(), 1);
+
+        // Delete the picture from Sheet1.
+        wb.delete_picture("Sheet1", "A1").unwrap();
+
+        // The media must survive because Sheet2 still references it.
+        assert_eq!(wb.images.len(), 1);
+
+        // Sheet2's picture should still be retrievable.
+        let pics = wb.get_pictures("Sheet2", "A1").unwrap();
+        assert_eq!(pics.len(), 1);
+        assert_eq!(pics[0].data, image_data);
+    }
+
+    #[test]
+    fn test_shared_media_save_preserves_image_data() {
+        use crate::image::{ImageConfig, ImageFormat};
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("shared_media_save.xlsx");
+
+        let mut wb = Workbook::new();
+        let image_data = vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+        wb.add_image(
+            "Sheet1",
+            &ImageConfig {
+                data: image_data.clone(),
+                format: ImageFormat::Png,
+                from_cell: "B2".to_string(),
+                width_px: 200,
+                height_px: 150,
+            },
+        )
+        .unwrap();
+
+        let drawing_idx = *wb.worksheet_drawings.get(&0).unwrap();
+        add_shared_media_anchor(&mut wb, drawing_idx, "../media/image1.png", 3, 3, 3);
+
+        // Delete picture at B2 -- shared media must survive.
+        wb.delete_picture("Sheet1", "B2").unwrap();
+        assert_eq!(wb.images.len(), 1);
+        assert_eq!(wb.drawings[0].1.one_cell_anchors.len(), 1);
+
+        // Save and verify the media file is in the zip archive.
+        wb.save(&path).unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        assert!(
+            archive.by_name("xl/media/image1.png").is_ok(),
+            "shared media must survive in saved file"
+        );
     }
 }

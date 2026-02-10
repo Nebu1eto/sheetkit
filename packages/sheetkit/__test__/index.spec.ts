@@ -474,6 +474,84 @@ describe('Chart & Picture CRUD', () => {
     const wb2 = await Workbook.open(out);
     expect(wb2.sheetNames).toEqual(['Sheet1']);
   });
+
+  it('should delete one picture and keep others', () => {
+    const wb = new Workbook();
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+    const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0]);
+    wb.addImage('Sheet1', {
+      data: png,
+      format: 'png',
+      fromCell: 'A1',
+      widthPx: 100,
+      heightPx: 100,
+    });
+    wb.addImage('Sheet1', {
+      data: jpeg,
+      format: 'jpeg',
+      fromCell: 'C3',
+      widthPx: 200,
+      heightPx: 200,
+    });
+    expect(wb.getPictureCells('Sheet1')).toHaveLength(2);
+
+    wb.deletePicture('Sheet1', 'A1');
+    const cells = wb.getPictureCells('Sheet1');
+    expect(cells).toHaveLength(1);
+    expect(cells).toContain('C3');
+
+    const pics = wb.getPictures('Sheet1', 'C3');
+    expect(pics).toHaveLength(1);
+    expect(pics[0].format).toBe('jpeg');
+  });
+
+  it('should delete picture from one sheet without affecting another', () => {
+    const wb = new Workbook();
+    wb.newSheet('Sheet2');
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+    wb.addImage('Sheet1', {
+      data: png,
+      format: 'png',
+      fromCell: 'A1',
+      widthPx: 100,
+      heightPx: 100,
+    });
+    wb.addImage('Sheet2', {
+      data: png,
+      format: 'png',
+      fromCell: 'A1',
+      widthPx: 100,
+      heightPx: 100,
+    });
+
+    wb.deletePicture('Sheet1', 'A1');
+    expect(wb.getPictureCells('Sheet1')).toHaveLength(0);
+    expect(wb.getPictureCells('Sheet2')).toHaveLength(1);
+    expect(wb.getPictures('Sheet2', 'A1')).toHaveLength(1);
+  });
+
+  it('should delete all pictures and clean up', () => {
+    const wb = new Workbook();
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+    wb.addImage('Sheet1', {
+      data: png,
+      format: 'png',
+      fromCell: 'B2',
+      widthPx: 100,
+      heightPx: 100,
+    });
+    wb.addImage('Sheet1', {
+      data: png,
+      format: 'png',
+      fromCell: 'D4',
+      widthPx: 100,
+      heightPx: 100,
+    });
+
+    wb.deletePicture('Sheet1', 'B2');
+    wb.deletePicture('Sheet1', 'D4');
+    expect(wb.getPictureCells('Sheet1')).toHaveLength(0);
+  });
 });
 
 describe('Phase 8 - Comments', () => {
