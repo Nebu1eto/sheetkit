@@ -10,12 +10,19 @@ keywords.workspace = true
 categories.workspace = true
 readme = "../../README.md"
 
+[[bin]]
+name = "sheetkit"
+path = "src/bin/main.rs"
+required-features = ["cli"]
+
 [dependencies]
 sheetkit-core = { workspace = true }
 sheetkit-xml = { workspace = true }
+clap = { version = "4", features = ["derive"], optional = true }
 
 [features]
 encryption = ["sheetkit-core/encryption"]
+cli = ["dep:clap"]
 
 [dev-dependencies]
 tempfile = { workspace = true }
