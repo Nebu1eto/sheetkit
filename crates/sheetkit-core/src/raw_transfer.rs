@@ -718,12 +718,12 @@ mod tests {
     fn test_formula_cell() {
         let sst = SharedStringTable::new();
         let mut cell = make_cell("A1", 1, CellTypeTag::None, Some("84"));
-        cell.f = Some(CellFormula {
+        cell.f = Some(Box::new(CellFormula {
             t: None,
             reference: None,
             si: None,
             value: Some("A2+B2".to_string()),
-        });
+        }));
         let ws = make_worksheet(vec![make_row(1, vec![cell])]);
         let buf = sheet_to_raw_buffer(&ws, &sst).unwrap();
 
@@ -749,9 +749,9 @@ mod tests {
     fn test_inline_string_cell() {
         let sst = SharedStringTable::new();
         let mut cell = make_cell("A1", 1, CellTypeTag::InlineString, None);
-        cell.is = Some(InlineString {
+        cell.is = Some(Box::new(InlineString {
             t: Some("Inline Text".to_string()),
-        });
+        }));
         let ws = make_worksheet(vec![make_row(1, vec![cell])]);
         let buf = sheet_to_raw_buffer(&ws, &sst).unwrap();
 
