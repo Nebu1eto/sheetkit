@@ -6,34 +6,36 @@ SheetKit delivers native Rust performance to both Rust and TypeScript applicatio
 
 ### Rust vs Node.js Overhead
 
-SheetKit's Node.js bindings add minimal overhead compared to pure Rust:
+SheetKit's Node.js bindings stay close to native Rust performance, and in several write-heavy paths they are faster:
 
 | Operation | Overhead |
 |-----------|----------|
-| **Read operations** | 1.13x (13% slower) |
-| **Write operations** | 1.05x (5% slower) |
-| **Streaming write** | 1.11x (11% slower) |
-| **Buffer round-trip** | 1.02x (2% slower) |
+| **Read operations (sync)** | ~1.10x (~10% slower, typical) |
+| **Read operations (async)** | ~1.10x (~10% slower, typical) |
+| **Write operations (batch)** | ~0.90x (~10% faster, typical) |
+| **Streaming write** | 1.21x (21% slower) |
+| **Buffer round-trip** | 1.01x (near parity) |
 
-For most real-world workloads, Node.js performance is nearly identical to native Rust.
+For most real-world workloads, Node.js performance remains close to native Rust.
 
 ### Read Performance Comparison
 
 | Scenario | Rust | Node.js | Overhead |
 |----------|------|---------|----------|
-| Large Data (50k rows × 20 cols) | 625ms | 709ms | +13% |
+| Large Data (50k rows × 20 cols) | 616ms | 680ms | +10% |
 | Heavy Styles (5k rows, formatted) | 33ms | 37ms | +12% |
-| Formulas (10k rows) | 43ms | 50ms | +16% |
-| Strings (20k rows text-heavy) | 137ms | 146ms | +7% |
+| Multi-Sheet (10 sheets × 5k rows) | 360ms | 781ms | +117% |
+| Formulas (10k rows) | 40ms | 52ms | +30% |
+| Strings (20k rows text-heavy) | 140ms | 126ms | -10% (faster) |
 
 ### Write Performance Comparison
 
 | Scenario | Rust | Node.js | Overhead |
 |----------|------|---------|----------|
-| 50k rows × 20 cols | 742ms | 681ms | -8% (faster!) |
-| 5k styled rows | 41ms | 50ms | +22% |
-| 10k rows with formulas | 34ms | 40ms | +18% |
-| 20k text-heavy rows | 148ms | 126ms | -15% (faster!) |
+| 50k rows × 20 cols | 1.03s | 657ms | -36% (faster) |
+| 5k styled rows | 39ms | 48ms | +23% |
+| 10k rows with formulas | 35ms | 39ms | +11% |
+| 20k text-heavy rows | 145ms | 123ms | -15% (faster) |
 
 Note: In some write scenarios, Node.js performs slightly better than Rust due to V8's efficient string handling during data construction.
 
@@ -43,18 +45,18 @@ Read performance remains consistent across different file sizes:
 
 | Rows | Rust | Node.js | Overhead |
 |------|------|---------|----------|
-| 1k | 6ms | 8ms | +33% |
-| 10k | 65ms | 69ms | +6% |
-| 100k | 650ms | 742ms | +14% |
+| 1k | 6ms | 7ms | +17% |
+| 10k | 62ms | 68ms | +10% |
+| 100k | 659ms | 714ms | +8% |
 
 Write performance scales linearly:
 
 | Rows | Rust | Node.js | Overhead |
 |------|------|---------|----------|
-| 1k | 6ms | 7ms | +17% |
-| 10k | 69ms | 69ms | 0% |
-| 50k | 347ms | 336ms | -3% |
-| 100k | 705ms | 720ms | +2% |
+| 1k | 7ms | 7ms | 0% |
+| 10k | 68ms | 66ms | -3% (faster) |
+| 50k | 456ms | 332ms | -27% (faster) |
+| 100k | 735ms | 665ms | -10% (faster) |
 
 ## Raw Buffer Transfer and Memory Behavior
 
