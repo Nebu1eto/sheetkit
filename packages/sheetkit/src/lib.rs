@@ -543,7 +543,7 @@ impl Workbook {
 
     /// Get all form controls on a sheet.
     #[napi]
-    pub fn get_form_controls(&self, sheet: String) -> Result<Vec<JsFormControlInfo>> {
+    pub fn get_form_controls(&mut self, sheet: String) -> Result<Vec<JsFormControlInfo>> {
         let controls = self
             .inner
             .get_form_controls(&sheet)
