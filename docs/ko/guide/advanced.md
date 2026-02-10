@@ -1280,3 +1280,54 @@ const buf = wb.getRowsBuffer('Sheet1');
 | `getRowsBuffer()` (raw) | ~30MB | Buffer만 유지, 디코딩 없음 |
 
 자세한 API 설명은 [API 레퍼런스](../api-reference/advanced.md#30-대량-데이터-전송)를 참조하세요.
+
+---
+
+### 라운드트립 충실도
+
+SheetKit으로 `.xlsx` 파일을 열고 저장한 후 다른 애플리케이션에서 열었을 때, 데이터가 손실되지 않는 것이 중요합니다. SheetKit은 라운드트립 시 다음 항목들을 보존합니다.
+
+#### 자동으로 보존되는 항목
+
+- SheetKit이 기본적으로 처리하는 모든 워크시트 데이터, 스타일, 공유 문자열 및 관계가 보존됩니다.
+- Theme XML(`xl/theme/theme1.xml`)은 raw bytes로 저장되어 변경 없이 다시 기록됩니다.
+- 댓글용 VML 드로잉이 있는 경우 raw bytes로 보존됩니다.
+- 타입 파싱에 실패한 차트 XML은 raw bytes로 보존됩니다.
+- **알 수 없는 ZIP 항목**: SheetKit이 명시적으로 처리하지 않는 모든 ZIP 항목(예: `customXml/`, `xl/printerSettings/`, 서드파티 애드인 파일, 커스텀 OPC 파트)은 열기 시 raw bytes로 캡처되어 저장 시 다시 기록됩니다. 이를 통해 Excel, LibreOffice 또는 기타 도구로 생성된 파일이 SheetKit 편집 후에도 커스텀 콘텐츠를 유지합니다.
+
+#### 동작 방식
+
+`open()` / `open_from_buffer()` 중에 SheetKit은 읽은 모든 ZIP 항목 경로를 추적합니다(워크시트, 스타일, 관계, 드로잉, 차트, 이미지, 피벗 테이블, 문서 속성 등). 알려진 모든 파트를 처리한 후 나머지 ZIP 항목을 순회하여 `(경로, bytes)` 쌍으로 저장합니다. `save()` / `save_to_buffer()` 시 이 알 수 없는 항목들은 알려진 파트 이후에 출력 ZIP에 기록됩니다.
+
+#### Rust
+
+```rust
+use sheetkit::Workbook;
+
+// customXml과 프린터 설정이 포함된 파일 열기
+let mut wb = Workbook::open("complex.xlsx")?;
+
+// 편집 -- 알 수 없는 파트는 영향 없음
+wb.set_cell_value("Sheet1", "A1", "Updated".into())?;
+
+// 저장 -- customXml, 프린터 설정 및 기타 알 수 없는
+// ZIP 항목이 출력 파일에 보존됩니다
+wb.save("complex_updated.xlsx")?;
+```
+
+#### TypeScript
+
+```typescript
+import { Workbook } from '@sheetkit/node';
+
+const wb = Workbook.openSync('complex.xlsx');
+wb.setCellValue('Sheet1', 'A1', 'Updated');
+wb.saveSync('complex_updated.xlsx');
+// 원본 파일의 알 수 없는 ZIP 항목이 보존됩니다.
+```
+
+#### 알려진 제한 사항
+
+- 알 수 없는 항목은 불투명한 byte blob으로 저장됩니다. SheetKit은 그 내용을 검사하거나 검증하지 않습니다.
+- 알 수 없는 항목의 경로가 SheetKit이 기록하는 경로와 충돌하는 경우(예: 비표준 `xl/styles.xml` 변형), SheetKit 버전이 우선하며 알 수 없는 항목은 기록되지 않습니다.
+- 알 수 없는 파트를 참조하는 Content Types(`[Content_Types].xml`) 항목은 파일 자체가 라운드트립되므로 보존됩니다. 그러나 SheetKit은 이미 목록에 없는 알 수 없는 파트에 대해 새로운 content type 항목을 추가하지 않습니다.

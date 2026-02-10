@@ -157,6 +157,9 @@ pub struct Workbook {
     /// Per-sheet VML drawing bytes (for legacy comment rendering), parallel to `worksheets`.
     /// `None` means no VML part exists for that sheet.
     sheet_vml: Vec<Option<Vec<u8>>>,
+    /// ZIP entries not recognized by the parser, preserved for round-trip fidelity.
+    /// Each entry is (zip_path, raw_bytes).
+    unknown_parts: Vec<(String, Vec<u8>)>,
     /// Raw VBA project binary blob (`xl/vbaProject.bin`), preserved opaquely for round-trip.
     /// `None` for non-macro workbooks.
     vba_blob: Option<Vec<u8>>,
