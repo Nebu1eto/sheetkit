@@ -3401,3 +3401,154 @@ describe('Cross-feature integration', () => {
     expect(props.creator).toBe('SheetKit');
   });
 });
+
+describe('Open Options', () => {
+  const out = tmpFile('test-open-options.xlsx');
+  afterEach(async () => cleanup(out));
+
+  it('should limit rows with sheetRows option', () => {
+    const wb = new Workbook();
+    for (let i = 1; i <= 20; i++) {
+      wb.setCellValue('Sheet1', `A${i}`, i);
+    }
+    const buf = wb.writeBufferSync();
+
+    const wb2 = Workbook.openBufferSync(buf, { sheetRows: 5 });
+    for (let i = 1; i <= 5; i++) {
+      expect(wb2.getCellValue('Sheet1', `A${i}`)).toBe(i);
+    }
+    for (let i = 6; i <= 20; i++) {
+      expect(wb2.getCellValue('Sheet1', `A${i}`)).toBeNull();
+    }
+  });
+
+  it('should limit rows with sheetRows option via file', async () => {
+    const wb = new Workbook();
+    for (let i = 1; i <= 15; i++) {
+      wb.setCellValue('Sheet1', `A${i}`, i * 10);
+    }
+    await wb.save(out);
+
+    const wb2 = Workbook.openSync(out, { sheetRows: 3 });
+    expect(wb2.getCellValue('Sheet1', 'A1')).toBe(10);
+    expect(wb2.getCellValue('Sheet1', 'A3')).toBe(30);
+    expect(wb2.getCellValue('Sheet1', 'A4')).toBeNull();
+  });
+
+  it('should parse only selected sheets', () => {
+    const wb = new Workbook();
+    wb.newSheet('Sales');
+    wb.newSheet('Data');
+    wb.setCellValue('Sheet1', 'A1', 'sheet1');
+    wb.setCellValue('Sales', 'A1', 'sales');
+    wb.setCellValue('Data', 'A1', 'data');
+    const buf = wb.writeBufferSync();
+
+    const wb2 = Workbook.openBufferSync(buf, { sheets: ['Sales'] });
+    expect(wb2.sheetNames).toEqual(['Sheet1', 'Sales', 'Data']);
+    expect(wb2.getCellValue('Sales', 'A1')).toBe('sales');
+    expect(wb2.getCellValue('Sheet1', 'A1')).toBeNull();
+    expect(wb2.getCellValue('Data', 'A1')).toBeNull();
+  });
+
+  it('should parse multiple selected sheets', () => {
+    const wb = new Workbook();
+    wb.newSheet('Alpha');
+    wb.newSheet('Beta');
+    wb.setCellValue('Sheet1', 'A1', 1);
+    wb.setCellValue('Alpha', 'A1', 2);
+    wb.setCellValue('Beta', 'A1', 3);
+    const buf = wb.writeBufferSync();
+
+    const wb2 = Workbook.openBufferSync(buf, { sheets: ['Sheet1', 'Beta'] });
+    expect(wb2.getCellValue('Sheet1', 'A1')).toBe(1);
+    expect(wb2.getCellValue('Alpha', 'A1')).toBeNull();
+    expect(wb2.getCellValue('Beta', 'A1')).toBe(3);
+  });
+
+  it('should reject when maxZipEntries is exceeded', () => {
+    const wb = new Workbook();
+    const buf = wb.writeBufferSync();
+    expect(() => Workbook.openBufferSync(buf, { maxZipEntries: 2 })).toThrow(/entry count/i);
+  });
+
+  it('should accept when maxZipEntries is within limit', () => {
+    const wb = new Workbook();
+    const buf = wb.writeBufferSync();
+    const wb2 = Workbook.openBufferSync(buf, { maxZipEntries: 1000 });
+    expect(wb2.sheetNames).toEqual(['Sheet1']);
+  });
+
+  it('should reject when maxUnzipSize is exceeded', () => {
+    const wb = new Workbook();
+    for (let i = 1; i <= 100; i++) {
+      wb.setCellValue('Sheet1', `A${i}`, 'x'.repeat(200));
+    }
+    const buf = wb.writeBufferSync();
+    expect(() => Workbook.openBufferSync(buf, { maxUnzipSize: 50 })).toThrow(/decompressed size/i);
+  });
+
+  it('should accept when maxUnzipSize is within limit', () => {
+    const wb = new Workbook();
+    const buf = wb.writeBufferSync();
+    const wb2 = Workbook.openBufferSync(buf, { maxUnzipSize: 100_000_000 });
+    expect(wb2.sheetNames).toEqual(['Sheet1']);
+  });
+
+  it('should combine sheetRows and sheets options', () => {
+    const wb = new Workbook();
+    wb.newSheet('Parsed');
+    wb.newSheet('Skipped');
+    for (let i = 1; i <= 10; i++) {
+      wb.setCellValue('Parsed', `A${i}`, i);
+      wb.setCellValue('Skipped', `A${i}`, i * 100);
+    }
+    const buf = wb.writeBufferSync();
+
+    const wb2 = Workbook.openBufferSync(buf, {
+      sheets: ['Parsed'],
+      sheetRows: 3,
+    });
+    expect(wb2.getCellValue('Parsed', 'A3')).toBe(3);
+    expect(wb2.getCellValue('Parsed', 'A4')).toBeNull();
+    expect(wb2.getCellValue('Skipped', 'A1')).toBeNull();
+  });
+
+  it('should work with no options (backward compatible)', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'hello');
+    const buf = wb.writeBufferSync();
+    const wb2 = Workbook.openBufferSync(buf);
+    expect(wb2.getCellValue('Sheet1', 'A1')).toBe('hello');
+  });
+
+  it('should work with async open', async () => {
+    const wb = new Workbook();
+    for (let i = 1; i <= 10; i++) {
+      wb.setCellValue('Sheet1', `A${i}`, i);
+    }
+    await wb.save(out);
+
+    const wb2 = await Workbook.open(out, { sheetRows: 2 });
+    expect(wb2.getCellValue('Sheet1', 'A2')).toBe(2);
+    expect(wb2.getCellValue('Sheet1', 'A3')).toBeNull();
+  });
+
+  it('should work with async openBuffer', async () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'test');
+    const buf = wb.writeBufferSync();
+
+    const wb2 = await Workbook.openBuffer(buf, { sheets: ['Sheet1'] });
+    expect(wb2.getCellValue('Sheet1', 'A1')).toBe('test');
+  });
+
+  it('sheetRows zero means no rows', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 42);
+    const buf = wb.writeBufferSync();
+
+    const wb2 = Workbook.openBufferSync(buf, { sheetRows: 0 });
+    expect(wb2.getCellValue('Sheet1', 'A1')).toBeNull();
+  });
+});

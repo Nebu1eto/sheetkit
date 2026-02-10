@@ -104,7 +104,10 @@ mod data;
 mod drawing;
 mod features;
 mod io;
+mod open_options;
 mod sheet_ops;
+
+pub use open_options::OpenOptions;
 
 /// XML declaration prepended to every XML part in the package.
 const XML_DECLARATION: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#;

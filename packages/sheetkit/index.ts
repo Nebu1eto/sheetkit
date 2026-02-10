@@ -15,6 +15,7 @@ import type {
   JsHyperlinkInfo,
   JsHyperlinkOptions,
   JsImageConfig,
+  JsOpenOptions,
   JsPageMargins,
   JsPageSetup,
   JsPivotTableConfig,
@@ -60,6 +61,7 @@ export type {
   JsHyperlinkInfo,
   JsHyperlinkOptions,
   JsImageConfig,
+  JsOpenOptions,
   JsPageMargins,
   JsPageSetup,
   JsPivotDataField,
@@ -164,23 +166,26 @@ class Workbook {
   }
 
   /** Open an existing .xlsx file from disk. */
-  static openSync(path: string): Workbook {
-    return Workbook.#wrap(NativeWorkbook.openSync(path));
+  static openSync(path: string, options?: JsOpenOptions | undefined | null): Workbook {
+    return Workbook.#wrap(NativeWorkbook.openSync(path, options));
   }
 
   /** Open an existing .xlsx file from disk asynchronously. */
-  static async open(path: string): Promise<Workbook> {
-    return Workbook.#wrap(await NativeWorkbook.open(path));
+  static async open(path: string, options?: JsOpenOptions | undefined | null): Promise<Workbook> {
+    return Workbook.#wrap(await NativeWorkbook.open(path, options));
   }
 
   /** Open a workbook from an in-memory Buffer. */
-  static openBufferSync(data: Buffer): Workbook {
-    return Workbook.#wrap(NativeWorkbook.openBufferSync(data));
+  static openBufferSync(data: Buffer, options?: JsOpenOptions | undefined | null): Workbook {
+    return Workbook.#wrap(NativeWorkbook.openBufferSync(data, options));
   }
 
   /** Open a workbook from an in-memory Buffer asynchronously. */
-  static async openBuffer(data: Buffer): Promise<Workbook> {
-    return Workbook.#wrap(await NativeWorkbook.openBuffer(data));
+  static async openBuffer(
+    data: Buffer,
+    options?: JsOpenOptions | undefined | null,
+  ): Promise<Workbook> {
+    return Workbook.#wrap(await NativeWorkbook.openBuffer(data, options));
   }
 
   /** Open an encrypted .xlsx file using a password. */

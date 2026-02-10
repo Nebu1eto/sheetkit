@@ -1,4 +1,5 @@
 use super::*;
+use crate::workbook::open_options::OpenOptions;
 
 /// VBA project relationship type URI.
 const VBA_PROJECT_REL_TYPE: &str =
@@ -52,6 +53,14 @@ impl Workbook {
     /// If the file is encrypted (CFB container), returns
     /// [`Error::FileEncrypted`]. Use [`Workbook::open_with_password`] instead.
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
+        Self::open_with_options(path, &OpenOptions::default())
+    }
+
+    /// Open an existing `.xlsx` file with custom parsing options.
+    ///
+    /// See [`OpenOptions`] for available options including row limits,
+    /// sheet filtering, and ZIP safety limits.
+    pub fn open_with_options<P: AsRef<Path>>(path: P, options: &OpenOptions) -> Result<Self> {
         let data = std::fs::read(path.as_ref())?;
 
         // Detect encrypted files (CFB container)
@@ -66,13 +75,38 @@ impl Workbook {
 
         let cursor = std::io::Cursor::new(data);
         let mut archive = zip::ZipArchive::new(cursor).map_err(|e| Error::Zip(e.to_string()))?;
-        Self::from_archive(&mut archive)
+        Self::from_archive(&mut archive, options)
     }
 
     /// Build a Workbook from an already-opened ZIP archive.
     fn from_archive<R: std::io::Read + std::io::Seek>(
         archive: &mut zip::ZipArchive<R>,
+        options: &OpenOptions,
     ) -> Result<Self> {
+        // ZIP safety checks: entry count and total decompressed size.
+        if let Some(max_entries) = options.max_zip_entries {
+            let count = archive.len();
+            if count > max_entries {
+                return Err(Error::ZipEntryCountExceeded {
+                    count,
+                    limit: max_entries,
+                });
+            }
+        }
+        if let Some(max_size) = options.max_unzip_size {
+            let mut total_size: u64 = 0;
+            for i in 0..archive.len() {
+                let entry = archive.by_index(i).map_err(|e| Error::Zip(e.to_string()))?;
+                total_size = total_size.saturating_add(entry.size());
+                if total_size > max_size {
+                    return Err(Error::ZipSizeExceeded {
+                        size: total_size,
+                        limit: max_size,
+                    });
+                }
+            }
+        }
+
         // Track all ZIP entry paths that are explicitly handled so that the
         // remaining entries can be preserved as unknown parts.
         let mut known_paths: HashSet<String> = HashSet::new();
@@ -120,7 +154,12 @@ impl Workbook {
             })?;
 
             let sheet_path = resolve_relationship_target("xl/workbook.xml", &rel.target);
-            let ws: WorksheetXml = read_xml_part(archive, &sheet_path)?;
+
+            let ws: WorksheetXml = if options.should_parse_sheet(&sheet_entry.name) {
+                read_xml_part(archive, &sheet_path)?
+            } else {
+                WorksheetXml::default()
+            };
             worksheets.push((sheet_entry.name.clone(), ws));
             known_paths.insert(sheet_path.clone());
             worksheet_paths.push(sheet_path);
@@ -421,11 +460,17 @@ impl Workbook {
             }
         }
 
-        // Populate cached column numbers on all cells and ensure sorted order
-        // for binary search correctness.
+        // Populate cached column numbers on all cells, apply row limit, and
+        // ensure sorted order for binary search correctness.
         for (_name, ws) in &mut worksheets {
             // Ensure rows are sorted by row number (some writers output unsorted data).
             ws.sheet_data.rows.sort_unstable_by_key(|r| r.r);
+
+            // Apply sheet_rows limit: keep only the first N rows.
+            if let Some(max_rows) = options.sheet_rows {
+                ws.sheet_data.rows.truncate(max_rows as usize);
+            }
+
             for row in &mut ws.sheet_data.rows {
                 for cell in &mut row.cells {
                     cell.col = fast_col_number(cell.r.as_str());
@@ -514,6 +559,11 @@ impl Workbook {
 
     /// Open a workbook from an in-memory `.xlsx` buffer.
     pub fn open_from_buffer(data: &[u8]) -> Result<Self> {
+        Self::open_from_buffer_with_options(data, &OpenOptions::default())
+    }
+
+    /// Open a workbook from an in-memory buffer with custom parsing options.
+    pub fn open_from_buffer_with_options(data: &[u8], options: &OpenOptions) -> Result<Self> {
         // Detect encrypted files (CFB container)
         #[cfg(feature = "encryption")]
         if data.len() >= 8 {
@@ -526,7 +576,7 @@ impl Workbook {
 
         let cursor = std::io::Cursor::new(data);
         let mut archive = zip::ZipArchive::new(cursor).map_err(|e| Error::Zip(e.to_string()))?;
-        Self::from_archive(&mut archive)
+        Self::from_archive(&mut archive, options)
     }
 
     /// Open an encrypted `.xlsx` file using a password.
@@ -540,7 +590,7 @@ impl Workbook {
         let decrypted_zip = crate::crypt::decrypt_xlsx(&data, password)?;
         let cursor = std::io::Cursor::new(decrypted_zip);
         let mut archive = zip::ZipArchive::new(cursor).map_err(|e| Error::Zip(e.to_string()))?;
-        Self::from_archive(&mut archive)
+        Self::from_archive(&mut archive, &OpenOptions::default())
     }
 
     /// Save the workbook as an encrypted `.xlsx` file using Agile Encryption
@@ -1827,6 +1877,23 @@ mod tests {
     }
 
     #[test]
+    fn test_open_with_default_options_is_equivalent_to_open() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("default_opts.xlsx");
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", CellValue::String("test".to_string()))
+            .unwrap();
+        wb.save(&path).unwrap();
+
+        let wb2 = Workbook::open_with_options(&path, &OpenOptions::default()).unwrap();
+        assert_eq!(wb2.sheet_names(), vec!["Sheet1"]);
+        assert_eq!(
+            wb2.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("test".to_string())
+        );
+    }
+
+    #[test]
     fn test_format_inference_from_content_types_overrides() {
         use sheetkit_xml::content_types::mime_types;
 
@@ -2273,6 +2340,64 @@ mod tests {
     }
 
     #[test]
+    fn test_sheet_rows_limits_rows_read() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("sheet_rows.xlsx");
+
+        let mut wb = Workbook::new();
+        for i in 1..=20 {
+            let cell = format!("A{}", i);
+            wb.set_cell_value("Sheet1", &cell, CellValue::Number(i as f64))
+                .unwrap();
+        }
+        wb.save(&path).unwrap();
+
+        let opts = OpenOptions::new().sheet_rows(5);
+        let wb2 = Workbook::open_with_options(&path, &opts).unwrap();
+
+        // First 5 rows should be present
+        for i in 1..=5 {
+            let cell = format!("A{}", i);
+            assert_eq!(
+                wb2.get_cell_value("Sheet1", &cell).unwrap(),
+                CellValue::Number(i as f64)
+            );
+        }
+
+        // Rows 6+ should return Empty
+        for i in 6..=20 {
+            let cell = format!("A{}", i);
+            assert_eq!(
+                wb2.get_cell_value("Sheet1", &cell).unwrap(),
+                CellValue::Empty
+            );
+        }
+    }
+
+    #[test]
+    fn test_sheet_rows_with_buffer() {
+        let mut wb = Workbook::new();
+        for i in 1..=10 {
+            let cell = format!("A{}", i);
+            wb.set_cell_value("Sheet1", &cell, CellValue::Number(i as f64))
+                .unwrap();
+        }
+        let buf = wb.save_to_buffer().unwrap();
+
+        let opts = OpenOptions::new().sheet_rows(3);
+        let wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
+
+        assert_eq!(
+            wb2.get_cell_value("Sheet1", "A3").unwrap(),
+            CellValue::Number(3.0)
+        );
+        assert_eq!(
+            wb2.get_cell_value("Sheet1", "A4").unwrap(),
+            CellValue::Empty
+        );
+    }
+
+    #[test]
     fn test_save_xlsx_preserves_existing_behavior() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("preserved.xlsx");
@@ -2292,6 +2417,69 @@ mod tests {
     }
 
     #[test]
+    fn test_selective_sheet_parsing() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("selective.xlsx");
+
+        let mut wb = Workbook::new();
+        wb.new_sheet("Sales").unwrap();
+        wb.new_sheet("Data").unwrap();
+        wb.set_cell_value("Sheet1", "A1", CellValue::String("Sheet1 data".to_string()))
+            .unwrap();
+        wb.set_cell_value("Sales", "A1", CellValue::String("Sales data".to_string()))
+            .unwrap();
+        wb.set_cell_value("Data", "A1", CellValue::String("Data data".to_string()))
+            .unwrap();
+        wb.save(&path).unwrap();
+
+        let opts = OpenOptions::new().sheets(vec!["Sales".to_string()]);
+        let wb2 = Workbook::open_with_options(&path, &opts).unwrap();
+
+        // All sheets exist in the workbook
+        assert_eq!(wb2.sheet_names(), vec!["Sheet1", "Sales", "Data"]);
+
+        // Only Sales should have data
+        assert_eq!(
+            wb2.get_cell_value("Sales", "A1").unwrap(),
+            CellValue::String("Sales data".to_string())
+        );
+
+        // Sheet1 and Data were not parsed, so they should be empty
+        assert_eq!(
+            wb2.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::Empty
+        );
+        assert_eq!(wb2.get_cell_value("Data", "A1").unwrap(), CellValue::Empty);
+    }
+
+    #[test]
+    fn test_selective_sheets_multiple() {
+        let mut wb = Workbook::new();
+        wb.new_sheet("Alpha").unwrap();
+        wb.new_sheet("Beta").unwrap();
+        wb.set_cell_value("Sheet1", "A1", CellValue::Number(1.0))
+            .unwrap();
+        wb.set_cell_value("Alpha", "A1", CellValue::Number(2.0))
+            .unwrap();
+        wb.set_cell_value("Beta", "A1", CellValue::Number(3.0))
+            .unwrap();
+        let buf = wb.save_to_buffer().unwrap();
+
+        let opts = OpenOptions::new().sheets(vec!["Sheet1".to_string(), "Beta".to_string()]);
+        let wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
+
+        assert_eq!(
+            wb2.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::Number(1.0)
+        );
+        assert_eq!(wb2.get_cell_value("Alpha", "A1").unwrap(), CellValue::Empty);
+        assert_eq!(
+            wb2.get_cell_value("Beta", "A1").unwrap(),
+            CellValue::Number(3.0)
+        );
+    }
+
+    #[test]
     fn test_save_does_not_mutate_stored_format() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("test.xlsm");
@@ -2300,5 +2488,122 @@ mod tests {
         wb.save(&path).unwrap();
         // The save call takes &self, so the stored format is unchanged.
         assert_eq!(wb.format(), WorkbookFormat::Xlsx);
+    }
+
+    #[test]
+    fn test_max_zip_entries_exceeded() {
+        let wb = Workbook::new();
+        let buf = wb.save_to_buffer().unwrap();
+
+        // A basic workbook has at least 8 ZIP entries -- set limit to 2
+        let opts = OpenOptions::new().max_zip_entries(2);
+        let result = Workbook::open_from_buffer_with_options(&buf, &opts);
+        assert!(matches!(result, Err(Error::ZipEntryCountExceeded { .. })));
+    }
+
+    #[test]
+    fn test_max_zip_entries_within_limit() {
+        let wb = Workbook::new();
+        let buf = wb.save_to_buffer().unwrap();
+
+        let opts = OpenOptions::new().max_zip_entries(1000);
+        let wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
+        assert_eq!(wb2.sheet_names(), vec!["Sheet1"]);
+    }
+
+    #[test]
+    fn test_max_unzip_size_exceeded() {
+        let mut wb = Workbook::new();
+        // Write enough data so the decompressed size is non-trivial
+        for i in 1..=100 {
+            let cell = format!("A{}", i);
+            wb.set_cell_value(
+                "Sheet1",
+                &cell,
+                CellValue::String("long_value_for_size_check".repeat(10)),
+            )
+            .unwrap();
+        }
+        let buf = wb.save_to_buffer().unwrap();
+
+        // Set a very small decompressed size limit
+        let opts = OpenOptions::new().max_unzip_size(100);
+        let result = Workbook::open_from_buffer_with_options(&buf, &opts);
+        assert!(matches!(result, Err(Error::ZipSizeExceeded { .. })));
+    }
+
+    #[test]
+    fn test_max_unzip_size_within_limit() {
+        let wb = Workbook::new();
+        let buf = wb.save_to_buffer().unwrap();
+
+        let opts = OpenOptions::new().max_unzip_size(1_000_000_000);
+        let wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
+        assert_eq!(wb2.sheet_names(), vec!["Sheet1"]);
+    }
+
+    #[test]
+    fn test_combined_options() {
+        let mut wb = Workbook::new();
+        wb.new_sheet("Parsed").unwrap();
+        wb.new_sheet("Skipped").unwrap();
+        for i in 1..=10 {
+            let cell = format!("A{}", i);
+            wb.set_cell_value("Parsed", &cell, CellValue::Number(i as f64))
+                .unwrap();
+            wb.set_cell_value("Skipped", &cell, CellValue::Number(i as f64))
+                .unwrap();
+        }
+        let buf = wb.save_to_buffer().unwrap();
+
+        let opts = OpenOptions::new()
+            .sheets(vec!["Parsed".to_string()])
+            .sheet_rows(3);
+        let wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
+
+        // Parsed sheet has only 3 rows
+        assert_eq!(
+            wb2.get_cell_value("Parsed", "A3").unwrap(),
+            CellValue::Number(3.0)
+        );
+        assert_eq!(
+            wb2.get_cell_value("Parsed", "A4").unwrap(),
+            CellValue::Empty
+        );
+
+        // Skipped sheet is empty
+        assert_eq!(
+            wb2.get_cell_value("Skipped", "A1").unwrap(),
+            CellValue::Empty
+        );
+    }
+
+    #[test]
+    fn test_sheet_rows_zero_means_no_rows() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", CellValue::Number(1.0))
+            .unwrap();
+        let buf = wb.save_to_buffer().unwrap();
+
+        let opts = OpenOptions::new().sheet_rows(0);
+        let wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
+        assert_eq!(
+            wb2.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::Empty
+        );
+    }
+
+    #[test]
+    fn test_open_from_buffer_with_options_backwards_compatible() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", CellValue::String("Hello".to_string()))
+            .unwrap();
+        let buf = wb.save_to_buffer().unwrap();
+
+        let wb2 = Workbook::open_from_buffer(&buf).unwrap();
+        assert_eq!(
+            wb2.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("Hello".to_string())
+        );
     }
 }

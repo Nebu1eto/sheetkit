@@ -48,16 +48,17 @@ impl Workbook {
 
     /// Open an existing .xlsx file from disk.
     #[napi(factory, js_name = "openSync")]
-    pub fn open_sync(path: String) -> Result<Self> {
-        let inner = sheetkit_core::workbook::Workbook::open(&path)
+    pub fn open_sync(path: String, options: Option<JsOpenOptions>) -> Result<Self> {
+        let opts = js_open_options_to_core(options.as_ref());
+        let inner = sheetkit_core::workbook::Workbook::open_with_options(&path, &opts)
             .map_err(|e| Error::from_reason(e.to_string()))?;
         Ok(Self { inner })
     }
 
     /// Open an existing .xlsx file from disk asynchronously.
     #[napi(factory)]
-    pub async fn open(path: String) -> Result<Self> {
-        Self::open_sync(path)
+    pub async fn open(path: String, options: Option<JsOpenOptions>) -> Result<Self> {
+        Self::open_sync(path, options)
     }
 
     /// Save the workbook to a .xlsx file.
@@ -76,16 +77,17 @@ impl Workbook {
 
     /// Open a workbook from an in-memory Buffer.
     #[napi(factory, js_name = "openBufferSync")]
-    pub fn open_buffer_sync(data: Buffer) -> Result<Self> {
-        let inner = sheetkit_core::workbook::Workbook::open_from_buffer(&data)
+    pub fn open_buffer_sync(data: Buffer, options: Option<JsOpenOptions>) -> Result<Self> {
+        let opts = js_open_options_to_core(options.as_ref());
+        let inner = sheetkit_core::workbook::Workbook::open_from_buffer_with_options(&data, &opts)
             .map_err(|e| Error::from_reason(e.to_string()))?;
         Ok(Self { inner })
     }
 
     /// Open a workbook from an in-memory Buffer asynchronously.
     #[napi(factory)]
-    pub async fn open_buffer(data: Buffer) -> Result<Self> {
-        Self::open_buffer_sync(data)
+    pub async fn open_buffer(data: Buffer, options: Option<JsOpenOptions>) -> Result<Self> {
+        Self::open_buffer_sync(data, options)
     }
 
     /// Open an encrypted .xlsx file using a password.

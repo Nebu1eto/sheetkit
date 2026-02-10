@@ -172,6 +172,14 @@ pub enum Error {
     #[error("unsupported file extension: {0}")]
     UnsupportedFileExtension(String),
 
+    /// The total decompressed size of the ZIP archive exceeds the safety limit.
+    #[error("ZIP decompressed size {size} bytes exceeds limit of {limit} bytes")]
+    ZipSizeExceeded { size: u64, limit: u64 },
+
+    /// The number of entries in the ZIP archive exceeds the safety limit.
+    #[error("ZIP entry count {count} exceeds limit of {limit}")]
+    ZipEntryCountExceeded { count: usize, limit: usize },
+
     /// An internal or otherwise unclassified error.
     #[error("internal error: {0}")]
     Internal(String),

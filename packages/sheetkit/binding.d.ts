@@ -19,17 +19,17 @@ export declare class Workbook {
   /** Create a new empty workbook with a single sheet named "Sheet1". */
   constructor()
   /** Open an existing .xlsx file from disk. */
-  static openSync(path: string): Workbook
+  static openSync(path: string, options?: JsOpenOptions | undefined | null): Workbook
   /** Open an existing .xlsx file from disk asynchronously. */
-  static open(path: string): Promise<Workbook>
+  static open(path: string, options?: JsOpenOptions | undefined | null): Promise<Workbook>
   /** Save the workbook to a .xlsx file. */
   saveSync(path: string): void
   /** Save the workbook to a .xlsx file asynchronously. */
   save(path: string): Promise<void>
   /** Open a workbook from an in-memory Buffer. */
-  static openBufferSync(data: Buffer): Workbook
+  static openBufferSync(data: Buffer, options?: JsOpenOptions | undefined | null): Workbook
   /** Open a workbook from an in-memory Buffer asynchronously. */
-  static openBuffer(data: Buffer): Promise<Workbook>
+  static openBuffer(data: Buffer, options?: JsOpenOptions | undefined | null): Promise<Workbook>
   /** Open an encrypted .xlsx file using a password. */
   static openWithPasswordSync(path: string, password: string): Workbook
   /** Open an encrypted .xlsx file using a password asynchronously. */
@@ -581,6 +581,18 @@ export interface JsImageConfig {
   fromCell: string
   widthPx: number
   heightPx: number
+}
+
+/** Options for controlling how a workbook is opened and parsed. */
+export interface JsOpenOptions {
+  /** Maximum number of rows to read per sheet. Omit for unlimited. */
+  sheetRows?: number
+  /** Only parse sheets whose names are in this list. Omit to parse all sheets. */
+  sheets?: Array<string>
+  /** Maximum total decompressed size of all ZIP entries in bytes. */
+  maxUnzipSize?: number
+  /** Maximum number of ZIP entries allowed. */
+  maxZipEntries?: number
 }
 
 /** Page margins configuration in inches. */
