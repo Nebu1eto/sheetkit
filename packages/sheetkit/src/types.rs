@@ -687,3 +687,23 @@ pub struct JsSlicerInfo {
     /// The visual style name, if set.
     pub style: Option<String>,
 }
+
+/// A VBA module extracted from a .xlsm file.
+#[napi(object)]
+pub struct JsVbaModule {
+    /// Module name (e.g., "Module1", "ThisWorkbook").
+    pub name: String,
+    /// Decompressed VBA source code.
+    pub source_code: String,
+    /// Module type: "standard", "class", "form", "document", or "thisWorkbook".
+    pub module_type: String,
+}
+
+/// Result of extracting VBA modules from a .xlsm file.
+#[napi(object)]
+pub struct JsVbaProject {
+    /// Extracted VBA modules.
+    pub modules: Vec<JsVbaModule>,
+    /// Non-fatal warnings encountered during parsing.
+    pub warnings: Vec<String>,
+}

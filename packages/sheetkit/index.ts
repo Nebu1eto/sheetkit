@@ -37,6 +37,8 @@ import type {
   JsTableInfo,
   JsThreadedCommentData,
   JsThreadedCommentInput,
+  JsVbaModule,
+  JsVbaProject,
   JsWorkbookProtectionConfig,
 } from './binding.js';
 import { JsStreamWriter, Workbook as NativeWorkbook } from './binding.js';
@@ -96,6 +98,8 @@ export type {
   JsTableInfo,
   JsThreadedCommentData,
   JsThreadedCommentInput,
+  JsVbaModule,
+  JsVbaProject,
   JsView3DConfig,
   JsWorkbookProtectionConfig,
 } from './binding.js';
@@ -1017,11 +1021,20 @@ class Workbook {
   renderToSvg(options: JsRenderOptions): string {
     return this.#native.renderToSvg(options);
   }
+
+  /** Get the raw VBA project binary (xl/vbaProject.bin), or null if not present. */
+  getVbaProject(): Buffer | null {
+    return this.#native.getVbaProject();
+  }
+
+  /** Extract VBA module source code from the workbook's VBA project. Returns null if no VBA project. */
+  getVbaModules(): JsVbaProject | null {
+    return this.#native.getVbaModules();
+  }
 }
 
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
 
 export { JsStreamWriter, SheetData, Workbook };
 export type { CellTypeName, CellValue };

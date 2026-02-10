@@ -1393,3 +1393,81 @@ wb.saveSync('complex_updated.xlsx');
 - Unknown entries are stored as opaque byte blobs. SheetKit does not inspect or validate their contents.
 - If an unknown entry's path collides with a path that SheetKit writes (e.g., a non-standard `xl/styles.xml` variant), SheetKit's version takes precedence and the unknown entry is not written.
 - Content Types (`[Content_Types].xml`) entries that reference unknown parts are preserved because the file itself is round-tripped. However, SheetKit does not add new content type entries for unknown parts that were not already listed.
+
+---
+
+### VBA Project Extraction
+
+SheetKit can extract VBA macro code from macro-enabled workbooks (`.xlsm` files). The VBA project is stored as `xl/vbaProject.bin` inside the ZIP archive, which is an OLE/CFB compound file containing VBA modules.
+
+This feature is read-only: SheetKit can read and extract VBA code, but does not support creating or modifying VBA projects.
+
+#### Rust
+
+```rust
+use sheetkit::Workbook;
+
+let wb = Workbook::open("macros.xlsm")?;
+
+// Check if the workbook contains a VBA project
+if let Some(raw_bytes) = wb.get_vba_project() {
+    println!("VBA project size: {} bytes", raw_bytes.len());
+}
+
+// Extract individual VBA modules with their source code
+if let Some(modules) = wb.get_vba_modules()? {
+    for module in &modules {
+        println!("Module: {} (type: {:?})", module.name, module.module_type);
+        println!("Source:\n{}", module.source_code);
+    }
+}
+
+// Standard .xlsx files return None
+let wb2 = Workbook::new();
+assert!(wb2.get_vba_project().is_none());
+assert!(wb2.get_vba_modules()?.is_none());
+```
+
+#### TypeScript
+
+```typescript
+import { Workbook } from '@sheetkit/node';
+
+const wb = Workbook.openSync('macros.xlsm');
+
+// Get raw VBA project binary, or null if not present
+const rawProject: Buffer | null = wb.getVbaProject();
+if (rawProject) {
+  console.log(`VBA project size: ${rawProject.length} bytes`);
+}
+
+// Extract individual VBA modules with source code
+const modules = wb.getVbaModules();
+if (modules) {
+  for (const m of modules) {
+    console.log(`Module: ${m.name} (type: ${m.moduleType})`);
+    console.log(`Source:\n${m.sourceCode}`);
+  }
+}
+
+// Standard .xlsx files return null
+const wb2 = new Workbook();
+console.log(wb2.getVbaProject());  // null
+console.log(wb2.getVbaModules());  // null
+```
+
+#### Module types
+
+Each VBA module has a `moduleType` field indicating its kind:
+
+| Type | Description |
+|------|-------------|
+| `standard` | A standard code module (`.bas`) |
+| `class` | A class module (`.cls`) |
+| `form` | A UserForm module |
+| `document` | A document module (e.g., Sheet code-behind) |
+| `thisWorkbook` | The ThisWorkbook module |
+
+#### VBA project round-trip
+
+When opening a `.xlsm` file and saving it back, the `xl/vbaProject.bin` entry is preserved as-is, maintaining macro functionality through the open/save cycle.

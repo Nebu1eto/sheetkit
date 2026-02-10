@@ -48,6 +48,7 @@ pub use sheetkit_core::threaded_comment::{
 pub use sheetkit_core::validation::{
     DataValidationConfig, ErrorStyle, ValidationOperator, ValidationType,
 };
+pub use sheetkit_core::vba::{VbaModule, VbaModuleType, VbaProject};
 
 /// Utility functions for cell reference conversion.
 pub mod utils {
