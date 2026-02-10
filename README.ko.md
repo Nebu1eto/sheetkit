@@ -87,7 +87,9 @@ pnpm add @sheetkit/node
 
 ## 문서
 
-자세한 문서는 [docs/ko/](docs/ko/) 폴더를 참조하세요.
+**[문서 사이트](https://nebu1eto.github.io/sheetkit/ko/)** | [English](https://nebu1eto.github.io/sheetkit/)
+
+문서 소스 파일은 [docs/ko/](docs/ko/) 폴더를 참조하세요.
 
 ## 감사의 글
 

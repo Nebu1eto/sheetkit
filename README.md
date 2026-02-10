@@ -87,7 +87,9 @@ pnpm add @sheetkit/node
 
 ## Documentation
 
-See the [docs/en/](docs/en/) folder for detailed documentation.
+**[Documentation Site](https://nebu1eto.github.io/sheetkit/)** | [Korean (한국어)](https://nebu1eto.github.io/sheetkit/ko/)
+
+See the [docs/](docs/) folder for documentation source files.
 
 ## Acknowledgements
 
