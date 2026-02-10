@@ -4,6 +4,17 @@ SheetKit은 Rust와 TypeScript 애플리케이션 모두에 네이티브 Rust �
 
 ## SheetKit은 얼마나 빠른가요?
 
+### ExcelJS, SheetJS와의 비교 (Node.js)
+
+기존 Node.js 벤치마크 스위트(`benchmarks/node/RESULTS.md`) 기준으로, SheetKit은 대표적인 읽기/쓰기 시나리오에서 ExcelJS와 SheetJS보다 일관되게 빠르게 동작합니다.
+
+| 시나리오 | SheetKit | ExcelJS | SheetJS |
+|---------|----------|---------|---------|
+| 대용량 읽기 (50k 행 × 20 열) | 680ms | 3.88s | 2.06s |
+| 대용량 쓰기 (50k 행 × 20 열) | 657ms | 3.49s | 1.59s |
+| 버퍼 왕복 (10k 행) | 167ms | 674ms | 211ms |
+| 랜덤 접근 읽기 (50k 행 파일에서 1k 셀) | 550ms | 3.97s | 1.74s |
+
 ### Rust vs Node.js 오버헤드
 
 SheetKit의 Node.js 바인딩은 네이티브 Rust와 매우 가까운 성능을 유지하며, 일부 쓰기 중심 경로에서는 더 빠르게 동작합니다:
