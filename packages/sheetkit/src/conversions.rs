@@ -189,6 +189,13 @@ pub(crate) fn cell_value_to_either(
 
 pub(crate) fn parse_style_color(s: &str) -> Option<StyleColor> {
     if s.starts_with('#') && s.len() == 7 {
+        // #RRGGBB format (stored as-is)
+        Some(StyleColor::Rgb(s.to_string()))
+    } else if s.len() == 8 && s.chars().all(|c| c.is_ascii_hexdigit()) {
+        // AARRGGBB format (e.g. "FFFFFF00")
+        Some(StyleColor::Rgb(s.to_string()))
+    } else if s.len() == 6 && s.chars().all(|c| c.is_ascii_hexdigit()) {
+        // RRGGBB format (e.g. "FF0000")
         Some(StyleColor::Rgb(s.to_string()))
     } else if let Some(theme_str) = s.strip_prefix("theme:") {
         theme_str.parse::<u32>().ok().map(StyleColor::Theme)

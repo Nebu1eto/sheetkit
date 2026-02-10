@@ -21,6 +21,7 @@ import type {
   JsPivotTableConfig,
   JsPivotTableInfo,
   JsPrintOptions,
+  JsRenderOptions,
   JsRichTextRun,
   JsRowData,
   JsShapeConfig,
@@ -73,6 +74,7 @@ export type {
   JsPivotTableInfo,
   JsPrintOptions,
   JsProtectionStyle,
+  JsRenderOptions,
   JsRichTextRun,
   JsRowCell,
   JsRowData,
@@ -976,6 +978,11 @@ class Workbook {
   /** Get sheet visibility. Returns "visible", "hidden", or "veryHidden". */
   getSheetVisibility(sheet: string): string {
     return this.#native.getSheetVisibility(sheet);
+  }
+
+  /** Render a worksheet to an SVG string. */
+  renderToSvg(options: JsRenderOptions): string {
+    return this.#native.renderToSvg(options);
   }
 }
 

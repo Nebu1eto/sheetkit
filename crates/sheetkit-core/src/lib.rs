@@ -20,6 +20,7 @@ pub mod pivot;
 pub mod protection;
 pub mod raw_transfer;
 pub mod raw_transfer_write;
+pub mod render;
 pub mod rich_text;
 pub mod row;
 pub mod shape;

@@ -32,6 +32,7 @@ pub use sheetkit_core::page_layout::{Orientation, PageMarginsConfig, PaperSize};
 pub use sheetkit_core::pivot::{
     AggregateFunction, PivotDataField, PivotField, PivotTableConfig, PivotTableInfo,
 };
+pub use sheetkit_core::render::RenderOptions;
 pub use sheetkit_core::rich_text::{rich_text_to_plain, RichTextRun};
 pub use sheetkit_core::shape::{ShapeConfig, ShapeType};
 pub use sheetkit_core::slicer::{SlicerConfig, SlicerInfo};

@@ -4021,3 +4021,121 @@ describe('Tables', () => {
     ).toThrow(/already exists/i);
   });
 });
+
+describe('SVG Renderer', () => {
+  it('should render a sheet to valid SVG', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'Name');
+    wb.setCellValue('Sheet1', 'B1', 'Score');
+    wb.setCellValue('Sheet1', 'A2', 'Alice');
+    wb.setCellValue('Sheet1', 'B2', 95);
+
+    const svg = wb.renderToSvg({ sheetName: 'Sheet1' });
+
+    expect(svg).toMatch(/^<svg/);
+    expect(svg).toMatch(/<\/svg>$/);
+    expect(svg).toContain('xmlns="http://www.w3.org/2000/svg"');
+  });
+
+  it('should include cell text in SVG output', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'Hello');
+    wb.setCellValue('Sheet1', 'B1', 42);
+
+    const svg = wb.renderToSvg({ sheetName: 'Sheet1' });
+
+    expect(svg).toContain('>Hello<');
+    expect(svg).toContain('>42<');
+  });
+
+  it('should render with gridlines by default', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'Test');
+
+    const svg = wb.renderToSvg({ sheetName: 'Sheet1' });
+
+    expect(svg).toContain('stroke="#D0D0D0"');
+  });
+
+  it('should omit gridlines when disabled', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'Test');
+
+    const svg = wb.renderToSvg({ sheetName: 'Sheet1', showGridlines: false });
+
+    expect(svg).not.toContain('stroke="#D0D0D0"');
+  });
+
+  it('should render headers by default', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'Test');
+
+    const svg = wb.renderToSvg({ sheetName: 'Sheet1' });
+
+    expect(svg).toContain('>A<');
+    expect(svg).toContain('>1<');
+  });
+
+  it('should omit headers when disabled', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'Test');
+
+    const svg = wb.renderToSvg({ sheetName: 'Sheet1', showHeaders: false });
+
+    expect(svg).not.toContain('fill="#F0F0F0"');
+  });
+
+  it('should render a sub-range', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'Name');
+    wb.setCellValue('Sheet1', 'B1', 'Score');
+    wb.setCellValue('Sheet1', 'A2', 'Alice');
+
+    const svg = wb.renderToSvg({ sheetName: 'Sheet1', range: 'A1:A2' });
+
+    expect(svg).toContain('>Name<');
+    expect(svg).toContain('>Alice<');
+    expect(svg).not.toContain('>Score<');
+  });
+
+  it('should apply scale factor to dimensions', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'Test');
+
+    const svg1 = wb.renderToSvg({ sheetName: 'Sheet1', scale: 1 });
+    const svg2 = wb.renderToSvg({ sheetName: 'Sheet1', scale: 2 });
+
+    const widthRegex = /width="([^"]+)"/;
+    const w1 = Number.parseFloat(svg1.match(widthRegex)![1]);
+    const w2 = Number.parseFloat(svg2.match(widthRegex)![1]);
+
+    expect(w2).toBeCloseTo(w1 * 2, 1);
+  });
+
+  it('should throw for invalid sheet name', () => {
+    const wb = new Workbook();
+    expect(() => wb.renderToSvg({ sheetName: 'NonExistent' })).toThrow();
+  });
+
+  it('should render styled cells with bold text', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'Bold');
+    const styleId = wb.addStyle({ font: { bold: true } });
+    wb.setCellStyle('Sheet1', 'A1', styleId);
+
+    const svg = wb.renderToSvg({ sheetName: 'Sheet1' });
+
+    expect(svg).toContain('font-weight="bold"');
+  });
+
+  it('should render cell fill colors', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'Yellow');
+    const styleId = wb.addStyle({ fill: { pattern: 'solid', fgColor: 'FFFFFF00' } });
+    wb.setCellStyle('Sheet1', 'A1', styleId);
+
+    const svg = wb.renderToSvg({ sheetName: 'Sheet1' });
+
+    expect(svg).toContain('fill="#FFFF00"');
+  });
+});
