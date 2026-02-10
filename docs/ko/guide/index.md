@@ -66,7 +66,7 @@ SheetKit은 Rust와 TypeScript를 위한 고성능 SpreadsheetML 라이브러리
 
 ```toml
 [dependencies]
-sheetkit = "0.1"
+sheetkit = "0.4"
 ```
 
 ### Node.js

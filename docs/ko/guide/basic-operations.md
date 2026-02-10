@@ -6,7 +6,7 @@
 
 ```toml
 [dependencies]
-sheetkit = "0.1"
+sheetkit = "0.4"
 ```
 
 ### Node.js
