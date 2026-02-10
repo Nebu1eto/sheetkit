@@ -2209,3 +2209,129 @@ const persons = wb.getPersons();
 | `display_name` / `displayName` | `String` | `string` | Person display name |
 | `user_id` / `userId` | `Option<String>` | `string?` | User identifier |
 | `provider_id` / `providerId` | `Option<String>` | `string?` | Identity provider ID |
+
+---
+
+## 35. Error Types
+
+All operations that can fail return `Result<T, Error>` in Rust. In TypeScript, errors are thrown as JavaScript `Error` objects with the message from the Rust error.
+
+### Error Enum Reference
+
+#### Cell and Reference Errors
+
+| Variant | Message | Description |
+|---------|---------|-------------|
+| `InvalidCellReference(String)` | `invalid cell reference: {0}` | Not a valid A1-style reference |
+| `InvalidRowNumber(u32)` | `invalid row number: {0}` | Row outside 1..=1,048,576 |
+| `InvalidColumnNumber(u32)` | `invalid column number: {0}` | Column outside 1..=16,384 |
+| `InvalidReference { reference }` | `invalid reference: {reference}` | Invalid cell range (sqref) |
+| `InvalidMergeCellReference(String)` | `invalid merge cell reference: {0}` | Malformed merge range |
+| `CellValueTooLong { length, max }` | `cell value too long: {length} characters (max {max})` | Value exceeds 32,767 character limit |
+
+#### Sheet Errors
+
+| Variant | Message | Description |
+|---------|---------|-------------|
+| `SheetNotFound { name }` | `sheet '{name}' does not exist` | Named sheet not in workbook |
+| `SheetAlreadyExists { name }` | `sheet '{name}' already exists` | Duplicate sheet name |
+| `InvalidSheetName(String)` | `invalid sheet name: {0}` | Name violates Excel rules |
+
+#### Style Errors
+
+| Variant | Message | Description |
+|---------|---------|-------------|
+| `StyleNotFound { id }` | `style not found: {id}` | Style ID not in stylesheet |
+| `CellStylesExceeded { max }` | `cell styles exceeded maximum ({max})` | Too many styles registered |
+| `ColumnWidthExceeded { width, max }` | `column width {width} exceeds maximum {max}` | Width > 255 |
+| `RowHeightExceeded { height, max }` | `row height {height} exceeds maximum {max}` | Height > 409 |
+| `OutlineLevelExceeded { level, max }` | `outline level {level} exceeds maximum {max}` | Outline level > 7 |
+
+#### Merge Cell Errors
+
+| Variant | Message | Description |
+|---------|---------|-------------|
+| `MergeCellOverlap { new, existing }` | `merge cell range '{new}' overlaps with existing range '{existing}'` | Overlapping merge ranges |
+| `MergeCellNotFound(String)` | `merge cell range '{0}' not found` | Merge range does not exist |
+
+#### Formula Errors
+
+| Variant | Message | Description |
+|---------|---------|-------------|
+| `CircularReference { cell }` | `circular reference detected at {cell}` | Dependency cycle in formulas |
+| `UnknownFunction { name }` | `unknown function: {name}` | Unrecognized function name |
+| `WrongArgCount { name, expected, got }` | `function {name} expects {expected} arguments, got {got}` | Incorrect argument count |
+| `FormulaError(String)` | `formula evaluation error: {0}` | General evaluation failure |
+
+#### Named Range Errors
+
+| Variant | Message | Description |
+|---------|---------|-------------|
+| `InvalidDefinedName(String)` | `invalid defined name: {0}` | Name contains forbidden characters |
+| `DefinedNameNotFound { name }` | `defined name '{name}' not found` | Named range does not exist |
+
+#### Feature-Specific Errors
+
+| Variant | Message | Description |
+|---------|---------|-------------|
+| `PivotTableNotFound { name }` | `pivot table '{name}' not found` | Pivot table does not exist |
+| `PivotTableAlreadyExists { name }` | `pivot table '{name}' already exists` | Duplicate pivot table name |
+| `TableNotFound { name }` | `table '{name}' not found` | Table does not exist |
+| `TableAlreadyExists { name }` | `table '{name}' already exists` | Duplicate table name |
+| `TableColumnNotFound { table, column }` | `column '{column}' not found in table '{table}'` | Column not in table |
+| `InvalidSourceRange(String)` | `invalid source range: {0}` | Pivot table source range invalid |
+| `SlicerNotFound { name }` | `slicer '{name}' not found` | Slicer does not exist |
+| `SlicerAlreadyExists { name }` | `slicer '{name}' already exists` | Duplicate slicer name |
+| `ThreadedCommentNotFound { id }` | `threaded comment '{id}' not found` | Comment ID does not exist |
+| `ChartNotFound { sheet, cell }` | `no chart found at cell '{cell}' on sheet '{sheet}'` | No chart at position |
+| `PictureNotFound { sheet, cell }` | `no picture found at cell '{cell}' on sheet '{sheet}'` | No picture at position |
+| `UnsupportedImageFormat { format }` | `unsupported image format: {format}` | Image format not supported |
+
+#### Stream Writer Errors
+
+| Variant | Message | Description |
+|---------|---------|-------------|
+| `StreamRowAlreadyWritten { row }` | `row {row} has already been written` | Rows must be in ascending order |
+| `StreamAlreadyFinished` | `stream writer already finished` | Writer was already finalized |
+| `StreamColumnsAfterRows` | `cannot set column width after rows have been written` | Column settings must precede rows |
+
+#### File I/O and ZIP Errors
+
+| Variant | Message | Description |
+|---------|---------|-------------|
+| `Io(std::io::Error)` | `I/O error: {0}` | Underlying OS I/O error |
+| `Zip(String)` | `ZIP error: {0}` | ZIP archive read/write error |
+| `XmlParse(String)` | `XML parse error: {0}` | Malformed XML |
+| `XmlDeserialize(String)` | `XML deserialization error: {0}` | XML does not match expected schema |
+| `UnsupportedFileExtension(String)` | `unsupported file extension: {0}` | Not .xlsx/.xlsm/.xltx/.xltm/.xlam |
+| `ZipSizeExceeded { size, limit }` | `ZIP decompressed size {size} bytes exceeds limit of {limit} bytes` | Decompressed size safety limit |
+| `ZipEntryCountExceeded { count, limit }` | `ZIP entry count {count} exceeds limit of {limit}` | Entry count safety limit |
+
+#### Encryption Errors
+
+| Variant | Message | Description |
+|---------|---------|-------------|
+| `FileEncrypted` | `file is encrypted, password required` | File needs password |
+| `IncorrectPassword` | `incorrect password` | Wrong decryption password |
+| `UnsupportedEncryption(String)` | `unsupported encryption method: {0}` | Unknown encryption algorithm |
+
+#### Other
+
+| Variant | Message | Description |
+|---------|---------|-------------|
+| `InvalidArgument(String)` | `invalid argument: {0}` | General invalid parameter |
+| `Internal(String)` | `internal error: {0}` | Unclassified internal error |
+
+### TypeScript Error Handling
+
+In TypeScript, all errors are thrown as standard `Error` objects. Match errors by their message string:
+
+```typescript
+try {
+    wb.getCellValue("NonExistent", "A1");
+} catch (e) {
+    if (e instanceof Error && e.message.includes("does not exist")) {
+        console.log("Sheet not found");
+    }
+}
+```
