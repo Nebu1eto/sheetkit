@@ -16,7 +16,9 @@ use sheetkit_core::image::ImageConfig;
 use sheetkit_core::page_layout::PageMarginsConfig;
 use sheetkit_core::pivot::{PivotDataField, PivotField, PivotTableConfig};
 use sheetkit_core::protection::WorkbookProtectionConfig;
+use sheetkit_core::table::{TableColumn, TableConfig};
 use sheetkit_core::validation::DataValidationConfig;
+use sheetkit_core::workbook::WorkbookFormat;
 
 use crate::conversions::*;
 use crate::stream::JsStreamWriter;
@@ -1400,6 +1402,151 @@ impl Workbook {
         self.inner
             .is_sheet_protected(&sheet)
             .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Set sheet view options (gridlines, zoom, view mode, etc.).
+    #[napi]
+    pub fn set_sheet_view_options(
+        &mut self,
+        sheet: String,
+        opts: JsSheetViewOptions,
+    ) -> Result<()> {
+        use sheetkit_core::sheet::ViewMode;
+        let core_opts = sheetkit_core::sheet::SheetViewOptions {
+            show_gridlines: opts.show_gridlines,
+            show_formulas: opts.show_formulas,
+            show_row_col_headers: opts.show_row_col_headers,
+            zoom_scale: opts.zoom_scale,
+            view_mode: opts.view_mode.as_deref().map(|s| match s {
+                "pageBreak" | "pageBreakPreview" => ViewMode::PageBreak,
+                "pageLayout" => ViewMode::PageLayout,
+                _ => ViewMode::Normal,
+            }),
+            top_left_cell: opts.top_left_cell,
+        };
+        self.inner
+            .set_sheet_view_options(&sheet, &core_opts)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Get sheet view options.
+    #[napi]
+    pub fn get_sheet_view_options(&self, sheet: String) -> Result<JsSheetViewOptions> {
+        let opts = self
+            .inner
+            .get_sheet_view_options(&sheet)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        Ok(JsSheetViewOptions {
+            show_gridlines: opts.show_gridlines,
+            show_formulas: opts.show_formulas,
+            show_row_col_headers: opts.show_row_col_headers,
+            zoom_scale: opts.zoom_scale,
+            view_mode: opts.view_mode.map(|v| v.as_str().to_string()),
+            top_left_cell: opts.top_left_cell,
+        })
+    }
+
+    /// Get the workbook format ("xlsx", "xlsm", "xltx", "xltm", "xlam").
+    #[napi]
+    pub fn get_format(&self) -> String {
+        match self.inner.format() {
+            WorkbookFormat::Xlsx => "xlsx".to_string(),
+            WorkbookFormat::Xlsm => "xlsm".to_string(),
+            WorkbookFormat::Xltx => "xltx".to_string(),
+            WorkbookFormat::Xltm => "xltm".to_string(),
+            WorkbookFormat::Xlam => "xlam".to_string(),
+        }
+    }
+
+    /// Add a table to a sheet.
+    #[napi]
+    pub fn add_table(&mut self, sheet: String, config: JsTableConfig) -> Result<()> {
+        let core_config = TableConfig {
+            name: config.name,
+            display_name: config.display_name,
+            range: config.range,
+            columns: config
+                .columns
+                .into_iter()
+                .map(|c| TableColumn {
+                    name: c.name,
+                    totals_row_function: c.totals_row_function,
+                    totals_row_label: c.totals_row_label,
+                })
+                .collect(),
+            show_header_row: config.show_header_row.unwrap_or(true),
+            style_name: config.style_name,
+            auto_filter: config.auto_filter.unwrap_or(true),
+            show_first_column: config.show_first_column.unwrap_or(false),
+            show_last_column: config.show_last_column.unwrap_or(false),
+            show_row_stripes: config.show_row_stripes.unwrap_or(true),
+            show_column_stripes: config.show_column_stripes.unwrap_or(false),
+        };
+        self.inner
+            .add_table(&sheet, &core_config)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Get all tables on a sheet.
+    #[napi]
+    pub fn get_tables(&self, sheet: String) -> Result<Vec<JsTableInfo>> {
+        let tables = self
+            .inner
+            .get_tables(&sheet)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        Ok(tables
+            .into_iter()
+            .map(|t| JsTableInfo {
+                name: t.name,
+                display_name: t.display_name,
+                range: t.range,
+                show_header_row: t.show_header_row,
+                auto_filter: t.auto_filter,
+                columns: t.columns,
+                style_name: t.style_name,
+            })
+            .collect())
+    }
+
+    /// Delete a table from a sheet by name.
+    #[napi]
+    pub fn delete_table(&mut self, sheet: String, name: String) -> Result<()> {
+        self.inner
+            .delete_table(&sheet, &name)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Set sheet visibility ("visible", "hidden", or "veryHidden").
+    #[napi]
+    pub fn set_sheet_visibility(&mut self, sheet: String, visibility: String) -> Result<()> {
+        use sheetkit_core::sheet::SheetVisibility;
+        let vis = match visibility.as_str() {
+            "visible" => SheetVisibility::Visible,
+            "hidden" => SheetVisibility::Hidden,
+            "veryHidden" => SheetVisibility::VeryHidden,
+            other => {
+                return Err(Error::from_reason(format!(
+                    "Invalid visibility: \"{other}\". Must be \"visible\", \"hidden\", or \"veryHidden\""
+                )));
+            }
+        };
+        self.inner
+            .set_sheet_visibility(&sheet, vis)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Get sheet visibility. Returns "visible", "hidden", or "veryHidden".
+    #[napi]
+    pub fn get_sheet_visibility(&self, sheet: String) -> Result<String> {
+        let vis = self
+            .inner
+            .get_sheet_visibility(&sheet)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        Ok(match vis {
+            sheetkit_core::sheet::SheetVisibility::Visible => "visible".to_string(),
+            sheetkit_core::sheet::SheetVisibility::Hidden => "hidden".to_string(),
+            sheetkit_core::sheet::SheetVisibility::VeryHidden => "veryHidden".to_string(),
+        })
     }
 }
 

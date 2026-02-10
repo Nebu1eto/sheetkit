@@ -151,6 +151,70 @@ const wb3 = await Workbook.openBuffer(buf2);
 
 ---
 
+### Workbook Format and VBA Preservation
+
+SheetKit supports multiple Excel file formats beyond the standard `.xlsx`. When opening a file, the format is automatically detected from the package content types. When saving, the format is inferred from the file extension.
+
+#### Supported Formats
+
+| Extension | Description |
+|-----------|-------------|
+| `.xlsx` | Standard spreadsheet (default) |
+| `.xlsm` | Macro-enabled spreadsheet |
+| `.xltx` | Template |
+| `.xltm` | Macro-enabled template |
+| `.xlam` | Macro-enabled add-in |
+
+#### Rust
+
+```rust
+use sheetkit::{Workbook, WorkbookFormat};
+
+// Format is auto-detected on open
+let wb = Workbook::open("macros.xlsm")?;
+assert_eq!(wb.format(), WorkbookFormat::Xlsm);
+
+// Format is inferred from extension on save
+let mut wb2 = Workbook::new();
+wb2.save("template.xltx")?;  // saved as template format
+
+// Explicit format control
+let mut wb3 = Workbook::new();
+wb3.set_format(WorkbookFormat::Xlsm);
+wb3.save_to_buffer()?;  // buffer uses xlsm content type
+```
+
+#### TypeScript
+
+```typescript
+// Format is auto-detected on open
+const wb = await Workbook.open("macros.xlsm");
+console.log(wb.format);  // "xlsm"
+
+// Format is inferred from extension on save
+const wb2 = new Workbook();
+await wb2.save("template.xltx");  // saved as template format
+
+// Explicit format control
+const wb3 = new Workbook();
+wb3.format = "xlsm";
+const buf = wb3.writeBufferSync();  // buffer uses xlsm content type
+```
+
+#### VBA Preservation
+
+Macro-enabled files (`.xlsm`, `.xltm`) preserve their VBA project through open/save round-trips. No user code is needed -- the VBA binary blob is kept in memory and written back on save automatically.
+
+```typescript
+const wb = await Workbook.open("with_macros.xlsm");
+wb.setCellValue("Sheet1", "A1", "Updated");
+await wb.save("with_macros.xlsm");  // macros are preserved
+```
+
+For full API details, see the [API Reference](../api-reference/workbook.md).
+
+---
+
 ### Cell Operations
 
 Read and write cell values. Cells are identified by sheet name and cell reference (e.g., `"A1"`, `"B2"`, `"AA100"`).

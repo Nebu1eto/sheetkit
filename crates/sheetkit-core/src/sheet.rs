@@ -455,7 +455,12 @@ pub fn set_panes(ws: &mut WorksheetXml, cell: &str) -> Result<()> {
     let sheet_views = ws.sheet_views.get_or_insert_with(|| SheetViews {
         sheet_views: vec![SheetView {
             tab_selected: None,
+            show_grid_lines: None,
+            show_formulas: None,
+            show_row_col_headers: None,
             zoom_scale: None,
+            view: None,
+            top_left_cell: None,
             workbook_view_id: 0,
             pane: None,
             selection: vec![],
@@ -491,6 +496,177 @@ pub fn get_panes(ws: &WorksheetXml) -> Option<String> {
         .and_then(|sv| sv.sheet_views.first())
         .and_then(|view| view.pane.as_ref())
         .and_then(|pane| pane.top_left_cell.clone())
+}
+
+/// View mode for a sheet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewMode {
+    /// Normal editing view (default).
+    Normal,
+    /// Page break preview.
+    PageBreak,
+    /// Page layout view.
+    PageLayout,
+}
+
+impl ViewMode {
+    /// Convert to the OOXML attribute string value.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            ViewMode::Normal => "normal",
+            ViewMode::PageBreak => "pageBreakPreview",
+            ViewMode::PageLayout => "pageLayout",
+        }
+    }
+
+    /// Parse from an OOXML attribute string value.
+    pub fn from_xml_str(s: &str) -> Option<Self> {
+        match s {
+            "normal" => Some(ViewMode::Normal),
+            "pageBreakPreview" => Some(ViewMode::PageBreak),
+            "pageLayout" => Some(ViewMode::PageLayout),
+            _ => None,
+        }
+    }
+}
+
+/// Options controlling the display of a sheet view.
+#[derive(Debug, Clone, Default)]
+pub struct SheetViewOptions {
+    /// Whether gridlines are shown. Defaults to true.
+    pub show_gridlines: Option<bool>,
+    /// Whether formulas are shown instead of their results. Defaults to false.
+    pub show_formulas: Option<bool>,
+    /// Whether row and column headers are shown. Defaults to true.
+    pub show_row_col_headers: Option<bool>,
+    /// Zoom scale as a percentage (10-400). Defaults to 100.
+    pub zoom_scale: Option<u32>,
+    /// The view mode (Normal, PageBreak, PageLayout).
+    pub view_mode: Option<ViewMode>,
+    /// The top-left cell visible in the view (e.g. "A1").
+    pub top_left_cell: Option<String>,
+}
+
+/// Set sheet view options on a worksheet.
+///
+/// Only non-`None` fields are applied; existing values for `None` fields are
+/// preserved.
+pub fn set_sheet_view_options(ws: &mut WorksheetXml, opts: &SheetViewOptions) -> Result<()> {
+    if let Some(zoom) = opts.zoom_scale {
+        if !(10..=400).contains(&zoom) {
+            return Err(Error::InvalidArgument(format!(
+                "zoom scale {zoom} is outside the valid range 10-400"
+            )));
+        }
+    }
+
+    let sheet_views = ws.sheet_views.get_or_insert_with(|| SheetViews {
+        sheet_views: vec![SheetView {
+            tab_selected: None,
+            show_grid_lines: None,
+            show_formulas: None,
+            show_row_col_headers: None,
+            zoom_scale: None,
+            view: None,
+            top_left_cell: None,
+            workbook_view_id: 0,
+            pane: None,
+            selection: vec![],
+        }],
+    });
+
+    if let Some(view) = sheet_views.sheet_views.first_mut() {
+        if let Some(v) = opts.show_gridlines {
+            view.show_grid_lines = if v { None } else { Some(false) };
+        }
+        if let Some(v) = opts.show_formulas {
+            view.show_formulas = if v { Some(true) } else { None };
+        }
+        if let Some(v) = opts.show_row_col_headers {
+            view.show_row_col_headers = if v { None } else { Some(false) };
+        }
+        if let Some(zoom) = opts.zoom_scale {
+            view.zoom_scale = if zoom == 100 { None } else { Some(zoom) };
+        }
+        if let Some(ref mode) = opts.view_mode {
+            view.view = match mode {
+                ViewMode::Normal => None,
+                other => Some(other.as_str().to_string()),
+            };
+        }
+        if let Some(ref cell) = opts.top_left_cell {
+            view.top_left_cell = if cell.is_empty() {
+                None
+            } else {
+                Some(cell.clone())
+            };
+        }
+    }
+
+    Ok(())
+}
+
+/// Read the current sheet view options from a worksheet.
+pub fn get_sheet_view_options(ws: &WorksheetXml) -> SheetViewOptions {
+    let view = ws
+        .sheet_views
+        .as_ref()
+        .and_then(|sv| sv.sheet_views.first());
+
+    match view {
+        None => SheetViewOptions {
+            show_gridlines: Some(true),
+            show_formulas: Some(false),
+            show_row_col_headers: Some(true),
+            zoom_scale: Some(100),
+            view_mode: Some(ViewMode::Normal),
+            top_left_cell: None,
+        },
+        Some(v) => SheetViewOptions {
+            show_gridlines: Some(v.show_grid_lines.unwrap_or(true)),
+            show_formulas: Some(v.show_formulas.unwrap_or(false)),
+            show_row_col_headers: Some(v.show_row_col_headers.unwrap_or(true)),
+            zoom_scale: Some(v.zoom_scale.unwrap_or(100)),
+            view_mode: Some(
+                v.view
+                    .as_deref()
+                    .and_then(ViewMode::from_xml_str)
+                    .unwrap_or(ViewMode::Normal),
+            ),
+            top_left_cell: v.top_left_cell.clone(),
+        },
+    }
+}
+
+/// Sheet visibility state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SheetVisibility {
+    /// The sheet tab is visible (default).
+    Visible,
+    /// The sheet tab is hidden but can be unhidden by the user.
+    Hidden,
+    /// The sheet tab is hidden and cannot be unhidden via the UI (only via code).
+    VeryHidden,
+}
+
+impl SheetVisibility {
+    /// Convert to the OOXML `state` attribute value.
+    pub fn as_xml_str(&self) -> Option<&'static str> {
+        match self {
+            SheetVisibility::Visible => None,
+            SheetVisibility::Hidden => Some("hidden"),
+            SheetVisibility::VeryHidden => Some("veryHidden"),
+        }
+    }
+
+    /// Parse from the OOXML `state` attribute value.
+    pub fn from_xml_str(s: Option<&str>) -> Self {
+        match s {
+            Some("hidden") => SheetVisibility::Hidden,
+            Some("veryHidden") => SheetVisibility::VeryHidden,
+            _ => SheetVisibility::Visible,
+        }
+    }
 }
 
 /// Rebuild content type overrides for worksheets so they match the current
@@ -1306,5 +1482,151 @@ mod tests {
         // Should not panic when there are no sheet views.
         unset_panes(&mut ws);
         assert!(get_panes(&ws).is_none());
+    }
+
+    #[test]
+    fn test_view_mode_as_str() {
+        assert_eq!(ViewMode::Normal.as_str(), "normal");
+        assert_eq!(ViewMode::PageBreak.as_str(), "pageBreakPreview");
+        assert_eq!(ViewMode::PageLayout.as_str(), "pageLayout");
+    }
+
+    #[test]
+    fn test_view_mode_from_str() {
+        assert_eq!(ViewMode::from_xml_str("normal"), Some(ViewMode::Normal));
+        assert_eq!(
+            ViewMode::from_xml_str("pageBreakPreview"),
+            Some(ViewMode::PageBreak)
+        );
+        assert_eq!(
+            ViewMode::from_xml_str("pageLayout"),
+            Some(ViewMode::PageLayout)
+        );
+        assert_eq!(ViewMode::from_xml_str("unknown"), None);
+    }
+
+    #[test]
+    fn test_sheet_visibility_as_xml_str() {
+        assert_eq!(SheetVisibility::Visible.as_xml_str(), None);
+        assert_eq!(SheetVisibility::Hidden.as_xml_str(), Some("hidden"));
+        assert_eq!(SheetVisibility::VeryHidden.as_xml_str(), Some("veryHidden"));
+    }
+
+    #[test]
+    fn test_sheet_visibility_from_xml_str() {
+        assert_eq!(
+            SheetVisibility::from_xml_str(None),
+            SheetVisibility::Visible
+        );
+        assert_eq!(
+            SheetVisibility::from_xml_str(Some("hidden")),
+            SheetVisibility::Hidden
+        );
+        assert_eq!(
+            SheetVisibility::from_xml_str(Some("veryHidden")),
+            SheetVisibility::VeryHidden
+        );
+        assert_eq!(
+            SheetVisibility::from_xml_str(Some("unknown")),
+            SheetVisibility::Visible
+        );
+    }
+
+    #[test]
+    fn test_set_sheet_view_options_basic() {
+        let mut ws = WorksheetXml::default();
+        let opts = SheetViewOptions {
+            show_gridlines: Some(false),
+            show_formulas: Some(true),
+            zoom_scale: Some(200),
+            view_mode: Some(ViewMode::PageBreak),
+            top_left_cell: Some("B5".to_string()),
+            show_row_col_headers: Some(false),
+        };
+        set_sheet_view_options(&mut ws, &opts).unwrap();
+
+        let result = get_sheet_view_options(&ws);
+        assert_eq!(result.show_gridlines, Some(false));
+        assert_eq!(result.show_formulas, Some(true));
+        assert_eq!(result.zoom_scale, Some(200));
+        assert_eq!(result.view_mode, Some(ViewMode::PageBreak));
+        assert_eq!(result.top_left_cell, Some("B5".to_string()));
+        assert_eq!(result.show_row_col_headers, Some(false));
+    }
+
+    #[test]
+    fn test_set_sheet_view_options_zoom_out_of_range() {
+        let mut ws = WorksheetXml::default();
+        let result = set_sheet_view_options(
+            &mut ws,
+            &SheetViewOptions {
+                zoom_scale: Some(9),
+                ..Default::default()
+            },
+        );
+        assert!(result.is_err());
+
+        let result2 = set_sheet_view_options(
+            &mut ws,
+            &SheetViewOptions {
+                zoom_scale: Some(401),
+                ..Default::default()
+            },
+        );
+        assert!(result2.is_err());
+    }
+
+    #[test]
+    fn test_set_sheet_view_options_preserves_existing() {
+        let mut ws = WorksheetXml::default();
+        set_sheet_view_options(
+            &mut ws,
+            &SheetViewOptions {
+                zoom_scale: Some(150),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        set_sheet_view_options(
+            &mut ws,
+            &SheetViewOptions {
+                show_gridlines: Some(false),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let result = get_sheet_view_options(&ws);
+        assert_eq!(result.zoom_scale, Some(150));
+        assert_eq!(result.show_gridlines, Some(false));
+    }
+
+    #[test]
+    fn test_get_sheet_view_options_defaults() {
+        let ws = WorksheetXml::default();
+        let opts = get_sheet_view_options(&ws);
+        assert_eq!(opts.show_gridlines, Some(true));
+        assert_eq!(opts.show_formulas, Some(false));
+        assert_eq!(opts.show_row_col_headers, Some(true));
+        assert_eq!(opts.zoom_scale, Some(100));
+        assert_eq!(opts.view_mode, Some(ViewMode::Normal));
+        assert!(opts.top_left_cell.is_none());
+    }
+
+    #[test]
+    fn test_set_sheet_view_options_does_not_break_panes() {
+        let mut ws = WorksheetXml::default();
+        set_panes(&mut ws, "B2").unwrap();
+        set_sheet_view_options(
+            &mut ws,
+            &SheetViewOptions {
+                zoom_scale: Some(120),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(get_panes(&ws), Some("B2".to_string()));
+        assert_eq!(get_sheet_view_options(&ws).zoom_scale, Some(120));
     }
 }

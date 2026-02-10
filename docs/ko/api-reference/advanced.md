@@ -1836,3 +1836,140 @@ sheet.columnName(25);  // 'Z'
 | `getRows()` | 중간 (모든 셀을 객체로 디코딩) | 전체를 한 번에 | 하위 호환성, 모든 셀 순회 |
 | `getRowsBuffer()` + `SheetData` | 낮음 (Buffer + 필요 시 디코딩) | 접근 시마다 | 대용량 시트, 임의 접근, 셀 일부만 읽기 |
 | `getRowsBuffer()` (raw) | 최소 (Buffer만) | 없음 | 커스텀 디코더, 네트워크 전송, 캐싱 |
+
+---
+
+## 31. 시트 보기 옵션
+
+시트 보기 옵션은 Excel UI에서 워크시트가 표시되는 방식을 제어합니다. 눈금선, 수식 표시, 확대/축소 수준, 보기 모드, 스크롤 위치 등을 포함합니다.
+
+### `set_sheet_view_options(sheet, options)` / `setSheetViewOptions(sheet, options)`
+
+시트의 표시 옵션을 설정합니다. `None`/`undefined`가 아닌 필드만 적용되며 나머지 설정은 보존됩니다.
+
+**Rust:**
+
+```rust
+use sheetkit::sheet::{SheetViewOptions, ViewMode};
+
+wb.set_sheet_view_options("Sheet1", &SheetViewOptions {
+    show_gridlines: Some(false),
+    show_formulas: Some(true),
+    zoom_scale: Some(150),
+    view_mode: Some(ViewMode::PageBreak),
+    top_left_cell: Some("C10".to_string()),
+    ..Default::default()
+})?;
+```
+
+**TypeScript:**
+
+```typescript
+wb.setSheetViewOptions("Sheet1", {
+    showGridlines: false,
+    showFormulas: true,
+    zoomScale: 150,
+    viewMode: "pageBreak",
+    topLeftCell: "C10",
+});
+```
+
+### `get_sheet_view_options(sheet)` / `getSheetViewOptions(sheet)`
+
+현재 시트 보기 표시 옵션을 반환합니다.
+
+**Rust:**
+
+```rust
+let opts = wb.get_sheet_view_options("Sheet1")?;
+println!("Zoom: {:?}", opts.zoom_scale);
+```
+
+**TypeScript:**
+
+```typescript
+const opts = wb.getSheetViewOptions("Sheet1");
+console.log("Zoom:", opts.zoomScale);
+```
+
+### SheetViewOptions
+
+| 필드 | Rust 타입 | TS 타입 | 설명 |
+|------|-----------|---------|------|
+| `show_gridlines` / `showGridlines` | `Option<bool>` | `boolean?` | 눈금선 표시 (기본값: true) |
+| `show_formulas` / `showFormulas` | `Option<bool>` | `boolean?` | 결과 대신 수식 표시 (기본값: false) |
+| `show_row_col_headers` / `showRowColHeaders` | `Option<bool>` | `boolean?` | 행/열 헤더 표시 (기본값: true) |
+| `zoom_scale` / `zoomScale` | `Option<u32>` | `number?` | 확대/축소 비율, 10-400 (기본값: 100) |
+| `view_mode` / `viewMode` | `Option<ViewMode>` | `string?` | 보기 모드 |
+| `top_left_cell` / `topLeftCell` | `Option<String>` | `string?` | 표시되는 왼쪽 상단 셀 (예: "A1") |
+
+### ViewMode
+
+| Rust | TypeScript | 설명 |
+|---|---|---|
+| `ViewMode::Normal` | `"normal"` | 일반 편집 보기 (기본값) |
+| `ViewMode::PageBreak` | `"pageBreak"` | 페이지 나누기 미리 보기 |
+| `ViewMode::PageLayout` | `"pageLayout"` | 페이지 레이아웃 보기 |
+
+> 확대/축소 값이 10-400 범위 밖이면 오류를 반환합니다. 보기 옵션을 설정해도 기존 틀 고정 설정에는 영향을 주지 않습니다.
+
+---
+
+## 32. 시트 표시 여부
+
+시트 표시 여부는 Excel UI에서 시트 탭이 보이는지를 제어합니다. 세 가지 상태가 있습니다: 표시(기본값), 숨김(사용자가 UI를 통해 숨김 해제 가능), 매우 숨김(코드를 통해서만 숨김 해제 가능).
+
+### `set_sheet_visibility(sheet, visibility)` / `setSheetVisibility(sheet, visibility)`
+
+시트의 표시 상태를 설정합니다. 최소 하나의 시트는 항상 표시 상태여야 합니다. 이 시트를 숨기면 표시 가능한 시트가 없게 되는 경우 오류를 반환합니다.
+
+**Rust:**
+
+```rust
+use sheetkit::sheet::SheetVisibility;
+
+wb.new_sheet("Hidden")?;
+wb.set_sheet_visibility("Hidden", SheetVisibility::Hidden)?;
+
+wb.new_sheet("Secret")?;
+wb.set_sheet_visibility("Secret", SheetVisibility::VeryHidden)?;
+```
+
+**TypeScript:**
+
+```typescript
+wb.newSheet("Hidden");
+wb.setSheetVisibility("Hidden", "hidden");
+
+wb.newSheet("Secret");
+wb.setSheetVisibility("Secret", "veryHidden");
+```
+
+### `get_sheet_visibility(sheet)` / `getSheetVisibility(sheet)`
+
+시트의 현재 표시 상태를 반환합니다.
+
+**Rust:**
+
+```rust
+let vis = wb.get_sheet_visibility("Hidden")?;
+assert_eq!(vis, SheetVisibility::Hidden);
+```
+
+**TypeScript:**
+
+```typescript
+const vis = wb.getSheetVisibility("Hidden"); // "hidden"
+```
+
+### SheetVisibility
+
+| Rust | TypeScript | 설명 |
+|---|---|---|
+| `SheetVisibility::Visible` | `"visible"` | 시트 탭이 표시됩니다 (기본값) |
+| `SheetVisibility::Hidden` | `"hidden"` | 숨김 상태이며 사용자가 UI를 통해 숨김 해제할 수 있습니다 |
+| `SheetVisibility::VeryHidden` | `"veryHidden"` | 숨김 상태이며 코드를 통해서만 숨김 해제할 수 있습니다 |
+
+> 마지막으로 남은 표시 가능한 시트는 숨길 수 없습니다. 유일하게 표시된 시트를 숨기려고 하면 오류가 반환됩니다.
+
+---

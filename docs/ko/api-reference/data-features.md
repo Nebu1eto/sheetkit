@@ -834,3 +834,218 @@ wb.deleteConditionalFormat("Sheet1", "A1:A100");
 | `formula` | 수식 |
 
 ---
+
+## 16. 테이블
+
+테이블은 헤더, 스타일, 선택적 자동 필터가 포함된 구조화된 데이터 범위입니다. 테이블은 별도의 OOXML 파트(`xl/tables/tableN.xml`)로 저장되며 관계 및 콘텐츠 타입이 자동으로 연결됩니다.
+
+### `add_table(sheet, config)` / `addTable(sheet, config)`
+
+시트에 테이블을 생성합니다. 테이블 이름은 워크북 전체에서 고유해야 합니다.
+
+**Rust:**
+
+```rust
+use sheetkit::table::{TableConfig, TableColumn};
+
+let config = TableConfig {
+    name: "Sales".to_string(),
+    display_name: "Sales".to_string(),
+    range: "A1:C10".to_string(),
+    columns: vec![
+        TableColumn { name: "Product".to_string(), totals_row_function: None, totals_row_label: None },
+        TableColumn { name: "Quantity".to_string(), totals_row_function: None, totals_row_label: None },
+        TableColumn { name: "Price".to_string(), totals_row_function: None, totals_row_label: None },
+    ],
+    show_header_row: true,
+    style_name: Some("TableStyleMedium2".to_string()),
+    auto_filter: true,
+    ..TableConfig::default()
+};
+wb.add_table("Sheet1", &config)?;
+```
+
+**TypeScript:**
+
+```typescript
+wb.addTable("Sheet1", {
+    name: "Sales",
+    displayName: "Sales",
+    range: "A1:C10",
+    columns: [
+        { name: "Product" },
+        { name: "Quantity" },
+        { name: "Price" },
+    ],
+    showHeaderRow: true,
+    styleName: "TableStyleMedium2",
+    autoFilter: true,
+});
+```
+
+### `get_tables(sheet)` / `getTables(sheet)`
+
+시트의 모든 테이블을 조회합니다.
+
+**Rust:**
+
+```rust
+let tables = wb.get_tables("Sheet1")?;
+for t in &tables {
+    println!("{}: {} ({})", t.name, t.range, t.columns.join(", "));
+}
+```
+
+**TypeScript:**
+
+```typescript
+const tables = wb.getTables("Sheet1");
+for (const t of tables) {
+    console.log(`${t.name}: ${t.range}`);
+}
+```
+
+### `delete_table(sheet, name)` / `deleteTable(sheet, name)`
+
+시트에서 이름으로 테이블을 삭제합니다.
+
+**Rust:**
+
+```rust
+wb.delete_table("Sheet1", "Sales")?;
+```
+
+**TypeScript:**
+
+```typescript
+wb.deleteTable("Sheet1", "Sales");
+```
+
+### TableConfig
+
+| 필드 | Rust 타입 | TS 타입 | 설명 |
+|------|-----------|---------|------|
+| `name` | `String` | `string` | 내부 테이블 이름 (워크북 내 고유) |
+| `display_name` | `String` | `string` | UI에 표시되는 이름 |
+| `range` | `String` | `string` | 셀 범위 (예: "A1:D10") |
+| `columns` | `Vec<TableColumn>` | `TableColumn[]` | 열 정의 |
+| `show_header_row` | `bool` | `boolean?` | 헤더 행 표시 (기본값: true) |
+| `style_name` | `Option<String>` | `string?` | 테이블 스타일 (예: "TableStyleMedium2") |
+| `auto_filter` | `bool` | `boolean?` | 자동 필터 사용 (기본값: true) |
+| `show_first_column` | `bool` | `boolean?` | 첫 번째 열 강조 (기본값: false) |
+| `show_last_column` | `bool` | `boolean?` | 마지막 열 강조 (기본값: false) |
+| `show_row_stripes` | `bool` | `boolean?` | 행 줄무늬 표시 (기본값: true) |
+| `show_column_stripes` | `bool` | `boolean?` | 열 줄무늬 표시 (기본값: false) |
+
+### TableColumn
+
+| 필드 | Rust 타입 | TS 타입 | 설명 |
+|------|-----------|---------|------|
+| `name` | `String` | `string` | 열 헤더 이름 |
+| `totals_row_function` | `Option<String>` | `string?` | 합계 행 함수 (예: "sum", "count", "average") |
+| `totals_row_label` | `Option<String>` | `string?` | 합계 행 레이블 (첫 번째 열용) |
+
+### TableInfo (`get_tables` 반환 타입)
+
+| 필드 | Rust 타입 | TS 타입 | 설명 |
+|------|-----------|---------|------|
+| `name` | `String` | `string` | 테이블 이름 |
+| `display_name` | `String` | `string` | 표시 이름 |
+| `range` | `String` | `string` | 셀 범위 |
+| `show_header_row` | `bool` | `boolean` | 헤더 행 표시 여부 |
+| `auto_filter` | `bool` | `boolean` | 자동 필터 사용 여부 |
+| `columns` | `Vec<String>` | `string[]` | 열 헤더 이름 목록 |
+| `style_name` | `Option<String>` | `string \| null` | 테이블 스타일 이름 |
+
+> 테이블 이름은 단일 시트가 아닌 워크북 전체에서 고유해야 합니다. 시트가 삭제되면 해당 시트의 모든 테이블이 자동으로 제거됩니다.
+
+---
+
+## 17. 데이터 변환 유틸리티 (Node.js 전용)
+
+시트 데이터와 일반적인 형식(JSON, CSV, HTML) 간의 변환을 위한 편의 메서드입니다. TypeScript/Node.js 바인딩에서만 사용할 수 있습니다.
+
+### `toJSON(sheet, options?)`
+
+시트를 객체 배열로 변환합니다. 각 객체는 첫 번째 행의 열 헤더를 키로 사용합니다.
+
+```typescript
+const wb = await Workbook.open("data.xlsx");
+const records = wb.toJSON("Sheet1");
+// [{ Name: "Alice", Age: 30, City: "Seoul" }, ...]
+
+// 옵션 사용
+const records2 = wb.toJSON("Sheet1", { headerRow: 2, range: "A2:C100" });
+```
+
+### `toCSV(sheet, options?)`
+
+시트를 CSV 문자열로 변환합니다. 필요한 경우 값이 인용되며 쉼표로 구분됩니다.
+
+```typescript
+const csv = wb.toCSV("Sheet1");
+// "Name,Age,City\nAlice,30,Seoul\n..."
+
+// 사용자 정의 구분자 사용
+const tsv = wb.toCSV("Sheet1", { separator: "\t" });
+```
+
+### `toHTML(sheet, options?)`
+
+시트를 HTML `<table>` 문자열로 변환합니다. 모든 텍스트 내용은 XSS 안전합니다(HTML 이스케이프 처리됩니다).
+
+```typescript
+const html = wb.toHTML("Sheet1");
+// "<table><thead><tr><th>Name</th>..."
+
+// CSS 클래스 적용
+const html2 = wb.toHTML("Sheet1", { tableClass: "data-table" });
+```
+
+### `fromJSON(sheet, data, options?)`
+
+객체 배열을 시트에 씁니다. 키가 헤더 행이 되고 값이 데이터 행을 채웁니다.
+
+```typescript
+const wb = new Workbook();
+wb.fromJSON("Sheet1", [
+    { Name: "Alice", Age: 30, City: "Seoul" },
+    { Name: "Bob", Age: 25, City: "Busan" },
+]);
+await wb.save("output.xlsx");
+
+// 옵션 사용
+wb.fromJSON("Sheet1", data, { startCell: "B2", writeHeaders: true });
+```
+
+### 변환 옵션
+
+**ToJSONOptions:**
+
+| 필드 | 타입 | 기본값 | 설명 |
+|------|------|--------|------|
+| `headerRow` | `number` | `1` | 열 헤더로 사용할 행 번호 (1 기반) |
+| `range` | `string?` | `undefined` | 특정 셀 범위로 제한 |
+
+**ToCSVOptions:**
+
+| 필드 | 타입 | 기본값 | 설명 |
+|------|------|--------|------|
+| `separator` | `string` | `","` | 필드 구분자 |
+| `lineEnding` | `string` | `"\n"` | 줄 바꿈 문자 |
+
+**ToHTMLOptions:**
+
+| 필드 | 타입 | 기본값 | 설명 |
+|------|------|--------|------|
+| `tableClass` | `string?` | `undefined` | `<table>` 요소의 CSS 클래스 |
+| `includeHeaders` | `boolean` | `true` | `<thead>` 섹션 포함 여부 |
+
+**FromJSONOptions:**
+
+| 필드 | 타입 | 기본값 | 설명 |
+|------|------|--------|------|
+| `startCell` | `string` | `"A1"` | 쓰기 시작할 왼쪽 상단 셀 |
+| `writeHeaders` | `boolean` | `true` | 객체 키를 헤더 행으로 작성 |
+
+---

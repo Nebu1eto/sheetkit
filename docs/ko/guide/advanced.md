@@ -927,6 +927,109 @@ wb.unprotectSheet('Sheet1');
 
 ---
 
+### 시트 보기 옵션
+
+시트 보기 옵션은 워크시트의 시각적 표시를 제어합니다. 눈금선, 수식 표시, 확대/축소 수준, 보기 모드 등을 포함합니다. 보기 옵션을 설정해도 틀 고정 설정에는 영향을 주지 않습니다.
+
+#### Rust
+
+```rust
+use sheetkit::sheet::{SheetViewOptions, ViewMode};
+
+let mut wb = Workbook::new();
+
+// 눈금선 숨기고 확대/축소를 150%로 설정
+wb.set_sheet_view_options("Sheet1", &SheetViewOptions {
+    show_gridlines: Some(false),
+    zoom_scale: Some(150),
+    ..Default::default()
+})?;
+
+// 페이지 나누기 미리 보기로 전환
+wb.set_sheet_view_options("Sheet1", &SheetViewOptions {
+    view_mode: Some(ViewMode::PageBreak),
+    ..Default::default()
+})?;
+
+// 현재 설정 읽기
+let opts = wb.get_sheet_view_options("Sheet1")?;
+```
+
+#### TypeScript
+
+```typescript
+const wb = new Workbook();
+
+// 눈금선 숨기고 확대/축소를 150%로 설정
+wb.setSheetViewOptions("Sheet1", {
+    showGridlines: false,
+    zoomScale: 150,
+});
+
+// 페이지 나누기 미리 보기로 전환
+wb.setSheetViewOptions("Sheet1", {
+    viewMode: "pageBreak",
+});
+
+// 현재 설정 읽기
+const opts = wb.getSheetViewOptions("Sheet1");
+```
+
+보기 모드: `"normal"` (기본값), `"pageBreak"`, `"pageLayout"`. 확대/축소 범위: 10-400.
+
+자세한 API 설명은 [API 레퍼런스](../api-reference/advanced.md#31-시트-보기-옵션)를 참조하세요.
+
+---
+
+### 시트 표시 여부
+
+Excel UI에서 시트 탭의 표시 여부를 제어합니다. 세 가지 표시 상태를 사용할 수 있습니다: 표시(기본값), 숨김(사용자가 UI를 통해 숨김 해제 가능), 매우 숨김(코드를 통해서만 숨김 해제 가능). 최소 하나의 시트는 항상 표시 상태여야 합니다.
+
+#### Rust
+
+```rust
+use sheetkit::sheet::SheetVisibility;
+
+let mut wb = Workbook::new();
+wb.new_sheet("Config")?;
+wb.new_sheet("Internal")?;
+
+// Config 시트 숨기기 (사용자가 Excel UI에서 숨김 해제 가능)
+wb.set_sheet_visibility("Config", SheetVisibility::Hidden)?;
+
+// Internal 시트를 매우 숨김으로 설정 (코드로만 숨김 해제 가능)
+wb.set_sheet_visibility("Internal", SheetVisibility::VeryHidden)?;
+
+// 표시 상태 확인
+let vis = wb.get_sheet_visibility("Config")?;
+assert_eq!(vis, SheetVisibility::Hidden);
+
+// 다시 표시
+wb.set_sheet_visibility("Config", SheetVisibility::Visible)?;
+```
+
+#### TypeScript
+
+```typescript
+const wb = new Workbook();
+wb.newSheet("Config");
+wb.newSheet("Internal");
+
+// 시트 숨기기
+wb.setSheetVisibility("Config", "hidden");
+wb.setSheetVisibility("Internal", "veryHidden");
+
+// 표시 상태 확인
+const vis = wb.getSheetVisibility("Config"); // "hidden"
+
+// 다시 표시
+wb.setSheetVisibility("Config", "visible");
+```
+
+자세한 API 설명은 [API 레퍼런스](../api-reference/advanced.md#32-시트-표시-여부)를 참조하세요.
+
+---
+
 ## 예제 프로젝트
 
 모든 기능을 보여주는 완전한 예제 프로젝트가 저장소에 포함되어 있습니다:

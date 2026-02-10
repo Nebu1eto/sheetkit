@@ -52,6 +52,13 @@ impl Workbook {
         if idx < self.sheet_vml.len() {
             self.sheet_vml.remove(idx);
         }
+        // Remove tables belonging to the deleted sheet and re-index remaining.
+        self.tables.retain(|(_, _, si)| *si != idx);
+        for (_, _, si) in &mut self.tables {
+            if *si > idx {
+                *si -= 1;
+            }
+        }
         self.reindex_sheet_maps_after_delete(idx);
         self.rebuild_sheet_index();
         Ok(())

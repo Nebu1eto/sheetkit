@@ -23,8 +23,11 @@ import type {
   JsRichTextRun,
   JsRowData,
   JsSheetProtectionConfig,
+  JsSheetViewOptions,
   JsSparklineConfig,
   JsStyle,
+  JsTableConfig,
+  JsTableInfo,
   JsWorkbookProtectionConfig,
 } from './binding.js';
 import { JsStreamWriter, Workbook as NativeWorkbook } from './binding.js';
@@ -69,13 +72,82 @@ export type {
   JsRowCell,
   JsRowData,
   JsSheetProtectionConfig,
+  JsSheetViewOptions,
   JsSparklineConfig,
   JsStyle,
+  JsTableColumn,
+  JsTableConfig,
+  JsTableInfo,
   JsView3DConfig,
   JsWorkbookProtectionConfig,
 } from './binding.js';
 
 type CellValueInput = string | number | boolean | DateValue | null;
+
+export interface ToJsonOptions {
+  /** Use first row as keys (true), or provide custom key names. */
+  header?: boolean | string[];
+}
+
+export interface ToCsvOptions {
+  /** Field delimiter. Default: "," */
+  delimiter?: string;
+  /** Quote character. Default: '"' */
+  quote?: string;
+  /** Line ending. Default: "\n" */
+  lineEnding?: string;
+}
+
+export interface ToHtmlOptions {
+  /** CSS class name for the table element. */
+  className?: string;
+}
+
+export interface FromJsonOptions {
+  /** Write column headers as the first row (true), or provide custom headers. */
+  header?: boolean | string[];
+  /** Top-left cell to start writing. Default: "A1" */
+  startCell?: string;
+}
+
+function cellValueToString(v: CellValue): string {
+  if (v === null || v === undefined) return '';
+  return String(v);
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function parseCellRef(ref: string): { col: number; row: number } {
+  const match = ref.match(/^([A-Za-z]+)(\d+)$/);
+  if (!match) {
+    throw new Error(`Invalid cell reference: ${ref}`);
+  }
+  const letters = match[1].toUpperCase();
+  const row = Number.parseInt(match[2], 10);
+  let col = 0;
+  for (let i = 0; i < letters.length; i++) {
+    col = col * 26 + (letters.charCodeAt(i) - 64);
+  }
+  return { col, row };
+}
+
+function columnNumberToLetter(n: number): string {
+  let name = '';
+  let num = n;
+  while (num > 0) {
+    num--;
+    name = String.fromCharCode(65 + (num % 26)) + name;
+    num = Math.floor(num / 26);
+  }
+  return name;
+}
 
 /** Excel workbook for reading and writing .xlsx files. */
 class Workbook {
@@ -689,6 +761,185 @@ class Workbook {
   isSheetProtected(sheet: string): boolean {
     return this.#native.isSheetProtected(sheet);
   }
+
+  /** Convert sheet data to an array of JSON objects. */
+  toJSON(sheet: string, options?: ToJsonOptions): Record<string, CellValue>[] {
+    const buf = this.#native.getRowsBuffer(sheet);
+    const sd = new SheetData(buf);
+    const rows = sd.toArray();
+    if (rows.length === 0) return [];
+
+    const headerOpt = options?.header;
+    let keys: string[];
+    let dataStartIndex: number;
+
+    if (Array.isArray(headerOpt)) {
+      keys = headerOpt;
+      dataStartIndex = 0;
+    } else if (headerOpt === true || headerOpt === undefined) {
+      keys = rows[0].map((v) => cellValueToString(v));
+      dataStartIndex = 1;
+    } else {
+      const colCount = rows.reduce((max, row) => Math.max(max, row.length), 0);
+      keys = Array.from({ length: colCount }, (_, i) => columnNumberToLetter(i + 1));
+      dataStartIndex = 0;
+    }
+
+    const result: Record<string, CellValue>[] = [];
+    for (let r = dataStartIndex; r < rows.length; r++) {
+      const row = rows[r];
+      const obj: Record<string, CellValue> = {};
+      for (let c = 0; c < keys.length; c++) {
+        obj[keys[c]] = c < row.length ? row[c] : null;
+      }
+      result.push(obj);
+    }
+    return result;
+  }
+
+  /** Convert sheet data to a CSV string. */
+  toCSV(sheet: string, options?: ToCsvOptions): string {
+    const delimiter = options?.delimiter ?? ',';
+    const quote = options?.quote ?? '"';
+    const lineEnding = options?.lineEnding ?? '\n';
+
+    const buf = this.#native.getRowsBuffer(sheet);
+    const sd = new SheetData(buf);
+    const rows = sd.toArray();
+    if (rows.length === 0) return '';
+
+    const maxCols = rows.reduce((max, row) => Math.max(max, row.length), 0);
+    const lines: string[] = [];
+
+    for (const row of rows) {
+      const fields: string[] = [];
+      for (let c = 0; c < maxCols; c++) {
+        const val = c < row.length ? row[c] : null;
+        const str = cellValueToString(val);
+        if (
+          str.includes(delimiter) ||
+          str.includes(quote) ||
+          str.includes('\n') ||
+          str.includes('\r')
+        ) {
+          const escaped = str.replace(new RegExp(escapeRegExp(quote), 'g'), quote + quote);
+          fields.push(quote + escaped + quote);
+        } else {
+          fields.push(str);
+        }
+      }
+      lines.push(fields.join(delimiter));
+    }
+    return lines.join(lineEnding);
+  }
+
+  /** Convert sheet data to an HTML table string. */
+  toHTML(sheet: string, options?: ToHtmlOptions): string {
+    const className = options?.className;
+    const buf = this.#native.getRowsBuffer(sheet);
+    const sd = new SheetData(buf);
+    const rows = sd.toArray();
+
+    const classAttr = className ? ` class="${escapeHtml(className)}"` : '';
+    const parts: string[] = [`<table${classAttr}>`];
+
+    for (const row of rows) {
+      parts.push('<tr>');
+      for (const cell of row) {
+        const text = escapeHtml(cellValueToString(cell));
+        parts.push(`<td>${text}</td>`);
+      }
+      parts.push('</tr>');
+    }
+    parts.push('</table>');
+    return parts.join('');
+  }
+
+  /** Write an array of JSON objects to a sheet. */
+  fromJSON(sheet: string, data: Record<string, CellValueInput>[], options?: FromJsonOptions): void {
+    if (data.length === 0) return;
+
+    const startCell = options?.startCell ?? 'A1';
+    const { col: startCol, row: startRow } = parseCellRef(startCell);
+    const headerOpt = options?.header;
+
+    let keys: string[];
+    if (Array.isArray(headerOpt)) {
+      keys = headerOpt;
+    } else {
+      const keySet = new Set<string>();
+      for (const obj of data) {
+        for (const key of Object.keys(obj)) {
+          keySet.add(key);
+        }
+      }
+      keys = Array.from(keySet);
+    }
+
+    const writeHeader = headerOpt !== false;
+    const grid: CellValueInput[][] = [];
+
+    if (writeHeader) {
+      grid.push(keys.map((k) => k));
+    }
+
+    for (const record of data) {
+      const row: CellValueInput[] = [];
+      for (const key of keys) {
+        const val = record[key];
+        row.push(val === undefined ? null : val);
+      }
+      grid.push(row);
+    }
+
+    const colLetter = columnNumberToLetter(startCol);
+    const cellRef = `${colLetter}${startRow}`;
+    this.#native.setSheetData(sheet, grid, cellRef);
+  }
+
+  /** Get the workbook format ("xlsx", "xlsm", "xltx", "xltm", "xlam"). */
+  getFormat(): string {
+    return this.#native.getFormat();
+  }
+
+  /** Add a table to a sheet. */
+  addTable(sheet: string, config: JsTableConfig): void {
+    this.#native.addTable(sheet, config);
+  }
+
+  /** Get all tables on a sheet. */
+  getTables(sheet: string): JsTableInfo[] {
+    return this.#native.getTables(sheet);
+  }
+
+  /** Delete a table from a sheet by name. */
+  deleteTable(sheet: string, name: string): void {
+    this.#native.deleteTable(sheet, name);
+  }
+
+  /** Set sheet view options (gridlines, zoom, view mode, etc.). */
+  setSheetViewOptions(sheet: string, opts: JsSheetViewOptions): void {
+    this.#native.setSheetViewOptions(sheet, opts);
+  }
+
+  /** Get sheet view options. */
+  getSheetViewOptions(sheet: string): JsSheetViewOptions {
+    return this.#native.getSheetViewOptions(sheet);
+  }
+
+  /** Set sheet visibility ("visible", "hidden", or "veryHidden"). */
+  setSheetVisibility(sheet: string, visibility: string): void {
+    this.#native.setSheetVisibility(sheet, visibility);
+  }
+
+  /** Get sheet visibility. Returns "visible", "hidden", or "veryHidden". */
+  getSheetVisibility(sheet: string): string {
+    return this.#native.getSheetVisibility(sheet);
+  }
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 export { JsStreamWriter, SheetData, Workbook };

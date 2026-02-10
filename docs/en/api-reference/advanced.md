@@ -1807,3 +1807,140 @@ sheet.columnName(25);  // 'Z'
 | `getRows()` | Moderate (all cells decoded to objects) | All upfront | Backward compatibility, iterating all cells |
 | `getRowsBuffer()` + `SheetData` | Low (buffer + on-demand decode) | Per-access | Large sheets, random access, reading a subset of cells |
 | `getRowsBuffer()` (raw) | Minimal (buffer only) | None | Custom decoders, network transfer, caching |
+
+---
+
+## 31. Sheet View Options
+
+Sheet view options control how a worksheet is displayed in the Excel UI, including gridlines, formula display, zoom level, view mode, and the scroll position.
+
+### `set_sheet_view_options(sheet, options)` / `setSheetViewOptions(sheet, options)`
+
+Set display options for a sheet. Only non-`None`/non-`undefined` fields are applied; other settings are preserved.
+
+**Rust:**
+
+```rust
+use sheetkit::sheet::{SheetViewOptions, ViewMode};
+
+wb.set_sheet_view_options("Sheet1", &SheetViewOptions {
+    show_gridlines: Some(false),
+    show_formulas: Some(true),
+    zoom_scale: Some(150),
+    view_mode: Some(ViewMode::PageBreak),
+    top_left_cell: Some("C10".to_string()),
+    ..Default::default()
+})?;
+```
+
+**TypeScript:**
+
+```typescript
+wb.setSheetViewOptions("Sheet1", {
+    showGridlines: false,
+    showFormulas: true,
+    zoomScale: 150,
+    viewMode: "pageBreak",
+    topLeftCell: "C10",
+});
+```
+
+### `get_sheet_view_options(sheet)` / `getSheetViewOptions(sheet)`
+
+Get the current sheet view display options.
+
+**Rust:**
+
+```rust
+let opts = wb.get_sheet_view_options("Sheet1")?;
+println!("Zoom: {:?}", opts.zoom_scale);
+```
+
+**TypeScript:**
+
+```typescript
+const opts = wb.getSheetViewOptions("Sheet1");
+console.log("Zoom:", opts.zoomScale);
+```
+
+### SheetViewOptions
+
+| Field | Rust Type | TS Type | Description |
+|---|---|---|---|
+| `show_gridlines` / `showGridlines` | `Option<bool>` | `boolean?` | Show gridlines (default: true) |
+| `show_formulas` / `showFormulas` | `Option<bool>` | `boolean?` | Show formulas instead of results (default: false) |
+| `show_row_col_headers` / `showRowColHeaders` | `Option<bool>` | `boolean?` | Show row/column headers (default: true) |
+| `zoom_scale` / `zoomScale` | `Option<u32>` | `number?` | Zoom percentage, 10-400 (default: 100) |
+| `view_mode` / `viewMode` | `Option<ViewMode>` | `string?` | View mode |
+| `top_left_cell` / `topLeftCell` | `Option<String>` | `string?` | Top-left visible cell (e.g. "A1") |
+
+### ViewMode
+
+| Rust | TypeScript | Description |
+|---|---|---|
+| `ViewMode::Normal` | `"normal"` | Normal editing view (default) |
+| `ViewMode::PageBreak` | `"pageBreak"` | Page break preview |
+| `ViewMode::PageLayout` | `"pageLayout"` | Page layout view |
+
+> Note: Zoom values outside the 10-400 range return an error. Setting view options does not affect existing freeze pane settings.
+
+---
+
+## 32. Sheet Visibility
+
+Sheet visibility controls whether a sheet tab appears in the Excel UI. There are three visibility states: visible (default), hidden (user can unhide via the UI), and very hidden (can only be unhidden programmatically).
+
+### `set_sheet_visibility(sheet, visibility)` / `setSheetVisibility(sheet, visibility)`
+
+Set the visibility state of a sheet. At least one sheet must remain visible at all times. Returns an error if hiding this sheet would leave no visible sheets.
+
+**Rust:**
+
+```rust
+use sheetkit::sheet::SheetVisibility;
+
+wb.new_sheet("Hidden")?;
+wb.set_sheet_visibility("Hidden", SheetVisibility::Hidden)?;
+
+wb.new_sheet("Secret")?;
+wb.set_sheet_visibility("Secret", SheetVisibility::VeryHidden)?;
+```
+
+**TypeScript:**
+
+```typescript
+wb.newSheet("Hidden");
+wb.setSheetVisibility("Hidden", "hidden");
+
+wb.newSheet("Secret");
+wb.setSheetVisibility("Secret", "veryHidden");
+```
+
+### `get_sheet_visibility(sheet)` / `getSheetVisibility(sheet)`
+
+Get the current visibility state of a sheet.
+
+**Rust:**
+
+```rust
+let vis = wb.get_sheet_visibility("Hidden")?;
+assert_eq!(vis, SheetVisibility::Hidden);
+```
+
+**TypeScript:**
+
+```typescript
+const vis = wb.getSheetVisibility("Hidden"); // "hidden"
+```
+
+### SheetVisibility
+
+| Rust | TypeScript | Description |
+|---|---|---|
+| `SheetVisibility::Visible` | `"visible"` | Sheet tab is visible (default) |
+| `SheetVisibility::Hidden` | `"hidden"` | Hidden, user can unhide via UI |
+| `SheetVisibility::VeryHidden` | `"veryHidden"` | Hidden, can only be unhidden via code |
+
+> Note: The last visible sheet cannot be hidden. If you attempt to hide the only remaining visible sheet, an error is returned.
+
+---

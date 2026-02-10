@@ -816,4 +816,112 @@ wb.deleteConditionalFormat('Sheet1', 'A1:A100');
 
 ---
 
+### Tables
+
+Tables are structured data ranges with column headers, styling, and optional auto-filter. Tables are stored as separate OOXML parts and support full round-trip through save and open.
+
+#### Rust
+
+```rust
+use sheetkit::table::{TableConfig, TableColumn};
+
+let mut wb = Workbook::new();
+
+// Create a table
+let config = TableConfig {
+    name: "EmployeeList".to_string(),
+    display_name: "EmployeeList".to_string(),
+    range: "A1:C5".to_string(),
+    columns: vec![
+        TableColumn { name: "Name".to_string(), totals_row_function: None, totals_row_label: None },
+        TableColumn { name: "Department".to_string(), totals_row_function: None, totals_row_label: None },
+        TableColumn { name: "Salary".to_string(), totals_row_function: None, totals_row_label: None },
+    ],
+    style_name: Some("TableStyleMedium2".to_string()),
+    ..TableConfig::default()
+};
+wb.add_table("Sheet1", &config)?;
+
+// List tables
+let tables = wb.get_tables("Sheet1")?;
+
+// Delete a table
+wb.delete_table("Sheet1", "EmployeeList")?;
+```
+
+#### TypeScript
+
+```typescript
+const wb = new Workbook();
+
+// Create a table
+wb.addTable("Sheet1", {
+    name: "EmployeeList",
+    displayName: "EmployeeList",
+    range: "A1:C5",
+    columns: [
+        { name: "Name" },
+        { name: "Department" },
+        { name: "Salary" },
+    ],
+    styleName: "TableStyleMedium2",
+});
+
+// List tables
+const tables = wb.getTables("Sheet1");
+
+// Delete a table
+wb.deleteTable("Sheet1", "EmployeeList");
+```
+
+For full API details including all config fields, see the [API Reference](../api-reference/data-features.md#16-tables).
+
+---
+
+### Data Conversion Utilities (Node.js only)
+
+SheetKit provides convenience methods for converting between sheet data and common formats like JSON, CSV, and HTML. These are available only in the TypeScript/Node.js bindings.
+
+#### JSON conversion
+
+```typescript
+import { Workbook } from '@sheetkit/node';
+
+// Read sheet as array of objects
+const wb = await Workbook.open("data.xlsx");
+const records = wb.toJSON("Sheet1");
+// [{ Name: "Alice", Age: 30 }, { Name: "Bob", Age: 25 }, ...]
+
+// Write objects to a sheet
+const wb2 = new Workbook();
+wb2.fromJSON("Sheet1", [
+    { Name: "Alice", Age: 30, City: "Seoul" },
+    { Name: "Bob", Age: 25, City: "Busan" },
+]);
+await wb2.save("output.xlsx");
+```
+
+#### CSV export
+
+```typescript
+const csv = wb.toCSV("Sheet1");
+// "Name,Age,City\nAlice,30,Seoul\n..."
+
+// Tab-separated values
+const tsv = wb.toCSV("Sheet1", { separator: "\t" });
+```
+
+#### HTML export
+
+```typescript
+const html = wb.toHTML("Sheet1");
+// "<table><thead><tr><th>Name</th>..."
+
+const html2 = wb.toHTML("Sheet1", { tableClass: "data-table" });
+```
+
+For full API details including all options, see the [API Reference](../api-reference/data-features.md#17-data-conversion-utilities-nodejs-only).
+
+---
+
 ### Freeze/Split Panes

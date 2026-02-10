@@ -102,6 +102,78 @@ impl Workbook {
         Ok(())
     }
 
+    /// Add a table to a sheet.
+    ///
+    /// Creates the table XML part, adds the appropriate relationship and
+    /// content type entries. The table name must be unique within the workbook.
+    pub fn add_table(&mut self, sheet: &str, config: &crate::table::TableConfig) -> Result<()> {
+        crate::table::validate_table_config(config)?;
+        let sheet_idx = self.sheet_index(sheet)?;
+
+        // Check for duplicate table name across the entire workbook.
+        if self.tables.iter().any(|(_, t, _)| t.name == config.name) {
+            return Err(Error::TableAlreadyExists {
+                name: config.name.clone(),
+            });
+        }
+
+        // Assign a unique table ID (max existing + 1).
+        let table_id = self.tables.iter().map(|(_, t, _)| t.id).max().unwrap_or(0) + 1;
+
+        let max_existing = self
+            .tables
+            .iter()
+            .filter_map(|(path, _, _)| {
+                path.trim_start_matches("xl/tables/table")
+                    .trim_end_matches(".xml")
+                    .parse::<u32>()
+                    .ok()
+            })
+            .max()
+            .unwrap_or(0);
+        let table_num = max_existing + 1;
+        let table_path = format!("xl/tables/table{}.xml", table_num);
+        let table_xml = crate::table::build_table_xml(config, table_id);
+
+        self.tables.push((table_path, table_xml, sheet_idx));
+        Ok(())
+    }
+
+    /// List all tables on a sheet.
+    ///
+    /// Returns metadata for each table associated with the given sheet.
+    pub fn get_tables(&self, sheet: &str) -> Result<Vec<crate::table::TableInfo>> {
+        let sheet_idx = self.sheet_index(sheet)?;
+        let infos = self
+            .tables
+            .iter()
+            .filter(|(_, _, idx)| *idx == sheet_idx)
+            .map(|(_, table_xml, _)| crate::table::table_xml_to_info(table_xml))
+            .collect();
+        Ok(infos)
+    }
+
+    /// Delete a table from a sheet by name.
+    ///
+    /// Removes the table part, relationship, and content type entries.
+    pub fn delete_table(&mut self, sheet: &str, table_name: &str) -> Result<()> {
+        let sheet_idx = self.sheet_index(sheet)?;
+
+        let pos = self
+            .tables
+            .iter()
+            .position(|(_, t, idx)| t.name == table_name && *idx == sheet_idx);
+        match pos {
+            Some(i) => {
+                self.tables.remove(i);
+                Ok(())
+            }
+            None => Err(Error::TableNotFound {
+                name: table_name.to_string(),
+            }),
+        }
+    }
+
     /// Set freeze panes on a sheet.
     ///
     /// The cell reference indicates the top-left cell of the scrollable area.
@@ -433,6 +505,70 @@ impl Workbook {
     pub fn is_sheet_protected(&self, sheet: &str) -> Result<bool> {
         let ws = self.worksheet_ref(sheet)?;
         Ok(crate::sheet::is_sheet_protected(ws))
+    }
+
+    /// Set sheet view display options (gridlines, formulas, zoom, view mode, etc.).
+    ///
+    /// Only non-`None` fields in the options struct are applied.
+    pub fn set_sheet_view_options(
+        &mut self,
+        sheet: &str,
+        opts: &crate::sheet::SheetViewOptions,
+    ) -> Result<()> {
+        let ws = self.worksheet_mut(sheet)?;
+        crate::sheet::set_sheet_view_options(ws, opts)
+    }
+
+    /// Get the current sheet view display options.
+    pub fn get_sheet_view_options(&self, sheet: &str) -> Result<crate::sheet::SheetViewOptions> {
+        let ws = self.worksheet_ref(sheet)?;
+        Ok(crate::sheet::get_sheet_view_options(ws))
+    }
+
+    /// Set the visibility state of a sheet (Visible, Hidden, VeryHidden).
+    ///
+    /// At least one sheet must remain visible. Returns an error if hiding
+    /// this sheet would leave no visible sheets.
+    pub fn set_sheet_visibility(
+        &mut self,
+        sheet: &str,
+        visibility: crate::sheet::SheetVisibility,
+    ) -> Result<()> {
+        let idx = self.sheet_index(sheet)?;
+
+        if visibility != crate::sheet::SheetVisibility::Visible {
+            let visible_count = self
+                .workbook_xml
+                .sheets
+                .sheets
+                .iter()
+                .enumerate()
+                .filter(|(i, entry)| {
+                    if *i == idx {
+                        return false;
+                    }
+                    crate::sheet::SheetVisibility::from_xml_str(entry.state.as_deref())
+                        == crate::sheet::SheetVisibility::Visible
+                })
+                .count();
+            if visible_count == 0 {
+                return Err(Error::InvalidArgument(
+                    "cannot hide the last visible sheet".to_string(),
+                ));
+            }
+        }
+
+        self.workbook_xml.sheets.sheets[idx].state = visibility.as_xml_str().map(|s| s.to_string());
+        Ok(())
+    }
+
+    /// Get the visibility state of a sheet.
+    pub fn get_sheet_visibility(&self, sheet: &str) -> Result<crate::sheet::SheetVisibility> {
+        let idx = self.sheet_index(sheet)?;
+        let entry = &self.workbook_xml.sheets.sheets[idx];
+        Ok(crate::sheet::SheetVisibility::from_xml_str(
+            entry.state.as_deref(),
+        ))
     }
 
     /// Resolve an optional sheet name to a [`DefinedNameScope`](crate::defined_names::DefinedNameScope).
@@ -1290,5 +1426,1052 @@ mod tests {
 
         let wb2 = Workbook::open(&path).unwrap();
         assert!(wb2.is_sheet_protected("Sheet1").unwrap());
+    }
+
+    #[test]
+    fn test_add_table() {
+        use crate::table::{TableColumn, TableConfig};
+
+        let mut wb = Workbook::new();
+        let config = TableConfig {
+            name: "Sales".to_string(),
+            display_name: "Sales".to_string(),
+            range: "A1:C5".to_string(),
+            columns: vec![
+                TableColumn {
+                    name: "Product".to_string(),
+                    totals_row_function: None,
+                    totals_row_label: None,
+                },
+                TableColumn {
+                    name: "Quantity".to_string(),
+                    totals_row_function: None,
+                    totals_row_label: None,
+                },
+                TableColumn {
+                    name: "Price".to_string(),
+                    totals_row_function: None,
+                    totals_row_label: None,
+                },
+            ],
+            show_header_row: true,
+            style_name: Some("TableStyleMedium2".to_string()),
+            auto_filter: true,
+            ..TableConfig::default()
+        };
+        wb.add_table("Sheet1", &config).unwrap();
+
+        let tables = wb.get_tables("Sheet1").unwrap();
+        assert_eq!(tables.len(), 1);
+        assert_eq!(tables[0].name, "Sales");
+        assert_eq!(tables[0].display_name, "Sales");
+        assert_eq!(tables[0].range, "A1:C5");
+        assert_eq!(tables[0].columns, vec!["Product", "Quantity", "Price"]);
+        assert!(tables[0].auto_filter);
+        assert!(tables[0].show_header_row);
+        assert_eq!(tables[0].style_name, Some("TableStyleMedium2".to_string()));
+    }
+
+    #[test]
+    fn test_add_table_duplicate_name_error() {
+        use crate::table::{TableColumn, TableConfig};
+
+        let mut wb = Workbook::new();
+        let config = TableConfig {
+            name: "T1".to_string(),
+            display_name: "T1".to_string(),
+            range: "A1:B5".to_string(),
+            columns: vec![TableColumn {
+                name: "Col".to_string(),
+                totals_row_function: None,
+                totals_row_label: None,
+            }],
+            ..TableConfig::default()
+        };
+        wb.add_table("Sheet1", &config).unwrap();
+        let result = wb.add_table("Sheet1", &config);
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::TableAlreadyExists { .. }
+        ));
+    }
+
+    #[test]
+    fn test_add_table_invalid_config() {
+        use crate::table::TableConfig;
+
+        let mut wb = Workbook::new();
+        let config = TableConfig {
+            name: String::new(),
+            range: "A1:B5".to_string(),
+            ..TableConfig::default()
+        };
+        assert!(wb.add_table("Sheet1", &config).is_err());
+    }
+
+    #[test]
+    fn test_add_table_sheet_not_found() {
+        use crate::table::{TableColumn, TableConfig};
+
+        let mut wb = Workbook::new();
+        let config = TableConfig {
+            name: "T1".to_string(),
+            display_name: "T1".to_string(),
+            range: "A1:B5".to_string(),
+            columns: vec![TableColumn {
+                name: "Col".to_string(),
+                totals_row_function: None,
+                totals_row_label: None,
+            }],
+            ..TableConfig::default()
+        };
+        let result = wb.add_table("NoSheet", &config);
+        assert!(matches!(result.unwrap_err(), Error::SheetNotFound { .. }));
+    }
+
+    #[test]
+    fn test_get_tables_empty() {
+        let wb = Workbook::new();
+        let tables = wb.get_tables("Sheet1").unwrap();
+        assert!(tables.is_empty());
+    }
+
+    #[test]
+    fn test_get_tables_sheet_not_found() {
+        let wb = Workbook::new();
+        let result = wb.get_tables("NoSheet");
+        assert!(matches!(result.unwrap_err(), Error::SheetNotFound { .. }));
+    }
+
+    #[test]
+    fn test_delete_table() {
+        use crate::table::{TableColumn, TableConfig};
+
+        let mut wb = Workbook::new();
+        let config = TableConfig {
+            name: "T1".to_string(),
+            display_name: "T1".to_string(),
+            range: "A1:B5".to_string(),
+            columns: vec![TableColumn {
+                name: "Col".to_string(),
+                totals_row_function: None,
+                totals_row_label: None,
+            }],
+            ..TableConfig::default()
+        };
+        wb.add_table("Sheet1", &config).unwrap();
+        assert_eq!(wb.get_tables("Sheet1").unwrap().len(), 1);
+
+        wb.delete_table("Sheet1", "T1").unwrap();
+        assert!(wb.get_tables("Sheet1").unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_delete_table_not_found() {
+        let mut wb = Workbook::new();
+        let result = wb.delete_table("Sheet1", "NoTable");
+        assert!(matches!(result.unwrap_err(), Error::TableNotFound { .. }));
+    }
+
+    #[test]
+    fn test_delete_table_wrong_sheet() {
+        use crate::table::{TableColumn, TableConfig};
+
+        let mut wb = Workbook::new();
+        wb.new_sheet("Sheet2").unwrap();
+        let config = TableConfig {
+            name: "T1".to_string(),
+            display_name: "T1".to_string(),
+            range: "A1:B5".to_string(),
+            columns: vec![TableColumn {
+                name: "Col".to_string(),
+                totals_row_function: None,
+                totals_row_label: None,
+            }],
+            ..TableConfig::default()
+        };
+        wb.add_table("Sheet1", &config).unwrap();
+
+        let result = wb.delete_table("Sheet2", "T1");
+        assert!(matches!(result.unwrap_err(), Error::TableNotFound { .. }));
+        // Table should still exist on Sheet1.
+        assert_eq!(wb.get_tables("Sheet1").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_multiple_tables_on_sheet() {
+        use crate::table::{TableColumn, TableConfig};
+
+        let mut wb = Workbook::new();
+        let config1 = TableConfig {
+            name: "T1".to_string(),
+            display_name: "T1".to_string(),
+            range: "A1:B5".to_string(),
+            columns: vec![
+                TableColumn {
+                    name: "Name".to_string(),
+                    totals_row_function: None,
+                    totals_row_label: None,
+                },
+                TableColumn {
+                    name: "Score".to_string(),
+                    totals_row_function: None,
+                    totals_row_label: None,
+                },
+            ],
+            ..TableConfig::default()
+        };
+        let config2 = TableConfig {
+            name: "T2".to_string(),
+            display_name: "T2".to_string(),
+            range: "D1:E5".to_string(),
+            columns: vec![
+                TableColumn {
+                    name: "City".to_string(),
+                    totals_row_function: None,
+                    totals_row_label: None,
+                },
+                TableColumn {
+                    name: "Population".to_string(),
+                    totals_row_function: None,
+                    totals_row_label: None,
+                },
+            ],
+            ..TableConfig::default()
+        };
+        wb.add_table("Sheet1", &config1).unwrap();
+        wb.add_table("Sheet1", &config2).unwrap();
+
+        let tables = wb.get_tables("Sheet1").unwrap();
+        assert_eq!(tables.len(), 2);
+        assert_eq!(tables[0].name, "T1");
+        assert_eq!(tables[1].name, "T2");
+    }
+
+    #[test]
+    fn test_tables_on_different_sheets() {
+        use crate::table::{TableColumn, TableConfig};
+
+        let mut wb = Workbook::new();
+        wb.new_sheet("Sheet2").unwrap();
+        let config1 = TableConfig {
+            name: "T1".to_string(),
+            display_name: "T1".to_string(),
+            range: "A1:B5".to_string(),
+            columns: vec![TableColumn {
+                name: "Col1".to_string(),
+                totals_row_function: None,
+                totals_row_label: None,
+            }],
+            ..TableConfig::default()
+        };
+        let config2 = TableConfig {
+            name: "T2".to_string(),
+            display_name: "T2".to_string(),
+            range: "A1:B5".to_string(),
+            columns: vec![TableColumn {
+                name: "Col2".to_string(),
+                totals_row_function: None,
+                totals_row_label: None,
+            }],
+            ..TableConfig::default()
+        };
+        wb.add_table("Sheet1", &config1).unwrap();
+        wb.add_table("Sheet2", &config2).unwrap();
+
+        assert_eq!(wb.get_tables("Sheet1").unwrap().len(), 1);
+        assert_eq!(wb.get_tables("Sheet2").unwrap().len(), 1);
+        assert_eq!(wb.get_tables("Sheet1").unwrap()[0].name, "T1");
+        assert_eq!(wb.get_tables("Sheet2").unwrap()[0].name, "T2");
+    }
+
+    #[test]
+    fn test_table_save_produces_zip_parts() {
+        use crate::table::{TableColumn, TableConfig};
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("table_parts.xlsx");
+
+        let mut wb = Workbook::new();
+        let config = TableConfig {
+            name: "Sales".to_string(),
+            display_name: "Sales".to_string(),
+            range: "A1:C5".to_string(),
+            columns: vec![
+                TableColumn {
+                    name: "Product".to_string(),
+                    totals_row_function: None,
+                    totals_row_label: None,
+                },
+                TableColumn {
+                    name: "Qty".to_string(),
+                    totals_row_function: None,
+                    totals_row_label: None,
+                },
+                TableColumn {
+                    name: "Price".to_string(),
+                    totals_row_function: None,
+                    totals_row_label: None,
+                },
+            ],
+            style_name: Some("TableStyleMedium2".to_string()),
+            ..TableConfig::default()
+        };
+        wb.add_table("Sheet1", &config).unwrap();
+        wb.save(&path).unwrap();
+
+        let file = std::fs::File::open(&path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+
+        assert!(
+            archive.by_name("xl/tables/table1.xml").is_ok(),
+            "table1.xml should be present in the ZIP"
+        );
+        assert!(
+            archive
+                .by_name("xl/worksheets/_rels/sheet1.xml.rels")
+                .is_ok(),
+            "worksheet rels should be present"
+        );
+
+        // Verify table XML content.
+        let mut table_data = Vec::new();
+        archive
+            .by_name("xl/tables/table1.xml")
+            .unwrap()
+            .read_to_end(&mut table_data)
+            .unwrap();
+        let table_str = String::from_utf8(table_data).unwrap();
+        assert!(table_str.contains("Sales"));
+        assert!(table_str.contains("A1:C5"));
+        assert!(table_str.contains("TableStyleMedium2"));
+        assert!(table_str.contains("autoFilter"));
+        assert!(table_str.contains("tableColumn"));
+
+        // Verify worksheet XML has tableParts element.
+        let mut ws_data = Vec::new();
+        archive
+            .by_name("xl/worksheets/sheet1.xml")
+            .unwrap()
+            .read_to_end(&mut ws_data)
+            .unwrap();
+        let ws_str = String::from_utf8(ws_data).unwrap();
+        assert!(
+            ws_str.contains("tableParts"),
+            "worksheet should contain tableParts element"
+        );
+        assert!(
+            ws_str.contains("tablePart"),
+            "worksheet should contain tablePart reference"
+        );
+
+        // Verify content types include the table.
+        let mut ct_data = Vec::new();
+        archive
+            .by_name("[Content_Types].xml")
+            .unwrap()
+            .read_to_end(&mut ct_data)
+            .unwrap();
+        let ct_str = String::from_utf8(ct_data).unwrap();
+        assert!(
+            ct_str.contains("table+xml"),
+            "content types should reference the table"
+        );
+
+        // Verify worksheet rels include a table relationship.
+        let mut rels_data = Vec::new();
+        archive
+            .by_name("xl/worksheets/_rels/sheet1.xml.rels")
+            .unwrap()
+            .read_to_end(&mut rels_data)
+            .unwrap();
+        let rels_str = String::from_utf8(rels_data).unwrap();
+        assert!(
+            rels_str.contains("relationships/table"),
+            "worksheet rels should reference the table"
+        );
+    }
+
+    #[test]
+    fn test_table_roundtrip_save_open() {
+        use crate::table::{TableColumn, TableConfig};
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("table_roundtrip.xlsx");
+
+        let mut wb = Workbook::new();
+        let config = TableConfig {
+            name: "Inventory".to_string(),
+            display_name: "Inventory".to_string(),
+            range: "A1:D10".to_string(),
+            columns: vec![
+                TableColumn {
+                    name: "Item".to_string(),
+                    totals_row_function: None,
+                    totals_row_label: None,
+                },
+                TableColumn {
+                    name: "Stock".to_string(),
+                    totals_row_function: None,
+                    totals_row_label: None,
+                },
+                TableColumn {
+                    name: "Price".to_string(),
+                    totals_row_function: None,
+                    totals_row_label: None,
+                },
+                TableColumn {
+                    name: "Supplier".to_string(),
+                    totals_row_function: None,
+                    totals_row_label: None,
+                },
+            ],
+            show_header_row: true,
+            style_name: Some("TableStyleLight1".to_string()),
+            auto_filter: true,
+            ..TableConfig::default()
+        };
+        wb.add_table("Sheet1", &config).unwrap();
+        wb.save(&path).unwrap();
+
+        let wb2 = Workbook::open(&path).unwrap();
+        let tables = wb2.get_tables("Sheet1").unwrap();
+        assert_eq!(tables.len(), 1);
+        assert_eq!(tables[0].name, "Inventory");
+        assert_eq!(tables[0].display_name, "Inventory");
+        assert_eq!(tables[0].range, "A1:D10");
+        assert_eq!(
+            tables[0].columns,
+            vec!["Item", "Stock", "Price", "Supplier"]
+        );
+        assert!(tables[0].auto_filter);
+        assert!(tables[0].show_header_row);
+        assert_eq!(tables[0].style_name, Some("TableStyleLight1".to_string()));
+    }
+
+    #[test]
+    fn test_table_roundtrip_multiple_tables() {
+        use crate::table::{TableColumn, TableConfig};
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("multi_table_roundtrip.xlsx");
+
+        let mut wb = Workbook::new();
+        wb.new_sheet("Sheet2").unwrap();
+        wb.add_table(
+            "Sheet1",
+            &TableConfig {
+                name: "T1".to_string(),
+                display_name: "T1".to_string(),
+                range: "A1:B5".to_string(),
+                columns: vec![
+                    TableColumn {
+                        name: "Name".to_string(),
+                        totals_row_function: None,
+                        totals_row_label: None,
+                    },
+                    TableColumn {
+                        name: "Value".to_string(),
+                        totals_row_function: None,
+                        totals_row_label: None,
+                    },
+                ],
+                ..TableConfig::default()
+            },
+        )
+        .unwrap();
+        wb.add_table(
+            "Sheet2",
+            &TableConfig {
+                name: "T2".to_string(),
+                display_name: "T2".to_string(),
+                range: "C1:D8".to_string(),
+                columns: vec![
+                    TableColumn {
+                        name: "Category".to_string(),
+                        totals_row_function: None,
+                        totals_row_label: None,
+                    },
+                    TableColumn {
+                        name: "Count".to_string(),
+                        totals_row_function: None,
+                        totals_row_label: None,
+                    },
+                ],
+                auto_filter: false,
+                ..TableConfig::default()
+            },
+        )
+        .unwrap();
+        wb.save(&path).unwrap();
+
+        let wb2 = Workbook::open(&path).unwrap();
+        let t1 = wb2.get_tables("Sheet1").unwrap();
+        assert_eq!(t1.len(), 1);
+        assert_eq!(t1[0].name, "T1");
+        assert_eq!(t1[0].range, "A1:B5");
+
+        let t2 = wb2.get_tables("Sheet2").unwrap();
+        assert_eq!(t2.len(), 1);
+        assert_eq!(t2[0].name, "T2");
+        assert_eq!(t2[0].range, "C1:D8");
+        assert!(!t2[0].auto_filter);
+    }
+
+    #[test]
+    fn test_table_roundtrip_resave() {
+        use crate::table::{TableColumn, TableConfig};
+
+        let dir = TempDir::new().unwrap();
+        let path1 = dir.path().join("table_resave1.xlsx");
+        let path2 = dir.path().join("table_resave2.xlsx");
+
+        let mut wb = Workbook::new();
+        wb.add_table(
+            "Sheet1",
+            &TableConfig {
+                name: "T1".to_string(),
+                display_name: "T1".to_string(),
+                range: "A1:B3".to_string(),
+                columns: vec![
+                    TableColumn {
+                        name: "X".to_string(),
+                        totals_row_function: None,
+                        totals_row_label: None,
+                    },
+                    TableColumn {
+                        name: "Y".to_string(),
+                        totals_row_function: None,
+                        totals_row_label: None,
+                    },
+                ],
+                ..TableConfig::default()
+            },
+        )
+        .unwrap();
+        wb.save(&path1).unwrap();
+
+        let wb2 = Workbook::open(&path1).unwrap();
+        wb2.save(&path2).unwrap();
+
+        let wb3 = Workbook::open(&path2).unwrap();
+        let tables = wb3.get_tables("Sheet1").unwrap();
+        assert_eq!(tables.len(), 1);
+        assert_eq!(tables[0].name, "T1");
+        assert_eq!(tables[0].columns, vec!["X", "Y"]);
+    }
+
+    #[test]
+    fn test_auto_filter_not_regressed_by_tables() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("autofilter_with_table.xlsx");
+
+        let mut wb = Workbook::new();
+        wb.set_auto_filter("Sheet1", "A1:C50").unwrap();
+        wb.save(&path).unwrap();
+
+        let wb2 = Workbook::open(&path).unwrap();
+        let ws = wb2.worksheet_ref("Sheet1").unwrap();
+        assert!(ws.auto_filter.is_some());
+        assert_eq!(ws.auto_filter.as_ref().unwrap().reference, "A1:C50");
+    }
+
+    #[test]
+    fn test_delete_sheet_removes_tables() {
+        use crate::table::{TableColumn, TableConfig};
+
+        let mut wb = Workbook::new();
+        wb.new_sheet("Sheet2").unwrap();
+        wb.add_table(
+            "Sheet1",
+            &TableConfig {
+                name: "T1".to_string(),
+                display_name: "T1".to_string(),
+                range: "A1:B5".to_string(),
+                columns: vec![TableColumn {
+                    name: "Col".to_string(),
+                    totals_row_function: None,
+                    totals_row_label: None,
+                }],
+                ..TableConfig::default()
+            },
+        )
+        .unwrap();
+        wb.add_table(
+            "Sheet2",
+            &TableConfig {
+                name: "T2".to_string(),
+                display_name: "T2".to_string(),
+                range: "A1:B5".to_string(),
+                columns: vec![TableColumn {
+                    name: "Col".to_string(),
+                    totals_row_function: None,
+                    totals_row_label: None,
+                }],
+                ..TableConfig::default()
+            },
+        )
+        .unwrap();
+
+        wb.delete_sheet("Sheet1").unwrap();
+        // T1 should be gone, T2 should still exist on Sheet2.
+        let tables = wb.get_tables("Sheet2").unwrap();
+        assert_eq!(tables.len(), 1);
+        assert_eq!(tables[0].name, "T2");
+    }
+
+    #[test]
+    fn test_table_with_no_auto_filter() {
+        use crate::table::{TableColumn, TableConfig};
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("table_no_filter.xlsx");
+
+        let mut wb = Workbook::new();
+        wb.add_table(
+            "Sheet1",
+            &TableConfig {
+                name: "Plain".to_string(),
+                display_name: "Plain".to_string(),
+                range: "A1:B3".to_string(),
+                columns: vec![
+                    TableColumn {
+                        name: "A".to_string(),
+                        totals_row_function: None,
+                        totals_row_label: None,
+                    },
+                    TableColumn {
+                        name: "B".to_string(),
+                        totals_row_function: None,
+                        totals_row_label: None,
+                    },
+                ],
+                auto_filter: false,
+                ..TableConfig::default()
+            },
+        )
+        .unwrap();
+        wb.save(&path).unwrap();
+
+        let wb2 = Workbook::open(&path).unwrap();
+        let tables = wb2.get_tables("Sheet1").unwrap();
+        assert_eq!(tables.len(), 1);
+        assert!(!tables[0].auto_filter);
+    }
+
+    #[test]
+    fn test_set_and_get_sheet_view_options_defaults() {
+        let wb = Workbook::new();
+        let opts = wb.get_sheet_view_options("Sheet1").unwrap();
+        assert_eq!(opts.show_gridlines, Some(true));
+        assert_eq!(opts.show_formulas, Some(false));
+        assert_eq!(opts.show_row_col_headers, Some(true));
+        assert_eq!(opts.zoom_scale, Some(100));
+        assert_eq!(opts.view_mode, Some(crate::sheet::ViewMode::Normal));
+        assert!(opts.top_left_cell.is_none());
+    }
+
+    #[test]
+    fn test_set_sheet_view_options_gridlines_off() {
+        let mut wb = Workbook::new();
+        wb.set_sheet_view_options(
+            "Sheet1",
+            &crate::sheet::SheetViewOptions {
+                show_gridlines: Some(false),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let opts = wb.get_sheet_view_options("Sheet1").unwrap();
+        assert_eq!(opts.show_gridlines, Some(false));
+    }
+
+    #[test]
+    fn test_set_sheet_view_options_zoom() {
+        let mut wb = Workbook::new();
+        wb.set_sheet_view_options(
+            "Sheet1",
+            &crate::sheet::SheetViewOptions {
+                zoom_scale: Some(150),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let opts = wb.get_sheet_view_options("Sheet1").unwrap();
+        assert_eq!(opts.zoom_scale, Some(150));
+    }
+
+    #[test]
+    fn test_set_sheet_view_options_zoom_invalid_low() {
+        let mut wb = Workbook::new();
+        let result = wb.set_sheet_view_options(
+            "Sheet1",
+            &crate::sheet::SheetViewOptions {
+                zoom_scale: Some(5),
+                ..Default::default()
+            },
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_set_sheet_view_options_zoom_invalid_high() {
+        let mut wb = Workbook::new();
+        let result = wb.set_sheet_view_options(
+            "Sheet1",
+            &crate::sheet::SheetViewOptions {
+                zoom_scale: Some(500),
+                ..Default::default()
+            },
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_set_sheet_view_options_view_mode() {
+        let mut wb = Workbook::new();
+        wb.set_sheet_view_options(
+            "Sheet1",
+            &crate::sheet::SheetViewOptions {
+                view_mode: Some(crate::sheet::ViewMode::PageBreak),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let opts = wb.get_sheet_view_options("Sheet1").unwrap();
+        assert_eq!(opts.view_mode, Some(crate::sheet::ViewMode::PageBreak));
+    }
+
+    #[test]
+    fn test_set_sheet_view_options_page_layout() {
+        let mut wb = Workbook::new();
+        wb.set_sheet_view_options(
+            "Sheet1",
+            &crate::sheet::SheetViewOptions {
+                view_mode: Some(crate::sheet::ViewMode::PageLayout),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let opts = wb.get_sheet_view_options("Sheet1").unwrap();
+        assert_eq!(opts.view_mode, Some(crate::sheet::ViewMode::PageLayout));
+    }
+
+    #[test]
+    fn test_set_sheet_view_options_show_formulas() {
+        let mut wb = Workbook::new();
+        wb.set_sheet_view_options(
+            "Sheet1",
+            &crate::sheet::SheetViewOptions {
+                show_formulas: Some(true),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let opts = wb.get_sheet_view_options("Sheet1").unwrap();
+        assert_eq!(opts.show_formulas, Some(true));
+    }
+
+    #[test]
+    fn test_set_sheet_view_options_top_left_cell() {
+        let mut wb = Workbook::new();
+        wb.set_sheet_view_options(
+            "Sheet1",
+            &crate::sheet::SheetViewOptions {
+                top_left_cell: Some("C10".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let opts = wb.get_sheet_view_options("Sheet1").unwrap();
+        assert_eq!(opts.top_left_cell, Some("C10".to_string()));
+    }
+
+    #[test]
+    fn test_sheet_view_options_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("view_opts.xlsx");
+
+        let mut wb = Workbook::new();
+        wb.set_sheet_view_options(
+            "Sheet1",
+            &crate::sheet::SheetViewOptions {
+                show_gridlines: Some(false),
+                show_formulas: Some(true),
+                zoom_scale: Some(200),
+                view_mode: Some(crate::sheet::ViewMode::PageBreak),
+                top_left_cell: Some("B5".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        wb.save(&path).unwrap();
+
+        let wb2 = Workbook::open(&path).unwrap();
+        let opts = wb2.get_sheet_view_options("Sheet1").unwrap();
+        assert_eq!(opts.show_gridlines, Some(false));
+        assert_eq!(opts.show_formulas, Some(true));
+        assert_eq!(opts.zoom_scale, Some(200));
+        assert_eq!(opts.view_mode, Some(crate::sheet::ViewMode::PageBreak));
+        assert_eq!(opts.top_left_cell, Some("B5".to_string()));
+    }
+
+    #[test]
+    fn test_sheet_view_options_nonexistent_sheet() {
+        let wb = Workbook::new();
+        let result = wb.get_sheet_view_options("NoSheet");
+        assert!(matches!(result.unwrap_err(), Error::SheetNotFound { .. }));
+    }
+
+    #[test]
+    fn test_set_sheet_view_options_preserves_panes() {
+        let mut wb = Workbook::new();
+        wb.set_panes("Sheet1", "B2").unwrap();
+        wb.set_sheet_view_options(
+            "Sheet1",
+            &crate::sheet::SheetViewOptions {
+                zoom_scale: Some(150),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(wb.get_panes("Sheet1").unwrap(), Some("B2".to_string()));
+        let opts = wb.get_sheet_view_options("Sheet1").unwrap();
+        assert_eq!(opts.zoom_scale, Some(150));
+    }
+
+    #[test]
+    fn test_get_sheet_visibility_default() {
+        let wb = Workbook::new();
+        let vis = wb.get_sheet_visibility("Sheet1").unwrap();
+        assert_eq!(vis, crate::sheet::SheetVisibility::Visible);
+    }
+
+    #[test]
+    fn test_set_sheet_visibility_hidden() {
+        let mut wb = Workbook::new();
+        wb.new_sheet("Sheet2").unwrap();
+        wb.set_sheet_visibility("Sheet1", crate::sheet::SheetVisibility::Hidden)
+            .unwrap();
+
+        let vis = wb.get_sheet_visibility("Sheet1").unwrap();
+        assert_eq!(vis, crate::sheet::SheetVisibility::Hidden);
+        let vis2 = wb.get_sheet_visibility("Sheet2").unwrap();
+        assert_eq!(vis2, crate::sheet::SheetVisibility::Visible);
+    }
+
+    #[test]
+    fn test_set_sheet_visibility_very_hidden() {
+        let mut wb = Workbook::new();
+        wb.new_sheet("Sheet2").unwrap();
+        wb.set_sheet_visibility("Sheet1", crate::sheet::SheetVisibility::VeryHidden)
+            .unwrap();
+
+        let vis = wb.get_sheet_visibility("Sheet1").unwrap();
+        assert_eq!(vis, crate::sheet::SheetVisibility::VeryHidden);
+    }
+
+    #[test]
+    fn test_set_sheet_visibility_back_to_visible() {
+        let mut wb = Workbook::new();
+        wb.new_sheet("Sheet2").unwrap();
+        wb.set_sheet_visibility("Sheet1", crate::sheet::SheetVisibility::Hidden)
+            .unwrap();
+        wb.set_sheet_visibility("Sheet1", crate::sheet::SheetVisibility::Visible)
+            .unwrap();
+
+        let vis = wb.get_sheet_visibility("Sheet1").unwrap();
+        assert_eq!(vis, crate::sheet::SheetVisibility::Visible);
+    }
+
+    #[test]
+    fn test_set_sheet_visibility_cannot_hide_last_visible() {
+        let mut wb = Workbook::new();
+        let result = wb.set_sheet_visibility("Sheet1", crate::sheet::SheetVisibility::Hidden);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("last visible"));
+    }
+
+    #[test]
+    fn test_set_sheet_visibility_cannot_hide_all() {
+        let mut wb = Workbook::new();
+        wb.new_sheet("Sheet2").unwrap();
+        wb.set_sheet_visibility("Sheet1", crate::sheet::SheetVisibility::Hidden)
+            .unwrap();
+
+        let result = wb.set_sheet_visibility("Sheet2", crate::sheet::SheetVisibility::Hidden);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_sheet_visibility_nonexistent_sheet() {
+        let wb = Workbook::new();
+        let result = wb.get_sheet_visibility("NoSheet");
+        assert!(matches!(result.unwrap_err(), Error::SheetNotFound { .. }));
+    }
+
+    #[test]
+    fn test_sheet_visibility_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("visibility.xlsx");
+
+        let mut wb = Workbook::new();
+        wb.new_sheet("Sheet2").unwrap();
+        wb.new_sheet("Sheet3").unwrap();
+        wb.set_sheet_visibility("Sheet2", crate::sheet::SheetVisibility::Hidden)
+            .unwrap();
+        wb.set_sheet_visibility("Sheet3", crate::sheet::SheetVisibility::VeryHidden)
+            .unwrap();
+        wb.save(&path).unwrap();
+
+        let wb2 = Workbook::open(&path).unwrap();
+        assert_eq!(
+            wb2.get_sheet_visibility("Sheet1").unwrap(),
+            crate::sheet::SheetVisibility::Visible
+        );
+        assert_eq!(
+            wb2.get_sheet_visibility("Sheet2").unwrap(),
+            crate::sheet::SheetVisibility::Hidden
+        );
+        assert_eq!(
+            wb2.get_sheet_visibility("Sheet3").unwrap(),
+            crate::sheet::SheetVisibility::VeryHidden
+        );
+    }
+
+    #[test]
+    fn test_sheet_view_options_show_row_col_headers_off() {
+        let mut wb = Workbook::new();
+        wb.set_sheet_view_options(
+            "Sheet1",
+            &crate::sheet::SheetViewOptions {
+                show_row_col_headers: Some(false),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let opts = wb.get_sheet_view_options("Sheet1").unwrap();
+        assert_eq!(opts.show_row_col_headers, Some(false));
+    }
+
+    #[test]
+    fn test_table_path_no_collision_after_delete() {
+        use crate::table::{TableColumn, TableConfig};
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("table_path_collision.xlsx");
+
+        let mut wb = Workbook::new();
+        let make_config = |name: &str, range: &str| TableConfig {
+            name: name.to_string(),
+            display_name: name.to_string(),
+            range: range.to_string(),
+            columns: vec![
+                TableColumn {
+                    name: "A".to_string(),
+                    totals_row_function: None,
+                    totals_row_label: None,
+                },
+                TableColumn {
+                    name: "B".to_string(),
+                    totals_row_function: None,
+                    totals_row_label: None,
+                },
+            ],
+            ..TableConfig::default()
+        };
+
+        wb.add_table("Sheet1", &make_config("T1", "A1:B5")).unwrap();
+        wb.add_table("Sheet1", &make_config("T2", "D1:E5")).unwrap();
+        wb.delete_table("Sheet1", "T1").unwrap();
+        wb.add_table("Sheet1", &make_config("T3", "G1:H5")).unwrap();
+
+        let paths: Vec<&str> = wb.tables.iter().map(|(p, _, _)| p.as_str()).collect();
+        let mut unique_paths = paths.clone();
+        unique_paths.sort();
+        unique_paths.dedup();
+        assert_eq!(
+            paths.len(),
+            unique_paths.len(),
+            "table paths must be unique: {:?}",
+            paths
+        );
+
+        wb.save(&path).unwrap();
+        let wb2 = Workbook::open(&path).unwrap();
+        let tables = wb2.get_tables("Sheet1").unwrap();
+        assert_eq!(tables.len(), 2);
+        let names: Vec<&str> = tables.iter().map(|t| t.name.as_str()).collect();
+        assert!(names.contains(&"T2"));
+        assert!(names.contains(&"T3"));
+    }
+
+    #[test]
+    fn test_dangling_table_parts_after_reopen_delete_save() {
+        use crate::table::{TableColumn, TableConfig};
+
+        let dir = TempDir::new().unwrap();
+        let path1 = dir.path().join("dangling_tp_step1.xlsx");
+        let path2 = dir.path().join("dangling_tp_step2.xlsx");
+
+        let mut wb = Workbook::new();
+        wb.add_table(
+            "Sheet1",
+            &TableConfig {
+                name: "T1".to_string(),
+                display_name: "T1".to_string(),
+                range: "A1:B5".to_string(),
+                columns: vec![
+                    TableColumn {
+                        name: "X".to_string(),
+                        totals_row_function: None,
+                        totals_row_label: None,
+                    },
+                    TableColumn {
+                        name: "Y".to_string(),
+                        totals_row_function: None,
+                        totals_row_label: None,
+                    },
+                ],
+                ..TableConfig::default()
+            },
+        )
+        .unwrap();
+        wb.save(&path1).unwrap();
+
+        let mut wb2 = Workbook::open(&path1).unwrap();
+        assert_eq!(wb2.get_tables("Sheet1").unwrap().len(), 1);
+        wb2.delete_table("Sheet1", "T1").unwrap();
+        wb2.save(&path2).unwrap();
+
+        let file = std::fs::File::open(&path2).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let mut ws_data = Vec::new();
+        archive
+            .by_name("xl/worksheets/sheet1.xml")
+            .unwrap()
+            .read_to_end(&mut ws_data)
+            .unwrap();
+        let ws_str = String::from_utf8(ws_data).unwrap();
+        assert!(
+            !ws_str.contains("tableParts"),
+            "worksheet XML must not contain tableParts after all tables are deleted"
+        );
+
+        assert!(
+            archive.by_name("xl/tables/table1.xml").is_err(),
+            "table1.xml must not be present after deletion"
+        );
+
+        let wb3 = Workbook::open(&path2).unwrap();
+        assert!(wb3.get_tables("Sheet1").unwrap().is_empty());
     }
 }

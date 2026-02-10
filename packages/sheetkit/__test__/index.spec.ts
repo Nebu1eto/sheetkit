@@ -2510,3 +2510,894 @@ describe('Buffer large dataset', () => {
     expect(decoded).toEqual(rows);
   });
 });
+
+describe('toJSON', () => {
+  it('should convert sheet data to JSON with first row as headers', () => {
+    const wb = new Workbook();
+    wb.setSheetData('Sheet1', [
+      ['Name', 'Age', 'Active'],
+      ['Alice', 30, true],
+      ['Bob', 25, false],
+    ]);
+    const result = wb.toJSON('Sheet1');
+    expect(result).toEqual([
+      { Name: 'Alice', Age: 30, Active: true },
+      { Name: 'Bob', Age: 25, Active: false },
+    ]);
+  });
+
+  it('should convert with custom header keys', () => {
+    const wb = new Workbook();
+    wb.setSheetData('Sheet1', [
+      ['Alice', 30],
+      ['Bob', 25],
+    ]);
+    const result = wb.toJSON('Sheet1', { header: ['name', 'age'] });
+    expect(result).toEqual([
+      { name: 'Alice', age: 30 },
+      { name: 'Bob', age: 25 },
+    ]);
+  });
+
+  it('should use column letters when header is false', () => {
+    const wb = new Workbook();
+    wb.setSheetData('Sheet1', [
+      ['Alice', 30],
+      ['Bob', 25],
+    ]);
+    const result = wb.toJSON('Sheet1', { header: false });
+    expect(result).toEqual([
+      { A: 'Alice', B: 30 },
+      { B: 25, A: 'Bob' },
+    ]);
+  });
+
+  it('should return empty array for empty sheet', () => {
+    const wb = new Workbook();
+    const result = wb.toJSON('Sheet1');
+    expect(result).toEqual([]);
+  });
+
+  it('should handle mixed types including null', () => {
+    const wb = new Workbook();
+    wb.setSheetData('Sheet1', [
+      ['Key', 'Value'],
+      ['number', 42],
+      ['text', 'hello'],
+      ['bool', true],
+      ['empty', null],
+    ]);
+    const result = wb.toJSON('Sheet1');
+    expect(result).toEqual([
+      { Key: 'number', Value: 42 },
+      { Key: 'text', Value: 'hello' },
+      { Key: 'bool', Value: true },
+      { Key: 'empty', Value: null },
+    ]);
+  });
+
+  it('should handle rows shorter than header', () => {
+    const wb = new Workbook();
+    wb.setSheetData('Sheet1', [['A', 'B', 'C'], ['only_one']]);
+    const result = wb.toJSON('Sheet1');
+    expect(result).toEqual([{ A: 'only_one', B: null, C: null }]);
+  });
+
+  it('should handle single-row sheet (header only)', () => {
+    const wb = new Workbook();
+    wb.setSheetData('Sheet1', [['Name', 'Age']]);
+    const result = wb.toJSON('Sheet1');
+    expect(result).toEqual([]);
+  });
+});
+
+describe('toCSV', () => {
+  it('should convert sheet data to CSV', () => {
+    const wb = new Workbook();
+    wb.setSheetData('Sheet1', [
+      ['Name', 'Age'],
+      ['Alice', 30],
+      ['Bob', 25],
+    ]);
+    const csv = wb.toCSV('Sheet1');
+    expect(csv).toBe('Name,Age\nAlice,30\nBob,25');
+  });
+
+  it('should escape values containing delimiter', () => {
+    const wb = new Workbook();
+    wb.setSheetData('Sheet1', [
+      ['Name', 'Notes'],
+      ['Alice', 'likes cats, dogs'],
+    ]);
+    const csv = wb.toCSV('Sheet1');
+    expect(csv).toBe('Name,Notes\nAlice,"likes cats, dogs"');
+  });
+
+  it('should escape values containing quotes', () => {
+    const wb = new Workbook();
+    wb.setSheetData('Sheet1', [
+      ['Name', 'Quote'],
+      ['Alice', 'She said "hello"'],
+    ]);
+    const csv = wb.toCSV('Sheet1');
+    expect(csv).toBe('Name,Quote\nAlice,"She said ""hello"""');
+  });
+
+  it('should escape values containing newlines', () => {
+    const wb = new Workbook();
+    wb.setSheetData('Sheet1', [
+      ['Name', 'Bio'],
+      ['Alice', 'Line 1\nLine 2'],
+    ]);
+    const csv = wb.toCSV('Sheet1');
+    expect(csv).toBe('Name,Bio\nAlice,"Line 1\nLine 2"');
+  });
+
+  it('should use custom delimiter and line ending', () => {
+    const wb = new Workbook();
+    wb.setSheetData('Sheet1', [
+      ['Name', 'Age'],
+      ['Alice', 30],
+    ]);
+    const csv = wb.toCSV('Sheet1', { delimiter: '\t', lineEnding: '\r\n' });
+    expect(csv).toBe('Name\tAge\r\nAlice\t30');
+  });
+
+  it('should return empty string for empty sheet', () => {
+    const wb = new Workbook();
+    const csv = wb.toCSV('Sheet1');
+    expect(csv).toBe('');
+  });
+
+  it('should handle boolean and null values', () => {
+    const wb = new Workbook();
+    wb.setSheetData('Sheet1', [[true, false, null, 0]]);
+    const csv = wb.toCSV('Sheet1');
+    expect(csv).toBe('true,false,,0');
+  });
+
+  it('should escape custom quote character', () => {
+    const wb = new Workbook();
+    wb.setSheetData('Sheet1', [["it's a test", 'normal']]);
+    const csv = wb.toCSV('Sheet1', { quote: "'" });
+    expect(csv).toBe("'it''s a test',normal");
+  });
+});
+
+describe('toHTML', () => {
+  it('should generate an HTML table', () => {
+    const wb = new Workbook();
+    wb.setSheetData('Sheet1', [
+      ['Name', 'Age'],
+      ['Alice', 30],
+    ]);
+    const html = wb.toHTML('Sheet1');
+    expect(html).toBe(
+      '<table><tr><td>Name</td><td>Age</td></tr><tr><td>Alice</td><td>30</td></tr></table>',
+    );
+  });
+
+  it('should apply className to table element', () => {
+    const wb = new Workbook();
+    wb.setSheetData('Sheet1', [['A']]);
+    const html = wb.toHTML('Sheet1', { className: 'my-table' });
+    expect(html).toContain('<table class="my-table">');
+  });
+
+  it('should escape HTML special characters', () => {
+    const wb = new Workbook();
+    wb.setSheetData('Sheet1', [['<script>alert("xss")</script>']]);
+    const html = wb.toHTML('Sheet1');
+    expect(html).not.toContain('<script>');
+    expect(html).toContain('&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;');
+  });
+
+  it('should escape ampersands', () => {
+    const wb = new Workbook();
+    wb.setSheetData('Sheet1', [['A & B']]);
+    const html = wb.toHTML('Sheet1');
+    expect(html).toContain('A &amp; B');
+  });
+
+  it('should escape single quotes in content', () => {
+    const wb = new Workbook();
+    wb.setSheetData('Sheet1', [["it's"]]);
+    const html = wb.toHTML('Sheet1');
+    expect(html).toContain('it&#39;s');
+  });
+
+  it('should escape className to prevent attribute injection', () => {
+    const wb = new Workbook();
+    wb.setSheetData('Sheet1', [['A']]);
+    const html = wb.toHTML('Sheet1', { className: 'foo" onclick="alert(1)' });
+    expect(html).toContain('class="foo&quot; onclick=&quot;alert(1)"');
+    expect(html).not.toContain('onclick="alert(1)"');
+  });
+
+  it('should return empty table for empty sheet', () => {
+    const wb = new Workbook();
+    const html = wb.toHTML('Sheet1');
+    expect(html).toBe('<table></table>');
+  });
+
+  it('should handle null cells', () => {
+    const wb = new Workbook();
+    wb.setSheetData('Sheet1', [['', 'value', '']]);
+    const html = wb.toHTML('Sheet1');
+    expect(html).toContain('<td></td><td>value</td><td></td>');
+  });
+});
+
+describe('fromJSON', () => {
+  it('should write JSON objects to a sheet with auto-detected headers', () => {
+    const wb = new Workbook();
+    wb.fromJSON('Sheet1', [
+      { Name: 'Alice', Age: 30 },
+      { Name: 'Bob', Age: 25 },
+    ]);
+    expect(wb.getCellValue('Sheet1', 'A1')).toBe('Name');
+    expect(wb.getCellValue('Sheet1', 'B1')).toBe('Age');
+    expect(wb.getCellValue('Sheet1', 'A2')).toBe('Alice');
+    expect(wb.getCellValue('Sheet1', 'B2')).toBe(30);
+    expect(wb.getCellValue('Sheet1', 'A3')).toBe('Bob');
+    expect(wb.getCellValue('Sheet1', 'B3')).toBe(25);
+  });
+
+  it('should write with custom headers', () => {
+    const wb = new Workbook();
+    wb.fromJSON(
+      'Sheet1',
+      [
+        { name: 'Alice', age: 30 },
+        { name: 'Bob', age: 25 },
+      ],
+      { header: ['name', 'age'] },
+    );
+    expect(wb.getCellValue('Sheet1', 'A1')).toBe('name');
+    expect(wb.getCellValue('Sheet1', 'B1')).toBe('age');
+    expect(wb.getCellValue('Sheet1', 'A2')).toBe('Alice');
+  });
+
+  it('should skip header row when header is false', () => {
+    const wb = new Workbook();
+    wb.fromJSON(
+      'Sheet1',
+      [
+        { Name: 'Alice', Age: 30 },
+        { Name: 'Bob', Age: 25 },
+      ],
+      { header: false },
+    );
+    expect(wb.getCellValue('Sheet1', 'A1')).toBe('Alice');
+    expect(wb.getCellValue('Sheet1', 'B1')).toBe(30);
+    expect(wb.getCellValue('Sheet1', 'A2')).toBe('Bob');
+  });
+
+  it('should write to a custom start cell', () => {
+    const wb = new Workbook();
+    wb.fromJSON('Sheet1', [{ X: 1, Y: 2 }], { startCell: 'C3' });
+    expect(wb.getCellValue('Sheet1', 'C3')).toBe('X');
+    expect(wb.getCellValue('Sheet1', 'D3')).toBe('Y');
+    expect(wb.getCellValue('Sheet1', 'C4')).toBe(1);
+    expect(wb.getCellValue('Sheet1', 'D4')).toBe(2);
+  });
+
+  it('should handle empty data array', () => {
+    const wb = new Workbook();
+    wb.fromJSON('Sheet1', []);
+    expect(wb.getCellValue('Sheet1', 'A1')).toBeNull();
+  });
+
+  it('should handle null values in objects', () => {
+    const wb = new Workbook();
+    wb.fromJSON('Sheet1', [{ A: 'value', B: null }]);
+    expect(wb.getCellValue('Sheet1', 'A2')).toBe('value');
+    expect(wb.getCellValue('Sheet1', 'B2')).toBeNull();
+  });
+
+  it('should handle missing keys in records (undefined becomes null)', () => {
+    const wb = new Workbook();
+    wb.fromJSON('Sheet1', [{ A: 1, B: 2, C: 3 }, { A: 4 }]);
+    expect(wb.getCellValue('Sheet1', 'A3')).toBe(4);
+    expect(wb.getCellValue('Sheet1', 'B3')).toBeNull();
+    expect(wb.getCellValue('Sheet1', 'C3')).toBeNull();
+  });
+
+  it('should roundtrip with toJSON', () => {
+    const wb = new Workbook();
+    const original = [
+      { Name: 'Alice', Score: 95, Pass: true },
+      { Name: 'Bob', Score: 80, Pass: true },
+      { Name: 'Charlie', Score: 55, Pass: false },
+    ];
+    wb.fromJSON('Sheet1', original);
+    const result = wb.toJSON('Sheet1');
+    expect(result).toEqual(original);
+  });
+
+  it('should roundtrip with toJSON using header: false on both sides', () => {
+    const wb = new Workbook();
+    wb.fromJSON(
+      'Sheet1',
+      [
+        { A: 'x', B: 1 },
+        { A: 'y', B: 2 },
+      ],
+      { header: false },
+    );
+    const result = wb.toJSON('Sheet1', { header: false });
+    expect(result).toEqual([
+      { A: 'x', B: 1 },
+      { A: 'y', B: 2 },
+    ]);
+  });
+
+  it('should collect keys from all records, not just the first', () => {
+    const wb = new Workbook();
+    wb.fromJSON('Sheet1', [{ A: 1 }, { B: 2 }, { A: 3, C: 4 }]);
+    expect(wb.getCellValue('Sheet1', 'A1')).toBe('A');
+    expect(wb.getCellValue('Sheet1', 'B1')).toBe('B');
+    expect(wb.getCellValue('Sheet1', 'C1')).toBe('C');
+    expect(wb.getCellValue('Sheet1', 'A2')).toBe(1);
+    expect(wb.getCellValue('Sheet1', 'B2')).toBeNull();
+    expect(wb.getCellValue('Sheet1', 'C2')).toBeNull();
+    expect(wb.getCellValue('Sheet1', 'A3')).toBeNull();
+    expect(wb.getCellValue('Sheet1', 'B3')).toBe(2);
+    expect(wb.getCellValue('Sheet1', 'C3')).toBeNull();
+    expect(wb.getCellValue('Sheet1', 'A4')).toBe(3);
+    expect(wb.getCellValue('Sheet1', 'B4')).toBeNull();
+    expect(wb.getCellValue('Sheet1', 'C4')).toBe(4);
+  });
+});
+
+describe('Sheet View Options', () => {
+  const out = tmpFile('test-sheet-view.xlsx');
+  afterEach(async () => cleanup(out));
+
+  it('should return defaults for a new sheet', () => {
+    const wb = new Workbook();
+    const opts = wb.getSheetViewOptions('Sheet1');
+    expect(opts.showGridlines).toBe(true);
+    expect(opts.showFormulas).toBe(false);
+    expect(opts.showRowColHeaders).toBe(true);
+    expect(opts.zoomScale).toBe(100);
+    expect(opts.viewMode).toBe('normal');
+    expect(opts.topLeftCell).toBeUndefined();
+  });
+
+  it('should set and get gridlines off', () => {
+    const wb = new Workbook();
+    wb.setSheetViewOptions('Sheet1', { showGridlines: false });
+    const opts = wb.getSheetViewOptions('Sheet1');
+    expect(opts.showGridlines).toBe(false);
+  });
+
+  it('should set and get zoom scale', () => {
+    const wb = new Workbook();
+    wb.setSheetViewOptions('Sheet1', { zoomScale: 150 });
+    const opts = wb.getSheetViewOptions('Sheet1');
+    expect(opts.zoomScale).toBe(150);
+  });
+
+  it('should reject invalid zoom scale', () => {
+    const wb = new Workbook();
+    expect(() => wb.setSheetViewOptions('Sheet1', { zoomScale: 5 })).toThrow();
+    expect(() => wb.setSheetViewOptions('Sheet1', { zoomScale: 500 })).toThrow();
+  });
+
+  it('should set and get view mode', () => {
+    const wb = new Workbook();
+    wb.setSheetViewOptions('Sheet1', { viewMode: 'pageBreak' });
+    const opts = wb.getSheetViewOptions('Sheet1');
+    expect(opts.viewMode).toBe('pageBreakPreview');
+  });
+
+  it('should set and get page layout view mode', () => {
+    const wb = new Workbook();
+    wb.setSheetViewOptions('Sheet1', { viewMode: 'pageLayout' });
+    const opts = wb.getSheetViewOptions('Sheet1');
+    expect(opts.viewMode).toBe('pageLayout');
+  });
+
+  it('should set and get show formulas', () => {
+    const wb = new Workbook();
+    wb.setSheetViewOptions('Sheet1', { showFormulas: true });
+    const opts = wb.getSheetViewOptions('Sheet1');
+    expect(opts.showFormulas).toBe(true);
+  });
+
+  it('should set and get top left cell', () => {
+    const wb = new Workbook();
+    wb.setSheetViewOptions('Sheet1', { topLeftCell: 'C5' });
+    const opts = wb.getSheetViewOptions('Sheet1');
+    expect(opts.topLeftCell).toBe('C5');
+  });
+
+  it('should set multiple options at once', () => {
+    const wb = new Workbook();
+    wb.setSheetViewOptions('Sheet1', {
+      showGridlines: false,
+      zoomScale: 75,
+      viewMode: 'pageLayout',
+      topLeftCell: 'B10',
+    });
+    const opts = wb.getSheetViewOptions('Sheet1');
+    expect(opts.showGridlines).toBe(false);
+    expect(opts.zoomScale).toBe(75);
+    expect(opts.viewMode).toBe('pageLayout');
+    expect(opts.topLeftCell).toBe('B10');
+  });
+
+  it('should roundtrip view options through save/open', async () => {
+    const wb = new Workbook();
+    wb.setSheetViewOptions('Sheet1', {
+      showGridlines: false,
+      zoomScale: 200,
+      viewMode: 'pageBreak',
+      showFormulas: true,
+      showRowColHeaders: false,
+    });
+    await wb.save(out);
+
+    const wb2 = await Workbook.open(out);
+    const opts = wb2.getSheetViewOptions('Sheet1');
+    expect(opts.showGridlines).toBe(false);
+    expect(opts.zoomScale).toBe(200);
+    expect(opts.viewMode).toBe('pageBreakPreview');
+    expect(opts.showFormulas).toBe(true);
+    expect(opts.showRowColHeaders).toBe(false);
+  });
+
+  it('should preserve panes when setting view options', () => {
+    const wb = new Workbook();
+    wb.setPanes('Sheet1', 'A3');
+    wb.setSheetViewOptions('Sheet1', { zoomScale: 80 });
+    expect(wb.getPanes('Sheet1')).toBe('A3');
+    const opts = wb.getSheetViewOptions('Sheet1');
+    expect(opts.zoomScale).toBe(80);
+  });
+
+  it('should throw for non-existent sheet', () => {
+    const wb = new Workbook();
+    expect(() => wb.getSheetViewOptions('NoSheet')).toThrow();
+    expect(() => wb.setSheetViewOptions('NoSheet', { zoomScale: 100 })).toThrow();
+  });
+});
+
+describe('Sheet Visibility', () => {
+  const out = tmpFile('test-sheet-visibility.xlsx');
+  afterEach(async () => cleanup(out));
+
+  it('should default to visible', () => {
+    const wb = new Workbook();
+    expect(wb.getSheetVisibility('Sheet1')).toBe('visible');
+  });
+
+  it('should set and get hidden', () => {
+    const wb = new Workbook();
+    wb.newSheet('Sheet2');
+    wb.setSheetVisibility('Sheet1', 'hidden');
+    expect(wb.getSheetVisibility('Sheet1')).toBe('hidden');
+  });
+
+  it('should set and get veryHidden', () => {
+    const wb = new Workbook();
+    wb.newSheet('Sheet2');
+    wb.setSheetVisibility('Sheet1', 'veryHidden');
+    expect(wb.getSheetVisibility('Sheet1')).toBe('veryHidden');
+  });
+
+  it('should not allow hiding the last visible sheet', () => {
+    const wb = new Workbook();
+    expect(() => wb.setSheetVisibility('Sheet1', 'hidden')).toThrow();
+  });
+
+  it('should roundtrip visibility through save/open', async () => {
+    const wb = new Workbook();
+    wb.newSheet('Sheet2');
+    wb.newSheet('Sheet3');
+    wb.setSheetVisibility('Sheet2', 'hidden');
+    wb.setSheetVisibility('Sheet3', 'veryHidden');
+    await wb.save(out);
+
+    const wb2 = await Workbook.open(out);
+    expect(wb2.getSheetVisibility('Sheet1')).toBe('visible');
+    expect(wb2.getSheetVisibility('Sheet2')).toBe('hidden');
+    expect(wb2.getSheetVisibility('Sheet3')).toBe('veryHidden');
+  });
+
+  it('should throw for non-existent sheet', () => {
+    const wb = new Workbook();
+    expect(() => wb.getSheetVisibility('NoSheet')).toThrow();
+    expect(() => wb.setSheetVisibility('NoSheet', 'hidden')).toThrow();
+  });
+
+  it('should throw for invalid visibility string', () => {
+    const wb = new Workbook();
+    wb.newSheet('Sheet2');
+    expect(() => wb.setSheetVisibility('Sheet1', 'hiddden')).toThrow(/Invalid visibility/);
+    expect(() => wb.setSheetVisibility('Sheet1', 'HIDDEN')).toThrow(/Invalid visibility/);
+    expect(() => wb.setSheetVisibility('Sheet1', '')).toThrow(/Invalid visibility/);
+  });
+});
+
+describe('Workbook Format', () => {
+  const out = tmpFile('test-format.xlsx');
+  afterEach(async () => cleanup(out));
+
+  it('should return xlsx for a new workbook', () => {
+    const wb = new Workbook();
+    expect(wb.getFormat()).toBe('xlsx');
+  });
+
+  it('should detect xlsx format after save and open', async () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'test');
+    await wb.save(out);
+    const wb2 = await Workbook.open(out);
+    expect(wb2.getFormat()).toBe('xlsx');
+  });
+
+  it('should detect xlsm format from buffer', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'data');
+    const buf = wb.writeBufferSync();
+    const wb2 = Workbook.openBufferSync(buf);
+    expect(wb2.getFormat()).toBe('xlsx');
+  });
+});
+
+describe('Table CRUD', () => {
+  const out = tmpFile('test-table.xlsx');
+  afterEach(async () => cleanup(out));
+
+  it('should add a table and retrieve it', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'Name');
+    wb.setCellValue('Sheet1', 'B1', 'Score');
+    wb.setCellValue('Sheet1', 'A2', 'Alice');
+    wb.setCellValue('Sheet1', 'B2', 95);
+
+    wb.addTable('Sheet1', {
+      name: 'Table1',
+      displayName: 'Table1',
+      range: 'A1:B2',
+      columns: [{ name: 'Name' }, { name: 'Score' }],
+    });
+
+    const tables = wb.getTables('Sheet1');
+    expect(tables).toHaveLength(1);
+    expect(tables[0].name).toBe('Table1');
+    expect(tables[0].displayName).toBe('Table1');
+    expect(tables[0].range).toBe('A1:B2');
+    expect(tables[0].columns).toEqual(['Name', 'Score']);
+    expect(tables[0].showHeaderRow).toBe(true);
+    expect(tables[0].autoFilter).toBe(true);
+  });
+
+  it('should add a table with style options', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'Item');
+    wb.setCellValue('Sheet1', 'B1', 'Price');
+
+    wb.addTable('Sheet1', {
+      name: 'StyledTable',
+      displayName: 'StyledTable',
+      range: 'A1:B5',
+      columns: [{ name: 'Item' }, { name: 'Price' }],
+      styleName: 'TableStyleMedium2',
+      showRowStripes: true,
+      showColumnStripes: false,
+      showFirstColumn: true,
+      showLastColumn: false,
+    });
+
+    const tables = wb.getTables('Sheet1');
+    expect(tables).toHaveLength(1);
+    expect(tables[0].styleName).toBe('TableStyleMedium2');
+  });
+
+  it('should add a table without header row', () => {
+    const wb = new Workbook();
+    wb.addTable('Sheet1', {
+      name: 'NoHeader',
+      displayName: 'NoHeader',
+      range: 'A1:B5',
+      columns: [{ name: 'Col1' }, { name: 'Col2' }],
+      showHeaderRow: false,
+    });
+
+    const tables = wb.getTables('Sheet1');
+    expect(tables[0].showHeaderRow).toBe(false);
+  });
+
+  it('should delete a table', () => {
+    const wb = new Workbook();
+    wb.addTable('Sheet1', {
+      name: 'ToDelete',
+      displayName: 'ToDelete',
+      range: 'A1:B5',
+      columns: [{ name: 'Col1' }, { name: 'Col2' }],
+    });
+
+    expect(wb.getTables('Sheet1')).toHaveLength(1);
+    wb.deleteTable('Sheet1', 'ToDelete');
+    expect(wb.getTables('Sheet1')).toHaveLength(0);
+  });
+
+  it('should throw when adding duplicate table name', () => {
+    const wb = new Workbook();
+    wb.addTable('Sheet1', {
+      name: 'Dup',
+      displayName: 'Dup',
+      range: 'A1:B5',
+      columns: [{ name: 'Col1' }, { name: 'Col2' }],
+    });
+
+    expect(() =>
+      wb.addTable('Sheet1', {
+        name: 'Dup',
+        displayName: 'Dup',
+        range: 'C1:D5',
+        columns: [{ name: 'Col3' }, { name: 'Col4' }],
+      }),
+    ).toThrow();
+  });
+
+  it('should throw when deleting non-existent table', () => {
+    const wb = new Workbook();
+    expect(() => wb.deleteTable('Sheet1', 'NoSuchTable')).toThrow();
+  });
+
+  it('should throw for non-existent sheet', () => {
+    const wb = new Workbook();
+    expect(() => wb.getTables('NoSheet')).toThrow();
+  });
+
+  it('should support multiple tables on different sheets', () => {
+    const wb = new Workbook();
+    wb.newSheet('Sheet2');
+
+    wb.addTable('Sheet1', {
+      name: 'T1',
+      displayName: 'T1',
+      range: 'A1:B5',
+      columns: [{ name: 'X' }, { name: 'Y' }],
+    });
+
+    wb.addTable('Sheet2', {
+      name: 'T2',
+      displayName: 'T2',
+      range: 'A1:C3',
+      columns: [{ name: 'A' }, { name: 'B' }, { name: 'C' }],
+    });
+
+    expect(wb.getTables('Sheet1')).toHaveLength(1);
+    expect(wb.getTables('Sheet2')).toHaveLength(1);
+    expect(wb.getTables('Sheet1')[0].name).toBe('T1');
+    expect(wb.getTables('Sheet2')[0].name).toBe('T2');
+  });
+
+  it('should roundtrip tables through save/open', async () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'Product');
+    wb.setCellValue('Sheet1', 'B1', 'Quantity');
+    wb.setCellValue('Sheet1', 'A2', 'Widget');
+    wb.setCellValue('Sheet1', 'B2', 100);
+
+    wb.addTable('Sheet1', {
+      name: 'Products',
+      displayName: 'Products',
+      range: 'A1:B2',
+      columns: [{ name: 'Product' }, { name: 'Quantity' }],
+      styleName: 'TableStyleLight1',
+    });
+
+    await wb.save(out);
+    const wb2 = await Workbook.open(out);
+    const tables = wb2.getTables('Sheet1');
+    expect(tables).toHaveLength(1);
+    expect(tables[0].name).toBe('Products');
+    expect(tables[0].range).toBe('A1:B2');
+    expect(tables[0].columns).toEqual(['Product', 'Quantity']);
+  });
+});
+
+describe('Cross-feature integration', () => {
+  const out = tmpFile('test-integration.xlsx');
+  afterEach(async () => cleanup(out));
+
+  it('should combine format detection with tables and views', async () => {
+    const wb = new Workbook();
+    expect(wb.getFormat()).toBe('xlsx');
+
+    wb.setCellValue('Sheet1', 'A1', 'Region');
+    wb.setCellValue('Sheet1', 'B1', 'Revenue');
+    wb.setCellValue('Sheet1', 'A2', 'North');
+    wb.setCellValue('Sheet1', 'B2', 50000);
+    wb.setCellValue('Sheet1', 'A3', 'South');
+    wb.setCellValue('Sheet1', 'B3', 75000);
+
+    wb.addTable('Sheet1', {
+      name: 'SalesData',
+      displayName: 'SalesData',
+      range: 'A1:B3',
+      columns: [{ name: 'Region' }, { name: 'Revenue' }],
+      styleName: 'TableStyleMedium2',
+    });
+
+    wb.setSheetViewOptions('Sheet1', {
+      zoomScale: 120,
+      showGridlines: false,
+    });
+
+    wb.setPanes('Sheet1', 'A2');
+
+    await wb.save(out);
+    const wb2 = await Workbook.open(out);
+
+    expect(wb2.getFormat()).toBe('xlsx');
+
+    const tables = wb2.getTables('Sheet1');
+    expect(tables).toHaveLength(1);
+    expect(tables[0].name).toBe('SalesData');
+
+    const view = wb2.getSheetViewOptions('Sheet1');
+    expect(view.zoomScale).toBe(120);
+    expect(view.showGridlines).toBe(false);
+
+    const panes = wb2.getPanes('Sheet1');
+    expect(panes).toBe('A2');
+  });
+
+  it('should combine tables with cell styles and defined names', async () => {
+    const wb = new Workbook();
+
+    wb.setCellValue('Sheet1', 'A1', 'Name');
+    wb.setCellValue('Sheet1', 'B1', 'Amount');
+    wb.setCellValue('Sheet1', 'A2', 'Alice');
+    wb.setCellValue('Sheet1', 'B2', 1000);
+    wb.setCellValue('Sheet1', 'A3', 'Bob');
+    wb.setCellValue('Sheet1', 'B3', 2000);
+
+    wb.addTable('Sheet1', {
+      name: 'Budget',
+      displayName: 'Budget',
+      range: 'A1:B3',
+      columns: [{ name: 'Name' }, { name: 'Amount' }],
+    });
+
+    const boldStyle = wb.addStyle({
+      font: { bold: true, size: 12 },
+    });
+    wb.setCellStyle('Sheet1', 'A1', boldStyle);
+    wb.setCellStyle('Sheet1', 'B1', boldStyle);
+
+    wb.setDefinedName({
+      name: 'BudgetRange',
+      value: 'Sheet1!$A$1:$B$3',
+    });
+
+    await wb.save(out);
+    const wb2 = await Workbook.open(out);
+
+    const tables = wb2.getTables('Sheet1');
+    expect(tables).toHaveLength(1);
+    expect(tables[0].name).toBe('Budget');
+
+    const name = wb2.getDefinedName('BudgetRange');
+    expect(name).not.toBeNull();
+    expect(name?.value).toBe('Sheet1!$A$1:$B$3');
+
+    expect(wb2.getCellValue('Sheet1', 'A2')).toBe('Alice');
+    expect(wb2.getCellValue('Sheet1', 'B3')).toBe(2000);
+  });
+
+  it('should combine tables with sheet visibility and protection', () => {
+    const wb = new Workbook();
+    wb.newSheet('Data');
+    wb.newSheet('Config');
+
+    wb.setCellValue('Data', 'A1', 'Key');
+    wb.setCellValue('Data', 'B1', 'Value');
+    wb.setCellValue('Data', 'A2', 'alpha');
+    wb.setCellValue('Data', 'B2', 42);
+
+    wb.addTable('Data', {
+      name: 'DataTable',
+      displayName: 'DataTable',
+      range: 'A1:B2',
+      columns: [{ name: 'Key' }, { name: 'Value' }],
+    });
+
+    wb.setSheetVisibility('Config', 'hidden');
+    wb.protectSheet('Data', { password: 'test123' });
+
+    expect(wb.getSheetVisibility('Config')).toBe('hidden');
+    expect(wb.isSheetProtected('Data')).toBe(true);
+    expect(wb.getTables('Data')).toHaveLength(1);
+  });
+
+  it('should combine tables with data validation and comments', () => {
+    const wb = new Workbook();
+
+    wb.setCellValue('Sheet1', 'A1', 'Status');
+    wb.setCellValue('Sheet1', 'B1', 'Notes');
+    wb.setCellValue('Sheet1', 'A2', 'Active');
+    wb.setCellValue('Sheet1', 'B2', 'First entry');
+
+    wb.addTable('Sheet1', {
+      name: 'StatusTable',
+      displayName: 'StatusTable',
+      range: 'A1:B2',
+      columns: [{ name: 'Status' }, { name: 'Notes' }],
+    });
+
+    wb.addDataValidation('Sheet1', {
+      sqref: 'A2:A100',
+      validationType: 'list',
+      formula1: '"Active,Inactive,Pending"',
+    });
+
+    wb.addComment('Sheet1', {
+      cell: 'A1',
+      author: 'System',
+      text: 'This column uses a dropdown validation.',
+    });
+
+    const tables = wb.getTables('Sheet1');
+    expect(tables).toHaveLength(1);
+
+    const validations = wb.getDataValidations('Sheet1');
+    expect(validations).toHaveLength(1);
+    expect(validations[0].validationType).toBe('list');
+
+    const comments = wb.getComments('Sheet1');
+    expect(comments).toHaveLength(1);
+    expect(comments[0].author).toBe('System');
+  });
+
+  it('should combine format detection with multi-sheet tables and page setup', async () => {
+    const wb = new Workbook();
+    wb.newSheet('Summary');
+
+    wb.setCellValue('Sheet1', 'A1', 'Item');
+    wb.setCellValue('Sheet1', 'B1', 'Count');
+    wb.addTable('Sheet1', {
+      name: 'Items',
+      displayName: 'Items',
+      range: 'A1:B5',
+      columns: [{ name: 'Item' }, { name: 'Count' }],
+    });
+
+    wb.setCellValue('Summary', 'A1', 'Metric');
+    wb.setCellValue('Summary', 'B1', 'Value');
+    wb.addTable('Summary', {
+      name: 'Metrics',
+      displayName: 'Metrics',
+      range: 'A1:B3',
+      columns: [{ name: 'Metric' }, { name: 'Value' }],
+    });
+
+    wb.setPageSetup('Sheet1', { orientation: 'landscape', paperSize: 'a4' });
+    wb.setPageSetup('Summary', { orientation: 'portrait', scale: 80 });
+
+    wb.setDocProps({ title: 'Integration Test', creator: 'SheetKit' });
+
+    await wb.save(out);
+    const wb2 = await Workbook.open(out);
+
+    expect(wb2.getFormat()).toBe('xlsx');
+    expect(wb2.getTables('Sheet1')).toHaveLength(1);
+    expect(wb2.getTables('Summary')).toHaveLength(1);
+    expect(wb2.getTables('Sheet1')[0].name).toBe('Items');
+    expect(wb2.getTables('Summary')[0].name).toBe('Metrics');
+
+    const setup1 = wb2.getPageSetup('Sheet1');
+    expect(setup1.orientation).toBe('landscape');
+
+    const props = wb2.getDocProps();
+    expect(props.title).toBe('Integration Test');
+    expect(props.creator).toBe('SheetKit');
+  });
+});
