@@ -20,28 +20,28 @@ jobs:
         settings:
           - host: macos-latest
             target: x86_64-apple-darwin
-            build: pnpm build --target x86_64-apple-darwin
+            build: pnpm build:napi --target x86_64-apple-darwin
           - host: windows-latest
-            build: pnpm build --target x86_64-pc-windows-msvc
+            build: pnpm build:napi --target x86_64-pc-windows-msvc
             target: x86_64-pc-windows-msvc
           - host: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            build: pnpm build --target x86_64-unknown-linux-gnu --use-napi-cross
+            build: pnpm build:napi --target x86_64-unknown-linux-gnu --use-napi-cross
           - host: ubuntu-latest
             target: x86_64-unknown-linux-musl
-            build: pnpm build --target x86_64-unknown-linux-musl -x
+            build: pnpm build:napi --target x86_64-unknown-linux-musl -x
           - host: macos-latest
             target: aarch64-apple-darwin
-            build: pnpm build --target aarch64-apple-darwin
+            build: pnpm build:napi --target aarch64-apple-darwin
           - host: ubuntu-latest
             target: aarch64-unknown-linux-gnu
-            build: pnpm build --target aarch64-unknown-linux-gnu --use-napi-cross
+            build: pnpm build:napi --target aarch64-unknown-linux-gnu --use-napi-cross
           - host: ubuntu-latest
             target: aarch64-unknown-linux-musl
-            build: pnpm build --target aarch64-unknown-linux-musl -x
+            build: pnpm build:napi --target aarch64-unknown-linux-musl -x
           - host: windows-latest
             target: aarch64-pc-windows-msvc
-            build: pnpm build --target aarch64-pc-windows-msvc
+            build: pnpm build:napi --target aarch64-pc-windows-msvc
 
     name: Build - ${{ matrix.settings.target }}
     runs-on: ${{ matrix.settings.host }}
@@ -145,6 +145,10 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Build JS wrapper
+        working-directory: packages/sheetkit
+        run: pnpm build
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
