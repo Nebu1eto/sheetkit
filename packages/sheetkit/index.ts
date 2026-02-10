@@ -26,6 +26,8 @@ import type {
   JsShapeConfig,
   JsSheetProtectionConfig,
   JsSheetViewOptions,
+  JsSlicerConfig,
+  JsSlicerInfo,
   JsSparklineConfig,
   JsStyle,
   JsTableConfig,
@@ -77,6 +79,8 @@ export type {
   JsShapeConfig,
   JsSheetProtectionConfig,
   JsSheetViewOptions,
+  JsSlicerConfig,
+  JsSlicerInfo,
   JsSparklineConfig,
   JsStyle,
   JsTableColumn,
@@ -722,6 +726,31 @@ class Workbook {
   /** Remove a sparkline by its location cell reference. */
   removeSparkline(sheet: string, location: string): void {
     this.#native.removeSparkline(sheet, location);
+  }
+
+  /** Register a table in the workbook. */
+  addTable(sheet: string, config: JsTableConfig): void {
+    this.#native.addTable(sheet, config);
+  }
+
+  /** Get all tables on a sheet. */
+  getTables(sheet: string): JsTableInfo[] {
+    return this.#native.getTables(sheet);
+  }
+
+  /** Add a slicer to a sheet targeting a table column. */
+  addSlicer(sheet: string, config: JsSlicerConfig): void {
+    this.#native.addSlicer(sheet, config);
+  }
+
+  /** Get all slicers on a sheet. */
+  getSlicers(sheet: string): JsSlicerInfo[] {
+    return this.#native.getSlicers(sheet);
+  }
+
+  /** Delete a slicer by name from a sheet. */
+  deleteSlicer(sheet: string, name: string): void {
+    this.#native.deleteSlicer(sheet, name);
   }
 
   /** Set a cell to a rich text value with multiple formatted runs. */

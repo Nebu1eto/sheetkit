@@ -594,3 +594,43 @@ pub struct JsTableInfo {
     /// The style name, if any.
     pub style_name: Option<String>,
 }
+
+/// Configuration for adding a slicer to a table.
+#[napi(object)]
+pub struct JsSlicerConfig {
+    /// Unique slicer name.
+    pub name: String,
+    /// Anchor cell (top-left corner).
+    pub cell: String,
+    /// Source table name.
+    pub table_name: String,
+    /// Column name from the table to filter.
+    pub column_name: String,
+    /// Caption displayed on the slicer header.
+    pub caption: Option<String>,
+    /// Slicer visual style (e.g. "SlicerStyleLight1").
+    pub style: Option<String>,
+    /// Width in pixels.
+    pub width: Option<u32>,
+    /// Height in pixels.
+    pub height: Option<u32>,
+    /// Whether to show the caption header.
+    pub show_caption: Option<bool>,
+    /// Number of columns in the slicer item display.
+    pub column_count: Option<u32>,
+}
+
+/// Information about an existing slicer.
+#[napi(object)]
+pub struct JsSlicerInfo {
+    /// The slicer's unique name.
+    pub name: String,
+    /// The display caption.
+    pub caption: String,
+    /// The source table name.
+    pub table_name: String,
+    /// The column name being filtered.
+    pub column_name: String,
+    /// The visual style name, if set.
+    pub style: Option<String>,
+}

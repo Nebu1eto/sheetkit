@@ -42,6 +42,10 @@ pub const VT: &str = "http://schemas.openxmlformats.org/officeDocument/2006/docP
 pub const CUSTOM_PROPERTIES: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/custom-properties";
 
+// Slicer namespaces (Office 2010+ extensions)
+pub const SLICER_2009: &str = "http://schemas.microsoft.com/office/spreadsheetml/2009/9/main";
+pub const SLICER_2010: &str = "http://schemas.microsoft.com/office/spreadsheetml/2010/11/main";
+
 // XML standard
 pub const XML: &str = "http://www.w3.org/XML/1998/namespace";
 pub const XSI: &str = "http://www.w3.org/2001/XMLSchema-instance";

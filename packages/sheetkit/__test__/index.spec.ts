@@ -3725,3 +3725,299 @@ describe('Additional Chart Types', () => {
     ).toThrow();
   });
 });
+
+describe('Slicers', () => {
+  const out = tmpFile('test-slicer.xlsx');
+  afterEach(async () => cleanup(out));
+
+  it('should add and get slicers', () => {
+    const wb = new Workbook();
+    wb.addTable('Sheet1', {
+      name: 'Table1',
+      displayName: 'Table1',
+      range: 'A1:D10',
+      columns: ['Status', 'Region', 'Category', 'Sales'],
+      showHeaderRow: true,
+      autoFilter: false,
+    });
+    wb.addSlicer('Sheet1', {
+      name: 'StatusFilter',
+      cell: 'F1',
+      tableName: 'Table1',
+      columnName: 'Status',
+    });
+
+    const slicers = wb.getSlicers('Sheet1');
+    expect(slicers.length).toBe(1);
+    expect(slicers[0].name).toBe('StatusFilter');
+    expect(slicers[0].columnName).toBe('Status');
+  });
+
+  it('should add slicer with options', () => {
+    const wb = new Workbook();
+    wb.addTable('Sheet1', {
+      name: 'Table1',
+      displayName: 'Table1',
+      range: 'A1:D10',
+      columns: ['Status', 'Region', 'Category', 'Sales'],
+      showHeaderRow: true,
+      autoFilter: false,
+    });
+    wb.addSlicer('Sheet1', {
+      name: 'RegionSlicer',
+      cell: 'G2',
+      tableName: 'Table1',
+      columnName: 'Region',
+      caption: 'Filter by Region',
+      style: 'SlicerStyleLight1',
+      width: 300,
+      height: 250,
+      showCaption: true,
+      columnCount: 2,
+    });
+
+    const slicers = wb.getSlicers('Sheet1');
+    expect(slicers.length).toBe(1);
+    expect(slicers[0].caption).toBe('Filter by Region');
+    expect(slicers[0].style).toBe('SlicerStyleLight1');
+  });
+
+  it('should delete a slicer', () => {
+    const wb = new Workbook();
+    wb.addTable('Sheet1', {
+      name: 'T1',
+      displayName: 'T1',
+      range: 'A1:B10',
+      columns: ['Col1', 'Col2'],
+      showHeaderRow: true,
+      autoFilter: false,
+    });
+    wb.addSlicer('Sheet1', {
+      name: 'S1',
+      cell: 'F1',
+      tableName: 'T1',
+      columnName: 'Col1',
+    });
+
+    expect(wb.getSlicers('Sheet1').length).toBe(1);
+    wb.deleteSlicer('Sheet1', 'S1');
+    expect(wb.getSlicers('Sheet1').length).toBe(0);
+  });
+
+  it('should save and open with slicers', async () => {
+    const wb = new Workbook();
+    wb.addTable('Sheet1', {
+      name: 'Table1',
+      displayName: 'Table1',
+      range: 'A1:D10',
+      columns: ['Status', 'Region', 'Category', 'Sales'],
+      showHeaderRow: true,
+      autoFilter: false,
+    });
+    wb.addSlicer('Sheet1', {
+      name: 'CategoryFilter',
+      cell: 'F1',
+      tableName: 'Table1',
+      columnName: 'Category',
+      caption: 'Category',
+      style: 'SlicerStyleLight1',
+    });
+
+    await wb.save(out);
+    const wb2 = await Workbook.open(out);
+    // Re-register table since table registry is not persisted yet.
+    wb2.addTable('Sheet1', {
+      name: 'Table1',
+      displayName: 'Table1',
+      range: 'A1:D10',
+      columns: ['Status', 'Region', 'Category', 'Sales'],
+      showHeaderRow: true,
+      autoFilter: false,
+    });
+    const slicers = wb2.getSlicers('Sheet1');
+    expect(slicers.length).toBe(1);
+    expect(slicers[0].name).toBe('CategoryFilter');
+    expect(slicers[0].columnName).toBe('Category');
+  });
+
+  it('should throw on duplicate slicer name', () => {
+    const wb = new Workbook();
+    wb.addTable('Sheet1', {
+      name: 'T1',
+      displayName: 'T1',
+      range: 'A1:B10',
+      columns: ['Col1', 'Col2'],
+      showHeaderRow: true,
+      autoFilter: false,
+    });
+    wb.addSlicer('Sheet1', {
+      name: 'S1',
+      cell: 'F1',
+      tableName: 'T1',
+      columnName: 'Col1',
+    });
+
+    expect(() =>
+      wb.addSlicer('Sheet1', {
+        name: 'S1',
+        cell: 'G1',
+        tableName: 'T1',
+        columnName: 'Col2',
+      }),
+    ).toThrow(/already exists/);
+  });
+
+  it('should throw on delete non-existent slicer', () => {
+    const wb = new Workbook();
+    expect(() => wb.deleteSlicer('Sheet1', 'NoSuch')).toThrow(/not found/);
+  });
+
+  it('should support multiple slicers on same sheet', () => {
+    const wb = new Workbook();
+    wb.addTable('Sheet1', {
+      name: 'T1',
+      displayName: 'T1',
+      range: 'A1:B10',
+      columns: ['Col1', 'Col2'],
+      showHeaderRow: true,
+      autoFilter: false,
+    });
+    wb.addSlicer('Sheet1', {
+      name: 'S1',
+      cell: 'F1',
+      tableName: 'T1',
+      columnName: 'Col1',
+    });
+    wb.addSlicer('Sheet1', {
+      name: 'S2',
+      cell: 'G1',
+      tableName: 'T1',
+      columnName: 'Col2',
+    });
+
+    const slicers = wb.getSlicers('Sheet1');
+    expect(slicers.length).toBe(2);
+  });
+
+  it('should throw on non-existent table', () => {
+    const wb = new Workbook();
+    expect(() =>
+      wb.addSlicer('Sheet1', {
+        name: 'S1',
+        cell: 'F1',
+        tableName: 'NoSuchTable',
+        columnName: 'Col1',
+      }),
+    ).toThrow(/table.*not found/i);
+  });
+
+  it('should throw on non-existent column', () => {
+    const wb = new Workbook();
+    wb.addTable('Sheet1', {
+      name: 'T1',
+      displayName: 'T1',
+      range: 'A1:B10',
+      columns: ['Col1', 'Col2'],
+      showHeaderRow: true,
+      autoFilter: false,
+    });
+    expect(() =>
+      wb.addSlicer('Sheet1', {
+        name: 'S1',
+        cell: 'F1',
+        tableName: 'T1',
+        columnName: 'NoSuchCol',
+      }),
+    ).toThrow(/column.*not found/i);
+  });
+
+  it('should resolve table_name in getSlicers', () => {
+    const wb = new Workbook();
+    wb.addTable('Sheet1', {
+      name: 'SalesTable',
+      displayName: 'SalesTable',
+      range: 'A1:C10',
+      columns: ['Region', 'Product', 'Amount'],
+      showHeaderRow: true,
+      autoFilter: false,
+    });
+    wb.addSlicer('Sheet1', {
+      name: 'RegionFilter',
+      cell: 'E1',
+      tableName: 'SalesTable',
+      columnName: 'Region',
+    });
+
+    const slicers = wb.getSlicers('Sheet1');
+    expect(slicers.length).toBe(1);
+    expect(slicers[0].tableName).toBe('SalesTable');
+    expect(slicers[0].columnName).toBe('Region');
+  });
+});
+
+describe('Tables', () => {
+  it('should add and get tables', () => {
+    const wb = new Workbook();
+    wb.addTable('Sheet1', {
+      name: 'Sales',
+      displayName: 'Sales',
+      range: 'A1:D10',
+      columns: ['Name', 'Region', 'Product', 'Amount'],
+      showHeaderRow: true,
+      autoFilter: false,
+    });
+
+    const tables = wb.getTables('Sheet1');
+    expect(tables.length).toBe(1);
+    expect(tables[0].name).toBe('Sales');
+    expect(tables[0].range).toBe('A1:D10');
+    expect(tables[0].columns).toEqual(['Name', 'Region', 'Product', 'Amount']);
+  });
+
+  it('should add multiple tables', () => {
+    const wb = new Workbook();
+    wb.addTable('Sheet1', {
+      name: 'T1',
+      displayName: 'T1',
+      range: 'A1:B10',
+      columns: ['Col1', 'Col2'],
+      showHeaderRow: true,
+      autoFilter: false,
+    });
+    wb.addTable('Sheet1', {
+      name: 'T2',
+      displayName: 'T2',
+      range: 'D1:F10',
+      columns: ['X', 'Y', 'Z'],
+      showHeaderRow: true,
+      autoFilter: false,
+    });
+
+    const tables = wb.getTables('Sheet1');
+    expect(tables.length).toBe(2);
+    expect(tables[0].name).toBe('T1');
+    expect(tables[1].name).toBe('T2');
+  });
+
+  it('should throw on duplicate table name', () => {
+    const wb = new Workbook();
+    wb.addTable('Sheet1', {
+      name: 'T1',
+      displayName: 'T1',
+      range: 'A1:B10',
+      columns: ['Col1', 'Col2'],
+      showHeaderRow: true,
+      autoFilter: false,
+    });
+    expect(() =>
+      wb.addTable('Sheet1', {
+        name: 'T1',
+        displayName: 'T1',
+        range: 'D1:E10',
+        columns: ['X', 'Y'],
+        showHeaderRow: true,
+        autoFilter: false,
+      }),
+    ).toThrow(/already exists/i);
+  });
+});

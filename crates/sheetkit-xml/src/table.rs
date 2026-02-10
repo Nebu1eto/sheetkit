@@ -1,12 +1,14 @@
 //! Table XML schema structures.
 //!
 //! Represents `xl/tables/table{N}.xml` in the OOXML package.
+//! Tables define structured data ranges with named columns, auto-filters,
+//! and optional styles.
 
 use serde::{Deserialize, Serialize};
 
 use crate::namespaces;
 
-/// Root element for a table definition part.
+/// Root element for a table definition part (`xl/tables/table{N}.xml`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename = "table")]
 pub struct TableXml {
@@ -57,7 +59,7 @@ pub struct TableColumnsXml {
     #[serde(rename = "@count")]
     pub count: u32,
 
-    #[serde(rename = "tableColumn")]
+    #[serde(rename = "tableColumn", default)]
     pub columns: Vec<TableColumnXml>,
 }
 

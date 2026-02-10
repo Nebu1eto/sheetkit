@@ -136,6 +136,18 @@ pub enum Error {
     #[error("invalid source range: {0}")]
     InvalidSourceRange(String),
 
+    /// The specified slicer was not found.
+    #[error("slicer '{name}' not found")]
+    SlicerNotFound { name: String },
+
+    /// A slicer with the given name already exists.
+    #[error("slicer '{name}' already exists")]
+    SlicerAlreadyExists { name: String },
+
+    /// The specified column was not found in the table.
+    #[error("column '{column}' not found in table '{table}'")]
+    TableColumnNotFound { table: String, column: String },
+
     /// The image format is not supported.
     #[error("unsupported image format: {format}")]
     UnsupportedImageFormat { format: String },

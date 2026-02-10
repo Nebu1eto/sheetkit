@@ -148,6 +148,11 @@ pub mod rel_types {
     // Custom properties
     pub const CUSTOM_PROPERTIES: &str =
         "http://schemas.openxmlformats.org/officeDocument/2006/relationships/custom-properties";
+
+    // Slicers
+    pub const SLICER: &str = "http://schemas.microsoft.com/office/2007/relationships/slicer";
+    pub const SLICER_CACHE: &str =
+        "http://schemas.microsoft.com/office/2007/relationships/slicerCache";
 }
 
 #[cfg(test)]

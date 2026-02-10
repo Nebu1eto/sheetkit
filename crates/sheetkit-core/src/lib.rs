@@ -24,6 +24,7 @@ pub mod rich_text;
 pub mod row;
 pub mod shape;
 pub mod sheet;
+pub mod slicer;
 pub mod sparkline;
 pub mod sst;
 pub mod stream;

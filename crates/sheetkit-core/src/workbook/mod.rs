@@ -172,6 +172,10 @@ pub struct Workbook {
     /// Parallel to `worksheets`. `Some(bytes)` means the sheet was skipped
     /// and the raw bytes should be written directly on save.
     raw_sheet_xml: Vec<Option<Vec<u8>>>,
+    /// Slicer definition parts: (zip path, SlicerDefinitions data).
+    slicer_defs: Vec<(String, sheetkit_xml::slicer::SlicerDefinitions)>,
+    /// Slicer cache definition parts: (zip path, raw XML string).
+    slicer_caches: Vec<(String, sheetkit_xml::slicer::SlicerCacheDefinition)>,
     /// O(1) sheet name -> index lookup cache. Must be kept in sync with
     /// `worksheets` via [`rebuild_sheet_index`].
     sheet_name_index: HashMap<String, usize>,

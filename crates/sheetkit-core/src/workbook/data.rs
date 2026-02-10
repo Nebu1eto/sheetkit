@@ -635,6 +635,327 @@ impl Workbook {
             });
         }
     }
+
+    /// Look up a table by name across all sheets. Returns a reference to the
+    /// table XML, path, and sheet index from the main table storage.
+    fn find_table_by_name(
+        &self,
+        name: &str,
+    ) -> Option<(&String, &sheetkit_xml::table::TableXml, usize)> {
+        self.tables
+            .iter()
+            .find(|(_, t, _)| t.name == name)
+            .map(|(path, t, idx)| (path, t, *idx))
+    }
+
+    /// Look up the table name for a given table ID.
+    fn table_name_by_id(&self, table_id: u32) -> Option<&str> {
+        self.tables
+            .iter()
+            .find(|(_, t, _)| t.id == table_id)
+            .map(|(_, t, _)| t.name.as_str())
+    }
+
+    /// Look up the column name by 1-based column index and table ID.
+    fn table_column_name_by_index(&self, table_id: u32, column_index: u32) -> Option<&str> {
+        self.tables
+            .iter()
+            .find(|(_, t, _)| t.id == table_id)
+            .and_then(|(_, t, _)| {
+                t.table_columns
+                    .columns
+                    .get((column_index - 1) as usize)
+                    .map(|c| c.name.as_str())
+            })
+    }
+
+    /// Add a slicer to a sheet targeting a table column.
+    ///
+    /// Creates the slicer definition, slicer cache, content type overrides,
+    /// and worksheet relationships needed for Excel to render the slicer.
+    pub fn add_slicer(&mut self, sheet: &str, config: &crate::slicer::SlicerConfig) -> Result<()> {
+        use sheetkit_xml::content_types::ContentTypeOverride;
+        use sheetkit_xml::slicer::{
+            SlicerCacheDefinition, SlicerDefinition, SlicerDefinitions, TableSlicerCache,
+        };
+
+        crate::slicer::validate_slicer_config(config)?;
+
+        let sheet_idx = self.sheet_index(sheet)?;
+
+        // Check for duplicate name across all slicer definitions.
+        for (_, sd) in &self.slicer_defs {
+            for s in &sd.slicers {
+                if s.name == config.name {
+                    return Err(Error::SlicerAlreadyExists {
+                        name: config.name.clone(),
+                    });
+                }
+            }
+        }
+
+        let cache_name = crate::slicer::slicer_cache_name(&config.name);
+        let caption = config
+            .caption
+            .clone()
+            .unwrap_or_else(|| config.column_name.clone());
+
+        // Determine part numbers.
+        let slicer_num = self.slicer_defs.len() + 1;
+        let cache_num = self.slicer_caches.len() + 1;
+
+        let slicer_path = format!("xl/slicers/slicer{}.xml", slicer_num);
+        let cache_path = format!("xl/slicerCaches/slicerCache{}.xml", cache_num);
+
+        // Build the slicer definition.
+        let slicer_def = SlicerDefinition {
+            name: config.name.clone(),
+            cache: cache_name.clone(),
+            caption: Some(caption),
+            start_item: None,
+            column_count: config.column_count,
+            show_caption: config.show_caption,
+            style: config.style.clone(),
+            locked_position: None,
+            row_height: crate::slicer::DEFAULT_ROW_HEIGHT_EMU,
+        };
+
+        let slicer_defs = SlicerDefinitions {
+            xmlns: sheetkit_xml::namespaces::SLICER_2009.to_string(),
+            xmlns_mc: Some(sheetkit_xml::namespaces::MC.to_string()),
+            slicers: vec![slicer_def],
+        };
+
+        // Look up the actual table by name and validate it exists on this sheet.
+        let (_path, table_xml, table_sheet_idx) = self
+            .find_table_by_name(&config.table_name)
+            .ok_or_else(|| Error::TableNotFound {
+                name: config.table_name.clone(),
+            })?;
+
+        if table_sheet_idx != sheet_idx {
+            return Err(Error::TableNotFound {
+                name: config.table_name.clone(),
+            });
+        }
+
+        // Validate the column exists in the table and get its 1-based index.
+        let column_index = table_xml
+            .table_columns
+            .columns
+            .iter()
+            .position(|c| c.name == config.column_name)
+            .ok_or_else(|| Error::TableColumnNotFound {
+                table: config.table_name.clone(),
+                column: config.column_name.clone(),
+            })?;
+
+        let real_table_id = table_xml.id;
+        let real_column = (column_index + 1) as u32;
+
+        // Build the slicer cache definition with real table metadata.
+        let slicer_cache = SlicerCacheDefinition {
+            name: cache_name.clone(),
+            source_name: config.column_name.clone(),
+            table_slicer_cache: Some(TableSlicerCache {
+                table_id: real_table_id,
+                column: real_column,
+            }),
+        };
+
+        // Store parts.
+        self.slicer_defs.push((slicer_path.clone(), slicer_defs));
+        self.slicer_caches.push((cache_path.clone(), slicer_cache));
+
+        // Add content type overrides.
+        self.content_types.overrides.push(ContentTypeOverride {
+            part_name: format!("/{}", slicer_path),
+            content_type: mime_types::SLICER.to_string(),
+        });
+        self.content_types.overrides.push(ContentTypeOverride {
+            part_name: format!("/{}", cache_path),
+            content_type: mime_types::SLICER_CACHE.to_string(),
+        });
+
+        // Add workbook relationship for slicer cache.
+        let wb_rid = crate::sheet::next_rid(&self.workbook_rels.relationships);
+        self.workbook_rels.relationships.push(Relationship {
+            id: wb_rid,
+            rel_type: rel_types::SLICER_CACHE.to_string(),
+            target: format!("slicerCaches/slicerCache{}.xml", cache_num),
+            target_mode: None,
+        });
+
+        // Add worksheet relationship for slicer part.
+        let ws_rid = self.next_worksheet_rid(sheet_idx);
+        let ws_rels = self
+            .worksheet_rels
+            .entry(sheet_idx)
+            .or_insert_with(|| Relationships {
+                xmlns: sheetkit_xml::namespaces::PACKAGE_RELATIONSHIPS.to_string(),
+                relationships: vec![],
+            });
+        ws_rels.relationships.push(Relationship {
+            id: ws_rid,
+            rel_type: rel_types::SLICER.to_string(),
+            target: format!("../slicers/slicer{}.xml", slicer_num),
+            target_mode: None,
+        });
+
+        Ok(())
+    }
+
+    /// Get information about all slicers on a sheet.
+    pub fn get_slicers(&self, sheet: &str) -> Result<Vec<crate::slicer::SlicerInfo>> {
+        let sheet_idx = self.sheet_index(sheet)?;
+        let mut result = Vec::new();
+
+        // Find slicer parts referenced by this sheet's relationships.
+        let empty_rels = Relationships {
+            xmlns: sheetkit_xml::namespaces::PACKAGE_RELATIONSHIPS.to_string(),
+            relationships: vec![],
+        };
+        let rels = self.worksheet_rels.get(&sheet_idx).unwrap_or(&empty_rels);
+
+        let slicer_targets: Vec<String> = rels
+            .relationships
+            .iter()
+            .filter(|r| r.rel_type == rel_types::SLICER)
+            .map(|r| {
+                let sheet_path = self.sheet_part_path(sheet_idx);
+                crate::workbook_paths::resolve_relationship_target(&sheet_path, &r.target)
+            })
+            .collect();
+
+        for (path, sd) in &self.slicer_defs {
+            if !slicer_targets.contains(path) {
+                continue;
+            }
+            for slicer in &sd.slicers {
+                // Find the matching cache to get source info.
+                let cache = self
+                    .slicer_caches
+                    .iter()
+                    .find(|(_, sc)| sc.name == slicer.cache);
+
+                let (table_name, column_name) = if let Some((_, sc)) = cache {
+                    let tname = sc
+                        .table_slicer_cache
+                        .as_ref()
+                        .and_then(|tsc| self.table_name_by_id(tsc.table_id))
+                        .unwrap_or("")
+                        .to_string();
+                    let cname = sc
+                        .table_slicer_cache
+                        .as_ref()
+                        .and_then(|tsc| self.table_column_name_by_index(tsc.table_id, tsc.column))
+                        .unwrap_or(&sc.source_name)
+                        .to_string();
+                    (tname, cname)
+                } else {
+                    (String::new(), String::new())
+                };
+
+                result.push(crate::slicer::SlicerInfo {
+                    name: slicer.name.clone(),
+                    caption: slicer
+                        .caption
+                        .clone()
+                        .unwrap_or_else(|| slicer.name.clone()),
+                    table_name,
+                    column_name,
+                    style: slicer.style.clone(),
+                });
+            }
+        }
+
+        Ok(result)
+    }
+
+    /// Delete a slicer by name from a sheet.
+    ///
+    /// Removes the slicer definition, cache, content types, and relationships.
+    pub fn delete_slicer(&mut self, sheet: &str, name: &str) -> Result<()> {
+        let sheet_idx = self.sheet_index(sheet)?;
+
+        // Find the slicer definition containing this slicer name.
+        let sd_idx = self
+            .slicer_defs
+            .iter()
+            .position(|(_, sd)| sd.slicers.iter().any(|s| s.name == name))
+            .ok_or_else(|| Error::SlicerNotFound {
+                name: name.to_string(),
+            })?;
+
+        let (sd_path, sd) = &self.slicer_defs[sd_idx];
+
+        // Find the cache name linked to this slicer.
+        let cache_name = sd
+            .slicers
+            .iter()
+            .find(|s| s.name == name)
+            .map(|s| s.cache.clone())
+            .unwrap_or_default();
+
+        // If this is the only slicer in this definitions part, remove the whole part.
+        let remove_whole_part = sd.slicers.len() == 1;
+
+        if remove_whole_part {
+            let sd_path_clone = sd_path.clone();
+            self.slicer_defs.remove(sd_idx);
+
+            // Remove content type override.
+            let sd_part = format!("/{}", sd_path_clone);
+            self.content_types
+                .overrides
+                .retain(|o| o.part_name != sd_part);
+
+            // Remove worksheet relationship pointing to this slicer part.
+            let ws_path = self.sheet_part_path(sheet_idx);
+            if let Some(rels) = self.worksheet_rels.get_mut(&sheet_idx) {
+                rels.relationships.retain(|r| {
+                    if r.rel_type != rel_types::SLICER {
+                        return true;
+                    }
+                    let target =
+                        crate::workbook_paths::resolve_relationship_target(&ws_path, &r.target);
+                    target != sd_path_clone
+                });
+            }
+        } else {
+            // Remove just this slicer from the definitions.
+            self.slicer_defs[sd_idx]
+                .1
+                .slicers
+                .retain(|s| s.name != name);
+        }
+
+        // Remove the matching slicer cache.
+        if !cache_name.is_empty() {
+            if let Some(sc_idx) = self
+                .slicer_caches
+                .iter()
+                .position(|(_, sc)| sc.name == cache_name)
+            {
+                let (sc_path, _) = self.slicer_caches.remove(sc_idx);
+                let sc_part = format!("/{}", sc_path);
+                self.content_types
+                    .overrides
+                    .retain(|o| o.part_name != sc_part);
+
+                // Remove workbook relationship for this cache.
+                self.workbook_rels.relationships.retain(|r| {
+                    if r.rel_type != rel_types::SLICER_CACHE {
+                        return true;
+                    }
+                    let full_target = format!("xl/{}", r.target);
+                    full_target != sc_path
+                });
+            }
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -1588,5 +1909,345 @@ mod tests {
         let wb = Workbook::new();
         let sparklines = wb.get_sparklines("Sheet1").unwrap();
         assert!(sparklines.is_empty());
+    }
+
+    fn make_table_config(cols: &[&str]) -> crate::table::TableConfig {
+        crate::table::TableConfig {
+            name: "Table1".to_string(),
+            display_name: "Table1".to_string(),
+            range: "A1:D10".to_string(),
+            columns: cols
+                .iter()
+                .map(|c| crate::table::TableColumn {
+                    name: c.to_string(),
+                    totals_row_function: None,
+                    totals_row_label: None,
+                })
+                .collect(),
+            ..crate::table::TableConfig::default()
+        }
+    }
+
+    fn make_slicer_workbook() -> Workbook {
+        let mut wb = Workbook::new();
+        let table = make_table_config(&["Status", "Region", "Category", "Col1", "Col2"]);
+        wb.add_table("Sheet1", &table).unwrap();
+        wb
+    }
+
+    fn make_slicer_config(name: &str, col: &str) -> crate::slicer::SlicerConfig {
+        crate::slicer::SlicerConfig {
+            name: name.to_string(),
+            cell: "F1".to_string(),
+            table_name: "Table1".to_string(),
+            column_name: col.to_string(),
+            caption: None,
+            style: None,
+            width: None,
+            height: None,
+            show_caption: None,
+            column_count: None,
+        }
+    }
+
+    #[test]
+    fn test_add_slicer_basic() {
+        let mut wb = make_slicer_workbook();
+        let config = make_slicer_config("StatusFilter", "Status");
+        wb.add_slicer("Sheet1", &config).unwrap();
+
+        let slicers = wb.get_slicers("Sheet1").unwrap();
+        assert_eq!(slicers.len(), 1);
+        assert_eq!(slicers[0].name, "StatusFilter");
+        assert_eq!(slicers[0].column_name, "Status");
+        assert_eq!(slicers[0].table_name, "Table1");
+    }
+
+    #[test]
+    fn test_add_slicer_with_options() {
+        let mut wb = make_slicer_workbook();
+        let config = crate::slicer::SlicerConfig {
+            name: "RegionSlicer".to_string(),
+            cell: "G2".to_string(),
+            table_name: "Table1".to_string(),
+            column_name: "Region".to_string(),
+            caption: Some("Filter by Region".to_string()),
+            style: Some("SlicerStyleLight1".to_string()),
+            width: Some(300),
+            height: Some(250),
+            show_caption: Some(true),
+            column_count: Some(2),
+        };
+        wb.add_slicer("Sheet1", &config).unwrap();
+
+        let slicers = wb.get_slicers("Sheet1").unwrap();
+        assert_eq!(slicers.len(), 1);
+        assert_eq!(slicers[0].caption, "Filter by Region");
+        assert_eq!(slicers[0].style, Some("SlicerStyleLight1".to_string()));
+    }
+
+    #[test]
+    fn test_add_slicer_duplicate_name() {
+        let mut wb = make_slicer_workbook();
+        let config = make_slicer_config("MySlicer", "Status");
+        wb.add_slicer("Sheet1", &config).unwrap();
+
+        let result = wb.add_slicer("Sheet1", &config);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("already exists"));
+    }
+
+    #[test]
+    fn test_add_slicer_invalid_sheet() {
+        let mut wb = make_slicer_workbook();
+        let config = make_slicer_config("S1", "Status");
+        let result = wb.add_slicer("NoSuchSheet", &config);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_add_slicer_table_not_found() {
+        let mut wb = Workbook::new();
+        let config = crate::slicer::SlicerConfig {
+            name: "S1".to_string(),
+            cell: "F1".to_string(),
+            table_name: "NonExistent".to_string(),
+            column_name: "Col".to_string(),
+            caption: None,
+            style: None,
+            width: None,
+            height: None,
+            show_caption: None,
+            column_count: None,
+        };
+        let result = wb.add_slicer("Sheet1", &config);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::TableNotFound { .. }));
+    }
+
+    #[test]
+    fn test_add_slicer_column_not_found() {
+        let mut wb = make_slicer_workbook();
+        let config = crate::slicer::SlicerConfig {
+            name: "S1".to_string(),
+            cell: "F1".to_string(),
+            table_name: "Table1".to_string(),
+            column_name: "NonExistentColumn".to_string(),
+            caption: None,
+            style: None,
+            width: None,
+            height: None,
+            show_caption: None,
+            column_count: None,
+        };
+        let result = wb.add_slicer("Sheet1", &config);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::TableColumnNotFound { .. }
+        ));
+    }
+
+    #[test]
+    fn test_add_slicer_correct_table_id_and_column() {
+        let mut wb = make_slicer_workbook();
+        let config = make_slicer_config("RegFilter", "Region");
+        wb.add_slicer("Sheet1", &config).unwrap();
+
+        // Region is at index 1 (0-based), so column should be 2 (1-based).
+        let cache = &wb.slicer_caches[0].1;
+        let tsc = cache.table_slicer_cache.as_ref().unwrap();
+        assert_eq!(tsc.table_id, 1);
+        assert_eq!(tsc.column, 2);
+    }
+
+    #[test]
+    fn test_get_slicers_resolves_table_name() {
+        let mut wb = make_slicer_workbook();
+        wb.add_slicer("Sheet1", &make_slicer_config("S1", "Category"))
+            .unwrap();
+
+        let slicers = wb.get_slicers("Sheet1").unwrap();
+        assert_eq!(slicers.len(), 1);
+        assert_eq!(slicers[0].table_name, "Table1");
+        assert_eq!(slicers[0].column_name, "Category");
+    }
+
+    #[test]
+    fn test_get_slicers_empty() {
+        let wb = Workbook::new();
+        let slicers = wb.get_slicers("Sheet1").unwrap();
+        assert!(slicers.is_empty());
+    }
+
+    #[test]
+    fn test_delete_slicer() {
+        let mut wb = make_slicer_workbook();
+        let config = make_slicer_config("S1", "Status");
+        wb.add_slicer("Sheet1", &config).unwrap();
+
+        assert_eq!(wb.get_slicers("Sheet1").unwrap().len(), 1);
+
+        wb.delete_slicer("Sheet1", "S1").unwrap();
+        assert_eq!(wb.get_slicers("Sheet1").unwrap().len(), 0);
+    }
+
+    #[test]
+    fn test_delete_slicer_not_found() {
+        let mut wb = Workbook::new();
+        let result = wb.delete_slicer("Sheet1", "NonExistent");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[test]
+    fn test_delete_slicer_cleans_content_types() {
+        let mut wb = make_slicer_workbook();
+        let config = make_slicer_config("S1", "Status");
+        wb.add_slicer("Sheet1", &config).unwrap();
+
+        let ct_before = wb.content_types.overrides.len();
+        wb.delete_slicer("Sheet1", "S1").unwrap();
+        let ct_after = wb.content_types.overrides.len();
+
+        // Two content type overrides (slicer + cache) should be removed.
+        assert_eq!(ct_before - ct_after, 2);
+    }
+
+    #[test]
+    fn test_delete_slicer_cleans_workbook_rels() {
+        let mut wb = make_slicer_workbook();
+        let config = make_slicer_config("S1", "Status");
+        wb.add_slicer("Sheet1", &config).unwrap();
+
+        let has_cache_rel = wb
+            .workbook_rels
+            .relationships
+            .iter()
+            .any(|r| r.rel_type == rel_types::SLICER_CACHE);
+        assert!(has_cache_rel);
+
+        wb.delete_slicer("Sheet1", "S1").unwrap();
+
+        let has_cache_rel = wb
+            .workbook_rels
+            .relationships
+            .iter()
+            .any(|r| r.rel_type == rel_types::SLICER_CACHE);
+        assert!(!has_cache_rel);
+    }
+
+    #[test]
+    fn test_multiple_slicers_on_same_sheet() {
+        let mut wb = make_slicer_workbook();
+        wb.add_slicer("Sheet1", &make_slicer_config("S1", "Col1"))
+            .unwrap();
+        wb.add_slicer("Sheet1", &make_slicer_config("S2", "Col2"))
+            .unwrap();
+
+        let slicers = wb.get_slicers("Sheet1").unwrap();
+        assert_eq!(slicers.len(), 2);
+    }
+
+    #[test]
+    fn test_slicer_roundtrip() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("slicer_rt.xlsx");
+
+        let mut wb = make_slicer_workbook();
+        wb.add_slicer("Sheet1", &make_slicer_config("MySlicer", "Category"))
+            .unwrap();
+        wb.save(&path).unwrap();
+
+        let wb2 = Workbook::open(&path).unwrap();
+        let slicers = wb2.get_slicers("Sheet1").unwrap();
+        assert_eq!(slicers.len(), 1);
+        assert_eq!(slicers[0].name, "MySlicer");
+        assert_eq!(slicers[0].column_name, "Category");
+        assert_eq!(slicers[0].table_name, "Table1");
+    }
+
+    #[test]
+    fn test_slicer_content_types_added() {
+        let mut wb = make_slicer_workbook();
+        wb.add_slicer("Sheet1", &make_slicer_config("S1", "Status"))
+            .unwrap();
+
+        let has_slicer_ct = wb
+            .content_types
+            .overrides
+            .iter()
+            .any(|o| o.content_type == mime_types::SLICER);
+        let has_cache_ct = wb
+            .content_types
+            .overrides
+            .iter()
+            .any(|o| o.content_type == mime_types::SLICER_CACHE);
+
+        assert!(has_slicer_ct);
+        assert!(has_cache_ct);
+    }
+
+    #[test]
+    fn test_slicer_worksheet_rels_added() {
+        let mut wb = make_slicer_workbook();
+        wb.add_slicer("Sheet1", &make_slicer_config("S1", "Status"))
+            .unwrap();
+
+        let rels = wb.worksheet_rels.get(&0).unwrap();
+        let has_slicer_rel = rels
+            .relationships
+            .iter()
+            .any(|r| r.rel_type == rel_types::SLICER);
+        assert!(has_slicer_rel);
+    }
+
+    #[test]
+    fn test_slicer_error_display() {
+        let err = Error::SlicerNotFound {
+            name: "Missing".to_string(),
+        };
+        assert_eq!(err.to_string(), "slicer 'Missing' not found");
+
+        let err = Error::SlicerAlreadyExists {
+            name: "Dup".to_string(),
+        };
+        assert_eq!(err.to_string(), "slicer 'Dup' already exists");
+    }
+
+    #[test]
+    fn test_add_table_and_get_tables() {
+        let mut wb = Workbook::new();
+        let table = make_table_config(&["Name", "Age", "City"]);
+        wb.add_table("Sheet1", &table).unwrap();
+
+        let tables = wb.get_tables("Sheet1").unwrap();
+        assert_eq!(tables.len(), 1);
+        assert_eq!(tables[0].name, "Table1");
+        assert_eq!(tables[0].columns, vec!["Name", "Age", "City"]);
+    }
+
+    #[test]
+    fn test_add_table_duplicate_name() {
+        let mut wb = Workbook::new();
+        let table = make_table_config(&["Col"]);
+        wb.add_table("Sheet1", &table).unwrap();
+
+        let result = wb.add_table("Sheet1", &table);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("already exists"));
+    }
+
+    #[test]
+    fn test_slicer_table_on_wrong_sheet() {
+        let mut wb = Workbook::new();
+        wb.new_sheet("Sheet2").unwrap();
+        let table = make_table_config(&["Status"]);
+        wb.add_table("Sheet2", &table).unwrap();
+
+        let config = make_slicer_config("S1", "Status");
+        let result = wb.add_slicer("Sheet1", &config);
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::TableNotFound { .. }));
     }
 }
