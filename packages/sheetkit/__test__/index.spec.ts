@@ -2901,4 +2901,78 @@ describe('Form Controls', () => {
 
     await cleanup(out2);
   });
+
+  it('should not duplicate controls after hydration and save', async () => {
+    const out2 = tmpFile('test-form-controls-no-dup.xlsx');
+
+    const wb = new Workbook();
+    wb.addFormControl('Sheet1', { controlType: 'button', cell: 'A1', text: 'Btn' });
+    wb.addFormControl('Sheet1', { controlType: 'checkbox', cell: 'A3', text: 'Chk' });
+    await wb.save(out);
+
+    // Open, trigger hydration via getFormControls, then save.
+    const wb2 = Workbook.openSync(out);
+    const controls2 = wb2.getFormControls('Sheet1');
+    expect(controls2).toHaveLength(2);
+    await wb2.save(out2);
+
+    // Re-open and verify no duplication.
+    const wb3 = Workbook.openSync(out2);
+    const controls3 = wb3.getFormControls('Sheet1');
+    expect(controls3).toHaveLength(2);
+    expect(controls3[0].controlType).toBe('button');
+    expect(controls3[1].controlType).toBe('checkbox');
+
+    await cleanup(out2);
+  });
+
+  it('should preserve controls when saving without calling getFormControls', async () => {
+    const out2 = tmpFile('test-form-controls-no-get.xlsx');
+
+    const wb = new Workbook();
+    wb.addFormControl('Sheet1', { controlType: 'button', cell: 'A1', text: 'Btn' });
+    wb.addFormControl('Sheet1', { controlType: 'checkbox', cell: 'A3', text: 'Chk' });
+    await wb.save(out);
+
+    // Open and save immediately without calling getFormControls.
+    const wb2 = Workbook.openSync(out);
+    await wb2.save(out2);
+
+    // Re-open and verify controls survived.
+    const wb3 = Workbook.openSync(out2);
+    const controls3 = wb3.getFormControls('Sheet1');
+    expect(controls3).toHaveLength(2);
+    expect(controls3[0].controlType).toBe('button');
+    expect(controls3[1].controlType).toBe('checkbox');
+
+    await cleanup(out2);
+  });
+
+  it('should not duplicate controls when mixed with comments', async () => {
+    const out2 = tmpFile('test-form-controls-comments-no-dup.xlsx');
+
+    const wb = new Workbook();
+    wb.addComment('Sheet1', { cell: 'A1', author: 'Author', text: 'A comment' });
+    wb.addFormControl('Sheet1', { controlType: 'button', cell: 'C1', text: 'Btn' });
+    await wb.save(out);
+
+    // Open, hydrate controls, then save.
+    const wb2 = Workbook.openSync(out);
+    const controls2 = wb2.getFormControls('Sheet1');
+    expect(controls2).toHaveLength(1);
+    const comments2 = wb2.getComments('Sheet1');
+    expect(comments2).toHaveLength(1);
+    await wb2.save(out2);
+
+    // Re-open and verify no duplication of either.
+    const wb3 = Workbook.openSync(out2);
+    const controls3 = wb3.getFormControls('Sheet1');
+    expect(controls3).toHaveLength(1);
+    expect(controls3[0].controlType).toBe('button');
+    const comments3 = wb3.getComments('Sheet1');
+    expect(comments3).toHaveLength(1);
+    expect(comments3[0].text).toBe('A comment');
+
+    await cleanup(out2);
+  });
 });

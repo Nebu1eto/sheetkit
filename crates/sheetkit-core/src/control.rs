@@ -664,6 +664,81 @@ pub fn count_vml_shapes(vml_bytes: &[u8]) -> usize {
     vml_str.matches("<v:shape ").count()
 }
 
+/// Strip form control shapes from VML bytes, keeping only comment (Note) shapes.
+///
+/// Returns `None` if no comment shapes remain after stripping, or `Some(bytes)`
+/// with the cleaned VML that contains only comment shapes.
+pub fn strip_form_control_shapes_from_vml(vml_bytes: &[u8]) -> Option<Vec<u8>> {
+    let vml_str = String::from_utf8_lossy(vml_bytes);
+
+    // Collect ranges of form control shapes to remove.
+    let mut keep_shapes = Vec::new();
+    let mut has_comment_shapes = false;
+    let mut search_from = 0;
+
+    while let Some(shape_start) = vml_str[search_from..].find("<v:shape ") {
+        let abs_start = search_from + shape_start;
+        let shape_end = match vml_str[abs_start..].find("</v:shape>") {
+            Some(pos) => abs_start + pos + "</v:shape>".len(),
+            None => break,
+        };
+        let shape_xml = &vml_str[abs_start..shape_end];
+
+        // Check if this is a comment shape (ObjectType="Note").
+        if shape_xml.contains("ObjectType=\"Note\"") {
+            keep_shapes.push((abs_start, shape_end));
+            has_comment_shapes = true;
+        }
+        // Form control shapes are silently dropped.
+        search_from = shape_end;
+    }
+
+    if !has_comment_shapes {
+        return None;
+    }
+
+    // Rebuild VML with only the comment shapes preserved.
+    // Find the header portion (everything before the first <v:shape).
+    let first_shape_pos = vml_str.find("<v:shape ").unwrap_or(vml_str.len());
+    let header = &vml_str[..first_shape_pos];
+
+    // Also strip the form control shapetype (_x0000_t201) if present, keeping
+    // only the comment shapetype (_x0000_t202).
+    let header = remove_shapetype_block(header, FORM_CONTROL_SHAPETYPE_ID);
+
+    let mut result = String::with_capacity(vml_str.len());
+    result.push_str(&header);
+
+    for (start, end) in &keep_shapes {
+        result.push_str(&vml_str[*start..*end]);
+        result.push('\n');
+    }
+
+    result.push_str("</xml>\n");
+    Some(result.into_bytes())
+}
+
+/// Remove a <v:shapetype id="..."> ... </v:shapetype> block from the header.
+fn remove_shapetype_block(header: &str, shapetype_id: &str) -> String {
+    if let Some(st_start) = header.find(&format!("<v:shapetype id=\"{shapetype_id}\"")) {
+        let st_end_tag = "</v:shapetype>";
+        if let Some(rel_end) = header[st_start..].find(st_end_tag) {
+            let st_end = st_start + rel_end + st_end_tag.len();
+            // Also consume a trailing newline if present.
+            let st_end = if header.as_bytes().get(st_end) == Some(&b'\n') {
+                st_end + 1
+            } else {
+                st_end
+            };
+            let mut cleaned = String::with_capacity(header.len());
+            cleaned.push_str(&header[..st_start]);
+            cleaned.push_str(&header[st_end..]);
+            return cleaned;
+        }
+    }
+    header.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1536,5 +1611,217 @@ mod tests {
         assert_eq!(roundtripped.macro_name, config.macro_name);
         assert_eq!(roundtripped.cell_link, config.cell_link);
         assert_eq!(roundtripped.checked, config.checked);
+    }
+
+    #[test]
+    fn test_strip_form_control_shapes_controls_only() {
+        let vml = build_form_control_vml(
+            &[
+                FormControlConfig::button("A1", "Btn"),
+                FormControlConfig::checkbox("A3", "Chk"),
+            ],
+            1025,
+        );
+        let result = strip_form_control_shapes_from_vml(vml.as_bytes());
+        assert!(
+            result.is_none(),
+            "should return None when no comment shapes remain"
+        );
+    }
+
+    #[test]
+    fn test_strip_form_control_shapes_mixed() {
+        // Build VML with both a comment shape and a form control shape.
+        let comment_vml = crate::vml::build_vml_drawing(&["A1"]);
+        let controls = vec![FormControlConfig::button("C1", "Click")];
+        let mixed = merge_vml_controls(comment_vml.as_bytes(), &controls, 1026);
+
+        let mixed_str = String::from_utf8_lossy(&mixed);
+        assert!(mixed_str.contains("ObjectType=\"Note\""));
+        assert!(mixed_str.contains("ObjectType=\"Button\""));
+
+        let stripped = strip_form_control_shapes_from_vml(&mixed).unwrap();
+        let stripped_str = String::from_utf8(stripped).unwrap();
+        assert!(
+            stripped_str.contains("ObjectType=\"Note\""),
+            "comment shapes should be preserved"
+        );
+        assert!(
+            !stripped_str.contains("ObjectType=\"Button\""),
+            "form control shapes should be removed"
+        );
+    }
+
+    #[test]
+    fn test_hydration_does_not_duplicate_on_save() {
+        use crate::workbook::Workbook;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let path1 = dir.path().join("no_dup_step1.xlsx");
+        let path2 = dir.path().join("no_dup_step2.xlsx");
+
+        let mut wb = Workbook::new();
+        wb.add_form_control("Sheet1", FormControlConfig::button("A1", "Btn"))
+            .unwrap();
+        wb.add_form_control("Sheet1", FormControlConfig::checkbox("A3", "Chk"))
+            .unwrap();
+        wb.save(&path1).unwrap();
+
+        // Open and trigger hydration via get_form_controls (read-only).
+        let mut wb2 = Workbook::open(&path1).unwrap();
+        let controls = wb2.get_form_controls("Sheet1").unwrap();
+        assert_eq!(controls.len(), 2);
+
+        // Save without adding or removing anything.
+        wb2.save(&path2).unwrap();
+
+        // Re-open and verify no duplication.
+        let mut wb3 = Workbook::open(&path2).unwrap();
+        let controls3 = wb3.get_form_controls("Sheet1").unwrap();
+        assert_eq!(
+            controls3.len(),
+            2,
+            "control count must be stable after hydrate+save cycle"
+        );
+        assert_eq!(controls3[0].control_type, FormControlType::Button);
+        assert_eq!(controls3[1].control_type, FormControlType::CheckBox);
+    }
+
+    #[test]
+    fn test_hydration_then_add_no_duplication() {
+        use crate::workbook::Workbook;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let path1 = dir.path().join("add_no_dup_step1.xlsx");
+        let path2 = dir.path().join("add_no_dup_step2.xlsx");
+
+        let mut wb = Workbook::new();
+        wb.add_form_control("Sheet1", FormControlConfig::button("A1", "Existing"))
+            .unwrap();
+        wb.save(&path1).unwrap();
+
+        // Open, add a new control, save.
+        let mut wb2 = Workbook::open(&path1).unwrap();
+        wb2.add_form_control("Sheet1", FormControlConfig::checkbox("A3", "New"))
+            .unwrap();
+        wb2.save(&path2).unwrap();
+
+        // Re-open and verify exact expected count.
+        let mut wb3 = Workbook::open(&path2).unwrap();
+        let controls = wb3.get_form_controls("Sheet1").unwrap();
+        assert_eq!(controls.len(), 2, "should have exactly 1 existing + 1 new");
+        assert_eq!(controls[0].control_type, FormControlType::Button);
+        assert_eq!(controls[0].text.as_deref(), Some("Existing"));
+        assert_eq!(controls[1].control_type, FormControlType::CheckBox);
+        assert_eq!(controls[1].text.as_deref(), Some("New"));
+    }
+
+    #[test]
+    fn test_hydration_with_comments_no_duplication() {
+        use crate::workbook::Workbook;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let path1 = dir.path().join("comments_no_dup_step1.xlsx");
+        let path2 = dir.path().join("comments_no_dup_step2.xlsx");
+
+        let mut wb = Workbook::new();
+        wb.add_comment(
+            "Sheet1",
+            &crate::comment::CommentConfig {
+                cell: "A1".to_string(),
+                author: "Author".to_string(),
+                text: "A comment".to_string(),
+            },
+        )
+        .unwrap();
+        wb.add_form_control("Sheet1", FormControlConfig::button("C1", "Btn"))
+            .unwrap();
+        wb.save(&path1).unwrap();
+
+        // Open, hydrate via get_form_controls, save.
+        let mut wb2 = Workbook::open(&path1).unwrap();
+        let controls = wb2.get_form_controls("Sheet1").unwrap();
+        assert_eq!(controls.len(), 1);
+        let comments = wb2.get_comments("Sheet1").unwrap();
+        assert_eq!(comments.len(), 1);
+        wb2.save(&path2).unwrap();
+
+        // Re-open and verify no duplication of either comments or controls.
+        let mut wb3 = Workbook::open(&path2).unwrap();
+        let controls3 = wb3.get_form_controls("Sheet1").unwrap();
+        assert_eq!(
+            controls3.len(),
+            1,
+            "form controls must not be duplicated when mixed with comments"
+        );
+        assert_eq!(controls3[0].control_type, FormControlType::Button);
+        let comments3 = wb3.get_comments("Sheet1").unwrap();
+        assert_eq!(comments3.len(), 1);
+        assert_eq!(comments3[0].text, "A comment");
+    }
+
+    #[test]
+    fn test_multiple_hydrate_save_cycles_stable_count() {
+        use crate::workbook::Workbook;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let mut prev_path = dir.path().join("cycle_0.xlsx");
+
+        let mut wb = Workbook::new();
+        wb.add_form_control("Sheet1", FormControlConfig::button("A1", "Btn"))
+            .unwrap();
+        wb.add_form_control("Sheet1", FormControlConfig::spin_button("C1", 0, 50))
+            .unwrap();
+        wb.save(&prev_path).unwrap();
+
+        // Run 3 open-hydrate-save cycles.
+        for i in 1..=3 {
+            let next_path = dir.path().join(format!("cycle_{i}.xlsx"));
+            let mut wb_n = Workbook::open(&prev_path).unwrap();
+            let controls = wb_n.get_form_controls("Sheet1").unwrap();
+            assert_eq!(
+                controls.len(),
+                2,
+                "cycle {i}: control count should remain 2"
+            );
+            wb_n.save(&next_path).unwrap();
+            prev_path = next_path;
+        }
+    }
+
+    #[test]
+    fn test_save_without_get_preserves_controls() {
+        use crate::workbook::Workbook;
+        use tempfile::TempDir;
+
+        let dir = TempDir::new().unwrap();
+        let path1 = dir.path().join("no_get_step1.xlsx");
+        let path2 = dir.path().join("no_get_step2.xlsx");
+
+        let mut wb = Workbook::new();
+        wb.add_form_control("Sheet1", FormControlConfig::button("A1", "Btn"))
+            .unwrap();
+        wb.add_form_control("Sheet1", FormControlConfig::checkbox("A3", "Chk"))
+            .unwrap();
+        wb.save(&path1).unwrap();
+
+        // Open and save immediately without calling get_form_controls.
+        let wb2 = Workbook::open(&path1).unwrap();
+        wb2.save(&path2).unwrap();
+
+        // Re-open and verify controls are preserved without duplication.
+        let mut wb3 = Workbook::open(&path2).unwrap();
+        let controls = wb3.get_form_controls("Sheet1").unwrap();
+        assert_eq!(
+            controls.len(),
+            2,
+            "controls must be preserved when saving without hydration"
+        );
+        assert_eq!(controls[0].control_type, FormControlType::Button);
+        assert_eq!(controls[1].control_type, FormControlType::CheckBox);
     }
 }
