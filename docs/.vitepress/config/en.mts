@@ -27,7 +27,15 @@ export const en = defineConfig({
 
 function nav(): DefaultTheme.NavItem[] {
   return [
-    { text: 'Guide', link: '/getting-started', activeMatch: '/guide/' },
+    {
+      text: 'Guide',
+      items: [
+        { text: 'Getting Started', link: '/getting-started' },
+        { text: 'Architecture', link: '/architecture' },
+        { text: 'Performance', link: '/performance' },
+        { text: 'Guide Overview', link: '/guide/' },
+      ],
+    },
     { text: 'API Reference', link: '/api-reference/', activeMatch: '/api-reference/' },
     {
       text: 'API Docs',

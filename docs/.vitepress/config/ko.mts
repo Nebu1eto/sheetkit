@@ -27,7 +27,15 @@ export const ko = defineConfig({
 
 function nav(): DefaultTheme.NavItem[] {
   return [
-    { text: '가이드', link: '/ko/getting-started', activeMatch: '/ko/guide/' },
+    {
+      text: '가이드',
+      items: [
+        { text: '시작 가이드', link: '/ko/getting-started' },
+        { text: '아키텍처', link: '/ko/architecture' },
+        { text: '성능', link: '/ko/performance' },
+        { text: '가이드 개요', link: '/ko/guide/' },
+      ],
+    },
     { text: 'API 레퍼런스', link: '/ko/api-reference/', activeMatch: '/ko/api-reference/' },
     {
       text: 'API 문서',
