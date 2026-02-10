@@ -47,6 +47,19 @@ impl WorkbookFormat {
         }
     }
 
+    /// Infer the format from a file extension (case-insensitive, without the
+    /// leading dot). Returns `None` for unrecognized extensions.
+    pub fn from_extension(ext: &str) -> Option<Self> {
+        match ext.to_ascii_lowercase().as_str() {
+            "xlsx" => Some(Self::Xlsx),
+            "xlsm" => Some(Self::Xlsm),
+            "xltx" => Some(Self::Xltx),
+            "xltm" => Some(Self::Xltm),
+            "xlam" => Some(Self::Xlam),
+            _ => None,
+        }
+    }
+
     /// Return the OOXML content type string for this format.
     pub fn content_type(self) -> &'static str {
         match self {

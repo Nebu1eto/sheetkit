@@ -160,6 +160,10 @@ pub enum Error {
     #[error("invalid argument: {0}")]
     InvalidArgument(String),
 
+    /// The file extension is not a supported OOXML spreadsheet format.
+    #[error("unsupported file extension: {0}")]
+    UnsupportedFileExtension(String),
+
     /// An internal or otherwise unclassified error.
     #[error("internal error: {0}")]
     Internal(String),
@@ -262,6 +266,12 @@ mod tests {
     fn test_error_display_invalid_merge_cell_reference() {
         let err = Error::InvalidMergeCellReference("bad ref".to_string());
         assert_eq!(err.to_string(), "invalid merge cell reference: bad ref");
+    }
+
+    #[test]
+    fn test_error_display_unsupported_file_extension() {
+        let err = Error::UnsupportedFileExtension("csv".to_string());
+        assert_eq!(err.to_string(), "unsupported file extension: csv");
     }
 
     #[test]

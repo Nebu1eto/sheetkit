@@ -383,19 +383,31 @@ impl Workbook {
         })
     }
 
-    /// Save the workbook to a `.xlsx` file at the given path.
+    /// Save the workbook to a file at the given path.
+    ///
+    /// The target format is inferred from the file extension. Supported
+    /// extensions are `.xlsx`, `.xlsm`, `.xltx`, `.xltm`, and `.xlam`.
+    /// An unsupported extension returns [`Error::UnsupportedFileExtension`].
+    ///
+    /// The inferred format overrides the workbook's stored format so that
+    /// the content type in the output always matches the extension.
     pub fn save<P: AsRef<Path>>(&self, path: P) -> Result<()> {
+        let path = path.as_ref();
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let target_format = WorkbookFormat::from_extension(ext)
+            .ok_or_else(|| Error::UnsupportedFileExtension(ext.to_string()))?;
+
         let file = std::fs::File::create(path)?;
         let mut zip = zip::ZipWriter::new(file);
         let options = SimpleFileOptions::default()
             .compression_method(CompressionMethod::Deflated)
             .compression_level(Some(1));
-        self.write_zip_contents(&mut zip, options)?;
+        self.write_zip_contents(&mut zip, options, Some(target_format))?;
         zip.finish().map_err(|e| Error::Zip(e.to_string()))?;
         Ok(())
     }
 
-    /// Serialize the workbook to an in-memory `.xlsx` buffer.
+    /// Serialize the workbook to an in-memory buffer using the stored format.
     pub fn save_to_buffer(&self) -> Result<Vec<u8>> {
         // Estimate compressed output size to reduce reallocations.
         let estimated = self.worksheets.len() * 4000
@@ -408,7 +420,7 @@ impl Workbook {
             let mut zip = zip::ZipWriter::new(cursor);
             let options =
                 SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
-            self.write_zip_contents(&mut zip, options)?;
+            self.write_zip_contents(&mut zip, options, None)?;
             zip.finish().map_err(|e| Error::Zip(e.to_string()))?;
         }
         Ok(buf)
@@ -456,7 +468,7 @@ impl Workbook {
             let mut zip = zip::ZipWriter::new(cursor);
             let options =
                 SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
-            self.write_zip_contents(&mut zip, options)?;
+            self.write_zip_contents(&mut zip, options, None)?;
             zip.finish().map_err(|e| Error::Zip(e.to_string()))?;
         }
 
@@ -467,20 +479,26 @@ impl Workbook {
     }
 
     /// Write all workbook parts into the given ZIP writer.
+    ///
+    /// When `format_override` is `Some`, that format is used for the workbook
+    /// content type instead of the stored `self.format`. This allows `save()`
+    /// to infer the format from the file extension without mutating `self`.
     fn write_zip_contents<W: std::io::Write + std::io::Seek>(
         &self,
         zip: &mut zip::ZipWriter<W>,
         options: SimpleFileOptions,
+        format_override: Option<WorkbookFormat>,
     ) -> Result<()> {
+        let effective_format = format_override.unwrap_or(self.format);
         let mut content_types = self.content_types.clone();
 
-        // Ensure the workbook override content type matches the stored format.
+        // Ensure the workbook override content type matches the effective format.
         if let Some(wb_override) = content_types
             .overrides
             .iter_mut()
             .find(|o| o.part_name == "/xl/workbook.xml")
         {
-            wb_override.content_type = self.format.content_type().to_string();
+            wb_override.content_type = effective_format.content_type().to_string();
         }
 
         // Ensure VBA project content type override and workbook relationship are
@@ -1400,19 +1418,20 @@ mod tests {
     }
 
     #[test]
-    fn test_save_writes_correct_content_type_for_format() {
+    fn test_save_writes_correct_content_type_for_each_extension() {
         let dir = TempDir::new().unwrap();
 
-        for fmt in [
-            WorkbookFormat::Xlsx,
-            WorkbookFormat::Xlsm,
-            WorkbookFormat::Xltx,
-            WorkbookFormat::Xltm,
-            WorkbookFormat::Xlam,
-        ] {
-            let path = dir.path().join(format!("test_{:?}.xlsx", fmt));
-            let mut wb = Workbook::new();
-            wb.set_format(fmt);
+        let cases = [
+            (WorkbookFormat::Xlsx, "test.xlsx"),
+            (WorkbookFormat::Xlsm, "test.xlsm"),
+            (WorkbookFormat::Xltx, "test.xltx"),
+            (WorkbookFormat::Xltm, "test.xltm"),
+            (WorkbookFormat::Xlam, "test.xlam"),
+        ];
+
+        for (expected_fmt, filename) in cases {
+            let path = dir.path().join(filename);
+            let wb = Workbook::new();
             wb.save(&path).unwrap();
 
             let file = std::fs::File::open(&path).unwrap();
@@ -1426,9 +1445,9 @@ mod tests {
                 .expect("workbook override must exist");
             assert_eq!(
                 wb_override.content_type,
-                fmt.content_type(),
-                "content type mismatch for {:?}",
-                fmt
+                expected_fmt.content_type(),
+                "content type mismatch for {}",
+                filename
             );
         }
     }
@@ -1703,5 +1722,234 @@ mod tests {
         let xlsm = build_xlsm_with_vba(vba_data);
         let wb = Workbook::open_from_buffer(&xlsm).unwrap();
         assert_eq!(wb.format(), WorkbookFormat::Xlsm);
+    }
+
+    #[test]
+    fn test_from_extension_recognized() {
+        assert_eq!(
+            WorkbookFormat::from_extension("xlsx"),
+            Some(WorkbookFormat::Xlsx)
+        );
+        assert_eq!(
+            WorkbookFormat::from_extension("xlsm"),
+            Some(WorkbookFormat::Xlsm)
+        );
+        assert_eq!(
+            WorkbookFormat::from_extension("xltx"),
+            Some(WorkbookFormat::Xltx)
+        );
+        assert_eq!(
+            WorkbookFormat::from_extension("xltm"),
+            Some(WorkbookFormat::Xltm)
+        );
+        assert_eq!(
+            WorkbookFormat::from_extension("xlam"),
+            Some(WorkbookFormat::Xlam)
+        );
+    }
+
+    #[test]
+    fn test_from_extension_case_insensitive() {
+        assert_eq!(
+            WorkbookFormat::from_extension("XLSX"),
+            Some(WorkbookFormat::Xlsx)
+        );
+        assert_eq!(
+            WorkbookFormat::from_extension("Xlsm"),
+            Some(WorkbookFormat::Xlsm)
+        );
+        assert_eq!(
+            WorkbookFormat::from_extension("XLTX"),
+            Some(WorkbookFormat::Xltx)
+        );
+    }
+
+    #[test]
+    fn test_from_extension_unrecognized() {
+        assert_eq!(WorkbookFormat::from_extension("csv"), None);
+        assert_eq!(WorkbookFormat::from_extension("xls"), None);
+        assert_eq!(WorkbookFormat::from_extension("txt"), None);
+        assert_eq!(WorkbookFormat::from_extension("pdf"), None);
+        assert_eq!(WorkbookFormat::from_extension(""), None);
+    }
+
+    #[test]
+    fn test_save_unsupported_extension_csv() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("output.csv");
+        let wb = Workbook::new();
+        let result = wb.save(&path);
+        assert!(matches!(result, Err(Error::UnsupportedFileExtension(ext)) if ext == "csv"));
+    }
+
+    #[test]
+    fn test_save_unsupported_extension_xls() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("output.xls");
+        let wb = Workbook::new();
+        let result = wb.save(&path);
+        assert!(matches!(result, Err(Error::UnsupportedFileExtension(ext)) if ext == "xls"));
+    }
+
+    #[test]
+    fn test_save_unsupported_extension_unknown() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("output.foo");
+        let wb = Workbook::new();
+        let result = wb.save(&path);
+        assert!(matches!(result, Err(Error::UnsupportedFileExtension(ext)) if ext == "foo"));
+    }
+
+    #[test]
+    fn test_save_no_extension_fails() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("noext");
+        let wb = Workbook::new();
+        let result = wb.save(&path);
+        assert!(matches!(
+            result,
+            Err(Error::UnsupportedFileExtension(ext)) if ext.is_empty()
+        ));
+    }
+
+    #[test]
+    fn test_save_as_xlsm_writes_xlsm_content_type() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("output.xlsm");
+        let wb = Workbook::new();
+        wb.save(&path).unwrap();
+
+        let file = std::fs::File::open(&path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let ct: ContentTypes = read_xml_part(&mut archive, "[Content_Types].xml").unwrap();
+        let wb_ct = ct
+            .overrides
+            .iter()
+            .find(|o| o.part_name == "/xl/workbook.xml")
+            .expect("workbook override must exist");
+        assert_eq!(wb_ct.content_type, WorkbookFormat::Xlsm.content_type());
+    }
+
+    #[test]
+    fn test_save_as_xltx_writes_template_content_type() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("output.xltx");
+        let wb = Workbook::new();
+        wb.save(&path).unwrap();
+
+        let file = std::fs::File::open(&path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let ct: ContentTypes = read_xml_part(&mut archive, "[Content_Types].xml").unwrap();
+        let wb_ct = ct
+            .overrides
+            .iter()
+            .find(|o| o.part_name == "/xl/workbook.xml")
+            .expect("workbook override must exist");
+        assert_eq!(wb_ct.content_type, WorkbookFormat::Xltx.content_type());
+    }
+
+    #[test]
+    fn test_save_as_xltm_writes_template_macro_content_type() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("output.xltm");
+        let wb = Workbook::new();
+        wb.save(&path).unwrap();
+
+        let file = std::fs::File::open(&path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let ct: ContentTypes = read_xml_part(&mut archive, "[Content_Types].xml").unwrap();
+        let wb_ct = ct
+            .overrides
+            .iter()
+            .find(|o| o.part_name == "/xl/workbook.xml")
+            .expect("workbook override must exist");
+        assert_eq!(wb_ct.content_type, WorkbookFormat::Xltm.content_type());
+    }
+
+    #[test]
+    fn test_save_as_xlam_writes_addin_content_type() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("output.xlam");
+        let wb = Workbook::new();
+        wb.save(&path).unwrap();
+
+        let file = std::fs::File::open(&path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let ct: ContentTypes = read_xml_part(&mut archive, "[Content_Types].xml").unwrap();
+        let wb_ct = ct
+            .overrides
+            .iter()
+            .find(|o| o.part_name == "/xl/workbook.xml")
+            .expect("workbook override must exist");
+        assert_eq!(wb_ct.content_type, WorkbookFormat::Xlam.content_type());
+    }
+
+    #[test]
+    fn test_save_extension_overrides_stored_format() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("output.xlsm");
+
+        // Workbook has Xlsx format stored, but saved as .xlsm
+        let wb = Workbook::new();
+        assert_eq!(wb.format(), WorkbookFormat::Xlsx);
+        wb.save(&path).unwrap();
+
+        let file = std::fs::File::open(&path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let ct: ContentTypes = read_xml_part(&mut archive, "[Content_Types].xml").unwrap();
+        let wb_ct = ct
+            .overrides
+            .iter()
+            .find(|o| o.part_name == "/xl/workbook.xml")
+            .expect("workbook override must exist");
+        assert_eq!(
+            wb_ct.content_type,
+            WorkbookFormat::Xlsm.content_type(),
+            "extension .xlsm must override stored Xlsx format"
+        );
+    }
+
+    #[test]
+    fn test_save_to_buffer_preserves_stored_format() {
+        let mut wb = Workbook::new();
+        wb.set_format(WorkbookFormat::Xltx);
+
+        let buf = wb.save_to_buffer().unwrap();
+        let wb2 = Workbook::open_from_buffer(&buf).unwrap();
+        assert_eq!(
+            wb2.format(),
+            WorkbookFormat::Xltx,
+            "save_to_buffer must use the stored format, not infer from extension"
+        );
+    }
+
+    #[test]
+    fn test_save_xlsx_preserves_existing_behavior() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("preserved.xlsx");
+
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", CellValue::String("hello".to_string()))
+            .unwrap();
+        wb.save(&path).unwrap();
+
+        let wb2 = Workbook::open(&path).unwrap();
+        assert_eq!(wb2.format(), WorkbookFormat::Xlsx);
+        assert_eq!(wb2.sheet_names(), vec!["Sheet1"]);
+        assert_eq!(
+            wb2.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("hello".to_string())
+        );
+    }
+
+    #[test]
+    fn test_save_does_not_mutate_stored_format() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("test.xlsm");
+        let wb = Workbook::new();
+        assert_eq!(wb.format(), WorkbookFormat::Xlsx);
+        wb.save(&path).unwrap();
+        // The save call takes &self, so the stored format is unchanged.
+        assert_eq!(wb.format(), WorkbookFormat::Xlsx);
     }
 }

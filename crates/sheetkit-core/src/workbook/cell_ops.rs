@@ -856,11 +856,11 @@ mod tests {
             .unwrap();
         wb.set_cell_style("Sheet1", "A1", style_id).unwrap();
 
-        let tmp = tempfile::NamedTempFile::new().unwrap();
-        let path = tmp.path().to_str().unwrap();
-        wb.save(path).unwrap();
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("date_test.xlsx");
+        wb.save(&path).unwrap();
 
-        let wb2 = Workbook::open(path).unwrap();
+        let wb2 = Workbook::open(&path).unwrap();
         let val = wb2.get_cell_value("Sheet1", "A1").unwrap();
         assert_eq!(val, CellValue::Date(serial));
     }
