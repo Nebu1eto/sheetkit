@@ -23,6 +23,7 @@ import type {
   JsRichTextRun,
   JsRowData,
   JsSheetProtectionConfig,
+  JsSheetViewOptions,
   JsSparklineConfig,
   JsStyle,
   JsWorkbookProtectionConfig,
@@ -69,6 +70,7 @@ export type {
   JsRowCell,
   JsRowData,
   JsSheetProtectionConfig,
+  JsSheetViewOptions,
   JsSparklineConfig,
   JsStyle,
   JsView3DConfig,
@@ -888,6 +890,26 @@ class Workbook {
     const colLetter = columnNumberToLetter(startCol);
     const cellRef = `${colLetter}${startRow}`;
     this.#native.setSheetData(sheet, grid, cellRef);
+  }
+
+  /** Set sheet view options (gridlines, zoom, view mode, etc.). */
+  setSheetViewOptions(sheet: string, opts: JsSheetViewOptions): void {
+    this.#native.setSheetViewOptions(sheet, opts);
+  }
+
+  /** Get sheet view options. */
+  getSheetViewOptions(sheet: string): JsSheetViewOptions {
+    return this.#native.getSheetViewOptions(sheet);
+  }
+
+  /** Set sheet visibility ("visible", "hidden", or "veryHidden"). */
+  setSheetVisibility(sheet: string, visibility: string): void {
+    this.#native.setSheetVisibility(sheet, visibility);
+  }
+
+  /** Get sheet visibility. Returns "visible", "hidden", or "veryHidden". */
+  getSheetVisibility(sheet: string): string {
+    return this.#native.getSheetVisibility(sheet);
   }
 }
 

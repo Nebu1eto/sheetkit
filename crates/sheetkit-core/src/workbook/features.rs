@@ -496,6 +496,70 @@ impl Workbook {
         Ok(crate::sheet::is_sheet_protected(ws))
     }
 
+    /// Set sheet view display options (gridlines, formulas, zoom, view mode, etc.).
+    ///
+    /// Only non-`None` fields in the options struct are applied.
+    pub fn set_sheet_view_options(
+        &mut self,
+        sheet: &str,
+        opts: &crate::sheet::SheetViewOptions,
+    ) -> Result<()> {
+        let ws = self.worksheet_mut(sheet)?;
+        crate::sheet::set_sheet_view_options(ws, opts)
+    }
+
+    /// Get the current sheet view display options.
+    pub fn get_sheet_view_options(&self, sheet: &str) -> Result<crate::sheet::SheetViewOptions> {
+        let ws = self.worksheet_ref(sheet)?;
+        Ok(crate::sheet::get_sheet_view_options(ws))
+    }
+
+    /// Set the visibility state of a sheet (Visible, Hidden, VeryHidden).
+    ///
+    /// At least one sheet must remain visible. Returns an error if hiding
+    /// this sheet would leave no visible sheets.
+    pub fn set_sheet_visibility(
+        &mut self,
+        sheet: &str,
+        visibility: crate::sheet::SheetVisibility,
+    ) -> Result<()> {
+        let idx = self.sheet_index(sheet)?;
+
+        if visibility != crate::sheet::SheetVisibility::Visible {
+            let visible_count = self
+                .workbook_xml
+                .sheets
+                .sheets
+                .iter()
+                .enumerate()
+                .filter(|(i, entry)| {
+                    if *i == idx {
+                        return false;
+                    }
+                    crate::sheet::SheetVisibility::from_xml_str(entry.state.as_deref())
+                        == crate::sheet::SheetVisibility::Visible
+                })
+                .count();
+            if visible_count == 0 {
+                return Err(Error::InvalidArgument(
+                    "cannot hide the last visible sheet".to_string(),
+                ));
+            }
+        }
+
+        self.workbook_xml.sheets.sheets[idx].state = visibility.as_xml_str().map(|s| s.to_string());
+        Ok(())
+    }
+
+    /// Get the visibility state of a sheet.
+    pub fn get_sheet_visibility(&self, sheet: &str) -> Result<crate::sheet::SheetVisibility> {
+        let idx = self.sheet_index(sheet)?;
+        let entry = &self.workbook_xml.sheets.sheets[idx];
+        Ok(crate::sheet::SheetVisibility::from_xml_str(
+            entry.state.as_deref(),
+        ))
+    }
+
     /// Resolve an optional sheet name to a [`DefinedNameScope`](crate::defined_names::DefinedNameScope).
     fn resolve_defined_name_scope(
         &self,
@@ -1982,5 +2046,308 @@ mod tests {
         let tables = wb2.get_tables("Sheet1").unwrap();
         assert_eq!(tables.len(), 1);
         assert!(!tables[0].auto_filter);
+    }
+
+    #[test]
+    fn test_set_and_get_sheet_view_options_defaults() {
+        let wb = Workbook::new();
+        let opts = wb.get_sheet_view_options("Sheet1").unwrap();
+        assert_eq!(opts.show_gridlines, Some(true));
+        assert_eq!(opts.show_formulas, Some(false));
+        assert_eq!(opts.show_row_col_headers, Some(true));
+        assert_eq!(opts.zoom_scale, Some(100));
+        assert_eq!(opts.view_mode, Some(crate::sheet::ViewMode::Normal));
+        assert!(opts.top_left_cell.is_none());
+    }
+
+    #[test]
+    fn test_set_sheet_view_options_gridlines_off() {
+        let mut wb = Workbook::new();
+        wb.set_sheet_view_options(
+            "Sheet1",
+            &crate::sheet::SheetViewOptions {
+                show_gridlines: Some(false),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let opts = wb.get_sheet_view_options("Sheet1").unwrap();
+        assert_eq!(opts.show_gridlines, Some(false));
+    }
+
+    #[test]
+    fn test_set_sheet_view_options_zoom() {
+        let mut wb = Workbook::new();
+        wb.set_sheet_view_options(
+            "Sheet1",
+            &crate::sheet::SheetViewOptions {
+                zoom_scale: Some(150),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let opts = wb.get_sheet_view_options("Sheet1").unwrap();
+        assert_eq!(opts.zoom_scale, Some(150));
+    }
+
+    #[test]
+    fn test_set_sheet_view_options_zoom_invalid_low() {
+        let mut wb = Workbook::new();
+        let result = wb.set_sheet_view_options(
+            "Sheet1",
+            &crate::sheet::SheetViewOptions {
+                zoom_scale: Some(5),
+                ..Default::default()
+            },
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_set_sheet_view_options_zoom_invalid_high() {
+        let mut wb = Workbook::new();
+        let result = wb.set_sheet_view_options(
+            "Sheet1",
+            &crate::sheet::SheetViewOptions {
+                zoom_scale: Some(500),
+                ..Default::default()
+            },
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_set_sheet_view_options_view_mode() {
+        let mut wb = Workbook::new();
+        wb.set_sheet_view_options(
+            "Sheet1",
+            &crate::sheet::SheetViewOptions {
+                view_mode: Some(crate::sheet::ViewMode::PageBreak),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let opts = wb.get_sheet_view_options("Sheet1").unwrap();
+        assert_eq!(opts.view_mode, Some(crate::sheet::ViewMode::PageBreak));
+    }
+
+    #[test]
+    fn test_set_sheet_view_options_page_layout() {
+        let mut wb = Workbook::new();
+        wb.set_sheet_view_options(
+            "Sheet1",
+            &crate::sheet::SheetViewOptions {
+                view_mode: Some(crate::sheet::ViewMode::PageLayout),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let opts = wb.get_sheet_view_options("Sheet1").unwrap();
+        assert_eq!(opts.view_mode, Some(crate::sheet::ViewMode::PageLayout));
+    }
+
+    #[test]
+    fn test_set_sheet_view_options_show_formulas() {
+        let mut wb = Workbook::new();
+        wb.set_sheet_view_options(
+            "Sheet1",
+            &crate::sheet::SheetViewOptions {
+                show_formulas: Some(true),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let opts = wb.get_sheet_view_options("Sheet1").unwrap();
+        assert_eq!(opts.show_formulas, Some(true));
+    }
+
+    #[test]
+    fn test_set_sheet_view_options_top_left_cell() {
+        let mut wb = Workbook::new();
+        wb.set_sheet_view_options(
+            "Sheet1",
+            &crate::sheet::SheetViewOptions {
+                top_left_cell: Some("C10".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let opts = wb.get_sheet_view_options("Sheet1").unwrap();
+        assert_eq!(opts.top_left_cell, Some("C10".to_string()));
+    }
+
+    #[test]
+    fn test_sheet_view_options_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("view_opts.xlsx");
+
+        let mut wb = Workbook::new();
+        wb.set_sheet_view_options(
+            "Sheet1",
+            &crate::sheet::SheetViewOptions {
+                show_gridlines: Some(false),
+                show_formulas: Some(true),
+                zoom_scale: Some(200),
+                view_mode: Some(crate::sheet::ViewMode::PageBreak),
+                top_left_cell: Some("B5".to_string()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        wb.save(&path).unwrap();
+
+        let wb2 = Workbook::open(&path).unwrap();
+        let opts = wb2.get_sheet_view_options("Sheet1").unwrap();
+        assert_eq!(opts.show_gridlines, Some(false));
+        assert_eq!(opts.show_formulas, Some(true));
+        assert_eq!(opts.zoom_scale, Some(200));
+        assert_eq!(opts.view_mode, Some(crate::sheet::ViewMode::PageBreak));
+        assert_eq!(opts.top_left_cell, Some("B5".to_string()));
+    }
+
+    #[test]
+    fn test_sheet_view_options_nonexistent_sheet() {
+        let wb = Workbook::new();
+        let result = wb.get_sheet_view_options("NoSheet");
+        assert!(matches!(result.unwrap_err(), Error::SheetNotFound { .. }));
+    }
+
+    #[test]
+    fn test_set_sheet_view_options_preserves_panes() {
+        let mut wb = Workbook::new();
+        wb.set_panes("Sheet1", "B2").unwrap();
+        wb.set_sheet_view_options(
+            "Sheet1",
+            &crate::sheet::SheetViewOptions {
+                zoom_scale: Some(150),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(wb.get_panes("Sheet1").unwrap(), Some("B2".to_string()));
+        let opts = wb.get_sheet_view_options("Sheet1").unwrap();
+        assert_eq!(opts.zoom_scale, Some(150));
+    }
+
+    #[test]
+    fn test_get_sheet_visibility_default() {
+        let wb = Workbook::new();
+        let vis = wb.get_sheet_visibility("Sheet1").unwrap();
+        assert_eq!(vis, crate::sheet::SheetVisibility::Visible);
+    }
+
+    #[test]
+    fn test_set_sheet_visibility_hidden() {
+        let mut wb = Workbook::new();
+        wb.new_sheet("Sheet2").unwrap();
+        wb.set_sheet_visibility("Sheet1", crate::sheet::SheetVisibility::Hidden)
+            .unwrap();
+
+        let vis = wb.get_sheet_visibility("Sheet1").unwrap();
+        assert_eq!(vis, crate::sheet::SheetVisibility::Hidden);
+        let vis2 = wb.get_sheet_visibility("Sheet2").unwrap();
+        assert_eq!(vis2, crate::sheet::SheetVisibility::Visible);
+    }
+
+    #[test]
+    fn test_set_sheet_visibility_very_hidden() {
+        let mut wb = Workbook::new();
+        wb.new_sheet("Sheet2").unwrap();
+        wb.set_sheet_visibility("Sheet1", crate::sheet::SheetVisibility::VeryHidden)
+            .unwrap();
+
+        let vis = wb.get_sheet_visibility("Sheet1").unwrap();
+        assert_eq!(vis, crate::sheet::SheetVisibility::VeryHidden);
+    }
+
+    #[test]
+    fn test_set_sheet_visibility_back_to_visible() {
+        let mut wb = Workbook::new();
+        wb.new_sheet("Sheet2").unwrap();
+        wb.set_sheet_visibility("Sheet1", crate::sheet::SheetVisibility::Hidden)
+            .unwrap();
+        wb.set_sheet_visibility("Sheet1", crate::sheet::SheetVisibility::Visible)
+            .unwrap();
+
+        let vis = wb.get_sheet_visibility("Sheet1").unwrap();
+        assert_eq!(vis, crate::sheet::SheetVisibility::Visible);
+    }
+
+    #[test]
+    fn test_set_sheet_visibility_cannot_hide_last_visible() {
+        let mut wb = Workbook::new();
+        let result = wb.set_sheet_visibility("Sheet1", crate::sheet::SheetVisibility::Hidden);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("last visible"));
+    }
+
+    #[test]
+    fn test_set_sheet_visibility_cannot_hide_all() {
+        let mut wb = Workbook::new();
+        wb.new_sheet("Sheet2").unwrap();
+        wb.set_sheet_visibility("Sheet1", crate::sheet::SheetVisibility::Hidden)
+            .unwrap();
+
+        let result = wb.set_sheet_visibility("Sheet2", crate::sheet::SheetVisibility::Hidden);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_sheet_visibility_nonexistent_sheet() {
+        let wb = Workbook::new();
+        let result = wb.get_sheet_visibility("NoSheet");
+        assert!(matches!(result.unwrap_err(), Error::SheetNotFound { .. }));
+    }
+
+    #[test]
+    fn test_sheet_visibility_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("visibility.xlsx");
+
+        let mut wb = Workbook::new();
+        wb.new_sheet("Sheet2").unwrap();
+        wb.new_sheet("Sheet3").unwrap();
+        wb.set_sheet_visibility("Sheet2", crate::sheet::SheetVisibility::Hidden)
+            .unwrap();
+        wb.set_sheet_visibility("Sheet3", crate::sheet::SheetVisibility::VeryHidden)
+            .unwrap();
+        wb.save(&path).unwrap();
+
+        let wb2 = Workbook::open(&path).unwrap();
+        assert_eq!(
+            wb2.get_sheet_visibility("Sheet1").unwrap(),
+            crate::sheet::SheetVisibility::Visible
+        );
+        assert_eq!(
+            wb2.get_sheet_visibility("Sheet2").unwrap(),
+            crate::sheet::SheetVisibility::Hidden
+        );
+        assert_eq!(
+            wb2.get_sheet_visibility("Sheet3").unwrap(),
+            crate::sheet::SheetVisibility::VeryHidden
+        );
+    }
+
+    #[test]
+    fn test_sheet_view_options_show_row_col_headers_off() {
+        let mut wb = Workbook::new();
+        wb.set_sheet_view_options(
+            "Sheet1",
+            &crate::sheet::SheetViewOptions {
+                show_row_col_headers: Some(false),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let opts = wb.get_sheet_view_options("Sheet1").unwrap();
+        assert_eq!(opts.show_row_col_headers, Some(false));
     }
 }

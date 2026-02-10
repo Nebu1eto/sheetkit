@@ -296,6 +296,14 @@ export declare class Workbook {
   unprotectSheet(sheet: string): void
   /** Check if a sheet is protected. */
   isSheetProtected(sheet: string): boolean
+  /** Set sheet view options (gridlines, zoom, view mode, etc.). */
+  setSheetViewOptions(sheet: string, opts: JsSheetViewOptions): void
+  /** Get sheet view options. */
+  getSheetViewOptions(sheet: string): JsSheetViewOptions
+  /** Set sheet visibility ("visible", "hidden", or "veryHidden"). */
+  setSheetVisibility(sheet: string, visibility: string): void
+  /** Get sheet visibility. Returns "visible", "hidden", or "veryHidden". */
+  getSheetVisibility(sheet: string): string
 }
 
 export interface DateValue {
@@ -705,6 +713,22 @@ export interface JsSheetProtectionConfig {
   autoFilter?: boolean
   /** Allow using pivot tables. */
   pivotTables?: boolean
+}
+
+/** Sheet view options for controlling how a sheet is displayed. */
+export interface JsSheetViewOptions {
+  /** Whether gridlines are shown. Defaults to true. */
+  showGridlines?: boolean
+  /** Whether formulas are shown instead of their results. Defaults to false. */
+  showFormulas?: boolean
+  /** Whether row and column headers are shown. Defaults to true. */
+  showRowColHeaders?: boolean
+  /** Zoom scale as a percentage (10-400). Defaults to 100. */
+  zoomScale?: number
+  /** View mode: "normal", "pageBreak", or "pageLayout". */
+  viewMode?: string
+  /** Top-left cell visible in the view (e.g. "A1"). */
+  topLeftCell?: string
 }
 
 export interface JsSparklineConfig {

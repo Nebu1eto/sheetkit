@@ -311,7 +311,12 @@ impl StreamWriter {
                 SheetViews {
                     sheet_views: vec![SheetView {
                         tab_selected: Some(true),
+                        show_grid_lines: None,
+                        show_formulas: None,
+                        show_row_col_headers: None,
                         zoom_scale: None,
+                        view: None,
+                        top_left_cell: None,
                         workbook_view_id: 0,
                         pane: Some(Pane {
                             x_split: if *x_split > 0 { Some(*x_split) } else { None },

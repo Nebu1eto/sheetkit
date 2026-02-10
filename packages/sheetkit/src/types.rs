@@ -478,6 +478,23 @@ pub struct JsCellEntry {
         napi::bindgen_prelude::Either5<String, f64, bool, DateValue, napi::bindgen_prelude::Null>,
 }
 
+/// Sheet view options for controlling how a sheet is displayed.
+#[napi(object)]
+pub struct JsSheetViewOptions {
+    /// Whether gridlines are shown. Defaults to true.
+    pub show_gridlines: Option<bool>,
+    /// Whether formulas are shown instead of their results. Defaults to false.
+    pub show_formulas: Option<bool>,
+    /// Whether row and column headers are shown. Defaults to true.
+    pub show_row_col_headers: Option<bool>,
+    /// Zoom scale as a percentage (10-400). Defaults to 100.
+    pub zoom_scale: Option<u32>,
+    /// View mode: "normal", "pageBreak", or "pageLayout".
+    pub view_mode: Option<String>,
+    /// Top-left cell visible in the view (e.g. "A1").
+    pub top_left_cell: Option<String>,
+}
+
 /// A single formatted text segment within a rich text cell.
 #[napi(object)]
 pub struct JsRichTextRun {
