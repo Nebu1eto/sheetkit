@@ -6,6 +6,7 @@ pub mod chart;
 pub mod col;
 pub mod comment;
 pub mod conditional;
+pub mod control;
 #[cfg(feature = "encryption")]
 pub mod crypt;
 pub mod defined_names;

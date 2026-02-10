@@ -183,6 +183,8 @@ pub struct Workbook {
     sheet_threaded_comments: Vec<Option<sheetkit_xml::threaded_comment::ThreadedComments>>,
     /// Person list shared across all sheets (for threaded comment authors).
     person_list: sheetkit_xml::threaded_comment::PersonList,
+    /// Per-sheet form control configurations, parallel to `worksheets`.
+    sheet_form_controls: Vec<Vec<crate::control::FormControlConfig>>,
     /// O(1) sheet name -> index lookup cache. Must be kept in sync with
     /// `worksheets` via [`rebuild_sheet_index`].
     sheet_name_index: HashMap<String, usize>,

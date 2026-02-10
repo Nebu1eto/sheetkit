@@ -26,6 +26,7 @@ pub use sheetkit_core::comment::CommentConfig;
 pub use sheetkit_core::conditional::{
     CfOperator, CfValueType, ConditionalFormatRule, ConditionalFormatType, ConditionalStyle,
 };
+pub use sheetkit_core::control::{FormControlConfig, FormControlInfo, FormControlType};
 pub use sheetkit_core::hyperlink::{HyperlinkInfo, HyperlinkType};
 pub use sheetkit_core::image::{ImageConfig, ImageFormat, PictureInfo};
 pub use sheetkit_core::numfmt::{builtin_format_code, format_number, format_with_builtin};
