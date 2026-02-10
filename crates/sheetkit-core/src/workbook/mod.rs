@@ -168,6 +168,10 @@ pub struct Workbook {
     vba_blob: Option<Vec<u8>>,
     /// Table parts: (zip path like "xl/tables/table1.xml", TableXml data, sheet_index).
     tables: Vec<(String, sheetkit_xml::table::TableXml, usize)>,
+    /// Raw XML bytes for sheets that were not parsed during selective open.
+    /// Parallel to `worksheets`. `Some(bytes)` means the sheet was skipped
+    /// and the raw bytes should be written directly on save.
+    raw_sheet_xml: Vec<Option<Vec<u8>>>,
     /// O(1) sheet name -> index lookup cache. Must be kept in sync with
     /// `worksheets` via [`rebuild_sheet_index`].
     sheet_name_index: HashMap<String, usize>,

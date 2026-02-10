@@ -45,6 +45,7 @@ impl Workbook {
             unknown_parts: vec![],
             vba_blob: None,
             tables: vec![],
+            raw_sheet_xml: vec![None],
         }
     }
 
@@ -139,6 +140,7 @@ impl Workbook {
         let sheet_count = workbook_xml.sheets.sheets.len();
         let mut worksheets = Vec::with_capacity(sheet_count);
         let mut worksheet_paths = Vec::with_capacity(sheet_count);
+        let mut raw_sheet_xml: Vec<Option<Vec<u8>>> = Vec::with_capacity(sheet_count);
         for sheet_entry in &workbook_xml.sheets.sheets {
             // Find the relationship target for this sheet's rId.
             let rel = workbook_rels
@@ -155,12 +157,16 @@ impl Workbook {
 
             let sheet_path = resolve_relationship_target("xl/workbook.xml", &rel.target);
 
-            let ws: WorksheetXml = if options.should_parse_sheet(&sheet_entry.name) {
-                read_xml_part(archive, &sheet_path)?
+            if options.should_parse_sheet(&sheet_entry.name) {
+                let ws: WorksheetXml = read_xml_part(archive, &sheet_path)?;
+                worksheets.push((sheet_entry.name.clone(), ws));
+                raw_sheet_xml.push(None);
             } else {
-                WorksheetXml::default()
+                // Store the raw XML bytes so the sheet round-trips unchanged on save.
+                let raw_bytes = read_bytes_part(archive, &sheet_path)?;
+                worksheets.push((sheet_entry.name.clone(), WorksheetXml::default()));
+                raw_sheet_xml.push(Some(raw_bytes));
             };
-            worksheets.push((sheet_entry.name.clone(), ws));
             known_paths.insert(sheet_path.clone());
             worksheet_paths.push(sheet_path);
         }
@@ -511,6 +517,7 @@ impl Workbook {
             unknown_parts,
             vba_blob,
             tables,
+            raw_sheet_xml,
         })
     }
 
@@ -838,6 +845,15 @@ impl Workbook {
         // xl/worksheets/sheet{N}.xml
         for (i, (_name, ws)) in self.worksheets.iter().enumerate() {
             let entry_name = self.sheet_part_path(i);
+
+            // If the sheet was not parsed (selective open), write raw bytes directly.
+            if let Some(Some(raw_bytes)) = self.raw_sheet_xml.get(i) {
+                zip.start_file(&entry_name, options)
+                    .map_err(|e| Error::Zip(e.to_string()))?;
+                zip.write_all(raw_bytes)?;
+                continue;
+            }
+
             let empty_sparklines: Vec<crate::sparkline::SparklineConfig> = vec![];
             let sparklines = self.sheet_sparklines.get(i).unwrap_or(&empty_sparklines);
             let legacy_rid = legacy_drawing_rids.get(&i).map(|s| s.as_str());
@@ -2590,6 +2606,82 @@ mod tests {
         assert_eq!(
             wb2.get_cell_value("Sheet1", "A1").unwrap(),
             CellValue::Empty
+        );
+    }
+
+    #[test]
+    fn test_selective_sheet_parsing_preserves_unparsed_sheets_on_save() {
+        let dir = TempDir::new().unwrap();
+        let path1 = dir.path().join("original.xlsx");
+        let path2 = dir.path().join("resaved.xlsx");
+
+        // Create a workbook with 3 sheets, each with distinct data.
+        let mut wb = Workbook::new();
+        wb.new_sheet("Sales").unwrap();
+        wb.new_sheet("Data").unwrap();
+        wb.set_cell_value(
+            "Sheet1",
+            "A1",
+            CellValue::String("Sheet1 value".to_string()),
+        )
+        .unwrap();
+        wb.set_cell_value("Sheet1", "B2", CellValue::Number(100.0))
+            .unwrap();
+        wb.set_cell_value("Sales", "A1", CellValue::String("Sales value".to_string()))
+            .unwrap();
+        wb.set_cell_value("Sales", "C3", CellValue::Number(200.0))
+            .unwrap();
+        wb.set_cell_value("Data", "A1", CellValue::String("Data value".to_string()))
+            .unwrap();
+        wb.set_cell_value("Data", "D4", CellValue::Bool(true))
+            .unwrap();
+        wb.save(&path1).unwrap();
+
+        // Reopen with only Sheet1 parsed.
+        let opts = OpenOptions::new().sheets(vec!["Sheet1".to_string()]);
+        let wb2 = Workbook::open_with_options(&path1, &opts).unwrap();
+
+        // Verify Sheet1 was parsed.
+        assert_eq!(
+            wb2.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("Sheet1 value".to_string())
+        );
+
+        // Save to a new file.
+        wb2.save(&path2).unwrap();
+
+        // Reopen the resaved file with all sheets parsed.
+        let wb3 = Workbook::open(&path2).unwrap();
+        assert_eq!(wb3.sheet_names(), vec!["Sheet1", "Sales", "Data"]);
+
+        // Sheet1 data should be intact.
+        assert_eq!(
+            wb3.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("Sheet1 value".to_string())
+        );
+        assert_eq!(
+            wb3.get_cell_value("Sheet1", "B2").unwrap(),
+            CellValue::Number(100.0)
+        );
+
+        // Sales data should be preserved from raw XML.
+        assert_eq!(
+            wb3.get_cell_value("Sales", "A1").unwrap(),
+            CellValue::String("Sales value".to_string())
+        );
+        assert_eq!(
+            wb3.get_cell_value("Sales", "C3").unwrap(),
+            CellValue::Number(200.0)
+        );
+
+        // Data sheet should be preserved from raw XML.
+        assert_eq!(
+            wb3.get_cell_value("Data", "A1").unwrap(),
+            CellValue::String("Data value".to_string())
+        );
+        assert_eq!(
+            wb3.get_cell_value("Data", "D4").unwrap(),
+            CellValue::Bool(true)
         );
     }
 
