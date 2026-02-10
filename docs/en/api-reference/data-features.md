@@ -978,6 +978,7 @@ wb.fromJSON("Sheet1", data, { startCell: "B2", writeHeaders: true });
 |---|---|---|---|
 | `separator` | `string` | `","` | Field separator |
 | `lineEnding` | `string` | `"\n"` | Line ending |
+| `escapeFormulas` | `boolean` | `false` | Prefix cells starting with `=`, `+`, `-`, or `@` with a tab character to prevent formula injection in downstream tools |
 
 **ToHTMLOptions:**
 

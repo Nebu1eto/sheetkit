@@ -1033,6 +1033,7 @@ wb.fromJSON("Sheet1", data, { startCell: "B2", writeHeaders: true });
 |------|------|--------|------|
 | `separator` | `string` | `","` | 필드 구분자 |
 | `lineEnding` | `string` | `"\n"` | 줄 바꿈 문자 |
+| `escapeFormulas` | `boolean` | `false` | `=`, `+`, `-`, `@`로 시작하는 셀에 탭 문자를 접두사로 추가하여 수식 삽입 공격을 방지합니다 |
 
 **ToHTMLOptions:**
 
