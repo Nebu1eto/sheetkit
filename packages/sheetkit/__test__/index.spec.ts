@@ -4693,3 +4693,4 @@ describe('Number Format - getCellFormattedValue', () => {
     expect(wb2.getCellFormattedValue('Sheet1', 'A1')).toBe('75.00%');
   });
 });
+// ci trigger
