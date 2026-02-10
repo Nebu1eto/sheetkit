@@ -285,9 +285,19 @@ pub fn build_form_control_vml(controls: &[FormControlConfig], start_shape_id: us
         let width = config.width.unwrap_or(default_w);
         let height = config.height.unwrap_or(default_h);
 
+        // Skip controls whose cell reference cannot be resolved (e.g. data
+        // from a corrupted file). Validated controls added via
+        // add_form_control will never hit this branch.
         let anchor = match build_control_anchor(&config.cell, width, height) {
             Ok(a) => a,
-            Err(_) => continue,
+            Err(_) => {
+                #[cfg(debug_assertions)]
+                eprintln!(
+                    "warning: skipping form control with invalid cell ref '{}'",
+                    config.cell
+                );
+                continue;
+            }
         };
 
         write_form_control_shape(&mut shapes, shape_id, i + 1, &anchor, config);
