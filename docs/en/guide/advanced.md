@@ -1144,3 +1144,54 @@ wb.applyStreamWriter(sw);
 ```
 
 For full API details on the buffer transfer methods, see the [API Reference](../api-reference/advanced.md#30-bulk-data-transfer).
+
+---
+
+### Round-Trip Fidelity
+
+When SheetKit opens an `.xlsx` file, saves it, and another application opens the result, it is important that nothing is silently lost. SheetKit preserves the following categories of data through a round-trip:
+
+#### Preserved automatically
+
+- All worksheet data, styles, shared strings, and relationships that SheetKit natively understands.
+- Theme XML (`xl/theme/theme1.xml`) is stored as raw bytes and written back unchanged.
+- VML drawings for comments are preserved as raw bytes when present.
+- Raw chart XML is preserved when typed parsing does not succeed.
+- **Unknown ZIP entries**: Any ZIP entry that SheetKit does not explicitly handle (e.g., `customXml/`, `xl/printerSettings/`, third-party add-in files, custom OPC parts) is captured as raw bytes during open and written back on save. This ensures that files produced by Excel, LibreOffice, or other tools retain their custom content after SheetKit edits the workbook.
+
+#### How it works
+
+During `open()` / `open_from_buffer()`, SheetKit tracks every ZIP entry path it reads (worksheets, styles, relationships, drawings, charts, images, pivot tables, document properties, etc.). After processing all known parts, it iterates over the remaining ZIP entries and stores them as `(path, bytes)` pairs. During `save()` / `save_to_buffer()`, these unknown entries are written back into the output ZIP after all known parts.
+
+#### Rust
+
+```rust
+use sheetkit::Workbook;
+
+// Open a file that contains customXml and printer settings
+let mut wb = Workbook::open("complex.xlsx")?;
+
+// Make edits -- unknown parts are untouched
+wb.set_cell_value("Sheet1", "A1", "Updated".into())?;
+
+// Save -- customXml, printer settings, and any other unknown
+// ZIP entries are preserved in the output file
+wb.save("complex_updated.xlsx")?;
+```
+
+#### TypeScript
+
+```typescript
+import { Workbook } from '@sheetkit/node';
+
+const wb = Workbook.openSync('complex.xlsx');
+wb.setCellValue('Sheet1', 'A1', 'Updated');
+wb.saveSync('complex_updated.xlsx');
+// Unknown ZIP entries from the original file are preserved.
+```
+
+#### Known limitations
+
+- Unknown entries are stored as opaque byte blobs. SheetKit does not inspect or validate their contents.
+- If an unknown entry's path collides with a path that SheetKit writes (e.g., a non-standard `xl/styles.xml` variant), SheetKit's version takes precedence and the unknown entry is not written.
+- Content Types (`[Content_Types].xml`) entries that reference unknown parts are preserved because the file itself is round-tripped. However, SheetKit does not add new content type entries for unknown parts that were not already listed.

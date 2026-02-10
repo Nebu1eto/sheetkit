@@ -32,6 +32,7 @@ impl Workbook {
             theme_colors: crate::theme::default_theme_colors(),
             sheet_sparklines: vec![vec![]],
             sheet_vml: vec![None],
+            unknown_parts: vec![],
             sheet_name_index,
         }
     }
@@ -62,17 +63,25 @@ impl Workbook {
     fn from_archive<R: std::io::Read + std::io::Seek>(
         archive: &mut zip::ZipArchive<R>,
     ) -> Result<Self> {
+        // Track all ZIP entry paths that are explicitly handled so that the
+        // remaining entries can be preserved as unknown parts.
+        let mut known_paths: HashSet<String> = HashSet::new();
+
         // Parse [Content_Types].xml
         let content_types: ContentTypes = read_xml_part(archive, "[Content_Types].xml")?;
+        known_paths.insert("[Content_Types].xml".to_string());
 
         // Parse _rels/.rels
         let package_rels: Relationships = read_xml_part(archive, "_rels/.rels")?;
+        known_paths.insert("_rels/.rels".to_string());
 
         // Parse xl/workbook.xml
         let workbook_xml: WorkbookXml = read_xml_part(archive, "xl/workbook.xml")?;
+        known_paths.insert("xl/workbook.xml".to_string());
 
         // Parse xl/_rels/workbook.xml.rels
         let workbook_rels: Relationships = read_xml_part(archive, "xl/_rels/workbook.xml.rels")?;
+        known_paths.insert("xl/_rels/workbook.xml.rels".to_string());
 
         // Parse each worksheet referenced in the workbook.
         let sheet_count = workbook_xml.sheets.sheets.len();
@@ -95,15 +104,18 @@ impl Workbook {
             let sheet_path = resolve_relationship_target("xl/workbook.xml", &rel.target);
             let ws: WorksheetXml = read_xml_part(archive, &sheet_path)?;
             worksheets.push((sheet_entry.name.clone(), ws));
+            known_paths.insert(sheet_path.clone());
             worksheet_paths.push(sheet_path);
         }
 
         // Parse xl/styles.xml
         let stylesheet: StyleSheet = read_xml_part(archive, "xl/styles.xml")?;
+        known_paths.insert("xl/styles.xml".to_string());
 
         // Parse xl/sharedStrings.xml (optional -- may not exist for workbooks with no strings)
         let shared_strings: Sst =
             read_xml_part(archive, "xl/sharedStrings.xml").unwrap_or_default();
+        known_paths.insert("xl/sharedStrings.xml".to_string());
 
         let sst_runtime = SharedStringTable::from_sst(shared_strings);
 
@@ -115,6 +127,7 @@ impl Workbook {
             }
             Err(_) => (None, crate::theme::default_theme_colors()),
         };
+        known_paths.insert("xl/theme/theme1.xml".to_string());
 
         // Parse per-sheet worksheet relationship files (optional).
         let mut worksheet_rels: HashMap<usize, Relationships> = HashMap::with_capacity(sheet_count);
@@ -122,6 +135,7 @@ impl Workbook {
             let rels_path = relationship_part_path(sheet_path);
             if let Ok(rels) = read_xml_part::<Relationships, _>(archive, &rels_path) {
                 worksheet_rels.insert(i, rels);
+                known_paths.insert(rels_path);
             }
         }
 
@@ -145,6 +159,7 @@ impl Workbook {
                 let comment_path = resolve_relationship_target(sheet_path, &comment_rel.target);
                 if let Ok(comments) = read_xml_part::<Comments, _>(archive, &comment_path) {
                     sheet_comments[sheet_idx] = Some(comments);
+                    known_paths.insert(comment_path);
                 }
             }
 
@@ -156,6 +171,7 @@ impl Workbook {
                 let vml_path = resolve_relationship_target(sheet_path, &vml_rel.target);
                 if let Ok(bytes) = read_bytes_part(archive, &vml_path) {
                     sheet_vml[sheet_idx] = Some(bytes);
+                    known_paths.insert(vml_path);
                 }
             }
 
@@ -171,6 +187,7 @@ impl Workbook {
                     let idx = drawings.len();
                     drawings.push((drawing_path.clone(), drawing));
                     drawing_path_to_idx.insert(drawing_path.clone(), idx);
+                    known_paths.insert(drawing_path);
                     idx
                 } else {
                     continue;
@@ -192,6 +209,7 @@ impl Workbook {
             if let Ok(drawing) = read_xml_part::<WsDr, _>(archive, &drawing_path) {
                 let idx = drawings.len();
                 drawings.push((drawing_path.clone(), drawing));
+                known_paths.insert(drawing_path.clone());
                 drawing_path_to_idx.insert(drawing_path, idx);
             }
         }
@@ -208,15 +226,20 @@ impl Workbook {
             let Ok(rels) = read_xml_part::<Relationships, _>(archive, &drawing_rels_path) else {
                 continue;
             };
+            known_paths.insert(drawing_rels_path);
 
             for rel in &rels.relationships {
                 if rel.rel_type == rel_types::CHART {
                     let chart_path = resolve_relationship_target(drawing_path, &rel.target);
                     if seen_chart_paths.insert(chart_path.clone()) {
                         match read_xml_part::<ChartSpace, _>(archive, &chart_path) {
-                            Ok(chart) => charts.push((chart_path, chart)),
+                            Ok(chart) => {
+                                known_paths.insert(chart_path.clone());
+                                charts.push((chart_path, chart));
+                            }
                             Err(_) => {
                                 if let Ok(bytes) = read_bytes_part(archive, &chart_path) {
+                                    known_paths.insert(chart_path.clone());
                                     raw_charts.push((chart_path, bytes));
                                 }
                             }
@@ -226,6 +249,7 @@ impl Workbook {
                     let image_path = resolve_relationship_target(drawing_path, &rel.target);
                     if seen_image_paths.insert(image_path.clone()) {
                         if let Ok(bytes) = read_bytes_part(archive, &image_path) {
+                            known_paths.insert(image_path.clone());
                             images.push((image_path, bytes));
                         }
                     }
@@ -244,9 +268,13 @@ impl Workbook {
             let chart_path = ovr.part_name.trim_start_matches('/').to_string();
             if seen_chart_paths.insert(chart_path.clone()) {
                 match read_xml_part::<ChartSpace, _>(archive, &chart_path) {
-                    Ok(chart) => charts.push((chart_path, chart)),
+                    Ok(chart) => {
+                        known_paths.insert(chart_path.clone());
+                        charts.push((chart_path, chart));
+                    }
                     Err(_) => {
                         if let Ok(bytes) = read_bytes_part(archive, &chart_path) {
+                            known_paths.insert(chart_path.clone());
                             raw_charts.push((chart_path, bytes));
                         }
                     }
@@ -260,10 +288,12 @@ impl Workbook {
             .and_then(|xml_str| {
                 sheetkit_xml::doc_props::deserialize_core_properties(&xml_str).ok()
             });
+        known_paths.insert("docProps/core.xml".to_string());
 
         // Parse docProps/app.xml (optional - uses serde)
         let app_properties: Option<sheetkit_xml::doc_props::ExtendedProperties> =
             read_xml_part(archive, "docProps/app.xml").ok();
+        known_paths.insert("docProps/app.xml".to_string());
 
         // Parse docProps/custom.xml (optional - uses manual XML parsing)
         let custom_properties = read_string_part(archive, "docProps/custom.xml")
@@ -271,6 +301,7 @@ impl Workbook {
             .and_then(|xml_str| {
                 sheetkit_xml::doc_props::deserialize_custom_properties(&xml_str).ok()
             });
+        known_paths.insert("docProps/custom.xml".to_string());
 
         // Parse pivot cache definitions, pivot tables, and pivot cache records.
         let mut pivot_cache_defs = Vec::new();
@@ -282,18 +313,21 @@ impl Workbook {
                 if let Ok(pcd) = read_xml_part::<sheetkit_xml::pivot_cache::PivotCacheDefinition, _>(
                     archive, path,
                 ) {
+                    known_paths.insert(path.to_string());
                     pivot_cache_defs.push((path.to_string(), pcd));
                 }
             } else if ovr.content_type == mime_types::PIVOT_TABLE {
                 if let Ok(pt) = read_xml_part::<sheetkit_xml::pivot_table::PivotTableDefinition, _>(
                     archive, path,
                 ) {
+                    known_paths.insert(path.to_string());
                     pivot_tables.push((path.to_string(), pt));
                 }
             } else if ovr.content_type == mime_types::PIVOT_CACHE_RECORDS {
                 if let Ok(pcr) =
                     read_xml_part::<sheetkit_xml::pivot_cache::PivotCacheRecords, _>(archive, path)
                 {
+                    known_paths.insert(path.to_string());
                     pivot_cache_records.push((path.to_string(), pcr));
                 }
             }
@@ -315,6 +349,21 @@ impl Workbook {
         let mut sheet_name_index = HashMap::with_capacity(worksheets.len());
         for (i, (name, _)) in worksheets.iter().enumerate() {
             sheet_name_index.insert(name.clone(), i);
+        }
+
+        // Collect all ZIP entries not explicitly handled as unknown parts.
+        let mut unknown_parts: Vec<(String, Vec<u8>)> = Vec::new();
+        for i in 0..archive.len() {
+            let Ok(entry) = archive.by_index(i) else {
+                continue;
+            };
+            let name = entry.name().to_string();
+            drop(entry);
+            if !known_paths.contains(&name) {
+                if let Ok(bytes) = read_bytes_part(archive, &name) {
+                    unknown_parts.push((name, bytes));
+                }
+            }
         }
 
         // Populate cached column numbers on all cells and ensure sorted order
@@ -357,6 +406,7 @@ impl Workbook {
             theme_colors,
             sheet_sparklines,
             sheet_vml,
+            unknown_parts,
             sheet_name_index,
         })
     }
@@ -698,6 +748,13 @@ impl Workbook {
             zip.start_file("docProps/custom.xml", options)
                 .map_err(|e| Error::Zip(e.to_string()))?;
             zip.write_all(xml_str.as_bytes())?;
+        }
+
+        // Write back unknown parts preserved from the original file.
+        for (path, data) in &self.unknown_parts {
+            zip.start_file(path, options)
+                .map_err(|e| Error::Zip(e.to_string()))?;
+            zip.write_all(data)?;
         }
 
         Ok(())
@@ -1245,6 +1302,191 @@ mod tests {
             wb2.get_cell_value("Sheet1", "B2").unwrap(),
             CellValue::Number(42.0)
         );
+    }
+
+    /// Create a test xlsx buffer with extra custom ZIP entries that sheetkit
+    /// does not natively handle.
+    fn create_xlsx_with_custom_entries() -> Vec<u8> {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", CellValue::String("hello".to_string()))
+            .unwrap();
+        let base_buf = wb.save_to_buffer().unwrap();
+
+        // Re-open the ZIP and inject custom entries.
+        let cursor = std::io::Cursor::new(&base_buf);
+        let mut archive = zip::ZipArchive::new(cursor).unwrap();
+        let mut out = Vec::new();
+        {
+            let out_cursor = std::io::Cursor::new(&mut out);
+            let mut zip_writer = zip::ZipWriter::new(out_cursor);
+            let options =
+                SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+
+            // Copy all existing entries.
+            for i in 0..archive.len() {
+                let mut entry = archive.by_index(i).unwrap();
+                let name = entry.name().to_string();
+                let mut data = Vec::new();
+                std::io::Read::read_to_end(&mut entry, &mut data).unwrap();
+                zip_writer.start_file(&name, options).unwrap();
+                std::io::Write::write_all(&mut zip_writer, &data).unwrap();
+            }
+
+            // Add custom entries that sheetkit does not handle.
+            zip_writer
+                .start_file("customXml/item1.xml", options)
+                .unwrap();
+            std::io::Write::write_all(&mut zip_writer, b"<custom>data1</custom>").unwrap();
+
+            zip_writer
+                .start_file("customXml/itemProps1.xml", options)
+                .unwrap();
+            std::io::Write::write_all(
+                &mut zip_writer,
+                b"<ds:datastoreItem xmlns:ds=\"http://schemas.openxmlformats.org/officeDocument/2006/customXml\"/>",
+            )
+            .unwrap();
+
+            zip_writer
+                .start_file("xl/printerSettings/printerSettings1.bin", options)
+                .unwrap();
+            std::io::Write::write_all(&mut zip_writer, b"\x00\x01\x02\x03PRINTER").unwrap();
+
+            zip_writer.finish().unwrap();
+        }
+        out
+    }
+
+    #[test]
+    fn test_unknown_zip_entries_preserved_on_roundtrip() {
+        let buf = create_xlsx_with_custom_entries();
+
+        // Open, verify the data is still accessible.
+        let wb = Workbook::open_from_buffer(&buf).unwrap();
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("hello".to_string())
+        );
+
+        // Save and re-open.
+        let saved = wb.save_to_buffer().unwrap();
+        let cursor = std::io::Cursor::new(&saved);
+        let mut archive = zip::ZipArchive::new(cursor).unwrap();
+
+        // Verify custom entries are present in the output.
+        let mut custom_xml = String::new();
+        std::io::Read::read_to_string(
+            &mut archive.by_name("customXml/item1.xml").unwrap(),
+            &mut custom_xml,
+        )
+        .unwrap();
+        assert_eq!(custom_xml, "<custom>data1</custom>");
+
+        let mut props_xml = String::new();
+        std::io::Read::read_to_string(
+            &mut archive.by_name("customXml/itemProps1.xml").unwrap(),
+            &mut props_xml,
+        )
+        .unwrap();
+        assert!(props_xml.contains("datastoreItem"));
+
+        let mut printer = Vec::new();
+        std::io::Read::read_to_end(
+            &mut archive
+                .by_name("xl/printerSettings/printerSettings1.bin")
+                .unwrap(),
+            &mut printer,
+        )
+        .unwrap();
+        assert_eq!(printer, b"\x00\x01\x02\x03PRINTER");
+    }
+
+    #[test]
+    fn test_unknown_entries_survive_multiple_roundtrips() {
+        let buf = create_xlsx_with_custom_entries();
+        let wb1 = Workbook::open_from_buffer(&buf).unwrap();
+        let buf2 = wb1.save_to_buffer().unwrap();
+        let wb2 = Workbook::open_from_buffer(&buf2).unwrap();
+        let buf3 = wb2.save_to_buffer().unwrap();
+
+        let cursor = std::io::Cursor::new(&buf3);
+        let mut archive = zip::ZipArchive::new(cursor).unwrap();
+
+        let mut custom_xml = String::new();
+        std::io::Read::read_to_string(
+            &mut archive.by_name("customXml/item1.xml").unwrap(),
+            &mut custom_xml,
+        )
+        .unwrap();
+        assert_eq!(custom_xml, "<custom>data1</custom>");
+
+        let mut printer = Vec::new();
+        std::io::Read::read_to_end(
+            &mut archive
+                .by_name("xl/printerSettings/printerSettings1.bin")
+                .unwrap(),
+            &mut printer,
+        )
+        .unwrap();
+        assert_eq!(printer, b"\x00\x01\x02\x03PRINTER");
+    }
+
+    #[test]
+    fn test_new_workbook_has_no_unknown_parts() {
+        let wb = Workbook::new();
+        let buf = wb.save_to_buffer().unwrap();
+        let wb2 = Workbook::open_from_buffer(&buf).unwrap();
+        assert!(wb2.unknown_parts.is_empty());
+    }
+
+    #[test]
+    fn test_known_entries_not_duplicated_as_unknown() {
+        let wb = Workbook::new();
+        let buf = wb.save_to_buffer().unwrap();
+        let wb2 = Workbook::open_from_buffer(&buf).unwrap();
+
+        // None of the standard entries should appear in unknown_parts.
+        let unknown_paths: Vec<&str> = wb2.unknown_parts.iter().map(|(p, _)| p.as_str()).collect();
+        assert!(
+            !unknown_paths.contains(&"[Content_Types].xml"),
+            "Content_Types should not be in unknown_parts"
+        );
+        assert!(
+            !unknown_paths.contains(&"xl/workbook.xml"),
+            "workbook.xml should not be in unknown_parts"
+        );
+        assert!(
+            !unknown_paths.contains(&"xl/styles.xml"),
+            "styles.xml should not be in unknown_parts"
+        );
+    }
+
+    #[test]
+    fn test_modifications_preserved_alongside_unknown_parts() {
+        let buf = create_xlsx_with_custom_entries();
+        let mut wb = Workbook::open_from_buffer(&buf).unwrap();
+
+        // Modify data in the workbook.
+        wb.set_cell_value("Sheet1", "B1", CellValue::Number(42.0))
+            .unwrap();
+
+        let saved = wb.save_to_buffer().unwrap();
+        let wb2 = Workbook::open_from_buffer(&saved).unwrap();
+
+        // Original data preserved.
+        assert_eq!(
+            wb2.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("hello".to_string())
+        );
+        // New data present.
+        assert_eq!(
+            wb2.get_cell_value("Sheet1", "B1").unwrap(),
+            CellValue::Number(42.0)
+        );
+        // Unknown parts still present.
+        let cursor = std::io::Cursor::new(&saved);
+        let mut archive = zip::ZipArchive::new(cursor).unwrap();
+        assert!(archive.by_name("customXml/item1.xml").is_ok());
     }
 
     #[cfg(feature = "encryption")]
