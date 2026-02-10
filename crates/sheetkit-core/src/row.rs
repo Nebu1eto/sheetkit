@@ -112,8 +112,8 @@ pub fn resolve_cell_value(
     parse_cell_type_value(
         cell.t,
         cell.v.as_deref(),
-        cell.f.as_ref(),
-        cell.is.as_ref(),
+        cell.f.as_deref(),
+        cell.is.as_deref(),
         sst,
     )
 }
@@ -1028,12 +1028,12 @@ mod tests {
                     s: None,
                     t: CellTypeTag::None,
                     v: Some("42".to_string()),
-                    f: Some(sheetkit_xml::worksheet::CellFormula {
+                    f: Some(Box::new(sheetkit_xml::worksheet::CellFormula {
                         t: None,
                         reference: None,
                         si: None,
                         value: Some("B1+C1".to_string()),
-                    }),
+                    })),
                     is: None,
                 }],
             }],
@@ -1071,9 +1071,9 @@ mod tests {
                     t: CellTypeTag::InlineString,
                     v: None,
                     f: None,
-                    is: Some(sheetkit_xml::worksheet::InlineString {
+                    is: Some(Box::new(sheetkit_xml::worksheet::InlineString {
                         t: Some("inline text".to_string()),
-                    }),
+                    })),
                 }],
             }],
         };

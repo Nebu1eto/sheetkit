@@ -327,7 +327,7 @@ pub struct Row {
     #[serde(rename = "@r")]
     pub r: u32,
 
-    #[serde(rename = "@spans", skip_serializing_if = "Option::is_none")]
+    #[serde(skip)]
     pub spans: Option<String>,
 
     #[serde(rename = "@s", skip_serializing_if = "Option::is_none")]
@@ -506,11 +506,11 @@ pub struct Cell {
 
     /// Cell formula.
     #[serde(rename = "f", skip_serializing_if = "Option::is_none")]
-    pub f: Option<CellFormula>,
+    pub f: Option<Box<CellFormula>>,
 
     /// Inline string.
     #[serde(rename = "is", skip_serializing_if = "Option::is_none")]
-    pub is: Option<InlineString>,
+    pub is: Option<Box<InlineString>>,
 }
 
 /// Cell data type tag, replacing `Option<String>` for zero-allocation matching.
@@ -1111,12 +1111,12 @@ mod tests {
             s: None,
             t: CellTypeTag::None,
             v: Some("84".to_string()),
-            f: Some(CellFormula {
+            f: Some(Box::new(CellFormula {
                 t: None,
                 reference: None,
                 si: None,
                 value: Some("A1+B1".to_string()),
-            }),
+            })),
             is: None,
         };
         let xml = quick_xml::se::to_string(&cell).unwrap();
@@ -1135,9 +1135,9 @@ mod tests {
             t: CellTypeTag::InlineString,
             v: None,
             f: None,
-            is: Some(InlineString {
+            is: Some(Box::new(InlineString {
                 t: Some("Hello World".to_string()),
-            }),
+            })),
         };
         let xml = quick_xml::se::to_string(&cell).unwrap();
         assert!(xml.contains("Hello World"));

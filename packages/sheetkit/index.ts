@@ -40,7 +40,6 @@ import type {
   JsTableInfo,
   JsThreadedCommentData,
   JsThreadedCommentInput,
-  JsVbaModule,
   JsVbaProject,
   JsWorkbookProtectionConfig,
 } from './binding.js';

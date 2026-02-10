@@ -4305,8 +4305,8 @@ describe('SVG Renderer', () => {
     const svg2 = wb.renderToSvg({ sheetName: 'Sheet1', scale: 2 });
 
     const widthRegex = /width="([^"]+)"/;
-    const w1 = Number.parseFloat(svg1.match(widthRegex)![1]);
-    const w2 = Number.parseFloat(svg2.match(widthRegex)![1]);
+    const w1 = Number.parseFloat(svg1.match(widthRegex)?.[1] ?? '');
+    const w2 = Number.parseFloat(svg2.match(widthRegex)?.[1] ?? '');
 
     expect(w2).toBeCloseTo(w1 * 2, 1);
   });

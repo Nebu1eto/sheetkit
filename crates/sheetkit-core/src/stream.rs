@@ -501,12 +501,12 @@ impl StreamWriter {
                         s: cell_style_id,
                         t: CellTypeTag::None,
                         v: None,
-                        f: Some(CellFormula {
+                        f: Some(Box::new(CellFormula {
                             t: None,
                             reference: None,
                             si: None,
                             value: Some(expr.clone()),
-                        }),
+                        })),
                         is: None,
                     });
                 }

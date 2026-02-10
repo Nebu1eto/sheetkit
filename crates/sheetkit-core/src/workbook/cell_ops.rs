@@ -687,12 +687,12 @@ pub(crate) fn value_to_xml_cell(
             xml_cell.v = Some(if b { "1" } else { "0" }.to_string());
         }
         CellValue::Formula { expr, .. } => {
-            xml_cell.f = Some(CellFormula {
+            xml_cell.f = Some(Box::new(CellFormula {
                 t: None,
                 reference: None,
                 si: None,
                 value: Some(expr),
-            });
+            }));
         }
         CellValue::Error(e) => {
             xml_cell.t = CellTypeTag::Error;

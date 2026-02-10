@@ -5,6 +5,7 @@
 //! [`sheetkit_xml::shared_strings::Sst`] and the high-level cell API.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use sheetkit_xml::shared_strings::{Si, Sst, T};
 
@@ -13,13 +14,14 @@ use crate::rich_text::{xml_to_run, RichTextRun};
 /// Runtime shared string table for efficient string lookup and insertion.
 ///
 /// Maintains both an ordered list of strings (for index-based lookup) and a
-/// reverse hash map (for deduplication when inserting). Original [`Si`] items
+/// reverse hash map (for deduplication when inserting). Uses `Arc<str>` so that
+/// both collections share the same string allocation. Original [`Si`] items
 /// loaded from file are preserved so that `to_sst()` can reuse them without
 /// cloning the string data a second time.
 #[derive(Debug)]
 pub struct SharedStringTable {
-    strings: Vec<String>,
-    index_map: HashMap<String, usize>,
+    strings: Vec<Arc<str>>,
+    index_map: HashMap<Arc<str>, usize>,
     /// Original or constructed Si items, parallel to `strings`.
     /// `None` for plain-text items added via `add()` / `add_owned()`.
     si_items: Vec<Option<Si>>,
@@ -46,10 +48,9 @@ impl SharedStringTable {
         let mut si_items: Vec<Option<Si>> = Vec::with_capacity(cap);
 
         for si in sst.items {
-            let text = si_to_string(&si);
+            let text: Arc<str> = si_to_string(&si).into();
             let idx = strings.len();
-            index_map.entry(text.clone()).or_insert(idx);
-            // Preserve the original Si for rich text or items with xml:space.
+            index_map.entry(Arc::clone(&text)).or_insert(idx);
             let is_rich = si.t.is_none() && !si.r.is_empty();
             let has_space_attr = si.t.as_ref().is_some_and(|t| t.xml_space.is_some());
             if is_rich || has_space_attr {
@@ -87,7 +88,7 @@ impl SharedStringTable {
                             } else {
                                 None
                             },
-                            value: s.clone(),
+                            value: s.to_string(),
                         }),
                         r: vec![],
                     }
@@ -106,7 +107,7 @@ impl SharedStringTable {
 
     /// Get a string by its index.
     pub fn get(&self, index: usize) -> Option<&str> {
-        self.strings.get(index).map(|s| s.as_str())
+        self.strings.get(index).map(|s| &**s)
     }
 
     /// Add a string by reference, returning its index.
@@ -117,8 +118,9 @@ impl SharedStringTable {
             return idx;
         }
         let idx = self.strings.len();
-        self.strings.push(s.to_string());
-        self.index_map.insert(s.to_string(), idx);
+        let rc: Arc<str> = s.into();
+        self.strings.push(Arc::clone(&rc));
+        self.index_map.insert(rc, idx);
         self.si_items.push(None);
         idx
     }
@@ -128,12 +130,13 @@ impl SharedStringTable {
     /// Avoids one allocation compared to `add()` when the caller already
     /// owns a `String`.
     pub fn add_owned(&mut self, s: String) -> usize {
-        if let Some(&idx) = self.index_map.get(&s) {
+        if let Some(&idx) = self.index_map.get(s.as_str()) {
             return idx;
         }
         let idx = self.strings.len();
-        self.index_map.insert(s.clone(), idx);
-        self.strings.push(s);
+        let rc: Arc<str> = s.into();
+        self.index_map.insert(Arc::clone(&rc), idx);
+        self.strings.push(rc);
         self.si_items.push(None);
         idx
     }
@@ -143,12 +146,13 @@ impl SharedStringTable {
     /// The plain-text concatenation of the runs is used for deduplication.
     pub fn add_rich_text(&mut self, runs: &[RichTextRun]) -> usize {
         let plain: String = runs.iter().map(|r| r.text.as_str()).collect();
-        if let Some(&idx) = self.index_map.get(&plain) {
+        if let Some(&idx) = self.index_map.get(plain.as_str()) {
             return idx;
         }
         let idx = self.strings.len();
-        self.index_map.insert(plain.clone(), idx);
-        self.strings.push(plain);
+        let rc: Arc<str> = plain.into();
+        self.index_map.insert(Arc::clone(&rc), idx);
+        self.strings.push(rc);
         let si = crate::rich_text::runs_to_si(runs);
         self.si_items.push(Some(si));
         idx

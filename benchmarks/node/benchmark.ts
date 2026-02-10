@@ -219,6 +219,13 @@ async function benchReadFile(filename: string, label: string, category: string) 
     }
   });
 
+  await benchMultiRun('SheetKit', `Read ${label} (async)`, category, async () => {
+    const wb = await SheetKitWorkbook.open(filepath);
+    for (const name of wb.sheetNames) {
+      wb.getRows(name);
+    }
+  });
+
   await benchMultiRun('ExcelJS', `Read ${label}`, category, async () => {
     const wb = new ExcelJS.Workbook();
     await wb.xlsx.readFile(filepath);
@@ -988,6 +995,13 @@ async function benchRandomAccessRead() {
 
   await benchMultiRun('SheetKit', label, 'Random Access', () => {
     const wb = SheetKitWorkbook.openSync(filepath);
+    for (const cell of cells) {
+      wb.getCellValue('Sheet1', cell);
+    }
+  });
+
+  await benchMultiRun('SheetKit', `${label} (async)`, 'Random Access', async () => {
+    const wb = await SheetKitWorkbook.open(filepath);
     for (const cell of cells) {
       wb.getCellValue('Sheet1', cell);
     }
