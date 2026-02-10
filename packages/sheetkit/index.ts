@@ -728,6 +728,16 @@ class Workbook {
     this.#native.removeSparkline(sheet, location);
   }
 
+  /** Register a table in the workbook. */
+  addTable(sheet: string, config: JsTableConfig): void {
+    this.#native.addTable(sheet, config);
+  }
+
+  /** Get all tables on a sheet. */
+  getTables(sheet: string): JsTableInfo[] {
+    return this.#native.getTables(sheet);
+  }
+
   /** Add a slicer to a sheet targeting a table column. */
   addSlicer(sheet: string, config: JsSlicerConfig): void {
     this.#native.addSlicer(sheet, config);

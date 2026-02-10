@@ -189,6 +189,36 @@ pub(crate) fn validate_table_config(config: &TableConfig) -> Result<()> {
     Ok(())
 }
 
+/// Internal table registry entry stored in the workbook.
+///
+/// Tracks the table ID, name, owning sheet index, and column names so that
+/// slicer metadata can be wired to real table definitions without requiring
+/// full OOXML table part serialization.
+#[derive(Debug, Clone)]
+pub(crate) struct TableEntry {
+    /// Auto-assigned 1-based table ID.
+    pub id: u32,
+    /// The table name.
+    pub name: String,
+    /// The sheet index where the table resides.
+    pub sheet_index: usize,
+    /// The cell range of the table (e.g. "A1:D10").
+    pub range: String,
+    /// Column names in order.
+    pub columns: Vec<String>,
+}
+
+/// Information about a table, returned by `get_tables`.
+#[derive(Debug, Clone)]
+pub struct TableInfo {
+    /// The table name.
+    pub name: String,
+    /// The cell range.
+    pub range: String,
+    /// Column names.
+    pub columns: Vec<String>,
+}
+
 /// Set an auto-filter on a worksheet for the given cell range.
 pub fn set_auto_filter(ws: &mut WorksheetXml, range: &str) -> Result<()> {
     ws.auto_filter = Some(AutoFilter {

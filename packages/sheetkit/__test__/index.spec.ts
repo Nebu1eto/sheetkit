@@ -3732,6 +3732,14 @@ describe('Slicers', () => {
 
   it('should add and get slicers', () => {
     const wb = new Workbook();
+    wb.addTable('Sheet1', {
+      name: 'Table1',
+      displayName: 'Table1',
+      range: 'A1:D10',
+      columns: ['Status', 'Region', 'Category', 'Sales'],
+      showHeaderRow: true,
+      autoFilter: false,
+    });
     wb.addSlicer('Sheet1', {
       name: 'StatusFilter',
       cell: 'F1',
@@ -3747,6 +3755,14 @@ describe('Slicers', () => {
 
   it('should add slicer with options', () => {
     const wb = new Workbook();
+    wb.addTable('Sheet1', {
+      name: 'Table1',
+      displayName: 'Table1',
+      range: 'A1:D10',
+      columns: ['Status', 'Region', 'Category', 'Sales'],
+      showHeaderRow: true,
+      autoFilter: false,
+    });
     wb.addSlicer('Sheet1', {
       name: 'RegionSlicer',
       cell: 'G2',
@@ -3768,6 +3784,14 @@ describe('Slicers', () => {
 
   it('should delete a slicer', () => {
     const wb = new Workbook();
+    wb.addTable('Sheet1', {
+      name: 'T1',
+      displayName: 'T1',
+      range: 'A1:B10',
+      columns: ['Col1', 'Col2'],
+      showHeaderRow: true,
+      autoFilter: false,
+    });
     wb.addSlicer('Sheet1', {
       name: 'S1',
       cell: 'F1',
@@ -3782,6 +3806,14 @@ describe('Slicers', () => {
 
   it('should save and open with slicers', async () => {
     const wb = new Workbook();
+    wb.addTable('Sheet1', {
+      name: 'Table1',
+      displayName: 'Table1',
+      range: 'A1:D10',
+      columns: ['Status', 'Region', 'Category', 'Sales'],
+      showHeaderRow: true,
+      autoFilter: false,
+    });
     wb.addSlicer('Sheet1', {
       name: 'CategoryFilter',
       cell: 'F1',
@@ -3793,6 +3825,15 @@ describe('Slicers', () => {
 
     await wb.save(out);
     const wb2 = await Workbook.open(out);
+    // Re-register table since table registry is not persisted yet.
+    wb2.addTable('Sheet1', {
+      name: 'Table1',
+      displayName: 'Table1',
+      range: 'A1:D10',
+      columns: ['Status', 'Region', 'Category', 'Sales'],
+      showHeaderRow: true,
+      autoFilter: false,
+    });
     const slicers = wb2.getSlicers('Sheet1');
     expect(slicers.length).toBe(1);
     expect(slicers[0].name).toBe('CategoryFilter');
@@ -3801,6 +3842,14 @@ describe('Slicers', () => {
 
   it('should throw on duplicate slicer name', () => {
     const wb = new Workbook();
+    wb.addTable('Sheet1', {
+      name: 'T1',
+      displayName: 'T1',
+      range: 'A1:B10',
+      columns: ['Col1', 'Col2'],
+      showHeaderRow: true,
+      autoFilter: false,
+    });
     wb.addSlicer('Sheet1', {
       name: 'S1',
       cell: 'F1',
@@ -3825,6 +3874,14 @@ describe('Slicers', () => {
 
   it('should support multiple slicers on same sheet', () => {
     const wb = new Workbook();
+    wb.addTable('Sheet1', {
+      name: 'T1',
+      displayName: 'T1',
+      range: 'A1:B10',
+      columns: ['Col1', 'Col2'],
+      showHeaderRow: true,
+      autoFilter: false,
+    });
     wb.addSlicer('Sheet1', {
       name: 'S1',
       cell: 'F1',

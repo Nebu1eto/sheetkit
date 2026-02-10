@@ -1288,6 +1288,44 @@ impl Workbook {
             .map_err(|e| Error::from_reason(e.to_string()))
     }
 
+    /// Register a table in the workbook.
+    #[napi]
+    pub fn add_table(&mut self, sheet: String, config: JsTableConfig) -> Result<()> {
+        let core_config = sheetkit_core::table::TableConfig {
+            name: config.name,
+            display_name: config.display_name,
+            range: config.range,
+            columns: config
+                .columns
+                .into_iter()
+                .map(|name| sheetkit_core::table::TableColumn { name })
+                .collect(),
+            show_header_row: config.show_header_row.unwrap_or(true),
+            style_name: config.style_name,
+            auto_filter: config.auto_filter.unwrap_or(false),
+        };
+        self.inner
+            .add_table(&sheet, &core_config)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Get all tables on a sheet.
+    #[napi]
+    pub fn get_tables(&self, sheet: String) -> Result<Vec<JsTableInfo>> {
+        let tables = self
+            .inner
+            .get_tables(&sheet)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        Ok(tables
+            .into_iter()
+            .map(|t| JsTableInfo {
+                name: t.name,
+                range: t.range,
+                columns: t.columns,
+            })
+            .collect())
+    }
+
     /// Add a slicer to a sheet targeting a table column.
     #[napi]
     pub fn add_slicer(&mut self, sheet: String, config: JsSlicerConfig) -> Result<()> {
