@@ -44,6 +44,8 @@ impl Workbook {
     /// Delete a sheet by name.
     pub fn delete_sheet(&mut self, name: &str) -> Result<()> {
         let idx = self.sheet_index(name)?;
+        self.assert_parallel_vecs_in_sync();
+
         crate::sheet::delete_sheet(
             &mut self.workbook_xml,
             &mut self.workbook_rels,
@@ -52,15 +54,16 @@ impl Workbook {
             name,
         )?;
 
-        if idx < self.sheet_comments.len() {
-            self.sheet_comments.remove(idx);
-        }
-        if idx < self.sheet_sparklines.len() {
-            self.sheet_sparklines.remove(idx);
-        }
-        if idx < self.sheet_vml.len() {
-            self.sheet_vml.remove(idx);
-        }
+        // Remove all per-sheet parallel data at once. After delete_sheet
+        // above, worksheets has already been shortened by 1 so these
+        // vectors must follow.
+        self.sheet_comments.remove(idx);
+        self.sheet_sparklines.remove(idx);
+        self.sheet_vml.remove(idx);
+        self.raw_sheet_xml.remove(idx);
+        self.sheet_threaded_comments.remove(idx);
+        self.sheet_form_controls.remove(idx);
+
         // Remove tables belonging to the deleted sheet and re-index remaining.
         self.tables.retain(|(_, _, si)| *si != idx);
         for (_, _, si) in &mut self.tables {
@@ -68,18 +71,30 @@ impl Workbook {
                 *si -= 1;
             }
         }
-        if idx < self.raw_sheet_xml.len() {
-            self.raw_sheet_xml.remove(idx);
-        }
-        if idx < self.sheet_threaded_comments.len() {
-            self.sheet_threaded_comments.remove(idx);
-        }
-        if idx < self.sheet_form_controls.len() {
-            self.sheet_form_controls.remove(idx);
-        }
         self.reindex_sheet_maps_after_delete(idx);
         self.rebuild_sheet_index();
         Ok(())
+    }
+
+    /// Debug assertion that all per-sheet parallel vectors have the same
+    /// length as `worksheets`. Catching desync early prevents silent data
+    /// corruption from mismatched indices.
+    fn assert_parallel_vecs_in_sync(&self) {
+        let n = self.worksheets.len();
+        debug_assert_eq!(self.sheet_comments.len(), n, "sheet_comments desync");
+        debug_assert_eq!(self.sheet_sparklines.len(), n, "sheet_sparklines desync");
+        debug_assert_eq!(self.sheet_vml.len(), n, "sheet_vml desync");
+        debug_assert_eq!(self.raw_sheet_xml.len(), n, "raw_sheet_xml desync");
+        debug_assert_eq!(
+            self.sheet_threaded_comments.len(),
+            n,
+            "sheet_threaded_comments desync"
+        );
+        debug_assert_eq!(
+            self.sheet_form_controls.len(),
+            n,
+            "sheet_form_controls desync"
+        );
     }
 
     /// Rename a sheet.
@@ -679,6 +694,40 @@ mod tests {
         wb.new_sheet("Sheet2").unwrap();
         wb.delete_sheet("Sheet1").unwrap();
         assert_eq!(wb.sheet_names(), vec!["Sheet2"]);
+    }
+
+    #[test]
+    fn test_delete_sheet_keeps_parallel_vecs_in_sync() {
+        let mut wb = Workbook::new();
+        wb.new_sheet("Sheet2").unwrap();
+        wb.new_sheet("Sheet3").unwrap();
+
+        // Add comments to Sheet2 (middle sheet).
+        wb.add_comment(
+            "Sheet2",
+            &crate::comment::CommentConfig {
+                cell: "A1".to_string(),
+                author: "Test".to_string(),
+                text: "note".to_string(),
+            },
+        )
+        .unwrap();
+
+        // Delete the middle sheet and verify no panic.
+        wb.delete_sheet("Sheet2").unwrap();
+        assert_eq!(wb.sheet_names(), vec!["Sheet1", "Sheet3"]);
+
+        // After deletion, adding a comment to Sheet3 (now index 1)
+        // should work without index mismatch.
+        wb.add_comment(
+            "Sheet3",
+            &crate::comment::CommentConfig {
+                cell: "B2".to_string(),
+                author: "Test".to_string(),
+                text: "note2".to_string(),
+            },
+        )
+        .unwrap();
     }
 
     #[test]
