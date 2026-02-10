@@ -125,9 +125,10 @@ impl Workbook {
                 let idx: usize = v
                     .parse()
                     .map_err(|_| Error::Internal(format!("invalid SST index: {v}")))?;
-                let s = self.sst_runtime.get(idx).ok_or_else(|| {
-                    Error::Internal(format!("SST index {idx} out of bounds"))
-                })?;
+                let s = self
+                    .sst_runtime
+                    .get(idx)
+                    .ok_or_else(|| Error::Internal(format!("SST index {idx} out of bounds")))?;
                 Ok(CellValue::String(s.to_string()))
             }
             // Boolean

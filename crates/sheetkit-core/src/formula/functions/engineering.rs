@@ -880,6 +880,7 @@ fn gamma(z: f64) -> f64 {
         return pi / ((pi * z).sin() * gamma(1.0 - z));
     }
     let g = 7.0;
+    #[allow(clippy::excessive_precision)]
     let c = [
         0.99999999999980993,
         676.5203681218851,
