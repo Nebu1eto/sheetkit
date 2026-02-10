@@ -2510,3 +2510,166 @@ describe('Buffer large dataset', () => {
     expect(decoded).toEqual(rows);
   });
 });
+
+describe('Sheet View Options', () => {
+  const out = tmpFile('test-sheet-view.xlsx');
+  afterEach(async () => cleanup(out));
+
+  it('should return defaults for a new sheet', () => {
+    const wb = new Workbook();
+    const opts = wb.getSheetViewOptions('Sheet1');
+    expect(opts.showGridlines).toBe(true);
+    expect(opts.showFormulas).toBe(false);
+    expect(opts.showRowColHeaders).toBe(true);
+    expect(opts.zoomScale).toBe(100);
+    expect(opts.viewMode).toBe('normal');
+    expect(opts.topLeftCell).toBeUndefined();
+  });
+
+  it('should set and get gridlines off', () => {
+    const wb = new Workbook();
+    wb.setSheetViewOptions('Sheet1', { showGridlines: false });
+    const opts = wb.getSheetViewOptions('Sheet1');
+    expect(opts.showGridlines).toBe(false);
+  });
+
+  it('should set and get zoom scale', () => {
+    const wb = new Workbook();
+    wb.setSheetViewOptions('Sheet1', { zoomScale: 150 });
+    const opts = wb.getSheetViewOptions('Sheet1');
+    expect(opts.zoomScale).toBe(150);
+  });
+
+  it('should reject invalid zoom scale', () => {
+    const wb = new Workbook();
+    expect(() => wb.setSheetViewOptions('Sheet1', { zoomScale: 5 })).toThrow();
+    expect(() => wb.setSheetViewOptions('Sheet1', { zoomScale: 500 })).toThrow();
+  });
+
+  it('should set and get view mode', () => {
+    const wb = new Workbook();
+    wb.setSheetViewOptions('Sheet1', { viewMode: 'pageBreak' });
+    const opts = wb.getSheetViewOptions('Sheet1');
+    expect(opts.viewMode).toBe('pageBreakPreview');
+  });
+
+  it('should set and get page layout view mode', () => {
+    const wb = new Workbook();
+    wb.setSheetViewOptions('Sheet1', { viewMode: 'pageLayout' });
+    const opts = wb.getSheetViewOptions('Sheet1');
+    expect(opts.viewMode).toBe('pageLayout');
+  });
+
+  it('should set and get show formulas', () => {
+    const wb = new Workbook();
+    wb.setSheetViewOptions('Sheet1', { showFormulas: true });
+    const opts = wb.getSheetViewOptions('Sheet1');
+    expect(opts.showFormulas).toBe(true);
+  });
+
+  it('should set and get top left cell', () => {
+    const wb = new Workbook();
+    wb.setSheetViewOptions('Sheet1', { topLeftCell: 'C5' });
+    const opts = wb.getSheetViewOptions('Sheet1');
+    expect(opts.topLeftCell).toBe('C5');
+  });
+
+  it('should set multiple options at once', () => {
+    const wb = new Workbook();
+    wb.setSheetViewOptions('Sheet1', {
+      showGridlines: false,
+      zoomScale: 75,
+      viewMode: 'pageLayout',
+      topLeftCell: 'B10',
+    });
+    const opts = wb.getSheetViewOptions('Sheet1');
+    expect(opts.showGridlines).toBe(false);
+    expect(opts.zoomScale).toBe(75);
+    expect(opts.viewMode).toBe('pageLayout');
+    expect(opts.topLeftCell).toBe('B10');
+  });
+
+  it('should roundtrip view options through save/open', async () => {
+    const wb = new Workbook();
+    wb.setSheetViewOptions('Sheet1', {
+      showGridlines: false,
+      zoomScale: 200,
+      viewMode: 'pageBreak',
+      showFormulas: true,
+      showRowColHeaders: false,
+    });
+    await wb.save(out);
+
+    const wb2 = await Workbook.open(out);
+    const opts = wb2.getSheetViewOptions('Sheet1');
+    expect(opts.showGridlines).toBe(false);
+    expect(opts.zoomScale).toBe(200);
+    expect(opts.viewMode).toBe('pageBreakPreview');
+    expect(opts.showFormulas).toBe(true);
+    expect(opts.showRowColHeaders).toBe(false);
+  });
+
+  it('should preserve panes when setting view options', () => {
+    const wb = new Workbook();
+    wb.setPanes('Sheet1', 'A3');
+    wb.setSheetViewOptions('Sheet1', { zoomScale: 80 });
+    expect(wb.getPanes('Sheet1')).toBe('A3');
+    const opts = wb.getSheetViewOptions('Sheet1');
+    expect(opts.zoomScale).toBe(80);
+  });
+
+  it('should throw for non-existent sheet', () => {
+    const wb = new Workbook();
+    expect(() => wb.getSheetViewOptions('NoSheet')).toThrow();
+    expect(() => wb.setSheetViewOptions('NoSheet', { zoomScale: 100 })).toThrow();
+  });
+});
+
+describe('Sheet Visibility', () => {
+  const out = tmpFile('test-sheet-visibility.xlsx');
+  afterEach(async () => cleanup(out));
+
+  it('should default to visible', () => {
+    const wb = new Workbook();
+    expect(wb.getSheetVisibility('Sheet1')).toBe('visible');
+  });
+
+  it('should set and get hidden', () => {
+    const wb = new Workbook();
+    wb.newSheet('Sheet2');
+    wb.setSheetVisibility('Sheet1', 'hidden');
+    expect(wb.getSheetVisibility('Sheet1')).toBe('hidden');
+  });
+
+  it('should set and get veryHidden', () => {
+    const wb = new Workbook();
+    wb.newSheet('Sheet2');
+    wb.setSheetVisibility('Sheet1', 'veryHidden');
+    expect(wb.getSheetVisibility('Sheet1')).toBe('veryHidden');
+  });
+
+  it('should not allow hiding the last visible sheet', () => {
+    const wb = new Workbook();
+    expect(() => wb.setSheetVisibility('Sheet1', 'hidden')).toThrow();
+  });
+
+  it('should roundtrip visibility through save/open', async () => {
+    const wb = new Workbook();
+    wb.newSheet('Sheet2');
+    wb.newSheet('Sheet3');
+    wb.setSheetVisibility('Sheet2', 'hidden');
+    wb.setSheetVisibility('Sheet3', 'veryHidden');
+    await wb.save(out);
+
+    const wb2 = await Workbook.open(out);
+    expect(wb2.getSheetVisibility('Sheet1')).toBe('visible');
+    expect(wb2.getSheetVisibility('Sheet2')).toBe('hidden');
+    expect(wb2.getSheetVisibility('Sheet3')).toBe('veryHidden');
+  });
+
+  it('should throw for non-existent sheet', () => {
+    const wb = new Workbook();
+    expect(() => wb.getSheetVisibility('NoSheet')).toThrow();
+    expect(() => wb.setSheetVisibility('NoSheet', 'hidden')).toThrow();
+  });
+});

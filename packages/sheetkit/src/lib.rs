@@ -1401,6 +1401,76 @@ impl Workbook {
             .is_sheet_protected(&sheet)
             .map_err(|e| Error::from_reason(e.to_string()))
     }
+
+    /// Set sheet view options (gridlines, zoom, view mode, etc.).
+    #[napi]
+    pub fn set_sheet_view_options(
+        &mut self,
+        sheet: String,
+        opts: JsSheetViewOptions,
+    ) -> Result<()> {
+        use sheetkit_core::sheet::ViewMode;
+        let core_opts = sheetkit_core::sheet::SheetViewOptions {
+            show_gridlines: opts.show_gridlines,
+            show_formulas: opts.show_formulas,
+            show_row_col_headers: opts.show_row_col_headers,
+            zoom_scale: opts.zoom_scale,
+            view_mode: opts.view_mode.as_deref().map(|s| match s {
+                "pageBreak" | "pageBreakPreview" => ViewMode::PageBreak,
+                "pageLayout" => ViewMode::PageLayout,
+                _ => ViewMode::Normal,
+            }),
+            top_left_cell: opts.top_left_cell,
+        };
+        self.inner
+            .set_sheet_view_options(&sheet, &core_opts)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Get sheet view options.
+    #[napi]
+    pub fn get_sheet_view_options(&self, sheet: String) -> Result<JsSheetViewOptions> {
+        let opts = self
+            .inner
+            .get_sheet_view_options(&sheet)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        Ok(JsSheetViewOptions {
+            show_gridlines: opts.show_gridlines,
+            show_formulas: opts.show_formulas,
+            show_row_col_headers: opts.show_row_col_headers,
+            zoom_scale: opts.zoom_scale,
+            view_mode: opts.view_mode.map(|v| v.as_str().to_string()),
+            top_left_cell: opts.top_left_cell,
+        })
+    }
+
+    /// Set sheet visibility ("visible", "hidden", or "veryHidden").
+    #[napi]
+    pub fn set_sheet_visibility(&mut self, sheet: String, visibility: String) -> Result<()> {
+        use sheetkit_core::sheet::SheetVisibility;
+        let vis = match visibility.as_str() {
+            "hidden" => SheetVisibility::Hidden,
+            "veryHidden" => SheetVisibility::VeryHidden,
+            _ => SheetVisibility::Visible,
+        };
+        self.inner
+            .set_sheet_visibility(&sheet, vis)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Get sheet visibility. Returns "visible", "hidden", or "veryHidden".
+    #[napi]
+    pub fn get_sheet_visibility(&self, sheet: String) -> Result<String> {
+        let vis = self
+            .inner
+            .get_sheet_visibility(&sheet)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        Ok(match vis {
+            sheetkit_core::sheet::SheetVisibility::Visible => "visible".to_string(),
+            sheetkit_core::sheet::SheetVisibility::Hidden => "hidden".to_string(),
+            sheetkit_core::sheet::SheetVisibility::VeryHidden => "veryHidden".to_string(),
+        })
+    }
 }
 
 impl Workbook {
