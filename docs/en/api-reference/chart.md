@@ -178,6 +178,31 @@ wb.addChart("Sheet1", "D1", "K15", {
 | `ChartType::ColLineStacked` | `"colLineStacked"` | Stacked column + line |
 | `ChartType::ColLinePercentStacked` | `"colLinePercentStacked"` | 100% stacked column + line |
 
+### `delete_chart` / `deleteChart`
+
+Delete a chart anchored at the given cell. Removes the chart data, drawing anchor, relationship entry, and content type override associated with the chart.
+
+Returns an error if no chart is found at the specified cell.
+
+**Parameters:**
+
+| Parameter | Rust Type | TS Type | Description |
+|---|---|---|---|
+| `sheet` | `&str` | `string` | Sheet name |
+| `cell` | `&str` | `string` | Anchor cell of the chart (e.g., `"D1"`) |
+
+**Rust:**
+
+```rust
+wb.delete_chart("Sheet1", "D1")?;
+```
+
+**TypeScript:**
+
+```typescript
+wb.deleteChart("Sheet1", "D1");
+```
+
 ### View3DConfig
 
 | Field | Rust Type | TS Type | Description |

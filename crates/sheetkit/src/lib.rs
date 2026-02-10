@@ -27,7 +27,7 @@ pub use sheetkit_core::conditional::{
     CfOperator, CfValueType, ConditionalFormatRule, ConditionalFormatType, ConditionalStyle,
 };
 pub use sheetkit_core::hyperlink::{HyperlinkInfo, HyperlinkType};
-pub use sheetkit_core::image::{ImageConfig, ImageFormat};
+pub use sheetkit_core::image::{ImageConfig, ImageFormat, PictureInfo};
 pub use sheetkit_core::numfmt::{builtin_format_code, format_number, format_with_builtin};
 pub use sheetkit_core::page_layout::{Orientation, PageMarginsConfig, PaperSize};
 pub use sheetkit_core::pivot::{

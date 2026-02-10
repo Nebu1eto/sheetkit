@@ -575,6 +575,49 @@ impl Workbook {
             .map_err(|e| Error::from_reason(e.to_string()))
     }
 
+    /// Delete a chart anchored at the given cell.
+    #[napi]
+    pub fn delete_chart(&mut self, sheet: String, cell: String) -> Result<()> {
+        self.inner
+            .delete_chart(&sheet, &cell)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Delete a picture anchored at the given cell.
+    #[napi]
+    pub fn delete_picture(&mut self, sheet: String, cell: String) -> Result<()> {
+        self.inner
+            .delete_picture(&sheet, &cell)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
+    /// Get all pictures anchored at the given cell.
+    #[napi]
+    pub fn get_pictures(&self, sheet: String, cell: String) -> Result<Vec<JsPictureInfo>> {
+        let pics = self
+            .inner
+            .get_pictures(&sheet, &cell)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        Ok(pics
+            .into_iter()
+            .map(|p| JsPictureInfo {
+                data: p.data.into(),
+                format: p.format.extension().to_string(),
+                cell: p.cell,
+                width_px: p.width_px,
+                height_px: p.height_px,
+            })
+            .collect())
+    }
+
+    /// Get all cells that have pictures anchored to them on the given sheet.
+    #[napi]
+    pub fn get_picture_cells(&self, sheet: String) -> Result<Vec<String>> {
+        self.inner
+            .get_picture_cells(&sheet)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
     /// Merge a range of cells on a sheet.
     #[napi]
     pub fn merge_cells(

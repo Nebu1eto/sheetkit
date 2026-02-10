@@ -166,6 +166,362 @@ impl Workbook {
 
         Ok(())
     }
+
+    /// Delete a chart anchored at the given cell.
+    ///
+    /// Removes the drawing anchor, chart data, relationship entry, and content
+    /// type override for the chart at `cell` on `sheet`.
+    pub fn delete_chart(&mut self, sheet: &str, cell: &str) -> Result<()> {
+        let sheet_idx = self.sheet_index(sheet)?;
+        let (col, row) = cell_name_to_coordinates(cell)?;
+        let target_col = col - 1;
+        let target_row = row - 1;
+
+        let &drawing_idx =
+            self.worksheet_drawings
+                .get(&sheet_idx)
+                .ok_or_else(|| Error::ChartNotFound {
+                    sheet: sheet.to_string(),
+                    cell: cell.to_string(),
+                })?;
+
+        let drawing = &self.drawings[drawing_idx].1;
+        let anchor_pos = drawing
+            .two_cell_anchors
+            .iter()
+            .position(|a| {
+                a.from.col == target_col && a.from.row == target_row && a.graphic_frame.is_some()
+            })
+            .ok_or_else(|| Error::ChartNotFound {
+                sheet: sheet.to_string(),
+                cell: cell.to_string(),
+            })?;
+
+        let anchor = &drawing.two_cell_anchors[anchor_pos];
+        let chart_rid = anchor
+            .graphic_frame
+            .as_ref()
+            .unwrap()
+            .graphic
+            .graphic_data
+            .chart
+            .r_id
+            .clone();
+
+        let chart_path = self
+            .drawing_rels
+            .get(&drawing_idx)
+            .and_then(|rels| {
+                rels.relationships
+                    .iter()
+                    .find(|r| r.id == chart_rid)
+                    .map(|r| {
+                        let drawing_path = &self.drawings[drawing_idx].0;
+                        let base_dir = drawing_path
+                            .rfind('/')
+                            .map(|i| &drawing_path[..i])
+                            .unwrap_or("");
+                        if r.target.starts_with("../") {
+                            let rel_target = r.target.trim_start_matches("../");
+                            let parent = base_dir.rfind('/').map(|i| &base_dir[..i]).unwrap_or("");
+                            if parent.is_empty() {
+                                rel_target.to_string()
+                            } else {
+                                format!("{}/{}", parent, rel_target)
+                            }
+                        } else {
+                            format!("{}/{}", base_dir, r.target)
+                        }
+                    })
+            })
+            .ok_or_else(|| Error::ChartNotFound {
+                sheet: sheet.to_string(),
+                cell: cell.to_string(),
+            })?;
+
+        self.charts.retain(|(path, _)| path != &chart_path);
+        self.raw_charts.retain(|(path, _)| path != &chart_path);
+
+        if let Some(rels) = self.drawing_rels.get_mut(&drawing_idx) {
+            rels.relationships.retain(|r| r.id != chart_rid);
+        }
+
+        self.drawings[drawing_idx]
+            .1
+            .two_cell_anchors
+            .remove(anchor_pos);
+
+        let ct_part_name = format!("/{}", chart_path);
+        self.content_types
+            .overrides
+            .retain(|o| o.part_name != ct_part_name);
+
+        Ok(())
+    }
+
+    /// Delete a picture anchored at the given cell.
+    ///
+    /// Removes the drawing anchor, image data, relationship entry, and content
+    /// type for the picture at `cell` on `sheet`. Searches both one-cell and
+    /// two-cell anchors.
+    pub fn delete_picture(&mut self, sheet: &str, cell: &str) -> Result<()> {
+        let sheet_idx = self.sheet_index(sheet)?;
+        let (col, row) = cell_name_to_coordinates(cell)?;
+        let target_col = col - 1;
+        let target_row = row - 1;
+
+        let &drawing_idx =
+            self.worksheet_drawings
+                .get(&sheet_idx)
+                .ok_or_else(|| Error::PictureNotFound {
+                    sheet: sheet.to_string(),
+                    cell: cell.to_string(),
+                })?;
+
+        let drawing = &self.drawings[drawing_idx].1;
+
+        // Check one-cell anchors first
+        if let Some(pos) = drawing
+            .one_cell_anchors
+            .iter()
+            .position(|a| a.from.col == target_col && a.from.row == target_row && a.pic.is_some())
+        {
+            let image_rid = drawing.one_cell_anchors[pos]
+                .pic
+                .as_ref()
+                .unwrap()
+                .blip_fill
+                .blip
+                .r_embed
+                .clone();
+
+            self.remove_picture_data(drawing_idx, &image_rid);
+            self.drawings[drawing_idx].1.one_cell_anchors.remove(pos);
+            return Ok(());
+        }
+
+        // Check two-cell anchors
+        if let Some(pos) = drawing
+            .two_cell_anchors
+            .iter()
+            .position(|a| a.from.col == target_col && a.from.row == target_row && a.pic.is_some())
+        {
+            let image_rid = drawing.two_cell_anchors[pos]
+                .pic
+                .as_ref()
+                .unwrap()
+                .blip_fill
+                .blip
+                .r_embed
+                .clone();
+
+            self.remove_picture_data(drawing_idx, &image_rid);
+            self.drawings[drawing_idx].1.two_cell_anchors.remove(pos);
+            return Ok(());
+        }
+
+        Err(Error::PictureNotFound {
+            sheet: sheet.to_string(),
+            cell: cell.to_string(),
+        })
+    }
+
+    /// Remove the relationship for a picture and clean up the image data only
+    /// when no other relationship across any drawing still references it.
+    fn remove_picture_data(&mut self, drawing_idx: usize, image_rid: &str) {
+        let image_path = self.resolve_drawing_rel_target(drawing_idx, image_rid);
+
+        // Remove the relationship entry for this specific picture.
+        if let Some(rels) = self.drawing_rels.get_mut(&drawing_idx) {
+            rels.relationships.retain(|r| r.id != image_rid);
+        }
+
+        // Only remove the actual image bytes when no remaining relationship
+        // across ALL drawings still targets the same media path.
+        if let Some(path) = image_path {
+            if !self.any_drawing_rel_targets_path(&path) {
+                self.images.retain(|(p, _)| p != &path);
+            }
+        }
+    }
+
+    /// Check whether any relationship in any drawing targets the given
+    /// resolved media path.
+    fn any_drawing_rel_targets_path(&self, target_path: &str) -> bool {
+        for (&di, rels) in &self.drawing_rels {
+            let drawing_path = match self.drawings.get(di) {
+                Some((p, _)) => p,
+                None => continue,
+            };
+            let base_dir = drawing_path
+                .rfind('/')
+                .map(|i| &drawing_path[..i])
+                .unwrap_or("");
+
+            for rel in &rels.relationships {
+                if rel.rel_type != rel_types::IMAGE {
+                    continue;
+                }
+                let resolved = if rel.target.starts_with("../") {
+                    let rel_target = rel.target.trim_start_matches("../");
+                    let parent = base_dir.rfind('/').map(|i| &base_dir[..i]).unwrap_or("");
+                    if parent.is_empty() {
+                        rel_target.to_string()
+                    } else {
+                        format!("{}/{}", parent, rel_target)
+                    }
+                } else {
+                    format!("{}/{}", base_dir, rel.target)
+                };
+                if resolved == target_path {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Resolve a relationship target to a full zip path.
+    fn resolve_drawing_rel_target(&self, drawing_idx: usize, rid: &str) -> Option<String> {
+        self.drawing_rels.get(&drawing_idx).and_then(|rels| {
+            rels.relationships.iter().find(|r| r.id == rid).map(|r| {
+                let drawing_path = &self.drawings[drawing_idx].0;
+                let base_dir = drawing_path
+                    .rfind('/')
+                    .map(|i| &drawing_path[..i])
+                    .unwrap_or("");
+                if r.target.starts_with("../") {
+                    let rel_target = r.target.trim_start_matches("../");
+                    let parent = base_dir.rfind('/').map(|i| &base_dir[..i]).unwrap_or("");
+                    if parent.is_empty() {
+                        rel_target.to_string()
+                    } else {
+                        format!("{}/{}", parent, rel_target)
+                    }
+                } else {
+                    format!("{}/{}", base_dir, r.target)
+                }
+            })
+        })
+    }
+
+    /// Get all pictures anchored at the given cell.
+    ///
+    /// Returns picture data, format, anchor cell, and dimensions for each
+    /// picture found at the specified cell.
+    pub fn get_pictures(&self, sheet: &str, cell: &str) -> Result<Vec<crate::image::PictureInfo>> {
+        let sheet_idx = self.sheet_index(sheet)?;
+        let (col, row) = cell_name_to_coordinates(cell)?;
+        let target_col = col - 1;
+        let target_row = row - 1;
+
+        let drawing_idx = match self.worksheet_drawings.get(&sheet_idx) {
+            Some(&idx) => idx,
+            None => return Ok(vec![]),
+        };
+
+        let drawing = &self.drawings[drawing_idx].1;
+        let mut results = Vec::new();
+
+        for anchor in &drawing.one_cell_anchors {
+            if anchor.from.col == target_col && anchor.from.row == target_row {
+                if let Some(pic) = &anchor.pic {
+                    if let Some(info) = self.extract_picture_info(drawing_idx, pic, cell) {
+                        results.push(info);
+                    }
+                }
+            }
+        }
+
+        for anchor in &drawing.two_cell_anchors {
+            if anchor.from.col == target_col && anchor.from.row == target_row {
+                if let Some(pic) = &anchor.pic {
+                    if let Some(info) = self.extract_picture_info(drawing_idx, pic, cell) {
+                        results.push(info);
+                    }
+                }
+            }
+        }
+
+        Ok(results)
+    }
+
+    /// Extract picture info from a Picture element by resolving its relationship.
+    fn extract_picture_info(
+        &self,
+        drawing_idx: usize,
+        pic: &sheetkit_xml::drawing::Picture,
+        cell: &str,
+    ) -> Option<crate::image::PictureInfo> {
+        let rid = &pic.blip_fill.blip.r_embed;
+        let image_path = self.resolve_drawing_rel_target(drawing_idx, rid)?;
+        let (data, format) = self.find_image_with_format(&image_path)?;
+
+        let cx = pic.sp_pr.xfrm.ext.cx;
+        let cy = pic.sp_pr.xfrm.ext.cy;
+        let width_px = (cx / crate::image::EMU_PER_PIXEL) as u32;
+        let height_px = (cy / crate::image::EMU_PER_PIXEL) as u32;
+
+        Some(crate::image::PictureInfo {
+            data: data.clone(),
+            format,
+            cell: cell.to_string(),
+            width_px,
+            height_px,
+        })
+    }
+
+    /// Find image data and determine format from the zip path extension.
+    fn find_image_with_format(
+        &self,
+        image_path: &str,
+    ) -> Option<(&Vec<u8>, crate::image::ImageFormat)> {
+        self.images
+            .iter()
+            .find(|(p, _)| p == image_path)
+            .and_then(|(path, data)| {
+                let ext = path.rsplit('.').next()?;
+                let format = crate::image::ImageFormat::from_extension(ext).ok()?;
+                Some((data, format))
+            })
+    }
+
+    /// Get all cells that have pictures anchored to them on the given sheet.
+    pub fn get_picture_cells(&self, sheet: &str) -> Result<Vec<String>> {
+        let sheet_idx = self.sheet_index(sheet)?;
+
+        let drawing_idx = match self.worksheet_drawings.get(&sheet_idx) {
+            Some(&idx) => idx,
+            None => return Ok(vec![]),
+        };
+
+        let drawing = &self.drawings[drawing_idx].1;
+        let mut cells = Vec::new();
+
+        for anchor in &drawing.one_cell_anchors {
+            if anchor.pic.is_some() {
+                if let Ok(name) = crate::utils::cell_ref::coordinates_to_cell_name(
+                    anchor.from.col + 1,
+                    anchor.from.row + 1,
+                ) {
+                    cells.push(name);
+                }
+            }
+        }
+
+        for anchor in &drawing.two_cell_anchors {
+            if anchor.pic.is_some() {
+                if let Ok(name) = crate::utils::cell_ref::coordinates_to_cell_name(
+                    anchor.from.col + 1,
+                    anchor.from.row + 1,
+                ) {
+                    cells.push(name);
+                }
+            }
+        }
+
+        Ok(cells)
+    }
 }
 
 #[cfg(test)]
@@ -823,5 +1179,684 @@ mod tests {
         assert!(archive
             .by_name("xl/drawings/_rels/drawing1.xml.rels")
             .is_ok());
+    }
+
+    #[test]
+    fn test_delete_chart_basic() {
+        use crate::chart::{ChartConfig, ChartSeries, ChartType};
+        let mut wb = Workbook::new();
+        let config = ChartConfig {
+            chart_type: ChartType::Col,
+            title: Some("Chart".to_string()),
+            series: vec![ChartSeries {
+                name: "S1".to_string(),
+                categories: "Sheet1!$A$1:$A$3".to_string(),
+                values: "Sheet1!$B$1:$B$3".to_string(),
+                x_values: None,
+                bubble_sizes: None,
+            }],
+            show_legend: true,
+            view_3d: None,
+        };
+        wb.add_chart("Sheet1", "E1", "L10", &config).unwrap();
+        assert_eq!(wb.charts.len(), 1);
+        assert_eq!(wb.drawings[0].1.two_cell_anchors.len(), 1);
+
+        wb.delete_chart("Sheet1", "E1").unwrap();
+        assert_eq!(wb.charts.len(), 0);
+        assert_eq!(wb.drawings[0].1.two_cell_anchors.len(), 0);
+    }
+
+    #[test]
+    fn test_delete_chart_not_found() {
+        let mut wb = Workbook::new();
+        let result = wb.delete_chart("Sheet1", "A1");
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::ChartNotFound { .. }));
+    }
+
+    #[test]
+    fn test_delete_chart_wrong_cell() {
+        use crate::chart::{ChartConfig, ChartSeries, ChartType};
+        let mut wb = Workbook::new();
+        let config = ChartConfig {
+            chart_type: ChartType::Col,
+            title: None,
+            series: vec![ChartSeries {
+                name: "S".to_string(),
+                categories: "Sheet1!$A$1:$A$3".to_string(),
+                values: "Sheet1!$B$1:$B$3".to_string(),
+                x_values: None,
+                bubble_sizes: None,
+            }],
+            show_legend: false,
+            view_3d: None,
+        };
+        wb.add_chart("Sheet1", "E1", "L10", &config).unwrap();
+
+        let result = wb.delete_chart("Sheet1", "A1");
+        assert!(result.is_err());
+        assert_eq!(wb.charts.len(), 1);
+    }
+
+    #[test]
+    fn test_delete_chart_removes_content_type() {
+        use crate::chart::{ChartConfig, ChartSeries, ChartType};
+        let mut wb = Workbook::new();
+        let config = ChartConfig {
+            chart_type: ChartType::Col,
+            title: None,
+            series: vec![ChartSeries {
+                name: "S".to_string(),
+                categories: "Sheet1!$A$1:$A$3".to_string(),
+                values: "Sheet1!$B$1:$B$3".to_string(),
+                x_values: None,
+                bubble_sizes: None,
+            }],
+            show_legend: false,
+            view_3d: None,
+        };
+        wb.add_chart("Sheet1", "E1", "L10", &config).unwrap();
+        let has_chart_ct = wb
+            .content_types
+            .overrides
+            .iter()
+            .any(|o| o.part_name.contains("chart"));
+        assert!(has_chart_ct);
+
+        wb.delete_chart("Sheet1", "E1").unwrap();
+        let has_chart_ct = wb
+            .content_types
+            .overrides
+            .iter()
+            .any(|o| o.part_name.contains("chart"));
+        assert!(!has_chart_ct);
+    }
+
+    #[test]
+    fn test_delete_one_chart_keeps_others() {
+        use crate::chart::{ChartConfig, ChartSeries, ChartType};
+        let mut wb = Workbook::new();
+        let config = ChartConfig {
+            chart_type: ChartType::Col,
+            title: None,
+            series: vec![ChartSeries {
+                name: "S".to_string(),
+                categories: "Sheet1!$A$1:$A$3".to_string(),
+                values: "Sheet1!$B$1:$B$3".to_string(),
+                x_values: None,
+                bubble_sizes: None,
+            }],
+            show_legend: false,
+            view_3d: None,
+        };
+        wb.add_chart("Sheet1", "A1", "F10", &config).unwrap();
+        wb.add_chart("Sheet1", "A12", "F22", &config).unwrap();
+        assert_eq!(wb.charts.len(), 2);
+        assert_eq!(wb.drawings[0].1.two_cell_anchors.len(), 2);
+
+        wb.delete_chart("Sheet1", "A1").unwrap();
+        assert_eq!(wb.charts.len(), 1);
+        assert_eq!(wb.drawings[0].1.two_cell_anchors.len(), 1);
+        assert_eq!(wb.drawings[0].1.two_cell_anchors[0].from.row, 11);
+    }
+
+    #[test]
+    fn test_delete_picture_basic() {
+        use crate::image::{ImageConfig, ImageFormat};
+        let mut wb = Workbook::new();
+        let config = ImageConfig {
+            data: vec![0x89, 0x50, 0x4E, 0x47],
+            format: ImageFormat::Png,
+            from_cell: "B2".to_string(),
+            width_px: 200,
+            height_px: 150,
+        };
+        wb.add_image("Sheet1", &config).unwrap();
+        assert_eq!(wb.images.len(), 1);
+        assert_eq!(wb.drawings[0].1.one_cell_anchors.len(), 1);
+
+        wb.delete_picture("Sheet1", "B2").unwrap();
+        assert_eq!(wb.images.len(), 0);
+        assert_eq!(wb.drawings[0].1.one_cell_anchors.len(), 0);
+    }
+
+    #[test]
+    fn test_delete_picture_not_found() {
+        let mut wb = Workbook::new();
+        let result = wb.delete_picture("Sheet1", "A1");
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), Error::PictureNotFound { .. }));
+    }
+
+    #[test]
+    fn test_delete_picture_wrong_cell() {
+        use crate::image::{ImageConfig, ImageFormat};
+        let mut wb = Workbook::new();
+        let config = ImageConfig {
+            data: vec![0x89, 0x50, 0x4E, 0x47],
+            format: ImageFormat::Png,
+            from_cell: "C3".to_string(),
+            width_px: 100,
+            height_px: 100,
+        };
+        wb.add_image("Sheet1", &config).unwrap();
+
+        let result = wb.delete_picture("Sheet1", "A1");
+        assert!(result.is_err());
+        assert_eq!(wb.images.len(), 1);
+    }
+
+    #[test]
+    fn test_delete_one_picture_keeps_others() {
+        use crate::image::{ImageConfig, ImageFormat};
+        let mut wb = Workbook::new();
+        wb.add_image(
+            "Sheet1",
+            &ImageConfig {
+                data: vec![0x89, 0x50, 0x4E, 0x47],
+                format: ImageFormat::Png,
+                from_cell: "A1".to_string(),
+                width_px: 100,
+                height_px: 100,
+            },
+        )
+        .unwrap();
+        wb.add_image(
+            "Sheet1",
+            &ImageConfig {
+                data: vec![0xFF, 0xD8, 0xFF, 0xE0],
+                format: ImageFormat::Jpeg,
+                from_cell: "C3".to_string(),
+                width_px: 200,
+                height_px: 200,
+            },
+        )
+        .unwrap();
+        assert_eq!(wb.images.len(), 2);
+        assert_eq!(wb.drawings[0].1.one_cell_anchors.len(), 2);
+
+        wb.delete_picture("Sheet1", "A1").unwrap();
+        assert_eq!(wb.images.len(), 1);
+        assert_eq!(wb.drawings[0].1.one_cell_anchors.len(), 1);
+        assert_eq!(wb.drawings[0].1.one_cell_anchors[0].from.col, 2);
+    }
+
+    #[test]
+    fn test_get_picture_cells_empty() {
+        let wb = Workbook::new();
+        let cells = wb.get_picture_cells("Sheet1").unwrap();
+        assert!(cells.is_empty());
+    }
+
+    #[test]
+    fn test_get_picture_cells_returns_cells() {
+        use crate::image::{ImageConfig, ImageFormat};
+        let mut wb = Workbook::new();
+        wb.add_image(
+            "Sheet1",
+            &ImageConfig {
+                data: vec![0x89, 0x50],
+                format: ImageFormat::Png,
+                from_cell: "B2".to_string(),
+                width_px: 100,
+                height_px: 100,
+            },
+        )
+        .unwrap();
+        wb.add_image(
+            "Sheet1",
+            &ImageConfig {
+                data: vec![0xFF, 0xD8],
+                format: ImageFormat::Jpeg,
+                from_cell: "D5".to_string(),
+                width_px: 200,
+                height_px: 150,
+            },
+        )
+        .unwrap();
+
+        let cells = wb.get_picture_cells("Sheet1").unwrap();
+        assert_eq!(cells.len(), 2);
+        assert!(cells.contains(&"B2".to_string()));
+        assert!(cells.contains(&"D5".to_string()));
+    }
+
+    #[test]
+    fn test_get_pictures_returns_data() {
+        use crate::image::{ImageConfig, ImageFormat};
+        let mut wb = Workbook::new();
+        let image_data = vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+        wb.add_image(
+            "Sheet1",
+            &ImageConfig {
+                data: image_data.clone(),
+                format: ImageFormat::Png,
+                from_cell: "B2".to_string(),
+                width_px: 400,
+                height_px: 300,
+            },
+        )
+        .unwrap();
+
+        let pics = wb.get_pictures("Sheet1", "B2").unwrap();
+        assert_eq!(pics.len(), 1);
+        assert_eq!(pics[0].data, image_data);
+        assert_eq!(pics[0].format, ImageFormat::Png);
+        assert_eq!(pics[0].cell, "B2");
+        assert_eq!(pics[0].width_px, 400);
+        assert_eq!(pics[0].height_px, 300);
+    }
+
+    #[test]
+    fn test_get_pictures_empty_cell() {
+        let wb = Workbook::new();
+        let pics = wb.get_pictures("Sheet1", "A1").unwrap();
+        assert!(pics.is_empty());
+    }
+
+    #[test]
+    fn test_get_pictures_wrong_cell() {
+        use crate::image::{ImageConfig, ImageFormat};
+        let mut wb = Workbook::new();
+        wb.add_image(
+            "Sheet1",
+            &ImageConfig {
+                data: vec![0x89, 0x50],
+                format: ImageFormat::Png,
+                from_cell: "B2".to_string(),
+                width_px: 100,
+                height_px: 100,
+            },
+        )
+        .unwrap();
+
+        let pics = wb.get_pictures("Sheet1", "A1").unwrap();
+        assert!(pics.is_empty());
+    }
+
+    #[test]
+    fn test_delete_chart_roundtrip() {
+        use crate::chart::{ChartConfig, ChartSeries, ChartType};
+        let dir = TempDir::new().unwrap();
+        let path1 = dir.path().join("chart_delete_rt1.xlsx");
+        let path2 = dir.path().join("chart_delete_rt2.xlsx");
+
+        let mut wb = Workbook::new();
+        wb.add_chart(
+            "Sheet1",
+            "E1",
+            "L10",
+            &ChartConfig {
+                chart_type: ChartType::Col,
+                title: Some("Chart".to_string()),
+                series: vec![ChartSeries {
+                    name: "S1".to_string(),
+                    categories: "Sheet1!$A$1:$A$3".to_string(),
+                    values: "Sheet1!$B$1:$B$3".to_string(),
+                    x_values: None,
+                    bubble_sizes: None,
+                }],
+                show_legend: true,
+                view_3d: None,
+            },
+        )
+        .unwrap();
+        wb.save(&path1).unwrap();
+
+        // Delete the chart from the in-memory workbook before save
+        wb.delete_chart("Sheet1", "E1").unwrap();
+        wb.save(&path2).unwrap();
+
+        let file = std::fs::File::open(&path2).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        assert!(archive.by_name("xl/charts/chart1.xml").is_err());
+    }
+
+    #[test]
+    fn test_delete_picture_roundtrip() {
+        use crate::image::{ImageConfig, ImageFormat};
+        let dir = TempDir::new().unwrap();
+        let path1 = dir.path().join("pic_delete_rt1.xlsx");
+        let path2 = dir.path().join("pic_delete_rt2.xlsx");
+
+        let mut wb = Workbook::new();
+        wb.add_image(
+            "Sheet1",
+            &ImageConfig {
+                data: vec![0x89, 0x50, 0x4E, 0x47],
+                format: ImageFormat::Png,
+                from_cell: "B2".to_string(),
+                width_px: 200,
+                height_px: 150,
+            },
+        )
+        .unwrap();
+        wb.save(&path1).unwrap();
+
+        // Delete the picture from the in-memory workbook before save
+        wb.delete_picture("Sheet1", "B2").unwrap();
+        wb.save(&path2).unwrap();
+
+        let file = std::fs::File::open(&path2).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        assert!(archive.by_name("xl/media/image1.png").is_err());
+    }
+
+    #[test]
+    fn test_delete_chart_preserves_image() {
+        use crate::chart::{ChartConfig, ChartSeries, ChartType};
+        use crate::image::{ImageConfig, ImageFormat};
+
+        let mut wb = Workbook::new();
+        wb.add_chart(
+            "Sheet1",
+            "E1",
+            "L10",
+            &ChartConfig {
+                chart_type: ChartType::Col,
+                title: None,
+                series: vec![ChartSeries {
+                    name: "S1".to_string(),
+                    categories: "Sheet1!$A$1:$A$3".to_string(),
+                    values: "Sheet1!$B$1:$B$3".to_string(),
+                    x_values: None,
+                    bubble_sizes: None,
+                }],
+                show_legend: false,
+                view_3d: None,
+            },
+        )
+        .unwrap();
+        wb.add_image(
+            "Sheet1",
+            &ImageConfig {
+                data: vec![0x89, 0x50, 0x4E, 0x47],
+                format: ImageFormat::Png,
+                from_cell: "E12".to_string(),
+                width_px: 200,
+                height_px: 150,
+            },
+        )
+        .unwrap();
+
+        wb.delete_chart("Sheet1", "E1").unwrap();
+        assert_eq!(wb.charts.len(), 0);
+        assert_eq!(wb.images.len(), 1);
+        assert_eq!(wb.drawings[0].1.one_cell_anchors.len(), 1);
+        assert_eq!(wb.drawings[0].1.two_cell_anchors.len(), 0);
+    }
+
+    #[test]
+    fn test_delete_picture_preserves_chart() {
+        use crate::chart::{ChartConfig, ChartSeries, ChartType};
+        use crate::image::{ImageConfig, ImageFormat};
+
+        let mut wb = Workbook::new();
+        wb.add_chart(
+            "Sheet1",
+            "E1",
+            "L10",
+            &ChartConfig {
+                chart_type: ChartType::Col,
+                title: None,
+                series: vec![ChartSeries {
+                    name: "S1".to_string(),
+                    categories: "Sheet1!$A$1:$A$3".to_string(),
+                    values: "Sheet1!$B$1:$B$3".to_string(),
+                    x_values: None,
+                    bubble_sizes: None,
+                }],
+                show_legend: false,
+                view_3d: None,
+            },
+        )
+        .unwrap();
+        wb.add_image(
+            "Sheet1",
+            &ImageConfig {
+                data: vec![0x89, 0x50, 0x4E, 0x47],
+                format: ImageFormat::Png,
+                from_cell: "E12".to_string(),
+                width_px: 200,
+                height_px: 150,
+            },
+        )
+        .unwrap();
+
+        wb.delete_picture("Sheet1", "E12").unwrap();
+        assert_eq!(wb.images.len(), 0);
+        assert_eq!(wb.charts.len(), 1);
+        assert_eq!(wb.drawings[0].1.two_cell_anchors.len(), 1);
+        assert_eq!(wb.drawings[0].1.one_cell_anchors.len(), 0);
+    }
+
+    // Helper: add a second anchor that references an existing media path,
+    // simulating shared media as found in real .xlsx files.
+    fn add_shared_media_anchor(
+        wb: &mut Workbook,
+        drawing_idx: usize,
+        media_rel_target: &str,
+        from_col: u32,
+        from_row: u32,
+        pic_id: u32,
+    ) -> String {
+        use sheetkit_xml::drawing::*;
+        use sheetkit_xml::relationships::Relationship;
+
+        let rid = wb.next_drawing_rid(drawing_idx);
+
+        let rels = wb
+            .drawing_rels
+            .entry(drawing_idx)
+            .or_insert_with(|| Relationships {
+                xmlns: sheetkit_xml::namespaces::PACKAGE_RELATIONSHIPS.to_string(),
+                relationships: vec![],
+            });
+        rels.relationships.push(Relationship {
+            id: rid.clone(),
+            rel_type: rel_types::IMAGE.to_string(),
+            target: media_rel_target.to_string(),
+            target_mode: None,
+        });
+
+        let pic = Picture {
+            nv_pic_pr: NvPicPr {
+                c_nv_pr: CNvPr {
+                    id: pic_id,
+                    name: format!("Picture {}", pic_id - 1),
+                },
+                c_nv_pic_pr: CNvPicPr {},
+            },
+            blip_fill: BlipFill {
+                blip: Blip {
+                    r_embed: rid.clone(),
+                },
+                stretch: Stretch {
+                    fill_rect: FillRect {},
+                },
+            },
+            sp_pr: SpPr {
+                xfrm: Xfrm {
+                    off: Offset { x: 0, y: 0 },
+                    ext: AExt {
+                        cx: 100 * crate::image::EMU_PER_PIXEL as u64,
+                        cy: 100 * crate::image::EMU_PER_PIXEL as u64,
+                    },
+                },
+                prst_geom: PrstGeom {
+                    prst: "rect".to_string(),
+                },
+            },
+        };
+
+        wb.drawings[drawing_idx]
+            .1
+            .one_cell_anchors
+            .push(OneCellAnchor {
+                from: MarkerType {
+                    col: from_col,
+                    col_off: 0,
+                    row: from_row,
+                    row_off: 0,
+                },
+                ext: Extent {
+                    cx: 100 * crate::image::EMU_PER_PIXEL as u64,
+                    cy: 100 * crate::image::EMU_PER_PIXEL as u64,
+                },
+                pic: Some(pic),
+                client_data: ClientData {},
+            });
+
+        rid
+    }
+
+    #[test]
+    fn test_delete_shared_media_keeps_other_picture() {
+        use crate::image::{ImageConfig, ImageFormat};
+
+        let mut wb = Workbook::new();
+        let image_data = vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A];
+        wb.add_image(
+            "Sheet1",
+            &ImageConfig {
+                data: image_data.clone(),
+                format: ImageFormat::Png,
+                from_cell: "B2".to_string(),
+                width_px: 200,
+                height_px: 150,
+            },
+        )
+        .unwrap();
+
+        // Add a second anchor sharing the same media (simulates opened .xlsx).
+        let drawing_idx = *wb.worksheet_drawings.get(&0).unwrap();
+        add_shared_media_anchor(&mut wb, drawing_idx, "../media/image1.png", 3, 3, 3);
+
+        assert_eq!(wb.images.len(), 1);
+        assert_eq!(wb.drawings[0].1.one_cell_anchors.len(), 2);
+
+        // Delete the first picture (B2 = col 1, row 1 in 0-based).
+        wb.delete_picture("Sheet1", "B2").unwrap();
+
+        // The media must survive because the second anchor still references it.
+        assert_eq!(wb.images.len(), 1);
+        assert_eq!(wb.images[0].0, "xl/media/image1.png");
+        assert_eq!(wb.drawings[0].1.one_cell_anchors.len(), 1);
+
+        // The surviving picture should still be retrievable.
+        let pics = wb.get_pictures("Sheet1", "D4").unwrap();
+        assert_eq!(pics.len(), 1);
+        assert_eq!(pics[0].data, image_data);
+    }
+
+    #[test]
+    fn test_delete_both_shared_media_pictures_cleans_up() {
+        use crate::image::{ImageConfig, ImageFormat};
+
+        let mut wb = Workbook::new();
+        wb.add_image(
+            "Sheet1",
+            &ImageConfig {
+                data: vec![0x89, 0x50, 0x4E, 0x47],
+                format: ImageFormat::Png,
+                from_cell: "B2".to_string(),
+                width_px: 100,
+                height_px: 100,
+            },
+        )
+        .unwrap();
+
+        let drawing_idx = *wb.worksheet_drawings.get(&0).unwrap();
+        add_shared_media_anchor(&mut wb, drawing_idx, "../media/image1.png", 3, 3, 3);
+
+        assert_eq!(wb.images.len(), 1);
+        assert_eq!(wb.drawings[0].1.one_cell_anchors.len(), 2);
+
+        // Delete first picture.
+        wb.delete_picture("Sheet1", "B2").unwrap();
+        assert_eq!(wb.images.len(), 1);
+
+        // Delete second picture -- now the media should be removed.
+        wb.delete_picture("Sheet1", "D4").unwrap();
+        assert_eq!(wb.images.len(), 0);
+        assert_eq!(wb.drawings[0].1.one_cell_anchors.len(), 0);
+    }
+
+    #[test]
+    fn test_cross_sheet_shared_media_survives_single_delete() {
+        use crate::image::{ImageConfig, ImageFormat};
+
+        let mut wb = Workbook::new();
+        wb.new_sheet("Sheet2").unwrap();
+
+        let image_data = vec![0x89, 0x50, 0x4E, 0x47, 0x0D];
+        wb.add_image(
+            "Sheet1",
+            &ImageConfig {
+                data: image_data.clone(),
+                format: ImageFormat::Png,
+                from_cell: "A1".to_string(),
+                width_px: 100,
+                height_px: 100,
+            },
+        )
+        .unwrap();
+
+        // Add an image to Sheet2 that shares the same media path.
+        let drawing_idx_s2 = wb.ensure_drawing_for_sheet(1);
+        add_shared_media_anchor(&mut wb, drawing_idx_s2, "../media/image1.png", 0, 0, 2);
+
+        assert_eq!(wb.images.len(), 1);
+
+        // Delete the picture from Sheet1.
+        wb.delete_picture("Sheet1", "A1").unwrap();
+
+        // The media must survive because Sheet2 still references it.
+        assert_eq!(wb.images.len(), 1);
+
+        // Sheet2's picture should still be retrievable.
+        let pics = wb.get_pictures("Sheet2", "A1").unwrap();
+        assert_eq!(pics.len(), 1);
+        assert_eq!(pics[0].data, image_data);
+    }
+
+    #[test]
+    fn test_shared_media_save_preserves_image_data() {
+        use crate::image::{ImageConfig, ImageFormat};
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("shared_media_save.xlsx");
+
+        let mut wb = Workbook::new();
+        let image_data = vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+        wb.add_image(
+            "Sheet1",
+            &ImageConfig {
+                data: image_data.clone(),
+                format: ImageFormat::Png,
+                from_cell: "B2".to_string(),
+                width_px: 200,
+                height_px: 150,
+            },
+        )
+        .unwrap();
+
+        let drawing_idx = *wb.worksheet_drawings.get(&0).unwrap();
+        add_shared_media_anchor(&mut wb, drawing_idx, "../media/image1.png", 3, 3, 3);
+
+        // Delete picture at B2 -- shared media must survive.
+        wb.delete_picture("Sheet1", "B2").unwrap();
+        assert_eq!(wb.images.len(), 1);
+        assert_eq!(wb.drawings[0].1.one_cell_anchors.len(), 1);
+
+        // Save and verify the media file is in the zip archive.
+        wb.save(&path).unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        assert!(
+            archive.by_name("xl/media/image1.png").is_ok(),
+            "shared media must survive in saved file"
+        );
     }
 }

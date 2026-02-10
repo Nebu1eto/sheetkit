@@ -196,6 +196,14 @@ pub enum Error {
     #[error("threaded comment '{id}' not found")]
     ThreadedCommentNotFound { id: String },
 
+    /// No chart was found at the specified cell.
+    #[error("no chart found at cell '{cell}' on sheet '{sheet}'")]
+    ChartNotFound { sheet: String, cell: String },
+
+    /// No picture was found at the specified cell.
+    #[error("no picture found at cell '{cell}' on sheet '{sheet}'")]
+    PictureNotFound { sheet: String, cell: String },
+
     /// An internal or otherwise unclassified error.
     #[error("internal error: {0}")]
     Internal(String),

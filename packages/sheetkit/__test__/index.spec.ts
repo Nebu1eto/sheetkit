@@ -360,6 +360,200 @@ describe('Phase 7 - Charts & Images', () => {
   });
 });
 
+describe('Chart & Picture CRUD', () => {
+  const out = tmpFile('test-crud-chart-pic.xlsx');
+  afterEach(async () => cleanup(out));
+
+  it('should delete a chart', () => {
+    const wb = new Workbook();
+    wb.addChart('Sheet1', 'D1', 'J10', {
+      chartType: 'col',
+      series: [{ name: 'S1', categories: 'Sheet1!$A$1:$A$3', values: 'Sheet1!$B$1:$B$3' }],
+    });
+    wb.deleteChart('Sheet1', 'D1');
+    // No error means success; saving should work without the chart
+  });
+
+  it('should throw when deleting a chart at empty cell', () => {
+    const wb = new Workbook();
+    expect(() => wb.deleteChart('Sheet1', 'A1')).toThrow();
+  });
+
+  it('should delete a picture', () => {
+    const wb = new Workbook();
+    const pngData = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+    wb.addImage('Sheet1', {
+      data: pngData,
+      format: 'png',
+      fromCell: 'B2',
+      widthPx: 200,
+      heightPx: 150,
+    });
+    wb.deletePicture('Sheet1', 'B2');
+  });
+
+  it('should throw when deleting a picture at empty cell', () => {
+    const wb = new Workbook();
+    expect(() => wb.deletePicture('Sheet1', 'A1')).toThrow();
+  });
+
+  it('should get picture cells', () => {
+    const wb = new Workbook();
+    wb.addImage('Sheet1', {
+      data: Buffer.from([0x89, 0x50]),
+      format: 'png',
+      fromCell: 'B2',
+      widthPx: 100,
+      heightPx: 100,
+    });
+    wb.addImage('Sheet1', {
+      data: Buffer.from([0xff, 0xd8]),
+      format: 'jpeg',
+      fromCell: 'D5',
+      widthPx: 200,
+      heightPx: 150,
+    });
+    const cells = wb.getPictureCells('Sheet1');
+    expect(cells).toContain('B2');
+    expect(cells).toContain('D5');
+    expect(cells.length).toBe(2);
+  });
+
+  it('should return empty array for sheet with no pictures', () => {
+    const wb = new Workbook();
+    expect(wb.getPictureCells('Sheet1')).toEqual([]);
+  });
+
+  it('should get pictures at a cell', () => {
+    const wb = new Workbook();
+    const pngData = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    wb.addImage('Sheet1', {
+      data: pngData,
+      format: 'png',
+      fromCell: 'C3',
+      widthPx: 400,
+      heightPx: 300,
+    });
+    const pics = wb.getPictures('Sheet1', 'C3');
+    expect(pics.length).toBe(1);
+    expect(pics[0].format).toBe('png');
+    expect(pics[0].cell).toBe('C3');
+    expect(pics[0].widthPx).toBe(400);
+    expect(pics[0].heightPx).toBe(300);
+    expect(Buffer.from(pics[0].data)).toEqual(pngData);
+  });
+
+  it('should return empty array when no picture at cell', () => {
+    const wb = new Workbook();
+    expect(wb.getPictures('Sheet1', 'A1')).toEqual([]);
+  });
+
+  it('should add chart, delete chart, save, and open', async () => {
+    const wb = new Workbook();
+    wb.addChart('Sheet1', 'E1', 'L10', {
+      chartType: 'bar',
+      series: [{ name: 'Data', categories: 'Sheet1!$A$1:$A$3', values: 'Sheet1!$B$1:$B$3' }],
+    });
+    wb.deleteChart('Sheet1', 'E1');
+    await wb.save(out);
+    const wb2 = await Workbook.open(out);
+    expect(wb2.sheetNames).toEqual(['Sheet1']);
+  });
+
+  it('should add picture, delete picture, save, and open', async () => {
+    const wb = new Workbook();
+    wb.addImage('Sheet1', {
+      data: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+      format: 'png',
+      fromCell: 'B2',
+      widthPx: 200,
+      heightPx: 150,
+    });
+    wb.deletePicture('Sheet1', 'B2');
+    await wb.save(out);
+    const wb2 = await Workbook.open(out);
+    expect(wb2.sheetNames).toEqual(['Sheet1']);
+  });
+
+  it('should delete one picture and keep others', () => {
+    const wb = new Workbook();
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+    const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0]);
+    wb.addImage('Sheet1', {
+      data: png,
+      format: 'png',
+      fromCell: 'A1',
+      widthPx: 100,
+      heightPx: 100,
+    });
+    wb.addImage('Sheet1', {
+      data: jpeg,
+      format: 'jpeg',
+      fromCell: 'C3',
+      widthPx: 200,
+      heightPx: 200,
+    });
+    expect(wb.getPictureCells('Sheet1')).toHaveLength(2);
+
+    wb.deletePicture('Sheet1', 'A1');
+    const cells = wb.getPictureCells('Sheet1');
+    expect(cells).toHaveLength(1);
+    expect(cells).toContain('C3');
+
+    const pics = wb.getPictures('Sheet1', 'C3');
+    expect(pics).toHaveLength(1);
+    expect(pics[0].format).toBe('jpeg');
+  });
+
+  it('should delete picture from one sheet without affecting another', () => {
+    const wb = new Workbook();
+    wb.newSheet('Sheet2');
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+    wb.addImage('Sheet1', {
+      data: png,
+      format: 'png',
+      fromCell: 'A1',
+      widthPx: 100,
+      heightPx: 100,
+    });
+    wb.addImage('Sheet2', {
+      data: png,
+      format: 'png',
+      fromCell: 'A1',
+      widthPx: 100,
+      heightPx: 100,
+    });
+
+    wb.deletePicture('Sheet1', 'A1');
+    expect(wb.getPictureCells('Sheet1')).toHaveLength(0);
+    expect(wb.getPictureCells('Sheet2')).toHaveLength(1);
+    expect(wb.getPictures('Sheet2', 'A1')).toHaveLength(1);
+  });
+
+  it('should delete all pictures and clean up', () => {
+    const wb = new Workbook();
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+    wb.addImage('Sheet1', {
+      data: png,
+      format: 'png',
+      fromCell: 'B2',
+      widthPx: 100,
+      heightPx: 100,
+    });
+    wb.addImage('Sheet1', {
+      data: png,
+      format: 'png',
+      fromCell: 'D4',
+      widthPx: 100,
+      heightPx: 100,
+    });
+
+    wb.deletePicture('Sheet1', 'B2');
+    wb.deletePicture('Sheet1', 'D4');
+    expect(wb.getPictureCells('Sheet1')).toHaveLength(0);
+  });
+});
+
 describe('Phase 8 - Comments', () => {
   it('should add and get comments', () => {
     const wb = new Workbook();
@@ -4499,3 +4693,4 @@ describe('Number Format - getCellFormattedValue', () => {
     expect(wb2.getCellFormattedValue('Sheet1', 'A1')).toBe('75.00%');
   });
 });
+// ci trigger
