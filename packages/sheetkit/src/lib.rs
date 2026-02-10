@@ -519,6 +519,23 @@ impl Workbook {
             .map_err(|e| Error::from_reason(e.to_string()))
     }
 
+    /// Add a shape to a sheet.
+    #[napi]
+    pub fn add_shape(&mut self, sheet: String, config: JsShapeConfig) -> Result<()> {
+        let core_config = sheetkit_core::shape::ShapeConfig {
+            shape_type: parse_shape_type(&config.shape_type)?,
+            from_cell: config.from_cell,
+            to_cell: config.to_cell,
+            text: config.text,
+            fill_color: config.fill_color,
+            line_color: config.line_color,
+            line_width: config.line_width,
+        };
+        self.inner
+            .add_shape(&sheet, &core_config)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
     /// Add an image to a sheet.
     #[napi]
     pub fn add_image(&mut self, sheet: String, config: JsImageConfig) -> Result<()> {

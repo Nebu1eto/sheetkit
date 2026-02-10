@@ -237,6 +237,7 @@ pub fn build_drawing_with_chart(chart_ref_id: &str, from: MarkerType, to: Marker
         to,
         graphic_frame: Some(graphic_frame),
         pic: None,
+        shape: None,
         client_data: ClientData {},
     };
     WsDr {
