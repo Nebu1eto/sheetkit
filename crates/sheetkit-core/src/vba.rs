@@ -504,9 +504,12 @@ fn parse_dir_stream(data: &[u8]) -> Result<DirInfo> {
             }
             // MODULENAMEUNICODE
             0x0047 => {
-                // UTF-16LE encoded name, prefer this over the ANSI name
+                // UTF-16LE encoded name, prefer this over the ANSI name.
+                // Use only the even portion of the data; an odd trailing
+                // byte indicates a truncated record and is safely ignored.
                 if record_size >= 2 {
-                    let u16_data: Vec<u16> = record_data
+                    let even_len = record_data.len() & !1;
+                    let u16_data: Vec<u16> = record_data[..even_len]
                         .chunks_exact(2)
                         .map(|c| u16::from_le_bytes([c[0], c[1]]))
                         .collect();
