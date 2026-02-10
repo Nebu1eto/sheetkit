@@ -156,6 +156,20 @@ export declare class Workbook {
   getComments(sheet: string): Array<JsCommentConfig>
   /** Remove a comment from a cell. */
   removeComment(sheet: string, cell: string): void
+  /** Add a threaded comment to a cell. Returns the comment ID. */
+  addThreadedComment(sheet: string, cell: string, input: JsThreadedCommentInput): string
+  /** Get all threaded comments for a sheet. */
+  getThreadedComments(sheet: string): Array<JsThreadedCommentData>
+  /** Get threaded comments for a specific cell on a sheet. */
+  getThreadedCommentsByCell(sheet: string, cell: string): Array<JsThreadedCommentData>
+  /** Delete a threaded comment by ID. */
+  deleteThreadedComment(sheet: string, commentId: string): void
+  /** Set the resolved (done) state of a threaded comment. */
+  resolveThreadedComment(sheet: string, commentId: string, done: boolean): void
+  /** Add a person to the person list. Returns the person ID. */
+  addPerson(input: JsPersonInput): string
+  /** Get all persons in the person list. */
+  getPersons(): Array<JsPersonData>
   /** Set an auto-filter on a sheet. */
   setAutoFilter(sheet: string, range: string): void
   /** Remove the auto-filter from a sheet. */
@@ -635,6 +649,19 @@ export interface JsPageSetup {
   fitToHeight?: number
 }
 
+export interface JsPersonData {
+  id: string
+  displayName: string
+  userId?: string
+  providerId?: string
+}
+
+export interface JsPersonInput {
+  displayName: string
+  userId?: string
+  providerId?: string
+}
+
 export interface JsPivotDataField {
   name: string
   function: string
@@ -912,6 +939,23 @@ export interface JsTableInfo {
   columns: Array<string>
   /** The style name, if any. */
   styleName?: string
+}
+
+export interface JsThreadedCommentData {
+  id: string
+  cellRef: string
+  text: string
+  author: string
+  personId: string
+  dateTime: string
+  parentId?: string
+  done: boolean
+}
+
+export interface JsThreadedCommentInput {
+  author: string
+  text: string
+  parentId?: string
 }
 
 export interface JsView3DConfig {

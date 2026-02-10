@@ -48,6 +48,8 @@ impl Workbook {
             raw_sheet_xml: vec![None],
             slicer_defs: vec![],
             slicer_caches: vec![],
+            sheet_threaded_comments: vec![None],
+            person_list: sheetkit_xml::threaded_comment::PersonList::default(),
         }
     }
 
@@ -418,6 +420,61 @@ impl Workbook {
             }
         }
 
+        // Parse threaded comments per-sheet and the workbook-level person list.
+        let mut sheet_threaded_comments: Vec<
+            Option<sheetkit_xml::threaded_comment::ThreadedComments>,
+        > = vec![None; worksheets.len()];
+        for (sheet_idx, sheet_path) in worksheet_paths.iter().enumerate() {
+            let Some(rels) = worksheet_rels.get(&sheet_idx) else {
+                continue;
+            };
+            if let Some(tc_rel) = rels
+                .relationships
+                .iter()
+                .find(|r| r.rel_type == sheetkit_xml::threaded_comment::REL_TYPE_THREADED_COMMENT)
+            {
+                let tc_path = resolve_relationship_target(sheet_path, &tc_rel.target);
+                if let Ok(tc) = read_xml_part::<sheetkit_xml::threaded_comment::ThreadedComments, _>(
+                    archive, &tc_path,
+                ) {
+                    sheet_threaded_comments[sheet_idx] = Some(tc);
+                    known_paths.insert(tc_path);
+                }
+            }
+        }
+
+        // Parse person list (workbook-level).
+        let person_list: sheetkit_xml::threaded_comment::PersonList = {
+            let mut found = None;
+            // Check workbook rels for person relationship.
+            if let Some(person_rel) = workbook_rels
+                .relationships
+                .iter()
+                .find(|r| r.rel_type == sheetkit_xml::threaded_comment::REL_TYPE_PERSON)
+            {
+                let person_path =
+                    resolve_relationship_target("xl/workbook.xml", &person_rel.target);
+                if let Ok(pl) = read_xml_part::<sheetkit_xml::threaded_comment::PersonList, _>(
+                    archive,
+                    &person_path,
+                ) {
+                    known_paths.insert(person_path);
+                    found = Some(pl);
+                }
+            }
+            // Fallback: try the standard path.
+            if found.is_none() {
+                if let Ok(pl) = read_xml_part::<sheetkit_xml::threaded_comment::PersonList, _>(
+                    archive,
+                    "xl/persons/person.xml",
+                ) {
+                    known_paths.insert("xl/persons/person.xml".to_string());
+                    found = Some(pl);
+                }
+            }
+            found.unwrap_or_default()
+        };
+
         // Parse sparklines from worksheet extension lists.
         let mut sheet_sparklines: Vec<Vec<crate::sparkline::SparklineConfig>> =
             vec![vec![]; worksheets.len()];
@@ -547,6 +604,8 @@ impl Workbook {
             raw_sheet_xml,
             slicer_defs,
             slicer_caches,
+            sheet_threaded_comments,
+            person_list,
         })
     }
 
@@ -859,6 +918,59 @@ impl Workbook {
                 .push(rid);
         }
 
+        // Register threaded comment content types and relationships before writing.
+        let has_any_threaded = self.sheet_threaded_comments.iter().any(|tc| tc.is_some());
+        if has_any_threaded {
+            for (i, tc) in self.sheet_threaded_comments.iter().enumerate() {
+                if tc.is_some() {
+                    let tc_path = format!("xl/threadedComments/threadedComment{}.xml", i + 1);
+                    let tc_part_name = format!("/{tc_path}");
+                    if !content_types.overrides.iter().any(|o| {
+                        o.part_name == tc_part_name
+                            && o.content_type
+                                == sheetkit_xml::threaded_comment::THREADED_COMMENTS_CONTENT_TYPE
+                    }) {
+                        content_types.overrides.push(ContentTypeOverride {
+                            part_name: tc_part_name,
+                            content_type:
+                                sheetkit_xml::threaded_comment::THREADED_COMMENTS_CONTENT_TYPE
+                                    .to_string(),
+                        });
+                    }
+
+                    let sheet_path = self.sheet_part_path(i);
+                    let target = relative_relationship_target(&sheet_path, &tc_path);
+                    let rels = worksheet_rels
+                        .entry(i)
+                        .or_insert_with(default_relationships);
+                    if !rels.relationships.iter().any(|r| {
+                        r.rel_type == sheetkit_xml::threaded_comment::REL_TYPE_THREADED_COMMENT
+                    }) {
+                        let rid = crate::sheet::next_rid(&rels.relationships);
+                        rels.relationships.push(Relationship {
+                            id: rid,
+                            rel_type: sheetkit_xml::threaded_comment::REL_TYPE_THREADED_COMMENT
+                                .to_string(),
+                            target,
+                            target_mode: None,
+                        });
+                    }
+                }
+            }
+
+            let person_part_name = "/xl/persons/person.xml";
+            if !content_types.overrides.iter().any(|o| {
+                o.part_name == person_part_name
+                    && o.content_type == sheetkit_xml::threaded_comment::PERSON_LIST_CONTENT_TYPE
+            }) {
+                content_types.overrides.push(ContentTypeOverride {
+                    part_name: person_part_name.to_string(),
+                    content_type: sheetkit_xml::threaded_comment::PERSON_LIST_CONTENT_TYPE
+                        .to_string(),
+                });
+            }
+        }
+
         // [Content_Types].xml
         write_xml_part(zip, "[Content_Types].xml", &content_types, options)?;
 
@@ -1062,6 +1174,17 @@ impl Workbook {
             zip.start_file("docProps/custom.xml", options)
                 .map_err(|e| Error::Zip(e.to_string()))?;
             zip.write_all(xml_str.as_bytes())?;
+        }
+
+        // xl/threadedComments/threadedComment{N}.xml
+        if has_any_threaded {
+            for (i, tc) in self.sheet_threaded_comments.iter().enumerate() {
+                if let Some(ref tc_data) = tc {
+                    let tc_path = format!("xl/threadedComments/threadedComment{}.xml", i + 1);
+                    write_xml_part(zip, &tc_path, tc_data, options)?;
+                }
+            }
+            write_xml_part(zip, "xl/persons/person.xml", &self.person_list, options)?;
         }
 
         // Write back unknown parts preserved from the original file.

@@ -18,6 +18,8 @@ import type {
   JsOpenOptions,
   JsPageMargins,
   JsPageSetup,
+  JsPersonData,
+  JsPersonInput,
   JsPivotTableConfig,
   JsPivotTableInfo,
   JsPrintOptions,
@@ -33,6 +35,8 @@ import type {
   JsStyle,
   JsTableConfig,
   JsTableInfo,
+  JsThreadedCommentData,
+  JsThreadedCommentInput,
   JsWorkbookProtectionConfig,
 } from './binding.js';
 import { JsStreamWriter, Workbook as NativeWorkbook } from './binding.js';
@@ -68,6 +72,8 @@ export type {
   JsOpenOptions,
   JsPageMargins,
   JsPageSetup,
+  JsPersonData,
+  JsPersonInput,
   JsPivotDataField,
   JsPivotField,
   JsPivotTableConfig,
@@ -88,6 +94,8 @@ export type {
   JsTableColumn,
   JsTableConfig,
   JsTableInfo,
+  JsThreadedCommentData,
+  JsThreadedCommentInput,
   JsView3DConfig,
   JsWorkbookProtectionConfig,
 } from './binding.js';
@@ -498,6 +506,41 @@ class Workbook {
   /** Remove a comment from a cell. */
   removeComment(sheet: string, cell: string): void {
     this.#native.removeComment(sheet, cell);
+  }
+
+  /** Add a threaded comment to a cell. Returns the comment ID. */
+  addThreadedComment(sheet: string, cell: string, input: JsThreadedCommentInput): string {
+    return this.#native.addThreadedComment(sheet, cell, input);
+  }
+
+  /** Get all threaded comments on a sheet. */
+  getThreadedComments(sheet: string): JsThreadedCommentData[] {
+    return this.#native.getThreadedComments(sheet);
+  }
+
+  /** Get threaded comments for a specific cell on a sheet. */
+  getThreadedCommentsByCell(sheet: string, cell: string): JsThreadedCommentData[] {
+    return this.#native.getThreadedCommentsByCell(sheet, cell);
+  }
+
+  /** Delete a threaded comment by ID. */
+  deleteThreadedComment(sheet: string, commentId: string): void {
+    this.#native.deleteThreadedComment(sheet, commentId);
+  }
+
+  /** Set the resolved (done) state of a threaded comment. */
+  resolveThreadedComment(sheet: string, commentId: string, done: boolean): void {
+    this.#native.resolveThreadedComment(sheet, commentId, done);
+  }
+
+  /** Add a person to the person list. Returns the person ID. */
+  addPerson(input: JsPersonInput): string {
+    return this.#native.addPerson(input);
+  }
+
+  /** Get all persons in the person list. */
+  getPersons(): JsPersonData[] {
+    return this.#native.getPersons();
   }
 
   /** Set an auto-filter on a sheet. */

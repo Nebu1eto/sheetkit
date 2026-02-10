@@ -4139,3 +4139,186 @@ describe('SVG Renderer', () => {
     expect(svg).toContain('fill="#FFFF00"');
   });
 });
+
+describe('Threaded Comments', () => {
+  const out = tmpFile('test-threaded-comments.xlsx');
+  afterEach(async () => cleanup(out));
+
+  it('should add and get a threaded comment', () => {
+    const wb = new Workbook();
+    const id = wb.addThreadedComment('Sheet1', 'A1', {
+      author: 'Alice',
+      text: 'Hello thread',
+    });
+    expect(id).toBeTruthy();
+
+    const comments = wb.getThreadedComments('Sheet1');
+    expect(comments).toHaveLength(1);
+    expect(comments[0].cellRef).toBe('A1');
+    expect(comments[0].text).toBe('Hello thread');
+    expect(comments[0].author).toBe('Alice');
+    expect(comments[0].done).toBe(false);
+  });
+
+  it('should add a reply to a threaded comment', () => {
+    const wb = new Workbook();
+    const parentId = wb.addThreadedComment('Sheet1', 'A1', {
+      author: 'Alice',
+      text: 'Initial comment',
+    });
+    wb.addThreadedComment('Sheet1', 'A1', {
+      author: 'Bob',
+      text: 'Reply to Alice',
+      parentId,
+    });
+
+    const comments = wb.getThreadedComments('Sheet1');
+    expect(comments).toHaveLength(2);
+    expect(comments[1].parentId).toBe(parentId);
+    expect(comments[1].text).toBe('Reply to Alice');
+  });
+
+  it('should get threaded comments by cell', () => {
+    const wb = new Workbook();
+    wb.addThreadedComment('Sheet1', 'A1', {
+      author: 'Alice',
+      text: 'On A1',
+    });
+    wb.addThreadedComment('Sheet1', 'B2', {
+      author: 'Bob',
+      text: 'On B2',
+    });
+
+    const a1 = wb.getThreadedCommentsByCell('Sheet1', 'A1');
+    expect(a1).toHaveLength(1);
+    expect(a1[0].text).toBe('On A1');
+
+    const b2 = wb.getThreadedCommentsByCell('Sheet1', 'B2');
+    expect(b2).toHaveLength(1);
+    expect(b2[0].text).toBe('On B2');
+
+    const c3 = wb.getThreadedCommentsByCell('Sheet1', 'C3');
+    expect(c3).toHaveLength(0);
+  });
+
+  it('should delete a threaded comment', () => {
+    const wb = new Workbook();
+    const id = wb.addThreadedComment('Sheet1', 'A1', {
+      author: 'Alice',
+      text: 'Delete me',
+    });
+    wb.deleteThreadedComment('Sheet1', id);
+
+    const comments = wb.getThreadedComments('Sheet1');
+    expect(comments).toHaveLength(0);
+  });
+
+  it('should resolve and unresolve a threaded comment', () => {
+    const wb = new Workbook();
+    const id = wb.addThreadedComment('Sheet1', 'A1', {
+      author: 'Alice',
+      text: 'Resolve me',
+    });
+
+    wb.resolveThreadedComment('Sheet1', id, true);
+    let comments = wb.getThreadedComments('Sheet1');
+    expect(comments[0].done).toBe(true);
+
+    wb.resolveThreadedComment('Sheet1', id, false);
+    comments = wb.getThreadedComments('Sheet1');
+    expect(comments[0].done).toBe(false);
+  });
+
+  it('should add and get persons', () => {
+    const wb = new Workbook();
+    const id = wb.addPerson({
+      displayName: 'Alice',
+      userId: 'alice@example.com',
+      providerId: 'ADAL',
+    });
+    expect(id).toBeTruthy();
+
+    const persons = wb.getPersons();
+    expect(persons).toHaveLength(1);
+    expect(persons[0].displayName).toBe('Alice');
+    expect(persons[0].userId).toBe('alice@example.com');
+  });
+
+  it('should auto-create persons when adding comments', () => {
+    const wb = new Workbook();
+    wb.addThreadedComment('Sheet1', 'A1', {
+      author: 'Alice',
+      text: 'Auto person',
+    });
+
+    const persons = wb.getPersons();
+    expect(persons).toHaveLength(1);
+    expect(persons[0].displayName).toBe('Alice');
+  });
+
+  it('should round-trip threaded comments through save/open', async () => {
+    const wb = new Workbook();
+    const id = wb.addThreadedComment('Sheet1', 'A1', {
+      author: 'Alice',
+      text: 'Persisted comment',
+    });
+    wb.resolveThreadedComment('Sheet1', id, true);
+    await wb.save(out);
+
+    const wb2 = await Workbook.open(out);
+    const comments = wb2.getThreadedComments('Sheet1');
+    expect(comments).toHaveLength(1);
+    expect(comments[0].cellRef).toBe('A1');
+    expect(comments[0].text).toBe('Persisted comment');
+    expect(comments[0].author).toBe('Alice');
+    expect(comments[0].done).toBe(true);
+
+    const persons = wb2.getPersons();
+    expect(persons).toHaveLength(1);
+    expect(persons[0].displayName).toBe('Alice');
+  });
+
+  it('should round-trip threaded comments with replies', async () => {
+    const wb = new Workbook();
+    const parentId = wb.addThreadedComment('Sheet1', 'B2', {
+      author: 'Bob',
+      text: 'Parent comment',
+    });
+    wb.addThreadedComment('Sheet1', 'B2', {
+      author: 'Alice',
+      text: 'Reply comment',
+      parentId,
+    });
+    await wb.save(out);
+
+    const wb2 = await Workbook.open(out);
+    const comments = wb2.getThreadedComments('Sheet1');
+    expect(comments).toHaveLength(2);
+    expect(comments[0].text).toBe('Parent comment');
+    expect(comments[1].text).toBe('Reply comment');
+    expect(comments[1].parentId).toBe(parentId);
+  });
+
+  it('should support threaded comments on multiple sheets', async () => {
+    const wb = new Workbook();
+    wb.newSheet('Sheet2');
+    wb.addThreadedComment('Sheet1', 'A1', {
+      author: 'Alice',
+      text: 'Sheet1 comment',
+    });
+    wb.addThreadedComment('Sheet2', 'C3', {
+      author: 'Bob',
+      text: 'Sheet2 comment',
+    });
+    await wb.save(out);
+
+    const wb2 = await Workbook.open(out);
+    const s1 = wb2.getThreadedComments('Sheet1');
+    expect(s1).toHaveLength(1);
+    expect(s1[0].text).toBe('Sheet1 comment');
+
+    const s2 = wb2.getThreadedComments('Sheet2');
+    expect(s2).toHaveLength(1);
+    expect(s2[0].text).toBe('Sheet2 comment');
+  });
+});

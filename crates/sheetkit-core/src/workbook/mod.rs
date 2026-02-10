@@ -91,6 +91,7 @@ use crate::image::ImageConfig;
 use crate::pivot::{PivotTableConfig, PivotTableInfo};
 use crate::protection::WorkbookProtectionConfig;
 use crate::sst::SharedStringTable;
+use crate::threaded_comment::{PersonData, PersonInput, ThreadedCommentData, ThreadedCommentInput};
 use crate::utils::cell_ref::{cell_name_to_coordinates, column_name_to_number};
 use crate::utils::constants::MAX_CELL_CHARS;
 use crate::validation::DataValidationConfig;
@@ -176,6 +177,10 @@ pub struct Workbook {
     slicer_defs: Vec<(String, sheetkit_xml::slicer::SlicerDefinitions)>,
     /// Slicer cache definition parts: (zip path, raw XML string).
     slicer_caches: Vec<(String, sheetkit_xml::slicer::SlicerCacheDefinition)>,
+    /// Per-sheet threaded comments (Excel 2019+), parallel to the `worksheets` vector.
+    sheet_threaded_comments: Vec<Option<sheetkit_xml::threaded_comment::ThreadedComments>>,
+    /// Person list shared across all sheets (for threaded comment authors).
+    person_list: sheetkit_xml::threaded_comment::PersonList,
     /// O(1) sheet name -> index lookup cache. Must be kept in sync with
     /// `worksheets` via [`rebuild_sheet_index`].
     sheet_name_index: HashMap<String, usize>,

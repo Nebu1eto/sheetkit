@@ -89,6 +89,85 @@ impl Workbook {
         Ok(())
     }
 
+    /// Add a threaded comment to a cell on the given sheet.
+    ///
+    /// Returns the generated comment ID. If the author does not exist in the
+    /// person list, they are added automatically.
+    pub fn add_threaded_comment(
+        &mut self,
+        sheet: &str,
+        cell: &str,
+        input: &ThreadedCommentInput,
+    ) -> Result<String> {
+        let idx = self.sheet_index(sheet)?;
+        crate::threaded_comment::add_threaded_comment(
+            &mut self.sheet_threaded_comments[idx],
+            &mut self.person_list,
+            cell,
+            input,
+        )
+    }
+
+    /// Get all threaded comments for a sheet.
+    pub fn get_threaded_comments(&self, sheet: &str) -> Result<Vec<ThreadedCommentData>> {
+        let idx = self.sheet_index(sheet)?;
+        Ok(crate::threaded_comment::get_threaded_comments(
+            &self.sheet_threaded_comments[idx],
+            &self.person_list,
+        ))
+    }
+
+    /// Get threaded comments for a specific cell on a sheet.
+    pub fn get_threaded_comments_by_cell(
+        &self,
+        sheet: &str,
+        cell: &str,
+    ) -> Result<Vec<ThreadedCommentData>> {
+        let idx = self.sheet_index(sheet)?;
+        Ok(crate::threaded_comment::get_threaded_comments_by_cell(
+            &self.sheet_threaded_comments[idx],
+            &self.person_list,
+            cell,
+        ))
+    }
+
+    /// Delete a threaded comment by its ID.
+    pub fn delete_threaded_comment(&mut self, sheet: &str, comment_id: &str) -> Result<()> {
+        let idx = self.sheet_index(sheet)?;
+        crate::threaded_comment::delete_threaded_comment(
+            &mut self.sheet_threaded_comments[idx],
+            comment_id,
+        );
+        Ok(())
+    }
+
+    /// Set the resolved (done) state of a threaded comment.
+    pub fn resolve_threaded_comment(
+        &mut self,
+        sheet: &str,
+        comment_id: &str,
+        done: bool,
+    ) -> Result<()> {
+        let idx = self.sheet_index(sheet)?;
+        crate::threaded_comment::resolve_threaded_comment(
+            &mut self.sheet_threaded_comments[idx],
+            comment_id,
+            done,
+        );
+        Ok(())
+    }
+
+    /// Add a person to the person list. Returns the person ID.
+    /// If a person with the same display name already exists, returns their ID.
+    pub fn add_person(&mut self, input: &PersonInput) -> String {
+        crate::threaded_comment::add_person(&mut self.person_list, input)
+    }
+
+    /// Get all persons in the person list.
+    pub fn get_persons(&self) -> Vec<PersonData> {
+        crate::threaded_comment::get_persons(&self.person_list)
+    }
+
     /// Set an auto-filter on a sheet for the given cell range.
     pub fn set_auto_filter(&mut self, sheet: &str, range: &str) -> Result<()> {
         let ws = self.worksheet_mut(sheet)?;
@@ -2483,5 +2562,264 @@ mod tests {
 
         let wb3 = Workbook::open(&path2).unwrap();
         assert!(wb3.get_tables("Sheet1").unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_workbook_add_threaded_comment() {
+        let mut wb = Workbook::new();
+        let input = crate::threaded_comment::ThreadedCommentInput {
+            author: "Alice".to_string(),
+            text: "Hello thread".to_string(),
+            parent_id: None,
+        };
+        let id = wb.add_threaded_comment("Sheet1", "A1", &input).unwrap();
+        assert!(!id.is_empty());
+
+        let comments = wb.get_threaded_comments("Sheet1").unwrap();
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments[0].cell_ref, "A1");
+        assert_eq!(comments[0].text, "Hello thread");
+        assert_eq!(comments[0].author, "Alice");
+    }
+
+    #[test]
+    fn test_workbook_threaded_comment_reply() {
+        let mut wb = Workbook::new();
+        let parent_id = wb
+            .add_threaded_comment(
+                "Sheet1",
+                "A1",
+                &crate::threaded_comment::ThreadedCommentInput {
+                    author: "Alice".to_string(),
+                    text: "Initial".to_string(),
+                    parent_id: None,
+                },
+            )
+            .unwrap();
+
+        wb.add_threaded_comment(
+            "Sheet1",
+            "A1",
+            &crate::threaded_comment::ThreadedCommentInput {
+                author: "Bob".to_string(),
+                text: "Reply".to_string(),
+                parent_id: Some(parent_id.clone()),
+            },
+        )
+        .unwrap();
+
+        let comments = wb.get_threaded_comments("Sheet1").unwrap();
+        assert_eq!(comments.len(), 2);
+        assert_eq!(comments[1].parent_id, Some(parent_id));
+    }
+
+    #[test]
+    fn test_workbook_threaded_comments_by_cell() {
+        let mut wb = Workbook::new();
+        wb.add_threaded_comment(
+            "Sheet1",
+            "A1",
+            &crate::threaded_comment::ThreadedCommentInput {
+                author: "Alice".to_string(),
+                text: "On A1".to_string(),
+                parent_id: None,
+            },
+        )
+        .unwrap();
+        wb.add_threaded_comment(
+            "Sheet1",
+            "B2",
+            &crate::threaded_comment::ThreadedCommentInput {
+                author: "Bob".to_string(),
+                text: "On B2".to_string(),
+                parent_id: None,
+            },
+        )
+        .unwrap();
+
+        let a1 = wb.get_threaded_comments_by_cell("Sheet1", "A1").unwrap();
+        assert_eq!(a1.len(), 1);
+        assert_eq!(a1[0].text, "On A1");
+
+        let b2 = wb.get_threaded_comments_by_cell("Sheet1", "B2").unwrap();
+        assert_eq!(b2.len(), 1);
+        assert_eq!(b2[0].text, "On B2");
+    }
+
+    #[test]
+    fn test_workbook_delete_threaded_comment() {
+        let mut wb = Workbook::new();
+        let id = wb
+            .add_threaded_comment(
+                "Sheet1",
+                "A1",
+                &crate::threaded_comment::ThreadedCommentInput {
+                    author: "Alice".to_string(),
+                    text: "Delete me".to_string(),
+                    parent_id: None,
+                },
+            )
+            .unwrap();
+
+        wb.delete_threaded_comment("Sheet1", &id).unwrap();
+        let comments = wb.get_threaded_comments("Sheet1").unwrap();
+        assert!(comments.is_empty());
+    }
+
+    #[test]
+    fn test_workbook_resolve_threaded_comment() {
+        let mut wb = Workbook::new();
+        let id = wb
+            .add_threaded_comment(
+                "Sheet1",
+                "A1",
+                &crate::threaded_comment::ThreadedCommentInput {
+                    author: "Alice".to_string(),
+                    text: "Resolve me".to_string(),
+                    parent_id: None,
+                },
+            )
+            .unwrap();
+
+        wb.resolve_threaded_comment("Sheet1", &id, true).unwrap();
+        let comments = wb.get_threaded_comments("Sheet1").unwrap();
+        assert!(comments[0].done);
+
+        wb.resolve_threaded_comment("Sheet1", &id, false).unwrap();
+        let comments = wb.get_threaded_comments("Sheet1").unwrap();
+        assert!(!comments[0].done);
+    }
+
+    #[test]
+    fn test_workbook_add_person() {
+        let mut wb = Workbook::new();
+        let id = wb.add_person(&crate::threaded_comment::PersonInput {
+            display_name: "Alice".to_string(),
+            user_id: Some("alice@example.com".to_string()),
+            provider_id: Some("ADAL".to_string()),
+        });
+        assert!(!id.is_empty());
+
+        let persons = wb.get_persons();
+        assert_eq!(persons.len(), 1);
+        assert_eq!(persons[0].display_name, "Alice");
+    }
+
+    #[test]
+    fn test_workbook_threaded_comment_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("threaded_comment_roundtrip.xlsx");
+
+        let mut wb = Workbook::new();
+        let id = wb
+            .add_threaded_comment(
+                "Sheet1",
+                "A1",
+                &crate::threaded_comment::ThreadedCommentInput {
+                    author: "Alice".to_string(),
+                    text: "Persisted comment".to_string(),
+                    parent_id: None,
+                },
+            )
+            .unwrap();
+        wb.resolve_threaded_comment("Sheet1", &id, true).unwrap();
+        wb.save(&path).unwrap();
+
+        let wb2 = Workbook::open(&path).unwrap();
+        let comments = wb2.get_threaded_comments("Sheet1").unwrap();
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments[0].cell_ref, "A1");
+        assert_eq!(comments[0].text, "Persisted comment");
+        assert_eq!(comments[0].author, "Alice");
+        assert!(comments[0].done);
+
+        let persons = wb2.get_persons();
+        assert_eq!(persons.len(), 1);
+        assert_eq!(persons[0].display_name, "Alice");
+    }
+
+    #[test]
+    fn test_workbook_threaded_comment_buffer_roundtrip() {
+        let mut wb = Workbook::new();
+        let parent_id = wb
+            .add_threaded_comment(
+                "Sheet1",
+                "B2",
+                &crate::threaded_comment::ThreadedCommentInput {
+                    author: "Bob".to_string(),
+                    text: "Buffer test".to_string(),
+                    parent_id: None,
+                },
+            )
+            .unwrap();
+        wb.add_threaded_comment(
+            "Sheet1",
+            "B2",
+            &crate::threaded_comment::ThreadedCommentInput {
+                author: "Alice".to_string(),
+                text: "Buffer reply".to_string(),
+                parent_id: Some(parent_id.clone()),
+            },
+        )
+        .unwrap();
+
+        let buf = wb.save_to_buffer().unwrap();
+        let wb2 = Workbook::open_from_buffer(&buf).unwrap();
+
+        let comments = wb2.get_threaded_comments("Sheet1").unwrap();
+        assert_eq!(comments.len(), 2);
+        assert_eq!(comments[0].text, "Buffer test");
+        assert_eq!(comments[1].text, "Buffer reply");
+        assert_eq!(comments[1].parent_id, Some(parent_id));
+    }
+
+    #[test]
+    fn test_workbook_threaded_comment_multiple_sheets() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("tc_multi_sheet.xlsx");
+
+        let mut wb = Workbook::new();
+        wb.new_sheet("Sheet2").unwrap();
+
+        wb.add_threaded_comment(
+            "Sheet1",
+            "A1",
+            &crate::threaded_comment::ThreadedCommentInput {
+                author: "Alice".to_string(),
+                text: "Sheet1 comment".to_string(),
+                parent_id: None,
+            },
+        )
+        .unwrap();
+        wb.add_threaded_comment(
+            "Sheet2",
+            "C3",
+            &crate::threaded_comment::ThreadedCommentInput {
+                author: "Bob".to_string(),
+                text: "Sheet2 comment".to_string(),
+                parent_id: None,
+            },
+        )
+        .unwrap();
+        wb.save(&path).unwrap();
+
+        let wb2 = Workbook::open(&path).unwrap();
+        let s1 = wb2.get_threaded_comments("Sheet1").unwrap();
+        assert_eq!(s1.len(), 1);
+        assert_eq!(s1[0].text, "Sheet1 comment");
+
+        let s2 = wb2.get_threaded_comments("Sheet2").unwrap();
+        assert_eq!(s2.len(), 1);
+        assert_eq!(s2[0].text, "Sheet2 comment");
+
+        let persons = wb2.get_persons();
+        assert_eq!(persons.len(), 2);
+    }
+
+    #[test]
+    fn test_workbook_threaded_comment_sheet_not_found() {
+        let wb = Workbook::new();
+        let result = wb.get_threaded_comments("NoSheet");
+        assert!(matches!(result.unwrap_err(), Error::SheetNotFound { .. }));
     }
 }

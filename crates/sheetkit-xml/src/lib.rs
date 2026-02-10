@@ -28,5 +28,6 @@ pub mod sparkline;
 pub mod styles;
 pub mod table;
 pub mod theme;
+pub mod threaded_comment;
 pub mod workbook;
 pub mod worksheet;
