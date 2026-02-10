@@ -17,6 +17,7 @@ import type {
   JsImageConfig,
   JsPageMargins,
   JsPageSetup,
+  JsPictureInfo,
   JsPivotTableConfig,
   JsPivotTableInfo,
   JsPrintOptions,
@@ -59,6 +60,7 @@ export type {
   JsImageConfig,
   JsPageMargins,
   JsPageSetup,
+  JsPictureInfo,
   JsPivotDataField,
   JsPivotField,
   JsPivotTableConfig,
@@ -348,6 +350,26 @@ class Workbook {
   /** Add an image to a sheet. */
   addImage(sheet: string, config: JsImageConfig): void {
     this.#native.addImage(sheet, config);
+  }
+
+  /** Delete a chart anchored at the given cell. */
+  deleteChart(sheet: string, cell: string): void {
+    this.#native.deleteChart(sheet, cell);
+  }
+
+  /** Delete a picture anchored at the given cell. */
+  deletePicture(sheet: string, cell: string): void {
+    this.#native.deletePicture(sheet, cell);
+  }
+
+  /** Get all pictures anchored at the given cell. */
+  getPictures(sheet: string, cell: string): JsPictureInfo[] {
+    return this.#native.getPictures(sheet, cell);
+  }
+
+  /** Get all cells that have pictures anchored to them on the given sheet. */
+  getPictureCells(sheet: string): string[] {
+    return this.#native.getPictureCells(sheet);
   }
 
   /** Merge a range of cells on a sheet. */

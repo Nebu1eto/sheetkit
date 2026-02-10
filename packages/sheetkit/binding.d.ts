@@ -130,6 +130,14 @@ export declare class Workbook {
   addChart(sheet: string, fromCell: string, toCell: string, config: JsChartConfig): void
   /** Add an image to a sheet. */
   addImage(sheet: string, config: JsImageConfig): void
+  /** Delete a chart anchored at the given cell. */
+  deleteChart(sheet: string, cell: string): void
+  /** Delete a picture anchored at the given cell. */
+  deletePicture(sheet: string, cell: string): void
+  /** Get all pictures anchored at the given cell. */
+  getPictures(sheet: string, cell: string): Array<JsPictureInfo>
+  /** Get all cells that have pictures anchored to them on the given sheet. */
+  getPictureCells(sheet: string): Array<string>
   /** Merge a range of cells on a sheet. */
   mergeCells(sheet: string, topLeft: string, bottomRight: string): void
   /** Remove a merged cell range from a sheet. */
@@ -595,6 +603,20 @@ export interface JsPageSetup {
   fitToWidth?: number
   /** Fit to this many pages tall. */
   fitToHeight?: number
+}
+
+/** Information about a picture retrieved from a worksheet. */
+export interface JsPictureInfo {
+  /** Raw image bytes. */
+  data: Buffer
+  /** Image format extension (e.g., "png", "jpeg"). */
+  format: string
+  /** Anchor cell reference (e.g., "B2"). */
+  cell: string
+  /** Image width in pixels. */
+  widthPx: number
+  /** Image height in pixels. */
+  heightPx: number
 }
 
 export interface JsPivotDataField {
