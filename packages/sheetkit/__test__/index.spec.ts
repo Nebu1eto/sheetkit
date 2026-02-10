@@ -2510,3 +2510,334 @@ describe('Buffer large dataset', () => {
     expect(decoded).toEqual(rows);
   });
 });
+
+describe('toJSON', () => {
+  it('should convert sheet data to JSON with first row as headers', () => {
+    const wb = new Workbook();
+    wb.setSheetData('Sheet1', [
+      ['Name', 'Age', 'Active'],
+      ['Alice', 30, true],
+      ['Bob', 25, false],
+    ]);
+    const result = wb.toJSON('Sheet1');
+    expect(result).toEqual([
+      { Name: 'Alice', Age: 30, Active: true },
+      { Name: 'Bob', Age: 25, Active: false },
+    ]);
+  });
+
+  it('should convert with custom header keys', () => {
+    const wb = new Workbook();
+    wb.setSheetData('Sheet1', [
+      ['Alice', 30],
+      ['Bob', 25],
+    ]);
+    const result = wb.toJSON('Sheet1', { header: ['name', 'age'] });
+    expect(result).toEqual([
+      { name: 'Alice', age: 30 },
+      { name: 'Bob', age: 25 },
+    ]);
+  });
+
+  it('should use column letters when header is false', () => {
+    const wb = new Workbook();
+    wb.setSheetData('Sheet1', [
+      ['Alice', 30],
+      ['Bob', 25],
+    ]);
+    const result = wb.toJSON('Sheet1', { header: false });
+    expect(result).toEqual([
+      { A: 'Alice', B: 30 },
+      { B: 25, A: 'Bob' },
+    ]);
+  });
+
+  it('should return empty array for empty sheet', () => {
+    const wb = new Workbook();
+    const result = wb.toJSON('Sheet1');
+    expect(result).toEqual([]);
+  });
+
+  it('should handle mixed types including null', () => {
+    const wb = new Workbook();
+    wb.setSheetData('Sheet1', [
+      ['Key', 'Value'],
+      ['number', 42],
+      ['text', 'hello'],
+      ['bool', true],
+      ['empty', null],
+    ]);
+    const result = wb.toJSON('Sheet1');
+    expect(result).toEqual([
+      { Key: 'number', Value: 42 },
+      { Key: 'text', Value: 'hello' },
+      { Key: 'bool', Value: true },
+      { Key: 'empty', Value: null },
+    ]);
+  });
+
+  it('should handle rows shorter than header', () => {
+    const wb = new Workbook();
+    wb.setSheetData('Sheet1', [
+      ['A', 'B', 'C'],
+      ['only_one'],
+    ]);
+    const result = wb.toJSON('Sheet1');
+    expect(result).toEqual([{ A: 'only_one', B: null, C: null }]);
+  });
+
+  it('should handle single-row sheet (header only)', () => {
+    const wb = new Workbook();
+    wb.setSheetData('Sheet1', [['Name', 'Age']]);
+    const result = wb.toJSON('Sheet1');
+    expect(result).toEqual([]);
+  });
+});
+
+describe('toCSV', () => {
+  it('should convert sheet data to CSV', () => {
+    const wb = new Workbook();
+    wb.setSheetData('Sheet1', [
+      ['Name', 'Age'],
+      ['Alice', 30],
+      ['Bob', 25],
+    ]);
+    const csv = wb.toCSV('Sheet1');
+    expect(csv).toBe('Name,Age\nAlice,30\nBob,25');
+  });
+
+  it('should escape values containing delimiter', () => {
+    const wb = new Workbook();
+    wb.setSheetData('Sheet1', [
+      ['Name', 'Notes'],
+      ['Alice', 'likes cats, dogs'],
+    ]);
+    const csv = wb.toCSV('Sheet1');
+    expect(csv).toBe('Name,Notes\nAlice,"likes cats, dogs"');
+  });
+
+  it('should escape values containing quotes', () => {
+    const wb = new Workbook();
+    wb.setSheetData('Sheet1', [
+      ['Name', 'Quote'],
+      ['Alice', 'She said "hello"'],
+    ]);
+    const csv = wb.toCSV('Sheet1');
+    expect(csv).toBe('Name,Quote\nAlice,"She said ""hello"""');
+  });
+
+  it('should escape values containing newlines', () => {
+    const wb = new Workbook();
+    wb.setSheetData('Sheet1', [
+      ['Name', 'Bio'],
+      ['Alice', 'Line 1\nLine 2'],
+    ]);
+    const csv = wb.toCSV('Sheet1');
+    expect(csv).toBe('Name,Bio\nAlice,"Line 1\nLine 2"');
+  });
+
+  it('should use custom delimiter and line ending', () => {
+    const wb = new Workbook();
+    wb.setSheetData('Sheet1', [
+      ['Name', 'Age'],
+      ['Alice', 30],
+    ]);
+    const csv = wb.toCSV('Sheet1', { delimiter: '\t', lineEnding: '\r\n' });
+    expect(csv).toBe('Name\tAge\r\nAlice\t30');
+  });
+
+  it('should return empty string for empty sheet', () => {
+    const wb = new Workbook();
+    const csv = wb.toCSV('Sheet1');
+    expect(csv).toBe('');
+  });
+
+  it('should handle boolean and null values', () => {
+    const wb = new Workbook();
+    wb.setSheetData('Sheet1', [[true, false, null, 0]]);
+    const csv = wb.toCSV('Sheet1');
+    expect(csv).toBe('true,false,,0');
+  });
+
+  it('should escape custom quote character', () => {
+    const wb = new Workbook();
+    wb.setSheetData('Sheet1', [["it's a test", 'normal']]);
+    const csv = wb.toCSV('Sheet1', { quote: "'" });
+    expect(csv).toBe("'it''s a test',normal");
+  });
+});
+
+describe('toHTML', () => {
+  it('should generate an HTML table', () => {
+    const wb = new Workbook();
+    wb.setSheetData('Sheet1', [
+      ['Name', 'Age'],
+      ['Alice', 30],
+    ]);
+    const html = wb.toHTML('Sheet1');
+    expect(html).toBe(
+      '<table><tr><td>Name</td><td>Age</td></tr><tr><td>Alice</td><td>30</td></tr></table>',
+    );
+  });
+
+  it('should apply className to table element', () => {
+    const wb = new Workbook();
+    wb.setSheetData('Sheet1', [['A']]);
+    const html = wb.toHTML('Sheet1', { className: 'my-table' });
+    expect(html).toContain('<table class="my-table">');
+  });
+
+  it('should escape HTML special characters', () => {
+    const wb = new Workbook();
+    wb.setSheetData('Sheet1', [['<script>alert("xss")</script>']]);
+    const html = wb.toHTML('Sheet1');
+    expect(html).not.toContain('<script>');
+    expect(html).toContain('&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;');
+  });
+
+  it('should escape ampersands', () => {
+    const wb = new Workbook();
+    wb.setSheetData('Sheet1', [['A & B']]);
+    const html = wb.toHTML('Sheet1');
+    expect(html).toContain('A &amp; B');
+  });
+
+  it('should escape single quotes in content', () => {
+    const wb = new Workbook();
+    wb.setSheetData('Sheet1', [["it's"]]);
+    const html = wb.toHTML('Sheet1');
+    expect(html).toContain('it&#39;s');
+  });
+
+  it('should escape className to prevent attribute injection', () => {
+    const wb = new Workbook();
+    wb.setSheetData('Sheet1', [['A']]);
+    const html = wb.toHTML('Sheet1', { className: 'foo" onclick="alert(1)' });
+    expect(html).toContain('class="foo&quot; onclick=&quot;alert(1)"');
+    expect(html).not.toContain('onclick="alert(1)"');
+  });
+
+  it('should return empty table for empty sheet', () => {
+    const wb = new Workbook();
+    const html = wb.toHTML('Sheet1');
+    expect(html).toBe('<table></table>');
+  });
+
+  it('should handle null cells', () => {
+    const wb = new Workbook();
+    wb.setSheetData('Sheet1', [['', 'value', '']]);
+    const html = wb.toHTML('Sheet1');
+    expect(html).toContain('<td></td><td>value</td><td></td>');
+  });
+});
+
+describe('fromJSON', () => {
+  it('should write JSON objects to a sheet with auto-detected headers', () => {
+    const wb = new Workbook();
+    wb.fromJSON('Sheet1', [
+      { Name: 'Alice', Age: 30 },
+      { Name: 'Bob', Age: 25 },
+    ]);
+    expect(wb.getCellValue('Sheet1', 'A1')).toBe('Name');
+    expect(wb.getCellValue('Sheet1', 'B1')).toBe('Age');
+    expect(wb.getCellValue('Sheet1', 'A2')).toBe('Alice');
+    expect(wb.getCellValue('Sheet1', 'B2')).toBe(30);
+    expect(wb.getCellValue('Sheet1', 'A3')).toBe('Bob');
+    expect(wb.getCellValue('Sheet1', 'B3')).toBe(25);
+  });
+
+  it('should write with custom headers', () => {
+    const wb = new Workbook();
+    wb.fromJSON(
+      'Sheet1',
+      [
+        { name: 'Alice', age: 30 },
+        { name: 'Bob', age: 25 },
+      ],
+      { header: ['name', 'age'] },
+    );
+    expect(wb.getCellValue('Sheet1', 'A1')).toBe('name');
+    expect(wb.getCellValue('Sheet1', 'B1')).toBe('age');
+    expect(wb.getCellValue('Sheet1', 'A2')).toBe('Alice');
+  });
+
+  it('should skip header row when header is false', () => {
+    const wb = new Workbook();
+    wb.fromJSON(
+      'Sheet1',
+      [
+        { Name: 'Alice', Age: 30 },
+        { Name: 'Bob', Age: 25 },
+      ],
+      { header: false },
+    );
+    expect(wb.getCellValue('Sheet1', 'A1')).toBe('Alice');
+    expect(wb.getCellValue('Sheet1', 'B1')).toBe(30);
+    expect(wb.getCellValue('Sheet1', 'A2')).toBe('Bob');
+  });
+
+  it('should write to a custom start cell', () => {
+    const wb = new Workbook();
+    wb.fromJSON('Sheet1', [{ X: 1, Y: 2 }], { startCell: 'C3' });
+    expect(wb.getCellValue('Sheet1', 'C3')).toBe('X');
+    expect(wb.getCellValue('Sheet1', 'D3')).toBe('Y');
+    expect(wb.getCellValue('Sheet1', 'C4')).toBe(1);
+    expect(wb.getCellValue('Sheet1', 'D4')).toBe(2);
+  });
+
+  it('should handle empty data array', () => {
+    const wb = new Workbook();
+    wb.fromJSON('Sheet1', []);
+    expect(wb.getCellValue('Sheet1', 'A1')).toBeNull();
+  });
+
+  it('should handle null values in objects', () => {
+    const wb = new Workbook();
+    wb.fromJSON('Sheet1', [{ A: 'value', B: null }]);
+    expect(wb.getCellValue('Sheet1', 'A2')).toBe('value');
+    expect(wb.getCellValue('Sheet1', 'B2')).toBeNull();
+  });
+
+  it('should handle missing keys in records (undefined becomes null)', () => {
+    const wb = new Workbook();
+    wb.fromJSON(
+      'Sheet1',
+      [
+        { A: 1, B: 2, C: 3 },
+        { A: 4 },
+      ],
+    );
+    expect(wb.getCellValue('Sheet1', 'A3')).toBe(4);
+    expect(wb.getCellValue('Sheet1', 'B3')).toBeNull();
+    expect(wb.getCellValue('Sheet1', 'C3')).toBeNull();
+  });
+
+  it('should roundtrip with toJSON', () => {
+    const wb = new Workbook();
+    const original = [
+      { Name: 'Alice', Score: 95, Pass: true },
+      { Name: 'Bob', Score: 80, Pass: true },
+      { Name: 'Charlie', Score: 55, Pass: false },
+    ];
+    wb.fromJSON('Sheet1', original);
+    const result = wb.toJSON('Sheet1');
+    expect(result).toEqual(original);
+  });
+
+  it('should roundtrip with toJSON using header: false on both sides', () => {
+    const wb = new Workbook();
+    wb.fromJSON(
+      'Sheet1',
+      [
+        { A: 'x', B: 1 },
+        { A: 'y', B: 2 },
+      ],
+      { header: false },
+    );
+    const result = wb.toJSON('Sheet1', { header: false });
+    expect(result).toEqual([
+      { A: 'x', B: 1 },
+      { A: 'y', B: 2 },
+    ]);
+  });
+});
