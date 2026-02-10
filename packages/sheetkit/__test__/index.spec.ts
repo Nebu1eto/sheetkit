@@ -3004,3 +3004,384 @@ describe('Sheet Visibility', () => {
     expect(() => wb.setSheetVisibility('NoSheet', 'hidden')).toThrow();
   });
 });
+
+describe('Workbook Format', () => {
+  const out = tmpFile('test-format.xlsx');
+  afterEach(async () => cleanup(out));
+
+  it('should return xlsx for a new workbook', () => {
+    const wb = new Workbook();
+    expect(wb.getFormat()).toBe('xlsx');
+  });
+
+  it('should detect xlsx format after save and open', async () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'test');
+    await wb.save(out);
+    const wb2 = await Workbook.open(out);
+    expect(wb2.getFormat()).toBe('xlsx');
+  });
+
+  it('should detect xlsm format from buffer', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'data');
+    const buf = wb.writeBufferSync();
+    const wb2 = Workbook.openBufferSync(buf);
+    expect(wb2.getFormat()).toBe('xlsx');
+  });
+});
+
+describe('Table CRUD', () => {
+  const out = tmpFile('test-table.xlsx');
+  afterEach(async () => cleanup(out));
+
+  it('should add a table and retrieve it', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'Name');
+    wb.setCellValue('Sheet1', 'B1', 'Score');
+    wb.setCellValue('Sheet1', 'A2', 'Alice');
+    wb.setCellValue('Sheet1', 'B2', 95);
+
+    wb.addTable('Sheet1', {
+      name: 'Table1',
+      displayName: 'Table1',
+      range: 'A1:B2',
+      columns: [{ name: 'Name' }, { name: 'Score' }],
+    });
+
+    const tables = wb.getTables('Sheet1');
+    expect(tables).toHaveLength(1);
+    expect(tables[0].name).toBe('Table1');
+    expect(tables[0].displayName).toBe('Table1');
+    expect(tables[0].range).toBe('A1:B2');
+    expect(tables[0].columns).toEqual(['Name', 'Score']);
+    expect(tables[0].showHeaderRow).toBe(true);
+    expect(tables[0].autoFilter).toBe(true);
+  });
+
+  it('should add a table with style options', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'Item');
+    wb.setCellValue('Sheet1', 'B1', 'Price');
+
+    wb.addTable('Sheet1', {
+      name: 'StyledTable',
+      displayName: 'StyledTable',
+      range: 'A1:B5',
+      columns: [{ name: 'Item' }, { name: 'Price' }],
+      styleName: 'TableStyleMedium2',
+      showRowStripes: true,
+      showColumnStripes: false,
+      showFirstColumn: true,
+      showLastColumn: false,
+    });
+
+    const tables = wb.getTables('Sheet1');
+    expect(tables).toHaveLength(1);
+    expect(tables[0].styleName).toBe('TableStyleMedium2');
+  });
+
+  it('should add a table without header row', () => {
+    const wb = new Workbook();
+    wb.addTable('Sheet1', {
+      name: 'NoHeader',
+      displayName: 'NoHeader',
+      range: 'A1:B5',
+      columns: [{ name: 'Col1' }, { name: 'Col2' }],
+      showHeaderRow: false,
+    });
+
+    const tables = wb.getTables('Sheet1');
+    expect(tables[0].showHeaderRow).toBe(false);
+  });
+
+  it('should delete a table', () => {
+    const wb = new Workbook();
+    wb.addTable('Sheet1', {
+      name: 'ToDelete',
+      displayName: 'ToDelete',
+      range: 'A1:B5',
+      columns: [{ name: 'Col1' }, { name: 'Col2' }],
+    });
+
+    expect(wb.getTables('Sheet1')).toHaveLength(1);
+    wb.deleteTable('Sheet1', 'ToDelete');
+    expect(wb.getTables('Sheet1')).toHaveLength(0);
+  });
+
+  it('should throw when adding duplicate table name', () => {
+    const wb = new Workbook();
+    wb.addTable('Sheet1', {
+      name: 'Dup',
+      displayName: 'Dup',
+      range: 'A1:B5',
+      columns: [{ name: 'Col1' }, { name: 'Col2' }],
+    });
+
+    expect(() =>
+      wb.addTable('Sheet1', {
+        name: 'Dup',
+        displayName: 'Dup',
+        range: 'C1:D5',
+        columns: [{ name: 'Col3' }, { name: 'Col4' }],
+      }),
+    ).toThrow();
+  });
+
+  it('should throw when deleting non-existent table', () => {
+    const wb = new Workbook();
+    expect(() => wb.deleteTable('Sheet1', 'NoSuchTable')).toThrow();
+  });
+
+  it('should throw for non-existent sheet', () => {
+    const wb = new Workbook();
+    expect(() => wb.getTables('NoSheet')).toThrow();
+  });
+
+  it('should support multiple tables on different sheets', () => {
+    const wb = new Workbook();
+    wb.newSheet('Sheet2');
+
+    wb.addTable('Sheet1', {
+      name: 'T1',
+      displayName: 'T1',
+      range: 'A1:B5',
+      columns: [{ name: 'X' }, { name: 'Y' }],
+    });
+
+    wb.addTable('Sheet2', {
+      name: 'T2',
+      displayName: 'T2',
+      range: 'A1:C3',
+      columns: [{ name: 'A' }, { name: 'B' }, { name: 'C' }],
+    });
+
+    expect(wb.getTables('Sheet1')).toHaveLength(1);
+    expect(wb.getTables('Sheet2')).toHaveLength(1);
+    expect(wb.getTables('Sheet1')[0].name).toBe('T1');
+    expect(wb.getTables('Sheet2')[0].name).toBe('T2');
+  });
+
+  it('should roundtrip tables through save/open', async () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'Product');
+    wb.setCellValue('Sheet1', 'B1', 'Quantity');
+    wb.setCellValue('Sheet1', 'A2', 'Widget');
+    wb.setCellValue('Sheet1', 'B2', 100);
+
+    wb.addTable('Sheet1', {
+      name: 'Products',
+      displayName: 'Products',
+      range: 'A1:B2',
+      columns: [{ name: 'Product' }, { name: 'Quantity' }],
+      styleName: 'TableStyleLight1',
+    });
+
+    await wb.save(out);
+    const wb2 = await Workbook.open(out);
+    const tables = wb2.getTables('Sheet1');
+    expect(tables).toHaveLength(1);
+    expect(tables[0].name).toBe('Products');
+    expect(tables[0].range).toBe('A1:B2');
+    expect(tables[0].columns).toEqual(['Product', 'Quantity']);
+  });
+});
+
+describe('Cross-feature integration', () => {
+  const out = tmpFile('test-integration.xlsx');
+  afterEach(async () => cleanup(out));
+
+  it('should combine format detection with tables and views', async () => {
+    const wb = new Workbook();
+    expect(wb.getFormat()).toBe('xlsx');
+
+    wb.setCellValue('Sheet1', 'A1', 'Region');
+    wb.setCellValue('Sheet1', 'B1', 'Revenue');
+    wb.setCellValue('Sheet1', 'A2', 'North');
+    wb.setCellValue('Sheet1', 'B2', 50000);
+    wb.setCellValue('Sheet1', 'A3', 'South');
+    wb.setCellValue('Sheet1', 'B3', 75000);
+
+    wb.addTable('Sheet1', {
+      name: 'SalesData',
+      displayName: 'SalesData',
+      range: 'A1:B3',
+      columns: [{ name: 'Region' }, { name: 'Revenue' }],
+      styleName: 'TableStyleMedium2',
+    });
+
+    wb.setSheetViewOptions('Sheet1', {
+      zoomScale: 120,
+      showGridlines: false,
+    });
+
+    wb.setPanes('Sheet1', 'A2');
+
+    await wb.save(out);
+    const wb2 = await Workbook.open(out);
+
+    expect(wb2.getFormat()).toBe('xlsx');
+
+    const tables = wb2.getTables('Sheet1');
+    expect(tables).toHaveLength(1);
+    expect(tables[0].name).toBe('SalesData');
+
+    const view = wb2.getSheetViewOptions('Sheet1');
+    expect(view.zoomScale).toBe(120);
+    expect(view.showGridlines).toBe(false);
+
+    const panes = wb2.getPanes('Sheet1');
+    expect(panes).toBe('A2');
+  });
+
+  it('should combine tables with cell styles and defined names', async () => {
+    const wb = new Workbook();
+
+    wb.setCellValue('Sheet1', 'A1', 'Name');
+    wb.setCellValue('Sheet1', 'B1', 'Amount');
+    wb.setCellValue('Sheet1', 'A2', 'Alice');
+    wb.setCellValue('Sheet1', 'B2', 1000);
+    wb.setCellValue('Sheet1', 'A3', 'Bob');
+    wb.setCellValue('Sheet1', 'B3', 2000);
+
+    wb.addTable('Sheet1', {
+      name: 'Budget',
+      displayName: 'Budget',
+      range: 'A1:B3',
+      columns: [{ name: 'Name' }, { name: 'Amount' }],
+    });
+
+    const boldStyle = wb.addStyle({
+      font: { bold: true, size: 12 },
+    });
+    wb.setCellStyle('Sheet1', 'A1', boldStyle);
+    wb.setCellStyle('Sheet1', 'B1', boldStyle);
+
+    wb.setDefinedName({
+      name: 'BudgetRange',
+      value: 'Sheet1!$A$1:$B$3',
+    });
+
+    await wb.save(out);
+    const wb2 = await Workbook.open(out);
+
+    const tables = wb2.getTables('Sheet1');
+    expect(tables).toHaveLength(1);
+    expect(tables[0].name).toBe('Budget');
+
+    const name = wb2.getDefinedName('BudgetRange');
+    expect(name).not.toBeNull();
+    expect(name?.value).toBe('Sheet1!$A$1:$B$3');
+
+    expect(wb2.getCellValue('Sheet1', 'A2')).toBe('Alice');
+    expect(wb2.getCellValue('Sheet1', 'B3')).toBe(2000);
+  });
+
+  it('should combine tables with sheet visibility and protection', () => {
+    const wb = new Workbook();
+    wb.newSheet('Data');
+    wb.newSheet('Config');
+
+    wb.setCellValue('Data', 'A1', 'Key');
+    wb.setCellValue('Data', 'B1', 'Value');
+    wb.setCellValue('Data', 'A2', 'alpha');
+    wb.setCellValue('Data', 'B2', 42);
+
+    wb.addTable('Data', {
+      name: 'DataTable',
+      displayName: 'DataTable',
+      range: 'A1:B2',
+      columns: [{ name: 'Key' }, { name: 'Value' }],
+    });
+
+    wb.setSheetVisibility('Config', 'hidden');
+    wb.protectSheet('Data', { password: 'test123' });
+
+    expect(wb.getSheetVisibility('Config')).toBe('hidden');
+    expect(wb.isSheetProtected('Data')).toBe(true);
+    expect(wb.getTables('Data')).toHaveLength(1);
+  });
+
+  it('should combine tables with data validation and comments', () => {
+    const wb = new Workbook();
+
+    wb.setCellValue('Sheet1', 'A1', 'Status');
+    wb.setCellValue('Sheet1', 'B1', 'Notes');
+    wb.setCellValue('Sheet1', 'A2', 'Active');
+    wb.setCellValue('Sheet1', 'B2', 'First entry');
+
+    wb.addTable('Sheet1', {
+      name: 'StatusTable',
+      displayName: 'StatusTable',
+      range: 'A1:B2',
+      columns: [{ name: 'Status' }, { name: 'Notes' }],
+    });
+
+    wb.addDataValidation('Sheet1', {
+      sqref: 'A2:A100',
+      validationType: 'list',
+      formula1: '"Active,Inactive,Pending"',
+    });
+
+    wb.addComment('Sheet1', {
+      cell: 'A1',
+      author: 'System',
+      text: 'This column uses a dropdown validation.',
+    });
+
+    const tables = wb.getTables('Sheet1');
+    expect(tables).toHaveLength(1);
+
+    const validations = wb.getDataValidations('Sheet1');
+    expect(validations).toHaveLength(1);
+    expect(validations[0].validationType).toBe('list');
+
+    const comments = wb.getComments('Sheet1');
+    expect(comments).toHaveLength(1);
+    expect(comments[0].author).toBe('System');
+  });
+
+  it('should combine format detection with multi-sheet tables and page setup', async () => {
+    const wb = new Workbook();
+    wb.newSheet('Summary');
+
+    wb.setCellValue('Sheet1', 'A1', 'Item');
+    wb.setCellValue('Sheet1', 'B1', 'Count');
+    wb.addTable('Sheet1', {
+      name: 'Items',
+      displayName: 'Items',
+      range: 'A1:B5',
+      columns: [{ name: 'Item' }, { name: 'Count' }],
+    });
+
+    wb.setCellValue('Summary', 'A1', 'Metric');
+    wb.setCellValue('Summary', 'B1', 'Value');
+    wb.addTable('Summary', {
+      name: 'Metrics',
+      displayName: 'Metrics',
+      range: 'A1:B3',
+      columns: [{ name: 'Metric' }, { name: 'Value' }],
+    });
+
+    wb.setPageSetup('Sheet1', { orientation: 'landscape', paperSize: 'a4' });
+    wb.setPageSetup('Summary', { orientation: 'portrait', scale: 80 });
+
+    wb.setDocProps({ title: 'Integration Test', creator: 'SheetKit' });
+
+    await wb.save(out);
+    const wb2 = await Workbook.open(out);
+
+    expect(wb2.getFormat()).toBe('xlsx');
+    expect(wb2.getTables('Sheet1')).toHaveLength(1);
+    expect(wb2.getTables('Summary')).toHaveLength(1);
+    expect(wb2.getTables('Sheet1')[0].name).toBe('Items');
+    expect(wb2.getTables('Summary')[0].name).toBe('Metrics');
+
+    const setup1 = wb2.getPageSetup('Sheet1');
+    expect(setup1.orientation).toBe('landscape');
+
+    const props = wb2.getDocProps();
+    expect(props.title).toBe('Integration Test');
+    expect(props.creator).toBe('SheetKit');
+  });
+});

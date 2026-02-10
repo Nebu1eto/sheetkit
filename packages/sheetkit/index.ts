@@ -26,6 +26,8 @@ import type {
   JsSheetViewOptions,
   JsSparklineConfig,
   JsStyle,
+  JsTableConfig,
+  JsTableInfo,
   JsWorkbookProtectionConfig,
 } from './binding.js';
 import { JsStreamWriter, Workbook as NativeWorkbook } from './binding.js';
@@ -73,6 +75,9 @@ export type {
   JsSheetViewOptions,
   JsSparklineConfig,
   JsStyle,
+  JsTableColumn,
+  JsTableConfig,
+  JsTableInfo,
   JsView3DConfig,
   JsWorkbookProtectionConfig,
 } from './binding.js';
@@ -890,6 +895,26 @@ class Workbook {
     const colLetter = columnNumberToLetter(startCol);
     const cellRef = `${colLetter}${startRow}`;
     this.#native.setSheetData(sheet, grid, cellRef);
+  }
+
+  /** Get the workbook format ("xlsx", "xlsm", "xltx", "xltm", "xlam"). */
+  getFormat(): string {
+    return this.#native.getFormat();
+  }
+
+  /** Add a table to a sheet. */
+  addTable(sheet: string, config: JsTableConfig): void {
+    this.#native.addTable(sheet, config);
+  }
+
+  /** Get all tables on a sheet. */
+  getTables(sheet: string): JsTableInfo[] {
+    return this.#native.getTables(sheet);
+  }
+
+  /** Delete a table from a sheet by name. */
+  deleteTable(sheet: string, name: string): void {
+    this.#native.deleteTable(sheet, name);
   }
 
   /** Set sheet view options (gridlines, zoom, view mode, etc.). */

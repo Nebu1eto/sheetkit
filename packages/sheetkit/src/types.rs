@@ -505,3 +505,60 @@ pub struct JsRichTextRun {
     pub italic: Option<bool>,
     pub color: Option<String>,
 }
+
+/// A column definition within a table.
+#[napi(object)]
+pub struct JsTableColumn {
+    /// The column header name.
+    pub name: String,
+    /// Optional totals row function (e.g., "sum", "count", "average").
+    pub totals_row_function: Option<String>,
+    /// Optional totals row label (used for the first column in totals row).
+    pub totals_row_label: Option<String>,
+}
+
+/// Configuration for creating a table.
+#[napi(object)]
+pub struct JsTableConfig {
+    /// The table name (must be unique within the workbook).
+    pub name: String,
+    /// The display name shown in the UI.
+    pub display_name: String,
+    /// The cell range (e.g. "A1:D10").
+    pub range: String,
+    /// Column definitions.
+    pub columns: Vec<JsTableColumn>,
+    /// Whether to show the header row. Defaults to true.
+    pub show_header_row: Option<bool>,
+    /// The table style name (e.g. "TableStyleMedium2").
+    pub style_name: Option<String>,
+    /// Whether to enable auto-filter on the table.
+    pub auto_filter: Option<bool>,
+    /// Whether to show first column formatting.
+    pub show_first_column: Option<bool>,
+    /// Whether to show last column formatting.
+    pub show_last_column: Option<bool>,
+    /// Whether to show row stripes.
+    pub show_row_stripes: Option<bool>,
+    /// Whether to show column stripes.
+    pub show_column_stripes: Option<bool>,
+}
+
+/// Metadata about an existing table.
+#[napi(object)]
+pub struct JsTableInfo {
+    /// The table name.
+    pub name: String,
+    /// The display name.
+    pub display_name: String,
+    /// The cell range (e.g. "A1:D10").
+    pub range: String,
+    /// Whether the table has a header row.
+    pub show_header_row: bool,
+    /// Whether auto-filter is enabled.
+    pub auto_filter: bool,
+    /// Column names.
+    pub columns: Vec<String>,
+    /// The style name, if any.
+    pub style_name: Option<String>,
+}

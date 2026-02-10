@@ -300,6 +300,14 @@ export declare class Workbook {
   setSheetViewOptions(sheet: string, opts: JsSheetViewOptions): void
   /** Get sheet view options. */
   getSheetViewOptions(sheet: string): JsSheetViewOptions
+  /** Get the workbook format ("xlsx", "xlsm", "xltx", "xltm", "xlam"). */
+  getFormat(): string
+  /** Add a table to a sheet. */
+  addTable(sheet: string, config: JsTableConfig): void
+  /** Get all tables on a sheet. */
+  getTables(sheet: string): Array<JsTableInfo>
+  /** Delete a table from a sheet by name. */
+  deleteTable(sheet: string, name: string): void
   /** Set sheet visibility ("visible", "hidden", or "veryHidden"). */
   setSheetVisibility(sheet: string, visibility: string): void
   /** Get sheet visibility. Returns "visible", "hidden", or "veryHidden". */
@@ -754,6 +762,60 @@ export interface JsStyle {
   numFmtId?: number
   customNumFmt?: string
   protection?: JsProtectionStyle
+}
+
+/** A column definition within a table. */
+export interface JsTableColumn {
+  /** The column header name. */
+  name: string
+  /** Optional totals row function (e.g., "sum", "count", "average"). */
+  totalsRowFunction?: string
+  /** Optional totals row label (used for the first column in totals row). */
+  totalsRowLabel?: string
+}
+
+/** Configuration for creating a table. */
+export interface JsTableConfig {
+  /** The table name (must be unique within the workbook). */
+  name: string
+  /** The display name shown in the UI. */
+  displayName: string
+  /** The cell range (e.g. "A1:D10"). */
+  range: string
+  /** Column definitions. */
+  columns: Array<JsTableColumn>
+  /** Whether to show the header row. Defaults to true. */
+  showHeaderRow?: boolean
+  /** The table style name (e.g. "TableStyleMedium2"). */
+  styleName?: string
+  /** Whether to enable auto-filter on the table. */
+  autoFilter?: boolean
+  /** Whether to show first column formatting. */
+  showFirstColumn?: boolean
+  /** Whether to show last column formatting. */
+  showLastColumn?: boolean
+  /** Whether to show row stripes. */
+  showRowStripes?: boolean
+  /** Whether to show column stripes. */
+  showColumnStripes?: boolean
+}
+
+/** Metadata about an existing table. */
+export interface JsTableInfo {
+  /** The table name. */
+  name: string
+  /** The display name. */
+  displayName: string
+  /** The cell range (e.g. "A1:D10"). */
+  range: string
+  /** Whether the table has a header row. */
+  showHeaderRow: boolean
+  /** Whether auto-filter is enabled. */
+  autoFilter: boolean
+  /** Column names. */
+  columns: Array<string>
+  /** The style name, if any. */
+  styleName?: string
 }
 
 export interface JsView3DConfig {
