@@ -5,8 +5,8 @@ The Rust core handles all Excel (.xlsx) processing, and napi-rs bindings bring t
 
 ## Why SheetKit?
 
-- **Native Performance**: Up to 10x faster than JavaScript-only libraries for large datasets
-- **Memory Efficient**: Buffer-based FFI transfer reduces memory usage by up to 96%
+- **Native Performance**: Rust core with low-overhead Node.js bindings for large spreadsheets
+- **Low FFI Overhead**: Raw buffer transfer between Node.js and Rust reduces boundary overhead
 - **Type Safe**: Strongly typed APIs for both Rust and TypeScript
 - **Complete**: 110+ formula functions, 43 chart types, streaming writer, and more
 
@@ -50,7 +50,7 @@ yarn add @sheetkit/node
 pnpm add @sheetkit/node
 ```
 
-Note: A Rust toolchain is required for native compilation during installation.
+Note: Prebuilt binaries are provided for common platforms. A Rust toolchain is needed only when building from source or when a prebuilt binary is unavailable.
 
 [View on npm](https://www.npmjs.com/package/@sheetkit/node)
 

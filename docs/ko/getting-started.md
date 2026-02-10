@@ -5,8 +5,8 @@ Rust 코어가 모든 Excel (.xlsx) 처리를 담당하며, napi-rs 바인딩을
 
 ## SheetKit을 선택해야 하는 이유
 
-- **네이티브 성능**: 대용량 데이터셋에서 JavaScript 전용 라이브러리보다 최대 10배 빠른 성능을 제공합니다
-- **메모리 효율성**: Buffer 기반 FFI 전송으로 메모리 사용량을 최대 96% 감소시킵니다
+- **네이티브 성능**: Rust 코어와 저오버헤드 Node.js 바인딩으로 대용량 스프레드시트를 빠르게 처리합니다
+- **FFI 오버헤드 최소화**: Raw Buffer 기반 전송으로 Node.js와 Rust 간 FFI 경계 오버헤드를 줄입니다
 - **타입 안전성**: Rust와 TypeScript 모두에서 강력한 타입 안전 API를 제공합니다
 - **완전한 기능**: 110개 이상의 수식 함수, 43가지 차트 타입, 스트리밍 쓰기 등을 지원합니다
 
@@ -50,7 +50,7 @@ yarn add @sheetkit/node
 pnpm add @sheetkit/node
 ```
 
-참고: 설치 시 네이티브 컴파일을 위해 Rust 툴체인이 필요합니다.
+참고: 주요 플랫폼에는 사전 빌드 바이너리가 제공됩니다. 사전 빌드 바이너리가 없는 환경이거나 소스에서 직접 빌드하는 경우에만 Rust 툴체인이 필요합니다.
 
 [npm에서 보기](https://www.npmjs.com/package/@sheetkit/node)
 
