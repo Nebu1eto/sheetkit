@@ -5,7 +5,7 @@ import { fixTypedocSidebarLinks } from './shared.mts';
 
 export const en = defineConfig({
   lang: 'en',
-  description: 'A Rust library for reading and writing Excel files, with Node.js bindings',
+  description: 'High-performance SpreadsheetML library for Rust and TypeScript',
 
   themeConfig: {
     nav: nav(),

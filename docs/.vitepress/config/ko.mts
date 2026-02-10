@@ -5,7 +5,7 @@ import { fixTypedocSidebarLinks } from './shared.mts';
 
 export const ko = defineConfig({
   lang: 'ko',
-  description: 'Rust와 Node.js로 Excel 파일을 읽고 쓰는 라이브러리',
+  description: 'Rust와 TypeScript를 위한 고성능 SpreadsheetML 라이브러리',
 
   themeConfig: {
     nav: nav(),

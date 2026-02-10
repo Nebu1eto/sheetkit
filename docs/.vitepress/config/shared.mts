@@ -2,7 +2,7 @@ import { type DefaultTheme, defineConfig } from 'vitepress';
 
 export const shared = defineConfig({
   title: 'SheetKit',
-  description: 'A Rust library for reading and writing Excel files, with Node.js bindings',
+  description: 'High-performance SpreadsheetML library for Rust and TypeScript',
 
   base: '/sheetkit/',
 

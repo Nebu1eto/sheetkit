@@ -1,6 +1,6 @@
 # SheetKit API Reference
 
-SheetKit is a Rust library for reading and writing Excel (.xlsx) files, with Node.js bindings via napi-rs. This document covers every public API method available in both the Rust crate and the TypeScript/Node.js package.
+SheetKit is a high-performance SpreadsheetML library for Rust and TypeScript. This document covers every public API method available in both the Rust crate and the TypeScript package.
 
 ---
 
