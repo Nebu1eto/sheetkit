@@ -643,10 +643,10 @@ wb.setCellFormula("Sheet1", "C1", "SUM(A1:B1)");
 **Rust:**
 
 ```rust
-// Sets D2 = SUM(A2:C2), D3 = SUM(A3:C3), ..., D10 = SUM(A10:C10)
+// D2 = SUM(A2:C2), D3 = SUM(A3:C3), ..., D10 = SUM(A10:C10)으로 설정
 wb.fill_formula("Sheet1", "D2:D10", "SUM(A2:C2)")?;
 
-// Absolute references are preserved:
+// 절대 참조는 보존된다:
 // E2 = $A$1*B2, E3 = $A$1*B3, E4 = $A$1*B4
 wb.fill_formula("Sheet1", "E2:E4", "$A$1*B2")?;
 ```
@@ -1646,10 +1646,10 @@ let wb = Workbook::open_with_password("encrypted.xlsx", "secret")?;
 **TypeScript:**
 
 ```typescript
-// Sync
+// 동기
 const wb = Workbook.openWithPasswordSync("encrypted.xlsx", "secret");
 
-// Async
+// 비동기
 const wb2 = await Workbook.openWithPassword("encrypted.xlsx", "secret");
 ```
 
@@ -1666,10 +1666,10 @@ wb.save_with_password("encrypted.xlsx", "secret")?;
 **TypeScript:**
 
 ```typescript
-// Sync
+// 동기
 wb.saveWithPassword("encrypted.xlsx", "secret");
 
-// Async
+// 비동기
 await wb.saveWithPassword("encrypted.xlsx", "secret");
 ```
 
@@ -1689,7 +1689,7 @@ await wb.saveWithPassword("encrypted.xlsx", "secret");
 
 ```rust
 match Workbook::open("file.xlsx") {
-    Ok(wb) => { /* Unencrypted file */ }
+    Ok(wb) => { /* 암호화되지 않은 파일 */ }
     Err(sheetkit::Error::FileEncrypted) => {
         let wb = Workbook::open_with_password("file.xlsx", "password")?;
     }
@@ -1776,8 +1776,8 @@ const sheet = new SheetData(buf);
 단일 셀의 디코딩된 값을 반환하며, 비어 있으면 `null`을 반환합니다. 행과 열은 1부터 시작합니다. 반환 타입은 셀 타입에 따라 달라집니다: 숫자 및 날짜 셀은 `number`, 문자열/에러/수식 셀은 `string`, 불리언 셀은 `boolean`.
 
 ```typescript
-const value = sheet.getCell(1, 1);   // Row 1, Column 1 (A1)
-const price = sheet.getCell(5, 3);   // Row 5, Column 3 (C5)
+const value = sheet.getCell(1, 1);   // 1행, 1열 (A1)
+const price = sheet.getCell(5, 3);   // 5행, 3열 (C5)
 ```
 
 #### `getCellType(row, col)`
@@ -1825,7 +1825,7 @@ for (const { row, values } of sheet.rows()) {
 0 기반 열 인덱스 (Buffer의 경계 사각형 기준)를 Excel 열 이름으로 변환합니다.
 
 ```typescript
-sheet.columnName(0);   // 'A' (when data starts at column A)
+sheet.columnName(0);   // 'A' (데이터가 A열에서 시작하는 경우)
 sheet.columnName(25);  // 'Z'
 ```
 

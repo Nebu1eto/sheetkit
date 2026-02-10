@@ -74,11 +74,11 @@ let wb = Workbook::open_from_buffer(&data)?;
 **TypeScript:**
 
 ```typescript
-// Sync
+// 동기
 const data: Buffer = fs.readFileSync("report.xlsx");
 const wb = Workbook.openBufferSync(data);
 
-// Async
+// 비동기
 const wb2 = await Workbook.openBuffer(data);
 ```
 
@@ -92,16 +92,16 @@ const wb2 = await Workbook.openBuffer(data);
 
 ```rust
 let buf: Vec<u8> = wb.save_to_buffer()?;
-// buf contains valid .xlsx data
+// buf에 유효한 .xlsx 데이터가 들어 있다
 ```
 
 **TypeScript:**
 
 ```typescript
-// Sync
+// 동기
 const buf: Buffer = wb.writeBufferSync();
 
-// Async
+// 비동기
 const buf2: Buffer = await wb.writeBuffer();
 ```
 
@@ -188,7 +188,7 @@ await wb.save("macros.xlsm");
 
 ```rust
 let mut wb = Workbook::new();
-// Format is inferred from ".xlsm" extension
+// ".xlsm" 확장자에서 형식이 유추됩니다
 wb.save("output.xlsm")?;
 assert_eq!(wb.format(), WorkbookFormat::Xlsm);
 ```
@@ -197,7 +197,7 @@ assert_eq!(wb.format(), WorkbookFormat::Xlsm);
 
 ```typescript
 const wb = new Workbook();
-await wb.save("output.xlsm"); // Format is automatically set to xlsm
+await wb.save("output.xlsm"); // 형식이 자동으로 xlsm으로 설정됩니다
 ```
 
 `save_to_buffer()` / `writeBufferSync()` 사용 시에는 파일 확장자가 없으므로 저장된 형식이 그대로 사용됩니다. Buffer 저장 전에 `set_format()`으로 형식을 명시적으로 설정하세요.
@@ -207,7 +207,7 @@ await wb.save("output.xlsm"); // Format is automatically set to xlsm
 매크로 사용 워크북(`.xlsm`, `.xltm`)에는 VBA 프로젝트 blob(`xl/vbaProject.bin`)이 포함됩니다. 이러한 파일을 열고 다시 저장하면 VBA 프로젝트가 투명하게 보존됩니다. 추가 API 호출이 필요하지 않습니다.
 
 ```rust
-// Open macro-enabled file, modify data, and save -- VBA macros are preserved
+// 매크로 사용 파일을 열고 데이터를 수정한 후 저장하면 VBA 매크로가 보존됩니다
 let mut wb = Workbook::open("with_macros.xlsm")?;
 wb.set_cell_value("Sheet1", "A1", CellValue::String("Updated".into()))?;
 wb.save("with_macros.xlsm")?;
@@ -216,7 +216,7 @@ wb.save("with_macros.xlsm")?;
 ```typescript
 const wb = await Workbook.open("with_macros.xlsm");
 wb.setCellValue("Sheet1", "A1", "Updated");
-await wb.save("with_macros.xlsm"); // VBA is preserved
+await wb.save("with_macros.xlsm"); // VBA가 보존됩니다
 ```
 
 ---
