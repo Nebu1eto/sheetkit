@@ -163,7 +163,11 @@ impl Workbook {
             let sheet_path = resolve_relationship_target("xl/workbook.xml", &rel.target);
 
             if options.should_parse_sheet(&sheet_entry.name) {
-                let ws: WorksheetXml = read_xml_part(archive, &sheet_path)?;
+                let mut ws: WorksheetXml = read_xml_part(archive, &sheet_path)?;
+                for row in &mut ws.sheet_data.rows {
+                    row.cells.shrink_to_fit();
+                }
+                ws.sheet_data.rows.shrink_to_fit();
                 worksheets.push((sheet_entry.name.clone(), ws));
                 raw_sheet_xml.push(None);
             } else {
