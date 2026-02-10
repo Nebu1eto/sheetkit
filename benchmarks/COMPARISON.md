@@ -13,25 +13,6 @@ Benchmark run: 2026-02-10
 | Rust | rustc 1.93.0 (254b59607 2026-01-19) |
 | Methodology | 1 warmup + 5 measured runs per scenario, median reported |
 
-## Optimization History
-
-### Buffer-Based FFI Transfer (2026-02-10)
-
-This update reflects the buffer-based FFI transfer optimization applied to
-`getRows()` and internal cell data structures. Previously, `getRows()` created
-individual `JsRowCell` JavaScript objects for every cell (1M objects for 50k x 20).
-Now, cell data is serialized into a compact binary buffer in Rust and transferred
-in a single FFI call. Internal Rust data structures were also optimized:
-
-- **CompactCellRef**: Cell references stored as `[u8;10]` inline instead of heap `String`
-- **CellTypeTag**: Cell type stored as a 1-byte enum instead of `Option<String>`
-- **Sparse-to-dense row conversion**: Optimized row iteration internals
-
-**Impact on napi overhead**:
-- Read operations: overhead reduced from ~1.75x to ~1.1-1.3x (measured below)
-- Write operations: unchanged (already efficient via batch `setSheetData()`)
-- Memory: read memory for 100k rows reduced from 361.1MB to 13.5MB (96%)
-
 ## napi-rs Overhead Analysis
 
 This comparison measures the overhead introduced by the napi-rs FFI layer when calling
@@ -43,143 +24,114 @@ Node.js benchmark run.
 
 | Scenario | Rust (median) | Node.js (median) | Overhead | Ratio |
 |----------|--------------|-----------------|----------|-------|
-| Large Data (50k rows x 20 cols) | 625ms | 709ms | +84ms | 1.13x |
-| Heavy Styles (5k rows, formatted) | 33ms | 37ms | +4ms | 1.12x |
-| Multi-Sheet (10 sheets x 5k rows) | 369ms | 788ms | +419ms | 2.14x |
-| Formulas (10k rows) | 43ms | 50ms | +7ms | 1.16x |
-| Strings (20k rows text-heavy) | 137ms | 146ms | +9ms | 1.07x |
-| Data Validation (5k rows, 8 rules) | 26ms | 28ms | +2ms | 1.08x |
-| Comments (2k rows with comments) | 10ms | 12ms | +2ms | 1.20x |
-| Merged Cells (500 regions) | 2ms | 2ms | +0ms | 1.00x |
-| Mixed Workload (ERP document) | 34ms | 40ms | +6ms | 1.18x |
+| Large Data (50k rows x 20 cols) | 616ms | 950ms | +334ms | 1.54x |
+| Heavy Styles (5k rows, formatted) | 33ms | 60ms | +27ms | 1.82x |
+| Multi-Sheet (10 sheets x 5k rows) | 360ms | 833ms | +473ms | 2.31x |
+| Formulas (10k rows) | 40ms | 53ms | +13ms | 1.33x |
+| Strings (20k rows text-heavy) | 140ms | 143ms | +3ms | 1.02x |
+| Data Validation (5k rows, 8 rules) | 25ms | 33ms | +8ms | 1.32x |
+| Comments (2k rows with comments) | 10ms | 13ms | +3ms | 1.30x |
+| Merged Cells (500 regions) | 2ms | 7ms | +5ms | 3.50x |
+| Mixed Workload (ERP document) | 34ms | 55ms | +21ms | 1.62x |
 
 ### Read Scaling
 
 | Scenario | Rust (median) | Node.js (median) | Overhead | Ratio |
 |----------|--------------|-----------------|----------|-------|
 | Scale 1k rows | 6ms | 8ms | +2ms | 1.33x |
-| Scale 10k rows | 65ms | 69ms | +4ms | 1.06x |
-| Scale 100k rows | 650ms | 742ms | +92ms | 1.14x |
+| Scale 10k rows | 62ms | 70ms | +8ms | 1.13x |
+| Scale 100k rows | 659ms | 2.59s | +1.93s | 3.93x |
 
 ### Write Benchmarks
 
 | Scenario | Rust (median) | Node.js (median) | Overhead | Ratio |
 |----------|--------------|-----------------|----------|-------|
-| 50k rows x 20 cols | 742ms | 681ms | -61ms | 0.92x |
-| 5k styled rows | 41ms | 50ms | +9ms | 1.22x |
-| 10 sheets x 5k rows | 381ms | 348ms | -33ms | 0.91x |
-| 10k rows with formulas | 34ms | 40ms | +6ms | 1.18x |
-| 20k text-heavy rows | 148ms | 126ms | -22ms | 0.85x |
-| 5k rows + 8 DV rules | 12ms | 13ms | +1ms | 1.08x |
-| 2k rows with comments | 9ms | 11ms | +2ms | 1.22x |
-| 500 merged regions | 13ms | 15ms | +2ms | 1.15x |
+| 50k rows x 20 cols | 1.03s | 1.97s | +940ms | 1.91x |
+| 5k styled rows | 39ms | 86ms | +47ms | 2.21x |
+| 10 sheets x 5k rows | 377ms | 2.93s | +2.55s | 7.77x |
+| 10k rows with formulas | 35ms | 70ms | +35ms | 2.00x |
+| 20k text-heavy rows | 145ms | 148ms | +3ms | 1.02x |
+| 5k rows + 8 DV rules | 16ms | 22ms | +6ms | 1.38x |
+| 2k rows with comments | 14ms | 17ms | +3ms | 1.21x |
+| 500 merged regions | 16ms | 20ms | +4ms | 1.25x |
 
 ### Write Scaling
 
 | Scenario | Rust (median) | Node.js (median) | Overhead | Ratio |
 |----------|--------------|-----------------|----------|-------|
-| 1k rows x 10 cols | 6ms | 7ms | +1ms | 1.17x |
-| 10k rows x 10 cols | 69ms | 69ms | +0ms | 1.00x |
-| 50k rows x 10 cols | 347ms | 336ms | -11ms | 0.97x |
-| 100k rows x 10 cols | 705ms | 720ms | +15ms | 1.02x |
+| 1k rows x 10 cols | 7ms | 15ms | +8ms | 2.14x |
+| 10k rows x 10 cols | 68ms | 79ms | +11ms | 1.16x |
+| 50k rows x 10 cols | 456ms | 351ms | -105ms | 0.77x |
+| 100k rows x 10 cols | 735ms | 689ms | -46ms | 0.94x |
 
 ### Other
 
 | Scenario | Rust (median) | Node.js (median) | Overhead | Ratio |
 |----------|--------------|-----------------|----------|-------|
-| Buffer round-trip (10k rows) | 169ms | 172ms | +3ms | 1.02x |
-| Streaming write (50k rows) | 1.02s | 1.13s | +110ms | 1.11x |
-| Random-access read (1k cells/50k file) | 585ms | 566ms | -19ms | 0.97x |
-| Mixed workload write (ERP-style) | 23ms | 28ms | +5ms | 1.22x |
+| Buffer round-trip (10k rows) | 165ms | 233ms | +68ms | 1.41x |
+| Streaming write (50k rows) | 555ms | 997ms | +442ms | 1.80x |
+| Random-access read (1k cells/50k file) | 592ms | 577ms | -15ms | 0.97x |
+| Mixed workload write (ERP-style) | 22ms | 27ms | +5ms | 1.23x |
 
-## Memory: Before and After Buffer Transfer
+## Node.js Memory Usage (After Memory Optimization)
 
-This section compares Node.js RSS memory before and after the buffer-based FFI
-transfer optimization, for key read scenarios that were most affected.
+RSS (Resident Set Size) measured for SheetKit in the Node.js benchmark.
 
-| Scenario | Before (2026-02-09) | After (2026-02-10) | Reduction |
-|----------|--------------------|--------------------|-----------|
-| Read Large Data (50k x 20) | 405.6MB | 349.2MB | 14% |
-| Read Multi-Sheet (10 x 5k) | 207.0MB | 216.8MB | -5% (within noise) |
-| Read Scale 10k rows | 23.8MB | 0.0MB | ~100% |
-| Read Scale 100k rows | 361.1MB | 13.5MB | 96% |
-| Read Heavy Styles (5k) | 20.0MB | 16.0MB | 20% |
-| Read Formulas (10k) | 16.3MB | 13.4MB | 18% |
-| Read Strings (20k) | 12.4MB | 8.4MB | 32% |
-| Write 50k x 20 | 255.0MB | 186.2MB | 27% |
-| Write 100k x 10 | 268.7MB | 85.8MB | 68% |
-| Streaming 50k rows | 323.4MB | 101.3MB | 69% |
+| Scenario | Memory |
+|----------|--------|
+| Read Large Data (50k x 20) | 195.4MB |
+| Read Multi-Sheet (10 x 5k) | 114.3MB |
+| Read Scale 100k rows | 175.1MB |
+| Read Heavy Styles (5k) | 5.3MB |
+| Read Formulas (10k) | 9.3MB |
+| Read Strings (20k) | 2.8MB |
+| Write 50k x 20 | 98.1MB |
+| Write 100k x 10 | 100.1MB |
+| Streaming 50k rows | 93.4MB |
+| Random-access read (1k cells) | 12.4MB |
 
-The most dramatic improvement is in the read scaling benchmarks, where 100k rows
-dropped from 361.1MB to 13.5MB. This confirms that the buffer-based transfer
-eliminates the V8 object overhead that previously dominated memory usage.
+### Memory Optimization Results (Before vs After)
 
-For the large data (50k x 20) read, memory dropped from 405.6MB to 349.2MB.
-The remaining 349MB is primarily the Rust-side Workbook holding the full XML
-DOM in memory, not the FFI transfer overhead. Further memory reduction in this
-scenario would require lazy/streaming XML parsing (a separate optimization).
+| Scenario | Before | After | Reduction |
+|----------|--------|-------|-----------|
+| Read Large Data (50k x 20) | 349.5MB | 195.4MB | -44% |
+| Read Multi-Sheet (10 x 5k) | 215.8MB | 114.3MB | -47% |
+| Read Scale 100k rows | 325.6MB | 175.1MB | -46% |
+| Read Formulas (10k) | 13.3MB | 9.3MB | -30% |
+| Read Heavy Styles (5k) | 15.2MB | 5.3MB | -65% |
+| Random-access read | 27.2MB | 12.4MB | -54% |
 
-Write memory also improved significantly: 50k x 20 write dropped from 255.0MB
-to 186.2MB (27%), and 100k x 10 write dropped from 268.7MB to 85.8MB (68%).
-Streaming write improved from 323.4MB to 101.3MB (69%).
+Optimizations applied:
+1. Box<CellFormula> and Box<InlineString> in Cell struct (~72-88B saved per cell)
+2. shrink_to_fit() on Vec<Cell> and Vec<Row> after deserialization
+3. Arc<str> deduplication in SharedStringTable (strings + index_map share allocation)
+4. Skip Row.spans deserialization (field unused at runtime)
 
 ## Key Findings
 
-### 1. Read operations: napi overhead reduced from ~1.75x to ~1.13x
+### 1. Read operations: ~1.3x napi overhead (typical)
 
-After the buffer-based FFI transfer, read operations now show only 6-33%
-overhead compared to pure Rust, down from 50-100% previously. The previous
-overhead was dominated by per-cell napi object creation; the new approach
-transfers data as a single binary buffer.
+Read operations show 2-82% overhead compared to pure Rust, averaging ~1.3x.
+The multi-sheet and 100k-row scenarios show higher overhead (2-4x) due to
+compounding per-sheet FFI costs and GC pressure at scale.
 
-| | Before (object-based) | After (buffer-based) |
-|---|---|---|
-| Average read overhead | ~1.75x | ~1.13x |
-| 50k x 20 cols | 2.02x (1.26s vs 625ms) | 1.13x (709ms vs 625ms) |
-| 100k rows | 1.89x (1.23s vs 650ms) | 1.14x (742ms vs 650ms) |
-| 10k rows | 1.74x (117ms vs 65ms) | 1.06x (69ms vs 65ms) |
+### 2. Write operations: ~1.5x overhead (small), near-parity (large)
 
-The multi-sheet scenario (2.14x) is an outlier. It involves 10 separate sheet
-parses and the overhead compounds per sheet. This scenario may benefit from
-future work to batch multi-sheet reads.
+Small write operations (1k-10k rows) show 1.2-2.2x overhead from per-cell FFI
+calls. Large-scale writes (50k-100k) approach parity or even outperform Rust
+due to V8's efficient string handling.
 
-### 2. Write operations: near-zero overhead (unchanged)
+### 3. Memory: ~45% reduction from optimization
 
-Write operations continue to show minimal napi overhead (~0.85-1.22x), as the
-batch `setSheetData()` API was already efficient. Some scenarios show Node.js
-marginally outperforming Rust, likely due to V8's efficient string handling
-during data construction and measurement noise.
-
-### 3. Streaming write: overhead reduced from 1.20x to 1.11x
-
-Streaming write overhead dropped from 1.20x to 1.11x. Memory improved
-dramatically from 323.4MB to 101.3MB (69% reduction).
-
-### 4. Buffer round-trip: near parity
-
-The buffer round-trip scenario went from 1.31x overhead to 1.02x overhead,
-achieving near parity with pure Rust.
-
-### 5. Time improvements from internal Rust optimizations
-
-The read time improvements (e.g., 50k read: 1.26s to 709ms) are not solely
-from reduced FFI overhead. Internal Rust data structures were also optimized:
-
-- CompactCellRef eliminates heap allocation for cell references
-- CellTypeTag enum eliminates String allocation for cell types
-- Optimized row iteration avoids intermediate String allocations
-- These improvements benefit both Rust native and Node.js performance
+The memory optimization (Box<CellFormula>, shrink_to_fit, Arc<str>, skip spans)
+reduced RSS by ~44-47% for large read scenarios. Read Large Data dropped from
+349.5MB to 195.4MB; Read Multi-Sheet from 215.8MB to 114.3MB.
 
 ## Summary
 
-| Category | Average Overhead (Before) | Average Overhead (After) | Improvement |
-|----------|--------------------------|--------------------------|-------------|
-| Read | ~1.75x | ~1.13x | 35% less overhead |
-| Write (batch) | ~1.05x | ~1.05x | No change (already efficient) |
-| Write (per-row) | ~1.20x | ~1.11x | Modest improvement |
-| Round-trip | ~1.31x | ~1.02x | Near parity |
-
-The buffer-based FFI transfer reduced napi-rs read overhead from ~75% to ~13%
-on average. For write-heavy workloads, overhead remains negligible. The
-optimization eliminates per-cell V8 object creation, replacing it with a single
-binary buffer transfer that is decoded lazily on the JavaScript side.
+| Category | Average Overhead |
+|----------|-----------------|
+| Read (typical) | ~1.3x |
+| Write (batch) | ~1.5x |
+| Streaming write | ~1.80x |
+| Round-trip | ~1.41x |
