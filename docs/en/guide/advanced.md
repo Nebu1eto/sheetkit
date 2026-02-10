@@ -1222,3 +1222,4 @@ Each VBA module has a `moduleType` field indicating its kind:
 #### VBA project round-trip
 
 When opening a `.xlsm` file and saving it back, the `xl/vbaProject.bin` entry is preserved as-is, maintaining macro functionality through the open/save cycle.
+
