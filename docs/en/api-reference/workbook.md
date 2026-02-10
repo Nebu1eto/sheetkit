@@ -215,4 +215,68 @@ wb.setCellValue("Sheet1", "A1", "Updated");
 await wb.save("with_macros.xlsm"); // VBA preserved
 ```
 
+### `OpenOptions` / `JsOpenOptions`
+
+Options for controlling how a workbook is opened and parsed. All fields are optional and default to no limit / parse everything.
+
+| Field | Rust type | TypeScript type | Description |
+|---|---|---|---|
+| `sheet_rows` / `sheetRows` | `Option<u32>` | `number?` | Maximum number of rows to read per sheet. Rows beyond this limit are discarded. |
+| `sheets` | `Option<Vec<String>>` | `string[]?` | Only parse sheets whose names are in this list. Unselected sheets exist in the workbook but contain no data. |
+| `max_unzip_size` / `maxUnzipSize` | `Option<u64>` | `number?` | Maximum total decompressed size of the ZIP archive in bytes. Prevents zip bombs. |
+| `max_zip_entries` / `maxZipEntries` | `Option<usize>` | `number?` | Maximum number of entries in the ZIP archive. Prevents zip bombs. |
+
+### `Workbook::open_with_options(path, options)` / `Workbook.open(path, options?)`
+
+Open a `.xlsx` file with custom parsing options. When no options are provided, behaves identically to `Workbook::open`.
+
+**Rust:**
+
+```rust
+use sheetkit::{Workbook, OpenOptions};
+
+// Read only the first 100 rows of the "Sales" sheet
+let opts = OpenOptions::new()
+    .sheet_rows(100)
+    .sheets(vec!["Sales".to_string()]);
+let wb = Workbook::open_with_options("report.xlsx", &opts)?;
+```
+
+**TypeScript:**
+
+```typescript
+// Read only the first 100 rows of the "Sales" sheet
+const wb = Workbook.openSync("report.xlsx", {
+  sheetRows: 100,
+  sheets: ["Sales"],
+});
+
+// With ZIP safety limits
+const wb2 = await Workbook.open("untrusted.xlsx", {
+  maxUnzipSize: 500_000_000,  // 500 MB
+  maxZipEntries: 5000,
+});
+```
+
+### `Workbook::open_from_buffer_with_options(data, options)` / `Workbook.openBufferSync(data, options?)`
+
+Open a workbook from an in-memory buffer with custom parsing options.
+
+**Rust:**
+
+```rust
+let data = std::fs::read("report.xlsx")?;
+let opts = OpenOptions::new().sheet_rows(50);
+let wb = Workbook::open_from_buffer_with_options(&data, &opts)?;
+```
+
+**TypeScript:**
+
+```typescript
+const data = fs.readFileSync("report.xlsx");
+const wb = Workbook.openBufferSync(data, { sheetRows: 50 });
+```
+
+> Note (Node.js): The options parameter is optional in all open methods. Omitting it preserves backward compatibility.
+
 ---

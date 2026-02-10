@@ -219,4 +219,68 @@ wb.setCellValue("Sheet1", "A1", "Updated");
 await wb.save("with_macros.xlsm"); // VBA가 보존됩니다
 ```
 
+### `OpenOptions` / `JsOpenOptions`
+
+워크북을 열 때 파싱 방식을 제어하는 옵션입니다. 모든 필드는 선택 사항이며, 기본값은 제한 없음 / 전체 파싱입니다.
+
+| 필드 | Rust 타입 | TypeScript 타입 | 설명 |
+|---|---|---|---|
+| `sheet_rows` / `sheetRows` | `Option<u32>` | `number?` | 시트당 읽을 최대 행 수입니다. 초과 행은 무시됩니다. |
+| `sheets` | `Option<Vec<String>>` | `string[]?` | 이 목록에 포함된 시트만 파싱합니다. 선택되지 않은 시트는 워크북에 존재하지만 데이터가 없습니다. |
+| `max_unzip_size` / `maxUnzipSize` | `Option<u64>` | `number?` | ZIP 아카이브의 전체 압축 해제 크기 제한(바이트)입니다. zip bomb을 방지합니다. |
+| `max_zip_entries` / `maxZipEntries` | `Option<usize>` | `number?` | ZIP 아카이브의 최대 엔트리 수입니다. zip bomb을 방지합니다. |
+
+### `Workbook::open_with_options(path, options)` / `Workbook.open(path, options?)`
+
+커스텀 파싱 옵션으로 `.xlsx` 파일을 엽니다. 옵션을 생략하면 `Workbook::open`과 동일하게 동작합니다.
+
+**Rust:**
+
+```rust
+use sheetkit::{Workbook, OpenOptions};
+
+// "Sales" 시트의 처음 100행만 읽기
+let opts = OpenOptions::new()
+    .sheet_rows(100)
+    .sheets(vec!["Sales".to_string()]);
+let wb = Workbook::open_with_options("report.xlsx", &opts)?;
+```
+
+**TypeScript:**
+
+```typescript
+// "Sales" 시트의 처음 100행만 읽기
+const wb = Workbook.openSync("report.xlsx", {
+  sheetRows: 100,
+  sheets: ["Sales"],
+});
+
+// ZIP 안전 제한 설정
+const wb2 = await Workbook.open("untrusted.xlsx", {
+  maxUnzipSize: 500_000_000,  // 500 MB
+  maxZipEntries: 5000,
+});
+```
+
+### `Workbook::open_from_buffer_with_options(data, options)` / `Workbook.openBufferSync(data, options?)`
+
+메모리 내 버퍼에서 커스텀 파싱 옵션으로 워크북을 엽니다.
+
+**Rust:**
+
+```rust
+let data = std::fs::read("report.xlsx")?;
+let opts = OpenOptions::new().sheet_rows(50);
+let wb = Workbook::open_from_buffer_with_options(&data, &opts)?;
+```
+
+**TypeScript:**
+
+```typescript
+const data = fs.readFileSync("report.xlsx");
+const wb = Workbook.openBufferSync(data, { sheetRows: 50 });
+```
+
+> Node.js에서 옵션 매개변수는 모든 open 메서드에서 선택 사항입니다. 생략하면 기존 동작과 동일합니다.
+
 ---

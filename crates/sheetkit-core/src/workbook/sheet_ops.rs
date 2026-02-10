@@ -28,6 +28,9 @@ impl Workbook {
         if self.sheet_vml.len() < self.worksheets.len() {
             self.sheet_vml.push(None);
         }
+        if self.raw_sheet_xml.len() < self.worksheets.len() {
+            self.raw_sheet_xml.push(None);
+        }
         self.rebuild_sheet_index();
         Ok(idx)
     }
@@ -58,6 +61,9 @@ impl Workbook {
             if *si > idx {
                 *si -= 1;
             }
+        }
+        if idx < self.raw_sheet_xml.len() {
+            self.raw_sheet_xml.remove(idx);
         }
         self.reindex_sheet_maps_after_delete(idx);
         self.rebuild_sheet_index();
@@ -101,6 +107,9 @@ impl Workbook {
         }
         if self.sheet_vml.len() < self.worksheets.len() {
             self.sheet_vml.push(None);
+        }
+        if self.raw_sheet_xml.len() < self.worksheets.len() {
+            self.raw_sheet_xml.push(None);
         }
         self.rebuild_sheet_index();
         Ok(idx)
@@ -196,6 +205,9 @@ impl Workbook {
         }
         if self.sheet_vml.len() < self.worksheets.len() {
             self.sheet_vml.push(None);
+        }
+        if self.raw_sheet_xml.len() < self.worksheets.len() {
+            self.raw_sheet_xml.push(None);
         }
         self.rebuild_sheet_index();
         Ok(idx)

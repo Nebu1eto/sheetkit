@@ -468,6 +468,19 @@ pub struct JsSheetProtectionConfig {
     pub pivot_tables: Option<bool>,
 }
 
+/// Options for controlling how a workbook is opened and parsed.
+#[napi(object)]
+pub struct JsOpenOptions {
+    /// Maximum number of rows to read per sheet. Omit for unlimited.
+    pub sheet_rows: Option<u32>,
+    /// Only parse sheets whose names are in this list. Omit to parse all sheets.
+    pub sheets: Option<Vec<String>>,
+    /// Maximum total decompressed size of all ZIP entries in bytes.
+    pub max_unzip_size: Option<f64>,
+    /// Maximum number of ZIP entries allowed.
+    pub max_zip_entries: Option<u32>,
+}
+
 /// A cell reference and value pair for batch operations.
 #[napi(object)]
 pub struct JsCellEntry {

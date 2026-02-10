@@ -1110,6 +1110,20 @@ pub(crate) fn js_sheet_protection_to_core(
     }
 }
 
+pub(crate) fn js_open_options_to_core(
+    js: Option<&crate::types::JsOpenOptions>,
+) -> sheetkit_core::workbook::OpenOptions {
+    let Some(js) = js else {
+        return sheetkit_core::workbook::OpenOptions::default();
+    };
+    sheetkit_core::workbook::OpenOptions {
+        sheet_rows: js.sheet_rows,
+        sheets: js.sheets.clone(),
+        max_unzip_size: js.max_unzip_size.map(|v| v as u64),
+        max_zip_entries: js.max_zip_entries.map(|v| v as usize),
+    }
+}
+
 pub(crate) fn js_sparkline_to_core(
     js: &crate::types::JsSparklineConfig,
 ) -> sheetkit_core::sparkline::SparklineConfig {
