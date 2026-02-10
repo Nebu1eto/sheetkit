@@ -734,7 +734,7 @@ const isProtected: boolean = wb.isSheetProtected("Sheet1");
 
 ## 22. Formula Evaluation
 
-SheetKit includes a formula evaluator that supports 110 Excel functions. Formulas are parsed using a nom-based parser and evaluated against the current workbook data.
+SheetKit includes a formula evaluator that supports 164 Excel functions. Formulas are parsed using a nom-based parser and evaluated against the current workbook data.
 
 ### `set_cell_formula` / `setCellFormula`
 
@@ -809,7 +809,7 @@ wb.calculate_all()?;
 wb.calculateAll();
 ```
 
-### Supported Functions (110)
+### Supported Functions (164)
 
 #### Math (23 functions)
 
@@ -838,6 +838,14 @@ wb.calculateAll();
 #### Lookup (11 functions)
 
 `VLOOKUP`, `HLOOKUP`, `INDEX`, `MATCH`, `LOOKUP`, `ROW`, `COLUMN`, `ROWS`, `COLUMNS`, `CHOOSE`, `ADDRESS`
+
+#### Financial (21 functions)
+
+`FV`, `PV`, `NPV`, `IRR`, `PMT`, `IPMT`, `PPMT`, `RATE`, `NPER`, `DB`, `DDB`, `SLN`, `SYD`, `EFFECT`, `NOMINAL`, `DOLLARDE`, `DOLLARFR`, `CUMIPMT`, `CUMPRINC`, `XNPV`, `XIRR`
+
+#### Engineering (33 functions)
+
+`BIN2DEC`, `BIN2HEX`, `BIN2OCT`, `DEC2BIN`, `DEC2HEX`, `DEC2OCT`, `HEX2BIN`, `HEX2DEC`, `HEX2OCT`, `OCT2BIN`, `OCT2DEC`, `OCT2HEX`, `DELTA`, `GESTEP`, `ERF`, `ERFC`, `COMPLEX`, `IMREAL`, `IMAGINARY`, `IMABS`, `IMARGUMENT`, `IMCONJUGATE`, `IMSUM`, `IMSUB`, `IMPRODUCT`, `IMDIV`, `IMPOWER`, `IMSQRT`, `CONVERT`, `BESSELI`, `BESSELJ`, `BESSELK`, `BESSELY`
 
 > Note: Function names are case-insensitive. Unsupported functions return an error. The evaluator supports cell references (A1, $B$2), range references (A1:C10), cross-sheet references (Sheet2!A1), and standard arithmetic operators (+, -, *, /, ^, &, comparison operators).
 
