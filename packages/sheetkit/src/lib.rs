@@ -1521,9 +1521,14 @@ impl Workbook {
     pub fn set_sheet_visibility(&mut self, sheet: String, visibility: String) -> Result<()> {
         use sheetkit_core::sheet::SheetVisibility;
         let vis = match visibility.as_str() {
+            "visible" => SheetVisibility::Visible,
             "hidden" => SheetVisibility::Hidden,
             "veryHidden" => SheetVisibility::VeryHidden,
-            _ => SheetVisibility::Visible,
+            other => {
+                return Err(Error::from_reason(format!(
+                    "Invalid visibility: \"{other}\". Must be \"visible\", \"hidden\", or \"veryHidden\""
+                )));
+            }
         };
         self.inner
             .set_sheet_visibility(&sheet, vis)

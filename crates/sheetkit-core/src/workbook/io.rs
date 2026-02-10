@@ -742,13 +742,15 @@ impl Workbook {
             let sparklines = self.sheet_sparklines.get(i).unwrap_or(&empty_sparklines);
             let legacy_rid = legacy_drawing_rids.get(&i).map(|s| s.as_str());
             let sheet_table_rids = table_parts_by_sheet.get(&i);
-            let has_extras =
-                legacy_rid.is_some() || !sparklines.is_empty() || sheet_table_rids.is_some();
+            let stale_table_parts = sheet_table_rids.is_none() && ws.table_parts.is_some();
+            let has_extras = legacy_rid.is_some()
+                || !sparklines.is_empty()
+                || sheet_table_rids.is_some()
+                || stale_table_parts;
 
             if !has_extras {
                 write_xml_part(zip, &entry_name, ws, options)?;
             } else {
-                // Build a worksheet with table_parts set if needed.
                 let ws_to_serialize;
                 let ws_ref = if let Some(rids) = sheet_table_rids {
                     ws_to_serialize = {
@@ -761,6 +763,13 @@ impl Workbook {
                                 .map(|rid| TablePart { r_id: rid.clone() })
                                 .collect(),
                         });
+                        cloned
+                    };
+                    &ws_to_serialize
+                } else if stale_table_parts {
+                    ws_to_serialize = {
+                        let mut cloned = ws.clone();
+                        cloned.table_parts = None;
                         cloned
                     };
                     &ws_to_serialize

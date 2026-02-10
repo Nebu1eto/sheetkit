@@ -2578,10 +2578,7 @@ describe('toJSON', () => {
 
   it('should handle rows shorter than header', () => {
     const wb = new Workbook();
-    wb.setSheetData('Sheet1', [
-      ['A', 'B', 'C'],
-      ['only_one'],
-    ]);
+    wb.setSheetData('Sheet1', [['A', 'B', 'C'], ['only_one']]);
     const result = wb.toJSON('Sheet1');
     expect(result).toEqual([{ A: 'only_one', B: null, C: null }]);
   });
@@ -2800,13 +2797,7 @@ describe('fromJSON', () => {
 
   it('should handle missing keys in records (undefined becomes null)', () => {
     const wb = new Workbook();
-    wb.fromJSON(
-      'Sheet1',
-      [
-        { A: 1, B: 2, C: 3 },
-        { A: 4 },
-      ],
-    );
+    wb.fromJSON('Sheet1', [{ A: 1, B: 2, C: 3 }, { A: 4 }]);
     expect(wb.getCellValue('Sheet1', 'A3')).toBe(4);
     expect(wb.getCellValue('Sheet1', 'B3')).toBeNull();
     expect(wb.getCellValue('Sheet1', 'C3')).toBeNull();
@@ -2839,6 +2830,23 @@ describe('fromJSON', () => {
       { A: 'x', B: 1 },
       { A: 'y', B: 2 },
     ]);
+  });
+
+  it('should collect keys from all records, not just the first', () => {
+    const wb = new Workbook();
+    wb.fromJSON('Sheet1', [{ A: 1 }, { B: 2 }, { A: 3, C: 4 }]);
+    expect(wb.getCellValue('Sheet1', 'A1')).toBe('A');
+    expect(wb.getCellValue('Sheet1', 'B1')).toBe('B');
+    expect(wb.getCellValue('Sheet1', 'C1')).toBe('C');
+    expect(wb.getCellValue('Sheet1', 'A2')).toBe(1);
+    expect(wb.getCellValue('Sheet1', 'B2')).toBeNull();
+    expect(wb.getCellValue('Sheet1', 'C2')).toBeNull();
+    expect(wb.getCellValue('Sheet1', 'A3')).toBeNull();
+    expect(wb.getCellValue('Sheet1', 'B3')).toBe(2);
+    expect(wb.getCellValue('Sheet1', 'C3')).toBeNull();
+    expect(wb.getCellValue('Sheet1', 'A4')).toBe(3);
+    expect(wb.getCellValue('Sheet1', 'B4')).toBeNull();
+    expect(wb.getCellValue('Sheet1', 'C4')).toBe(4);
   });
 });
 
@@ -3002,6 +3010,14 @@ describe('Sheet Visibility', () => {
     const wb = new Workbook();
     expect(() => wb.getSheetVisibility('NoSheet')).toThrow();
     expect(() => wb.setSheetVisibility('NoSheet', 'hidden')).toThrow();
+  });
+
+  it('should throw for invalid visibility string', () => {
+    const wb = new Workbook();
+    wb.newSheet('Sheet2');
+    expect(() => wb.setSheetVisibility('Sheet1', 'hiddden')).toThrow(/Invalid visibility/);
+    expect(() => wb.setSheetVisibility('Sheet1', 'HIDDEN')).toThrow(/Invalid visibility/);
+    expect(() => wb.setSheetVisibility('Sheet1', '')).toThrow(/Invalid visibility/);
   });
 });
 

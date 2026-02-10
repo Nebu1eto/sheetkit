@@ -101,8 +101,6 @@ export interface ToCsvOptions {
 export interface ToHtmlOptions {
   /** CSS class name for the table element. */
   className?: string;
-  /** Include inline style attributes on cells. */
-  includeStyles?: boolean;
 }
 
 export interface FromJsonOptions {
@@ -858,11 +856,7 @@ class Workbook {
   }
 
   /** Write an array of JSON objects to a sheet. */
-  fromJSON(
-    sheet: string,
-    data: Record<string, CellValueInput>[],
-    options?: FromJsonOptions,
-  ): void {
+  fromJSON(sheet: string, data: Record<string, CellValueInput>[], options?: FromJsonOptions): void {
     if (data.length === 0) return;
 
     const startCell = options?.startCell ?? 'A1';
@@ -873,7 +867,13 @@ class Workbook {
     if (Array.isArray(headerOpt)) {
       keys = headerOpt;
     } else {
-      keys = Object.keys(data[0]);
+      const keySet = new Set<string>();
+      for (const obj of data) {
+        for (const key of Object.keys(obj)) {
+          keySet.add(key);
+        }
+      }
+      keys = Array.from(keySet);
     }
 
     const writeHeader = headerOpt !== false;

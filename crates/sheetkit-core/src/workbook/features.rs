@@ -120,7 +120,18 @@ impl Workbook {
         // Assign a unique table ID (max existing + 1).
         let table_id = self.tables.iter().map(|(_, t, _)| t.id).max().unwrap_or(0) + 1;
 
-        let table_num = self.tables.len() + 1;
+        let max_existing = self
+            .tables
+            .iter()
+            .filter_map(|(path, _, _)| {
+                path.trim_start_matches("xl/tables/table")
+                    .trim_end_matches(".xml")
+                    .parse::<u32>()
+                    .ok()
+            })
+            .max()
+            .unwrap_or(0);
+        let table_num = max_existing + 1;
         let table_path = format!("xl/tables/table{}.xml", table_num);
         let table_xml = crate::table::build_table_xml(config, table_id);
 
@@ -2349,5 +2360,118 @@ mod tests {
 
         let opts = wb.get_sheet_view_options("Sheet1").unwrap();
         assert_eq!(opts.show_row_col_headers, Some(false));
+    }
+
+    #[test]
+    fn test_table_path_no_collision_after_delete() {
+        use crate::table::{TableColumn, TableConfig};
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("table_path_collision.xlsx");
+
+        let mut wb = Workbook::new();
+        let make_config = |name: &str, range: &str| TableConfig {
+            name: name.to_string(),
+            display_name: name.to_string(),
+            range: range.to_string(),
+            columns: vec![
+                TableColumn {
+                    name: "A".to_string(),
+                    totals_row_function: None,
+                    totals_row_label: None,
+                },
+                TableColumn {
+                    name: "B".to_string(),
+                    totals_row_function: None,
+                    totals_row_label: None,
+                },
+            ],
+            ..TableConfig::default()
+        };
+
+        wb.add_table("Sheet1", &make_config("T1", "A1:B5")).unwrap();
+        wb.add_table("Sheet1", &make_config("T2", "D1:E5")).unwrap();
+        wb.delete_table("Sheet1", "T1").unwrap();
+        wb.add_table("Sheet1", &make_config("T3", "G1:H5")).unwrap();
+
+        let paths: Vec<&str> = wb.tables.iter().map(|(p, _, _)| p.as_str()).collect();
+        let mut unique_paths = paths.clone();
+        unique_paths.sort();
+        unique_paths.dedup();
+        assert_eq!(
+            paths.len(),
+            unique_paths.len(),
+            "table paths must be unique: {:?}",
+            paths
+        );
+
+        wb.save(&path).unwrap();
+        let wb2 = Workbook::open(&path).unwrap();
+        let tables = wb2.get_tables("Sheet1").unwrap();
+        assert_eq!(tables.len(), 2);
+        let names: Vec<&str> = tables.iter().map(|t| t.name.as_str()).collect();
+        assert!(names.contains(&"T2"));
+        assert!(names.contains(&"T3"));
+    }
+
+    #[test]
+    fn test_dangling_table_parts_after_reopen_delete_save() {
+        use crate::table::{TableColumn, TableConfig};
+
+        let dir = TempDir::new().unwrap();
+        let path1 = dir.path().join("dangling_tp_step1.xlsx");
+        let path2 = dir.path().join("dangling_tp_step2.xlsx");
+
+        let mut wb = Workbook::new();
+        wb.add_table(
+            "Sheet1",
+            &TableConfig {
+                name: "T1".to_string(),
+                display_name: "T1".to_string(),
+                range: "A1:B5".to_string(),
+                columns: vec![
+                    TableColumn {
+                        name: "X".to_string(),
+                        totals_row_function: None,
+                        totals_row_label: None,
+                    },
+                    TableColumn {
+                        name: "Y".to_string(),
+                        totals_row_function: None,
+                        totals_row_label: None,
+                    },
+                ],
+                ..TableConfig::default()
+            },
+        )
+        .unwrap();
+        wb.save(&path1).unwrap();
+
+        let mut wb2 = Workbook::open(&path1).unwrap();
+        assert_eq!(wb2.get_tables("Sheet1").unwrap().len(), 1);
+        wb2.delete_table("Sheet1", "T1").unwrap();
+        wb2.save(&path2).unwrap();
+
+        let file = std::fs::File::open(&path2).unwrap();
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let mut ws_data = Vec::new();
+        archive
+            .by_name("xl/worksheets/sheet1.xml")
+            .unwrap()
+            .read_to_end(&mut ws_data)
+            .unwrap();
+        let ws_str = String::from_utf8(ws_data).unwrap();
+        assert!(
+            !ws_str.contains("tableParts"),
+            "worksheet XML must not contain tableParts after all tables are deleted"
+        );
+
+        assert!(
+            archive.by_name("xl/tables/table1.xml").is_err(),
+            "table1.xml must not be present after deletion"
+        );
+
+        let wb3 = Workbook::open(&path2).unwrap();
+        assert!(wb3.get_tables("Sheet1").unwrap().is_empty());
     }
 }
