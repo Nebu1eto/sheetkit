@@ -146,6 +146,9 @@ pub struct PlotArea {
     #[serde(rename = "c:surface3DChart", skip_serializing_if = "Option::is_none")]
     pub surface_3d_chart: Option<Surface3DChart>,
 
+    #[serde(rename = "c:ofPieChart", skip_serializing_if = "Option::is_none")]
+    pub of_pie_chart: Option<OfPieChart>,
+
     #[serde(rename = "c:catAx", skip_serializing_if = "Option::is_none")]
     pub cat_ax: Option<CatAx>,
 
@@ -187,6 +190,9 @@ pub struct Bar3DChart {
 
     #[serde(rename = "c:ser", default)]
     pub series: Vec<Series>,
+
+    #[serde(rename = "c:shape", skip_serializing_if = "Option::is_none")]
+    pub shape: Option<StringVal>,
 
     #[serde(rename = "c:axId", default)]
     pub ax_ids: Vec<UintVal>,
@@ -330,6 +336,9 @@ pub struct BubbleSeries {
 
     #[serde(rename = "c:bubbleSize", skip_serializing_if = "Option::is_none")]
     pub bubble_size: Option<ValueRef>,
+
+    #[serde(rename = "c:bubble3D", skip_serializing_if = "Option::is_none")]
+    pub bubble_3d: Option<BoolVal>,
 }
 
 /// Radar chart definition.
@@ -380,6 +389,23 @@ pub struct Surface3DChart {
     #[serde(rename = "c:axId", default)]
     pub ax_ids: Vec<UintVal>,
 }
+
+/// Of-pie chart definition (pie-of-pie or bar-of-pie).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OfPieChart {
+    #[serde(rename = "c:ofPieType")]
+    pub of_pie_type: StringVal,
+
+    #[serde(rename = "c:ser", default)]
+    pub series: Vec<Series>,
+
+    #[serde(rename = "c:serLines", skip_serializing_if = "Option::is_none")]
+    pub ser_lines: Option<SerLines>,
+}
+
+/// Series lines marker element.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SerLines {}
 
 /// A data series within a chart.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -654,6 +680,7 @@ mod tests {
                 val: "clustered".to_string(),
             },
             series: vec![],
+            shape: None,
             ax_ids: vec![UintVal { val: 1 }, UintVal { val: 2 }],
         };
         let xml = quick_xml::se::to_string(&bar).unwrap();
@@ -718,6 +745,7 @@ mod tests {
                         f: "Sheet1!$C$2:$C$6".to_string(),
                     }),
                 }),
+                bubble_3d: None,
             }],
             ax_ids: vec![UintVal { val: 1 }, UintVal { val: 2 }],
         };
@@ -850,6 +878,7 @@ mod tests {
         assert!(pa.stock_chart.is_none());
         assert!(pa.surface_chart.is_none());
         assert!(pa.surface_3d_chart.is_none());
+        assert!(pa.of_pie_chart.is_none());
         assert!(pa.cat_ax.is_none());
         assert!(pa.val_ax.is_none());
         assert!(pa.ser_ax.is_none());
@@ -883,5 +912,60 @@ mod tests {
         };
         let xml = quick_xml::se::to_string(&doughnut).unwrap();
         assert!(xml.contains("val=\"50\""));
+    }
+
+    #[test]
+    fn test_bar_3d_chart_with_shape() {
+        let bar = Bar3DChart {
+            bar_dir: StringVal {
+                val: "col".to_string(),
+            },
+            grouping: StringVal {
+                val: "clustered".to_string(),
+            },
+            series: vec![],
+            shape: Some(StringVal {
+                val: "cone".to_string(),
+            }),
+            ax_ids: vec![UintVal { val: 1 }, UintVal { val: 2 }],
+        };
+        let xml = quick_xml::se::to_string(&bar).unwrap();
+        assert!(xml.contains("cone"));
+    }
+
+    #[test]
+    fn test_of_pie_chart_serialize() {
+        let of_pie = OfPieChart {
+            of_pie_type: StringVal {
+                val: "pie".to_string(),
+            },
+            series: vec![Series {
+                idx: UintVal { val: 0 },
+                order: UintVal { val: 0 },
+                tx: None,
+                cat: None,
+                val: None,
+            }],
+            ser_lines: Some(SerLines {}),
+        };
+        let xml = quick_xml::se::to_string(&of_pie).unwrap();
+        assert!(xml.contains("val=\"pie\""));
+        assert!(xml.contains("serLines"));
+    }
+
+    #[test]
+    fn test_bubble_series_with_bubble_3d() {
+        let bs = BubbleSeries {
+            idx: UintVal { val: 0 },
+            order: UintVal { val: 0 },
+            tx: None,
+            x_val: None,
+            y_val: None,
+            bubble_size: None,
+            bubble_3d: Some(BoolVal { val: true }),
+        };
+        let xml = quick_xml::se::to_string(&bs).unwrap();
+        assert!(xml.contains("bubble3D"));
+        assert!(xml.contains("val=\"true\""));
     }
 }

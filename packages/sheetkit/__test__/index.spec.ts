@@ -3552,3 +3552,45 @@ describe('Open Options', () => {
     expect(wb2.getCellValue('Sheet1', 'A1')).toBeNull();
   });
 });
+
+describe('Additional Chart Types', () => {
+  const out = tmpFile('test-additional-charts.xlsx');
+  afterEach(async () => cleanup(out));
+
+  const chartSeries = [{ name: 'S1', categories: 'Sheet1!$A$1:$A$3', values: 'Sheet1!$B$1:$B$3' }];
+
+  const newChartTypes = [
+    'pieOfPie',
+    'barOfPie',
+    'col3DCone',
+    'col3DConeStacked',
+    'col3DConePercentStacked',
+    'col3DPyramid',
+    'col3DPyramidStacked',
+    'col3DPyramidPercentStacked',
+    'col3DCylinder',
+    'col3DCylinderStacked',
+    'col3DCylinderPercentStacked',
+    'contour',
+    'wireframeContour',
+    'bubble3D',
+  ];
+
+  for (const chartType of newChartTypes) {
+    it(`should create a ${chartType} chart and save`, async () => {
+      const wb = new Workbook();
+      wb.setCellValue('Sheet1', 'A1', 'Category');
+      wb.setCellValue('Sheet1', 'B1', 100);
+      wb.addChart('Sheet1', 'D1', 'J10', { chartType, series: chartSeries });
+      await wb.save(out);
+      await expect(access(out)).resolves.toBeUndefined();
+    });
+  }
+
+  it('should reject unknown chart type', () => {
+    const wb = new Workbook();
+    expect(() =>
+      wb.addChart('Sheet1', 'D1', 'J10', { chartType: 'unknownType', series: chartSeries }),
+    ).toThrow();
+  });
+});

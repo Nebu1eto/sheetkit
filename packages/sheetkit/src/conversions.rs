@@ -358,6 +358,20 @@ pub(crate) fn parse_chart_type(s: &str) -> Result<ChartType> {
         "colline" => ChartType::ColLine,
         "collinestacked" => ChartType::ColLineStacked,
         "collinepercentstacked" => ChartType::ColLinePercentStacked,
+        "pieofpie" => ChartType::PieOfPie,
+        "barofpie" => ChartType::BarOfPie,
+        "col3dcone" => ChartType::Col3DCone,
+        "col3dconestacked" => ChartType::Col3DConeStacked,
+        "col3dconepercentstacked" => ChartType::Col3DConePercentStacked,
+        "col3dpyramid" => ChartType::Col3DPyramid,
+        "col3dpyramidstacked" => ChartType::Col3DPyramidStacked,
+        "col3dpyramidpercentstacked" => ChartType::Col3DPyramidPercentStacked,
+        "col3dcylinder" => ChartType::Col3DCylinder,
+        "col3dcylinderstacked" => ChartType::Col3DCylinderStacked,
+        "col3dcylinderpercentstacked" => ChartType::Col3DCylinderPercentStacked,
+        "contour" => ChartType::Contour,
+        "wireframecontour" => ChartType::WireframeContour,
+        "bubble3d" => ChartType::Bubble3D,
         _ => {
             return Err(Error::from_reason(format!("unknown chart type: {s}")));
         }

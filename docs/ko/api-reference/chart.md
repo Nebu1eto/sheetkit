@@ -1,6 +1,6 @@
 ## 10. 차트
 
-43가지 차트 유형을 지원합니다. `add_chart`로 시트에 차트를 추가하며, 셀 범위로 위치와 크기를 지정합니다.
+57가지 차트 유형을 지원합니다. `add_chart`로 시트에 차트를 추가하며, 셀 범위로 위치와 크기를 지정합니다.
 
 ### `add_chart(sheet, from_cell, to_cell, config)` / `addChart(sheet, fromCell, toCell, config)`
 
@@ -69,7 +69,7 @@ wb.addChart("Sheet1", "E1", "L15", {
 | `right_angle_axes` / `rightAngleAxes` | `bool?` / `boolean?` | 직각 축 사용 여부 |
 | `perspective` | `u32?` / `number?` | 원근 각도 |
 
-### 차트 유형 전체 목록 (41종)
+### 차트 유형 전체 목록 (57종)
 
 #### 세로 막대 (Column) 차트
 
@@ -81,6 +81,15 @@ wb.addChart("Sheet1", "E1", "L15", {
 | `col3D` | `ChartType::Col3D` | 3D 세로 막대 |
 | `col3DStacked` | `ChartType::Col3DStacked` | 3D 누적 세로 막대 |
 | `col3DPercentStacked` | `ChartType::Col3DPercentStacked` | 3D 100% 누적 세로 막대 |
+| `col3DCone` | `ChartType::Col3DCone` | 3D 원뿔 세로 막대 |
+| `col3DConeStacked` | `ChartType::Col3DConeStacked` | 3D 누적 원뿔 세로 막대 |
+| `col3DConePercentStacked` | `ChartType::Col3DConePercentStacked` | 3D 100% 누적 원뿔 세로 막대 |
+| `col3DPyramid` | `ChartType::Col3DPyramid` | 3D 피라미드 세로 막대 |
+| `col3DPyramidStacked` | `ChartType::Col3DPyramidStacked` | 3D 누적 피라미드 세로 막대 |
+| `col3DPyramidPercentStacked` | `ChartType::Col3DPyramidPercentStacked` | 3D 100% 누적 피라미드 세로 막대 |
+| `col3DCylinder` | `ChartType::Col3DCylinder` | 3D 원통 세로 막대 |
+| `col3DCylinderStacked` | `ChartType::Col3DCylinderStacked` | 3D 누적 원통 세로 막대 |
+| `col3DCylinderPercentStacked` | `ChartType::Col3DCylinderPercentStacked` | 3D 100% 누적 원통 세로 막대 |
 
 #### 가로 막대 (Bar) 차트
 
@@ -109,6 +118,8 @@ wb.addChart("Sheet1", "E1", "L15", {
 | `pie` | `ChartType::Pie` | 원형 |
 | `pie3D` | `ChartType::Pie3D` | 3D 원형 |
 | `doughnut` | `ChartType::Doughnut` | 도넛형 |
+| `pieOfPie` | `ChartType::PieOfPie` | 원형 대 원형 |
+| `barOfPie` | `ChartType::BarOfPie` | 원형 대 가로 막대 |
 
 #### 영역 (Area) 차트
 
@@ -146,15 +157,23 @@ wb.addChart("Sheet1", "E1", "L15", {
 | `stockVHLC` | `ChartType::StockVHLC` | 거래량-고가-저가-종가 |
 | `stockVOHLC` | `ChartType::StockVOHLC` | 거래량-시가-고가-저가-종가 |
 
+#### 표면형 및 등고선 차트
+
+| 타입 문자열 | Rust Enum | 설명 |
+|------------|-----------|------|
+| `surface` | `ChartType::Surface` | 표면형 |
+| `surfaceTop` | `ChartType::Surface3D` | 3D 표면형 |
+| `surfaceWireframe` | `ChartType::SurfaceWireframe` | 와이어프레임 표면형 |
+| `surfaceTopWireframe` | `ChartType::SurfaceWireframe3D` | 3D 와이어프레임 표면형 |
+| `contour` | `ChartType::Contour` | 등고선형 (2D 표면 투영) |
+| `wireframeContour` | `ChartType::WireframeContour` | 와이어프레임 등고선형 |
+
 #### 기타 차트
 
 | 타입 문자열 | Rust Enum | 설명 |
 |------------|-----------|------|
 | `bubble` | `ChartType::Bubble` | 거품형 |
-| `surface` | `ChartType::Surface` | 표면형 |
-| `surfaceTop` | `ChartType::Surface3D` | 3D 표면형 |
-| `surfaceWireframe` | `ChartType::SurfaceWireframe` | 와이어프레임 표면형 |
-| `surfaceTopWireframe` | `ChartType::SurfaceWireframe3D` | 3D 와이어프레임 표면형 |
+| `bubble3D` | `ChartType::Bubble3D` | 3D 거품형 |
 
 #### 콤보 (Combo) 차트
 
