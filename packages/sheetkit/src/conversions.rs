@@ -365,6 +365,10 @@ pub(crate) fn parse_chart_type(s: &str) -> Result<ChartType> {
     Ok(chart_type)
 }
 
+pub(crate) fn parse_shape_type(s: &str) -> Result<sheetkit_core::shape::ShapeType> {
+    sheetkit_core::shape::ShapeType::parse(s).map_err(|e| Error::from_reason(e.to_string()))
+}
+
 pub(crate) fn parse_image_format(s: &str) -> Result<ImageFormat> {
     ImageFormat::from_extension(s).map_err(|e| Error::from_reason(e.to_string()))
 }

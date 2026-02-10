@@ -22,6 +22,7 @@ import type {
   JsPrintOptions,
   JsRichTextRun,
   JsRowData,
+  JsShapeConfig,
   JsSheetProtectionConfig,
   JsSparklineConfig,
   JsStyle,
@@ -68,6 +69,7 @@ export type {
   JsRichTextRun,
   JsRowCell,
   JsRowData,
+  JsShapeConfig,
   JsSheetProtectionConfig,
   JsSparklineConfig,
   JsStyle,
@@ -348,6 +350,11 @@ class Workbook {
   /** Add an image to a sheet. */
   addImage(sheet: string, config: JsImageConfig): void {
     this.#native.addImage(sheet, config);
+  }
+
+  /** Add a shape to a sheet, anchored between two cells. */
+  addShape(sheet: string, config: JsShapeConfig): void {
+    this.#native.addShape(sheet, config);
   }
 
   /** Merge a range of cells on a sheet. */
