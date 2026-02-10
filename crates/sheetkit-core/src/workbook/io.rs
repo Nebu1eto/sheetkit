@@ -969,6 +969,21 @@ impl Workbook {
                         .to_string(),
                 });
             }
+
+            // Add person relationship to workbook_rels so Excel can discover the person list.
+            if !workbook_rels
+                .relationships
+                .iter()
+                .any(|r| r.rel_type == sheetkit_xml::threaded_comment::REL_TYPE_PERSON)
+            {
+                let rid = crate::sheet::next_rid(&workbook_rels.relationships);
+                workbook_rels.relationships.push(Relationship {
+                    id: rid,
+                    rel_type: sheetkit_xml::threaded_comment::REL_TYPE_PERSON.to_string(),
+                    target: "persons/person.xml".to_string(),
+                    target_mode: None,
+                });
+            }
         }
 
         // [Content_Types].xml
@@ -1924,6 +1939,51 @@ mod tests {
         let cursor = std::io::Cursor::new(&saved);
         let mut archive = zip::ZipArchive::new(cursor).unwrap();
         assert!(archive.by_name("customXml/item1.xml").is_ok());
+    }
+
+    #[test]
+    fn test_threaded_comment_person_rel_in_workbook_rels() {
+        let mut wb = Workbook::new();
+        wb.add_threaded_comment(
+            "Sheet1",
+            "A1",
+            &crate::threaded_comment::ThreadedCommentInput {
+                author: "Alice".to_string(),
+                text: "Test comment".to_string(),
+                parent_id: None,
+            },
+        )
+        .unwrap();
+
+        let buf = wb.save_to_buffer().unwrap();
+        let wb2 = Workbook::open_from_buffer(&buf).unwrap();
+
+        // Verify workbook_rels contains a REL_TYPE_PERSON relationship.
+        let has_person_rel = wb2.workbook_rels.relationships.iter().any(|r| {
+            r.rel_type == sheetkit_xml::threaded_comment::REL_TYPE_PERSON
+                && r.target == "persons/person.xml"
+        });
+        assert!(
+            has_person_rel,
+            "workbook_rels must contain a person relationship for threaded comments"
+        );
+    }
+
+    #[test]
+    fn test_no_person_rel_without_threaded_comments() {
+        let wb = Workbook::new();
+        let buf = wb.save_to_buffer().unwrap();
+        let wb2 = Workbook::open_from_buffer(&buf).unwrap();
+
+        let has_person_rel = wb2
+            .workbook_rels
+            .relationships
+            .iter()
+            .any(|r| r.rel_type == sheetkit_xml::threaded_comment::REL_TYPE_PERSON);
+        assert!(
+            !has_person_rel,
+            "workbook_rels must not contain a person relationship when there are no threaded comments"
+        );
     }
 
     #[cfg(feature = "encryption")]
