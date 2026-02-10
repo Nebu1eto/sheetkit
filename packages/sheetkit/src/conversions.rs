@@ -214,9 +214,9 @@ pub(crate) fn parse_pattern_type(s: &str) -> PatternType {
         "darkgray" => PatternType::DarkGray,
         "mediumgray" => PatternType::MediumGray,
         "lightgray" => PatternType::LightGray,
-        other => {
+        _other => {
             #[cfg(debug_assertions)]
-            eprintln!("warning: unknown pattern type '{other}', defaulting to None");
+            eprintln!("warning: unknown pattern type '{_other}', defaulting to None");
             PatternType::None
         }
     }
@@ -238,9 +238,9 @@ pub(crate) fn parse_border_line_style(s: &str) -> BorderLineStyle {
         "dashdotdot" => BorderLineStyle::DashDotDot,
         "mediumdashdotdot" => BorderLineStyle::MediumDashDotDot,
         "slantdashdot" => BorderLineStyle::SlantDashDot,
-        other => {
+        _other => {
             #[cfg(debug_assertions)]
-            eprintln!("warning: unknown border line style '{other}', defaulting to Thin");
+            eprintln!("warning: unknown border line style '{_other}', defaulting to Thin");
             BorderLineStyle::Thin
         }
     }
@@ -256,9 +256,9 @@ pub(crate) fn parse_horizontal_align(s: &str) -> HorizontalAlign {
         "justify" => HorizontalAlign::Justify,
         "centercontinuous" => HorizontalAlign::CenterContinuous,
         "distributed" => HorizontalAlign::Distributed,
-        other => {
+        _other => {
             #[cfg(debug_assertions)]
-            eprintln!("warning: unknown horizontal alignment '{other}', defaulting to General");
+            eprintln!("warning: unknown horizontal alignment '{_other}', defaulting to General");
             HorizontalAlign::General
         }
     }
@@ -271,9 +271,9 @@ pub(crate) fn parse_vertical_align(s: &str) -> VerticalAlign {
         "bottom" => VerticalAlign::Bottom,
         "justify" => VerticalAlign::Justify,
         "distributed" => VerticalAlign::Distributed,
-        other => {
+        _other => {
             #[cfg(debug_assertions)]
-            eprintln!("warning: unknown vertical alignment '{other}', defaulting to Bottom");
+            eprintln!("warning: unknown vertical alignment '{_other}', defaulting to Bottom");
             VerticalAlign::Bottom
         }
     }
