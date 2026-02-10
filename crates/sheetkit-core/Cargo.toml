@@ -20,6 +20,7 @@ quick-xml = { workspace = true }
 serde = { workspace = true }
 nom = { workspace = true }
 uuid = { workspace = true }
+cfb = { workspace = true }
 
 # Encryption (optional, behind "encryption" feature)
 aes = { workspace = true, optional = true }
@@ -29,11 +30,10 @@ sha1 = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
 hmac = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
-cfb = { workspace = true, optional = true }
 base64 = { workspace = true, optional = true }
 
 [features]
-encryption = ["aes", "cbc", "ecb", "sha1", "sha2", "hmac", "rand", "cfb", "base64"]
+encryption = ["aes", "cbc", "ecb", "sha1", "sha2", "hmac", "rand", "base64"]
 
 [dev-dependencies]
 tempfile = { workspace = true }

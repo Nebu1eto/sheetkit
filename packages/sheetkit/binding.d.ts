@@ -336,6 +336,13 @@ export declare class Workbook {
   getSheetVisibility(sheet: string): string
   /** Render a worksheet to an SVG string. */
   renderToSvg(options: JsRenderOptions): string
+  /** Get the raw VBA project binary (xl/vbaProject.bin), or null if not present. */
+  getVbaProject(): Buffer | null
+  /**
+   * Extract VBA module source code from the workbook's VBA project.
+   * Returns null if no VBA project is present.
+   */
+  getVbaModules(): JsVbaProject | null
 }
 
 export interface DateValue {
@@ -956,6 +963,24 @@ export interface JsThreadedCommentInput {
   author: string
   text: string
   parentId?: string
+}
+
+/** A VBA module extracted from a .xlsm file. */
+export interface JsVbaModule {
+  /** Module name (e.g., "Module1", "ThisWorkbook"). */
+  name: string
+  /** Decompressed VBA source code. */
+  sourceCode: string
+  /** Module type: "standard", "class", "form", "document", or "thisWorkbook". */
+  moduleType: string
+}
+
+/** Result of extracting VBA modules from a .xlsm file. */
+export interface JsVbaProject {
+  /** Extracted VBA modules. */
+  modules: Array<JsVbaModule>
+  /** Non-fatal warnings encountered during parsing. */
+  warnings: Array<string>
 }
 
 export interface JsView3DConfig {
