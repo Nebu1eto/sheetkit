@@ -62,20 +62,22 @@ pub fn format_number(value: f64, format_code: &str) -> String {
 
     let sections = parse_sections(format_code);
 
+    let has_any_condition = sections.iter().any(|s| extract_condition(s).is_some());
     let section = pick_section(&sections, value);
 
     let (cleaned, _color) = strip_color_and_condition(section);
 
-    // When multiple sections exist and the negative section is picked,
-    // use absolute value because the section format handles sign presentation
-    // (e.g., parentheses, literal minus). For single-section formats,
-    // pass the original value so format_numeric can prepend a minus sign.
-    let multi_section_negative = sections.len() >= 2 && value < 0.0;
-    let effective_value = if multi_section_negative {
-        value.abs()
+    // When multiple sections handle sign presentation, use absolute value:
+    // - Standard sign-based sections (>= 2 sections): the negative section
+    //   format includes its own sign (parentheses, literal minus, etc.)
+    // - Conditional sections: the format encodes its own sign presentation,
+    //   so always pass absolute value to avoid double signs
+    let use_abs = if has_any_condition {
+        sections.len() >= 2
     } else {
-        value
+        sections.len() >= 2 && value < 0.0
     };
+    let effective_value = if use_abs { value.abs() } else { value };
 
     if cleaned == "@" {
         return format_general(effective_value);
@@ -89,7 +91,7 @@ pub fn format_number(value: f64, format_code: &str) -> String {
         return format_fraction(effective_value, &cleaned);
     }
 
-    if cleaned.contains('E') || cleaned.contains('e') {
+    if format_has_unquoted_char(&cleaned, 'E') || format_has_unquoted_char(&cleaned, 'e') {
         return format_scientific(effective_value, &cleaned);
     }
 
@@ -163,7 +165,134 @@ fn parse_sections(format_code: &str) -> Vec<&str> {
     sections
 }
 
+/// Comparison operator for conditional format sections.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ConditionOp {
+    Gt,
+    Ge,
+    Lt,
+    Le,
+    Eq,
+    Ne,
+}
+
+/// A parsed conditional predicate from a format section (e.g., `[>100]`).
+#[derive(Debug, Clone, PartialEq)]
+struct Condition {
+    op: ConditionOp,
+    threshold: f64,
+}
+
+impl Condition {
+    fn matches(&self, value: f64) -> bool {
+        match self.op {
+            ConditionOp::Gt => value > self.threshold,
+            ConditionOp::Ge => value >= self.threshold,
+            ConditionOp::Lt => value < self.threshold,
+            ConditionOp::Le => value <= self.threshold,
+            ConditionOp::Eq => (value - self.threshold).abs() < 1e-12,
+            ConditionOp::Ne => (value - self.threshold).abs() >= 1e-12,
+        }
+    }
+}
+
+/// Parse a bracket's inner content as a conditional predicate.
+/// Returns `Some(Condition)` for strings like `>100`, `<=0`, `<>5`, `=0`.
+fn parse_condition(content: &str) -> Option<Condition> {
+    let s = content.trim();
+    if s.is_empty() {
+        return None;
+    }
+
+    // Try two-character operators first, then single-character
+    let (op, rest) = if let Some(r) = s.strip_prefix(">=") {
+        (ConditionOp::Ge, r)
+    } else if let Some(r) = s.strip_prefix("<=") {
+        (ConditionOp::Le, r)
+    } else if let Some(r) = s.strip_prefix("<>").or_else(|| s.strip_prefix("!=")) {
+        (ConditionOp::Ne, r)
+    } else if let Some(r) = s.strip_prefix('>') {
+        (ConditionOp::Gt, r)
+    } else if let Some(r) = s.strip_prefix('<') {
+        (ConditionOp::Lt, r)
+    } else if let Some(r) = s.strip_prefix('=') {
+        (ConditionOp::Eq, r)
+    } else {
+        return None;
+    };
+
+    let threshold: f64 = rest.trim().parse().ok()?;
+    Some(Condition { op, threshold })
+}
+
+/// Extract the condition (if any) from a format section's bracket content.
+fn extract_condition(section: &str) -> Option<Condition> {
+    let mut chars = section.chars().peekable();
+    while let Some(&ch) = chars.peek() {
+        if ch == '[' {
+            chars.next();
+            let mut bracket_content = String::new();
+            while let Some(&c) = chars.peek() {
+                if c == ']' {
+                    chars.next();
+                    break;
+                }
+                bracket_content.push(c);
+                chars.next();
+            }
+            let lower = bracket_content.to_ascii_lowercase();
+            let is_known_non_condition = is_color_code(&lower)
+                || lower.starts_with("dbnum")
+                || lower.starts_with('$')
+                || lower.starts_with("natnum")
+                || (lower.starts_with('h') && lower.contains(':'))
+                || lower.starts_with("mm")
+                || lower.starts_with("ss");
+            if !is_known_non_condition {
+                if let Some(cond) = parse_condition(&bracket_content) {
+                    return Some(cond);
+                }
+            }
+        } else {
+            chars.next();
+        }
+    }
+    None
+}
+
+/// Pick the format section to apply for a given value.
+///
+/// When sections contain explicit conditional predicates (e.g., `[>100]`),
+/// those conditions are evaluated against the value. Otherwise, the standard
+/// Excel sign-based selection (positive / negative / zero / text) is used.
 fn pick_section<'a>(sections: &[&'a str], value: f64) -> &'a str {
+    // Gather conditions from each section
+    let conditions: Vec<Option<Condition>> =
+        sections.iter().map(|s| extract_condition(s)).collect();
+
+    let has_any_condition = conditions.iter().any(|c| c.is_some());
+
+    if has_any_condition {
+        // Find the first section whose condition matches
+        for (i, cond) in conditions.iter().enumerate() {
+            if let Some(c) = cond {
+                if c.matches(value) {
+                    return sections[i];
+                }
+            }
+        }
+        // No conditional section matched: use the first section without a condition
+        // as the fallback (this is how Excel handles it)
+        for (i, cond) in conditions.iter().enumerate() {
+            if cond.is_none() {
+                return sections[i];
+            }
+        }
+        // All sections have conditions and none matched: use the last section
+        return sections.last().unwrap_or(&"General");
+    }
+
+    // Standard sign-based selection (no conditional predicates)
     match sections.len() {
         1 => sections[0],
         2 => {
@@ -173,16 +302,7 @@ fn pick_section<'a>(sections: &[&'a str], value: f64) -> &'a str {
                 sections[1]
             }
         }
-        3 => {
-            if value > 0.0 {
-                sections[0]
-            } else if value < 0.0 {
-                sections[1]
-            } else {
-                sections[2]
-            }
-        }
-        4.. => {
+        3 | 4.. => {
             if value > 0.0 {
                 sections[0]
             } else if value < 0.0 {
@@ -195,6 +315,8 @@ fn pick_section<'a>(sections: &[&'a str], value: f64) -> &'a str {
     }
 }
 
+/// Strip color codes and conditional predicates from a format section,
+/// returning the cleaned format string and the color name (if any).
 fn strip_color_and_condition(section: &str) -> (String, Option<String>) {
     let mut result = String::with_capacity(section.len());
     let mut color = None;
@@ -224,8 +346,9 @@ fn strip_color_and_condition(section: &str) -> (String, Option<String>) {
                 result.push('[');
                 result.push_str(&bracket_content);
                 result.push(']');
-            } else if lower.starts_with('>') || lower.starts_with('<') || lower.starts_with('=') {
-                // Conditional -- skip for now (just pick by sign)
+            } else if parse_condition(&bracket_content).is_some() {
+                // Conditional predicate -- strip from format string
+                // (condition is evaluated during section selection)
             } else if lower.starts_with("dbnum")
                 || lower.starts_with("$")
                 || lower.starts_with("natnum")
@@ -1523,5 +1646,99 @@ mod tests {
     #[test]
     fn test_count_decimal_places_three() {
         assert_eq!(count_decimal_places("0.000"), 3);
+    }
+
+    #[test]
+    fn test_parse_condition_operators() {
+        let c = parse_condition(">100").unwrap();
+        assert_eq!(c.op, ConditionOp::Gt);
+        assert_eq!(c.threshold, 100.0);
+
+        let c = parse_condition(">=50").unwrap();
+        assert_eq!(c.op, ConditionOp::Ge);
+        assert_eq!(c.threshold, 50.0);
+
+        let c = parse_condition("<1000").unwrap();
+        assert_eq!(c.op, ConditionOp::Lt);
+        assert_eq!(c.threshold, 1000.0);
+
+        let c = parse_condition("<=0").unwrap();
+        assert_eq!(c.op, ConditionOp::Le);
+        assert_eq!(c.threshold, 0.0);
+
+        let c = parse_condition("=0").unwrap();
+        assert_eq!(c.op, ConditionOp::Eq);
+        assert_eq!(c.threshold, 0.0);
+
+        let c = parse_condition("<>5").unwrap();
+        assert_eq!(c.op, ConditionOp::Ne);
+        assert_eq!(c.threshold, 5.0);
+
+        let c = parse_condition("!=5").unwrap();
+        assert_eq!(c.op, ConditionOp::Ne);
+        assert_eq!(c.threshold, 5.0);
+
+        assert!(parse_condition("Red").is_none());
+        assert!(parse_condition("").is_none());
+    }
+
+    #[test]
+    fn test_condition_matches() {
+        let c = Condition {
+            op: ConditionOp::Gt,
+            threshold: 100.0,
+        };
+        assert!(c.matches(150.0));
+        assert!(!c.matches(100.0));
+        assert!(!c.matches(50.0));
+    }
+
+    #[test]
+    fn test_conditional_two_sections_color_and_condition() {
+        // [Red][>100]0;[Blue][<=100]0
+        let fmt = "[Red][>100]0;[Blue][<=100]0";
+        assert_eq!(format_number(150.0, fmt), "150");
+        assert_eq!(format_number(50.0, fmt), "50");
+        assert_eq!(format_number(100.0, fmt), "100");
+    }
+
+    #[test]
+    fn test_conditional_three_sections_cascading() {
+        // [>1000]#,##0;[>100]0.0;0.00
+        let fmt = "[>1000]#,##0;[>100]0.0;0.00";
+        assert_eq!(format_number(5000.0, fmt), "5,000");
+        assert_eq!(format_number(500.0, fmt), "500.0");
+        assert_eq!(format_number(50.0, fmt), "50.00");
+    }
+
+    #[test]
+    fn test_conditional_equals_zero() {
+        // [=0]"zero";General -- value 0 matches first section, value 42 falls through
+        let fmt = "[=0]\"zero\";0";
+        assert_eq!(format_number(0.0, fmt), "zero");
+        assert_eq!(format_number(42.0, fmt), "42");
+    }
+
+    #[test]
+    fn test_conditional_with_sign_format() {
+        // [Red][>0]+0;[Blue][<0]-0;0
+        let fmt = "[Red][>0]+0;[Blue][<0]-0;0";
+        assert_eq!(format_number(5.0, fmt), "+5");
+        assert_eq!(format_number(-3.0, fmt), "-3");
+        assert_eq!(format_number(0.0, fmt), "0");
+    }
+
+    #[test]
+    fn test_extract_condition_from_section() {
+        let cond = extract_condition("[Red][>100]0.00").unwrap();
+        assert_eq!(cond.op, ConditionOp::Gt);
+        assert_eq!(cond.threshold, 100.0);
+
+        let cond = extract_condition("[<=0]0");
+        assert!(cond.is_some());
+        assert_eq!(cond.unwrap().op, ConditionOp::Le);
+
+        assert!(extract_condition("[Red]0.00").is_none());
+        assert!(extract_condition("0.00").is_none());
     }
 }
