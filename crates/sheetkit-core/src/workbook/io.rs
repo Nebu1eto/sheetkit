@@ -1,5 +1,12 @@
 use super::*;
 
+/// VBA project relationship type URI.
+const VBA_PROJECT_REL_TYPE: &str =
+    "http://schemas.microsoft.com/office/2006/relationships/vbaProject";
+
+/// VBA project content type.
+const VBA_PROJECT_CONTENT_TYPE: &str = "application/vnd.ms-office.vbaProject";
+
 impl Workbook {
     /// Create a new empty workbook containing a single empty sheet named "Sheet1".
     pub fn new() -> Self {
@@ -33,6 +40,7 @@ impl Workbook {
             theme_colors: crate::theme::default_theme_colors(),
             sheet_sparklines: vec![vec![]],
             sheet_vml: vec![None],
+            vba_blob: None,
             sheet_name_index,
         }
     }
@@ -320,6 +328,9 @@ impl Workbook {
             }
         }
 
+        // Load VBA project binary blob if present (macro-enabled files).
+        let vba_blob = read_bytes_part(archive, "xl/vbaProject.bin").ok();
+
         // Build sheet name -> index lookup.
         let mut sheet_name_index = HashMap::with_capacity(worksheets.len());
         for (i, (name, _)) in worksheets.iter().enumerate() {
@@ -367,6 +378,7 @@ impl Workbook {
             theme_colors,
             sheet_sparklines,
             sheet_vml,
+            vba_blob,
             sheet_name_index,
         })
     }
@@ -469,6 +481,49 @@ impl Workbook {
             .find(|o| o.part_name == "/xl/workbook.xml")
         {
             wb_override.content_type = self.format.content_type().to_string();
+        }
+
+        // Ensure VBA project content type override and workbook relationship are
+        // present when a VBA blob exists, and absent when it does not.
+        let mut workbook_rels = self.workbook_rels.clone();
+        if self.vba_blob.is_some() {
+            let vba_part_name = "/xl/vbaProject.bin";
+            if !content_types
+                .overrides
+                .iter()
+                .any(|o| o.part_name == vba_part_name)
+            {
+                content_types.overrides.push(ContentTypeOverride {
+                    part_name: vba_part_name.to_string(),
+                    content_type: VBA_PROJECT_CONTENT_TYPE.to_string(),
+                });
+            }
+            if !content_types.defaults.iter().any(|d| d.extension == "bin") {
+                content_types.defaults.push(ContentTypeDefault {
+                    extension: "bin".to_string(),
+                    content_type: VBA_PROJECT_CONTENT_TYPE.to_string(),
+                });
+            }
+            if !workbook_rels
+                .relationships
+                .iter()
+                .any(|r| r.rel_type == VBA_PROJECT_REL_TYPE)
+            {
+                let rid = crate::sheet::next_rid(&workbook_rels.relationships);
+                workbook_rels.relationships.push(Relationship {
+                    id: rid,
+                    rel_type: VBA_PROJECT_REL_TYPE.to_string(),
+                    target: "vbaProject.bin".to_string(),
+                    target_mode: None,
+                });
+            }
+        } else {
+            content_types
+                .overrides
+                .retain(|o| o.content_type != VBA_PROJECT_CONTENT_TYPE);
+            workbook_rels
+                .relationships
+                .retain(|r| r.rel_type != VBA_PROJECT_REL_TYPE);
         }
 
         let mut worksheet_rels = self.worksheet_rels.clone();
@@ -587,12 +642,7 @@ impl Workbook {
         write_xml_part(zip, "xl/workbook.xml", &self.workbook_xml, options)?;
 
         // xl/_rels/workbook.xml.rels
-        write_xml_part(
-            zip,
-            "xl/_rels/workbook.xml.rels",
-            &self.workbook_rels,
-            options,
-        )?;
+        write_xml_part(zip, "xl/_rels/workbook.xml.rels", &workbook_rels, options)?;
 
         // xl/worksheets/sheet{N}.xml
         for (i, (_name, ws)) in self.worksheets.iter().enumerate() {
@@ -697,6 +747,13 @@ impl Workbook {
             zip.start_file("xl/theme/theme1.xml", options)
                 .map_err(|e| Error::Zip(e.to_string()))?;
             zip.write_all(theme_bytes)?;
+        }
+
+        // xl/vbaProject.bin -- write VBA blob if present
+        if let Some(ref blob) = self.vba_blob {
+            zip.start_file("xl/vbaProject.bin", options)
+                .map_err(|e| Error::Zip(e.to_string()))?;
+            zip.write_all(blob)?;
         }
 
         // docProps/core.xml
@@ -1427,5 +1484,224 @@ mod tests {
     #[test]
     fn test_workbook_format_default_is_xlsx() {
         assert_eq!(WorkbookFormat::default(), WorkbookFormat::Xlsx);
+    }
+
+    fn build_xlsm_with_vba(vba_bytes: &[u8]) -> Vec<u8> {
+        use std::io::Write;
+        let mut buf = Vec::new();
+        {
+            let cursor = std::io::Cursor::new(&mut buf);
+            let mut zip = zip::ZipWriter::new(cursor);
+            let opts = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+
+            let ct_xml = format!(
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Default Extension="bin" ContentType="application/vnd.ms-office.vbaProject"/>
+  <Override PartName="/xl/workbook.xml" ContentType="{wb_ct}"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="{ws_ct}"/>
+  <Override PartName="/xl/styles.xml" ContentType="{st_ct}"/>
+  <Override PartName="/xl/sharedStrings.xml" ContentType="{sst_ct}"/>
+  <Override PartName="/xl/vbaProject.bin" ContentType="application/vnd.ms-office.vbaProject"/>
+</Types>"#,
+                wb_ct = mime_types::WORKBOOK_MACRO,
+                ws_ct = mime_types::WORKSHEET,
+                st_ct = mime_types::STYLES,
+                sst_ct = mime_types::SHARED_STRINGS,
+            );
+            zip.start_file("[Content_Types].xml", opts).unwrap();
+            zip.write_all(ct_xml.as_bytes()).unwrap();
+
+            let pkg_rels = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>"#;
+            zip.start_file("_rels/.rels", opts).unwrap();
+            zip.write_all(pkg_rels.as_bytes()).unwrap();
+
+            let wb_rels = format!(
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="{ws_rel}" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="{st_rel}" Target="styles.xml"/>
+  <Relationship Id="rId3" Type="{sst_rel}" Target="sharedStrings.xml"/>
+  <Relationship Id="rId4" Type="{vba_rel}" Target="vbaProject.bin"/>
+</Relationships>"#,
+                ws_rel = rel_types::WORKSHEET,
+                st_rel = rel_types::STYLES,
+                sst_rel = rel_types::SHARED_STRINGS,
+                vba_rel = VBA_PROJECT_REL_TYPE,
+            );
+            zip.start_file("xl/_rels/workbook.xml.rels", opts).unwrap();
+            zip.write_all(wb_rels.as_bytes()).unwrap();
+
+            let wb_xml = concat!(
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
+                r#"<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main""#,
+                r#" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">"#,
+                r#"<sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets>"#,
+                r#"</workbook>"#,
+            );
+            zip.start_file("xl/workbook.xml", opts).unwrap();
+            zip.write_all(wb_xml.as_bytes()).unwrap();
+
+            let ws_xml = concat!(
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
+                r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main""#,
+                r#" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">"#,
+                r#"<sheetData/>"#,
+                r#"</worksheet>"#,
+            );
+            zip.start_file("xl/worksheets/sheet1.xml", opts).unwrap();
+            zip.write_all(ws_xml.as_bytes()).unwrap();
+
+            let styles_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts>
+  <fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill></fills>
+  <borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>
+  <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
+  <cellXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/></cellXfs>
+</styleSheet>"#;
+            zip.start_file("xl/styles.xml", opts).unwrap();
+            zip.write_all(styles_xml.as_bytes()).unwrap();
+
+            let sst_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="0" uniqueCount="0"/>"#;
+            zip.start_file("xl/sharedStrings.xml", opts).unwrap();
+            zip.write_all(sst_xml.as_bytes()).unwrap();
+
+            zip.start_file("xl/vbaProject.bin", opts).unwrap();
+            zip.write_all(vba_bytes).unwrap();
+
+            zip.finish().unwrap();
+        }
+        buf
+    }
+
+    #[test]
+    fn test_vba_blob_loaded_when_present() {
+        let vba_data = b"FAKE_VBA_PROJECT_BINARY_DATA_1234567890";
+        let xlsm = build_xlsm_with_vba(vba_data);
+        let wb = Workbook::open_from_buffer(&xlsm).unwrap();
+        assert!(wb.vba_blob.is_some());
+        assert_eq!(wb.vba_blob.as_deref().unwrap(), vba_data);
+    }
+
+    #[test]
+    fn test_vba_blob_none_for_plain_xlsx() {
+        let wb = Workbook::new();
+        assert!(wb.vba_blob.is_none());
+
+        let buf = wb.save_to_buffer().unwrap();
+        let wb2 = Workbook::open_from_buffer(&buf).unwrap();
+        assert!(wb2.vba_blob.is_none());
+    }
+
+    #[test]
+    fn test_vba_blob_survives_roundtrip_with_identical_bytes() {
+        let vba_data: Vec<u8> = (0..=255).cycle().take(1024).collect();
+        let xlsm = build_xlsm_with_vba(&vba_data);
+
+        let wb = Workbook::open_from_buffer(&xlsm).unwrap();
+        assert_eq!(wb.vba_blob.as_deref().unwrap(), &vba_data[..]);
+
+        let saved = wb.save_to_buffer().unwrap();
+        let cursor = std::io::Cursor::new(&saved);
+        let mut archive = zip::ZipArchive::new(cursor).unwrap();
+
+        let mut roundtripped = Vec::new();
+        std::io::Read::read_to_end(
+            &mut archive.by_name("xl/vbaProject.bin").unwrap(),
+            &mut roundtripped,
+        )
+        .unwrap();
+        assert_eq!(roundtripped, vba_data);
+    }
+
+    #[test]
+    fn test_vba_relationship_preserved_on_roundtrip() {
+        let vba_data = b"VBA_BLOB";
+        let xlsm = build_xlsm_with_vba(vba_data);
+
+        let wb = Workbook::open_from_buffer(&xlsm).unwrap();
+        let saved = wb.save_to_buffer().unwrap();
+
+        let cursor = std::io::Cursor::new(&saved);
+        let mut archive = zip::ZipArchive::new(cursor).unwrap();
+
+        let rels: Relationships =
+            read_xml_part(&mut archive, "xl/_rels/workbook.xml.rels").unwrap();
+        let vba_rel = rels
+            .relationships
+            .iter()
+            .find(|r| r.rel_type == VBA_PROJECT_REL_TYPE);
+        assert!(vba_rel.is_some(), "VBA relationship must be preserved");
+        assert_eq!(vba_rel.unwrap().target, "vbaProject.bin");
+    }
+
+    #[test]
+    fn test_vba_content_type_preserved_on_roundtrip() {
+        let vba_data = b"VBA_BLOB";
+        let xlsm = build_xlsm_with_vba(vba_data);
+
+        let wb = Workbook::open_from_buffer(&xlsm).unwrap();
+        let saved = wb.save_to_buffer().unwrap();
+
+        let cursor = std::io::Cursor::new(&saved);
+        let mut archive = zip::ZipArchive::new(cursor).unwrap();
+
+        let ct: ContentTypes = read_xml_part(&mut archive, "[Content_Types].xml").unwrap();
+        let vba_override = ct
+            .overrides
+            .iter()
+            .find(|o| o.part_name == "/xl/vbaProject.bin");
+        assert!(
+            vba_override.is_some(),
+            "VBA content type override must be preserved"
+        );
+        assert_eq!(vba_override.unwrap().content_type, VBA_PROJECT_CONTENT_TYPE);
+    }
+
+    #[test]
+    fn test_non_vba_save_has_no_vba_entries() {
+        let wb = Workbook::new();
+        let buf = wb.save_to_buffer().unwrap();
+
+        let cursor = std::io::Cursor::new(&buf);
+        let mut archive = zip::ZipArchive::new(cursor).unwrap();
+
+        assert!(
+            archive.by_name("xl/vbaProject.bin").is_err(),
+            "plain xlsx must not contain vbaProject.bin"
+        );
+
+        let rels: Relationships =
+            read_xml_part(&mut archive, "xl/_rels/workbook.xml.rels").unwrap();
+        assert!(
+            !rels
+                .relationships
+                .iter()
+                .any(|r| r.rel_type == VBA_PROJECT_REL_TYPE),
+            "plain xlsx must not have VBA relationship"
+        );
+
+        let ct: ContentTypes = read_xml_part(&mut archive, "[Content_Types].xml").unwrap();
+        assert!(
+            !ct.overrides
+                .iter()
+                .any(|o| o.content_type == VBA_PROJECT_CONTENT_TYPE),
+            "plain xlsx must not have VBA content type override"
+        );
+    }
+
+    #[test]
+    fn test_xlsm_format_detected_with_vba() {
+        let vba_data = b"VBA_BLOB";
+        let xlsm = build_xlsm_with_vba(vba_data);
+        let wb = Workbook::open_from_buffer(&xlsm).unwrap();
+        assert_eq!(wb.format(), WorkbookFormat::Xlsm);
     }
 }
