@@ -99,6 +99,9 @@ pub mod mime_types {
     pub const WORKBOOK_MACRO: &str = "application/vnd.ms-excel.sheet.macroEnabled.main+xml";
     pub const WORKBOOK_TEMPLATE: &str =
         "application/vnd.openxmlformats-officedocument.spreadsheetml.template.main+xml";
+    pub const WORKBOOK_TEMPLATE_MACRO: &str =
+        "application/vnd.ms-excel.template.macroEnabled.main+xml";
+    pub const WORKBOOK_ADDIN_MACRO: &str = "application/vnd.ms-excel.addin.macroEnabled.main+xml";
 
     // Worksheet
     pub const WORKSHEET: &str =

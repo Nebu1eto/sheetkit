@@ -7,6 +7,7 @@ impl Workbook {
         let mut sheet_name_index = HashMap::new();
         sheet_name_index.insert("Sheet1".to_string(), 0);
         Self {
+            format: WorkbookFormat::default(),
             content_types: ContentTypes::default(),
             package_rels: relationships::package_rels(),
             workbook_xml: WorkbookXml::default(),
@@ -64,6 +65,14 @@ impl Workbook {
     ) -> Result<Self> {
         // Parse [Content_Types].xml
         let content_types: ContentTypes = read_xml_part(archive, "[Content_Types].xml")?;
+
+        // Infer the workbook format from the content type of xl/workbook.xml.
+        let format = content_types
+            .overrides
+            .iter()
+            .find(|o| o.part_name == "/xl/workbook.xml")
+            .and_then(|o| WorkbookFormat::from_content_type(&o.content_type))
+            .unwrap_or_default();
 
         // Parse _rels/.rels
         let package_rels: Relationships = read_xml_part(archive, "_rels/.rels")?;
@@ -332,6 +341,7 @@ impl Workbook {
         }
 
         Ok(Self {
+            format,
             content_types,
             package_rels,
             workbook_xml,
@@ -451,6 +461,16 @@ impl Workbook {
         options: SimpleFileOptions,
     ) -> Result<()> {
         let mut content_types = self.content_types.clone();
+
+        // Ensure the workbook override content type matches the stored format.
+        if let Some(wb_override) = content_types
+            .overrides
+            .iter_mut()
+            .find(|o| o.part_name == "/xl/workbook.xml")
+        {
+            wb_override.content_type = self.format.content_type().to_string();
+        }
+
         let mut worksheet_rels = self.worksheet_rels.clone();
 
         // Synchronize comment and VML parts with worksheet relationships/content types.
@@ -1258,5 +1278,154 @@ mod tests {
 
         let result = Workbook::open(&path);
         assert!(matches!(result, Err(Error::FileEncrypted)))
+    }
+
+    #[test]
+    fn test_workbook_format_from_content_type() {
+        use sheetkit_xml::content_types::mime_types;
+        assert_eq!(
+            WorkbookFormat::from_content_type(mime_types::WORKBOOK),
+            Some(WorkbookFormat::Xlsx)
+        );
+        assert_eq!(
+            WorkbookFormat::from_content_type(mime_types::WORKBOOK_MACRO),
+            Some(WorkbookFormat::Xlsm)
+        );
+        assert_eq!(
+            WorkbookFormat::from_content_type(mime_types::WORKBOOK_TEMPLATE),
+            Some(WorkbookFormat::Xltx)
+        );
+        assert_eq!(
+            WorkbookFormat::from_content_type(mime_types::WORKBOOK_TEMPLATE_MACRO),
+            Some(WorkbookFormat::Xltm)
+        );
+        assert_eq!(
+            WorkbookFormat::from_content_type(mime_types::WORKBOOK_ADDIN_MACRO),
+            Some(WorkbookFormat::Xlam)
+        );
+        assert_eq!(
+            WorkbookFormat::from_content_type("application/unknown"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_workbook_format_content_type_roundtrip() {
+        for fmt in [
+            WorkbookFormat::Xlsx,
+            WorkbookFormat::Xlsm,
+            WorkbookFormat::Xltx,
+            WorkbookFormat::Xltm,
+            WorkbookFormat::Xlam,
+        ] {
+            let ct = fmt.content_type();
+            assert_eq!(WorkbookFormat::from_content_type(ct), Some(fmt));
+        }
+    }
+
+    #[test]
+    fn test_new_workbook_defaults_to_xlsx_format() {
+        let wb = Workbook::new();
+        assert_eq!(wb.format(), WorkbookFormat::Xlsx);
+    }
+
+    #[test]
+    fn test_xlsx_roundtrip_preserves_format() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("roundtrip_format.xlsx");
+
+        let wb = Workbook::new();
+        assert_eq!(wb.format(), WorkbookFormat::Xlsx);
+        wb.save(&path).unwrap();
+
+        let wb2 = Workbook::open(&path).unwrap();
+        assert_eq!(wb2.format(), WorkbookFormat::Xlsx);
+    }
+
+    #[test]
+    fn test_save_writes_correct_content_type_for_format() {
+        let dir = TempDir::new().unwrap();
+
+        for fmt in [
+            WorkbookFormat::Xlsx,
+            WorkbookFormat::Xlsm,
+            WorkbookFormat::Xltx,
+            WorkbookFormat::Xltm,
+            WorkbookFormat::Xlam,
+        ] {
+            let path = dir.path().join(format!("test_{:?}.xlsx", fmt));
+            let mut wb = Workbook::new();
+            wb.set_format(fmt);
+            wb.save(&path).unwrap();
+
+            let file = std::fs::File::open(&path).unwrap();
+            let mut archive = zip::ZipArchive::new(file).unwrap();
+
+            let ct: ContentTypes = read_xml_part(&mut archive, "[Content_Types].xml").unwrap();
+            let wb_override = ct
+                .overrides
+                .iter()
+                .find(|o| o.part_name == "/xl/workbook.xml")
+                .expect("workbook override must exist");
+            assert_eq!(
+                wb_override.content_type,
+                fmt.content_type(),
+                "content type mismatch for {:?}",
+                fmt
+            );
+        }
+    }
+
+    #[test]
+    fn test_set_format_changes_workbook_format() {
+        let mut wb = Workbook::new();
+        assert_eq!(wb.format(), WorkbookFormat::Xlsx);
+
+        wb.set_format(WorkbookFormat::Xlsm);
+        assert_eq!(wb.format(), WorkbookFormat::Xlsm);
+    }
+
+    #[test]
+    fn test_save_buffer_roundtrip_with_xlsm_format() {
+        let mut wb = Workbook::new();
+        wb.set_format(WorkbookFormat::Xlsm);
+        wb.set_cell_value("Sheet1", "A1", CellValue::String("test".to_string()))
+            .unwrap();
+
+        let buf = wb.save_to_buffer().unwrap();
+        let wb2 = Workbook::open_from_buffer(&buf).unwrap();
+        assert_eq!(wb2.format(), WorkbookFormat::Xlsm);
+        assert_eq!(
+            wb2.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("test".to_string())
+        );
+    }
+
+    #[test]
+    fn test_format_inference_from_content_types_overrides() {
+        use sheetkit_xml::content_types::mime_types;
+
+        // Simulate a content_types with xlsm workbook type.
+        let ct = ContentTypes {
+            xmlns: "http://schemas.openxmlformats.org/package/2006/content-types".to_string(),
+            defaults: vec![],
+            overrides: vec![ContentTypeOverride {
+                part_name: "/xl/workbook.xml".to_string(),
+                content_type: mime_types::WORKBOOK_MACRO.to_string(),
+            }],
+        };
+
+        let detected = ct
+            .overrides
+            .iter()
+            .find(|o| o.part_name == "/xl/workbook.xml")
+            .and_then(|o| WorkbookFormat::from_content_type(&o.content_type))
+            .unwrap_or_default();
+        assert_eq!(detected, WorkbookFormat::Xlsm);
+    }
+
+    #[test]
+    fn test_workbook_format_default_is_xlsx() {
+        assert_eq!(WorkbookFormat::default(), WorkbookFormat::Xlsx);
     }
 }
