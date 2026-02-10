@@ -740,6 +740,11 @@ class Workbook {
     return this.#native.getTables(sheet);
   }
 
+  /** Delete a table from a sheet by name. */
+  deleteTable(sheet: string, name: string): void {
+    this.#native.deleteTable(sheet, name);
+  }
+
   /** Add a slicer to a sheet targeting a table column. */
   addSlicer(sheet: string, config: JsSlicerConfig): void {
     this.#native.addSlicer(sheet, config);
@@ -943,21 +948,6 @@ class Workbook {
   /** Get the workbook format ("xlsx", "xlsm", "xltx", "xltm", "xlam"). */
   getFormat(): string {
     return this.#native.getFormat();
-  }
-
-  /** Add a table to a sheet. */
-  addTable(sheet: string, config: JsTableConfig): void {
-    this.#native.addTable(sheet, config);
-  }
-
-  /** Get all tables on a sheet. */
-  getTables(sheet: string): JsTableInfo[] {
-    return this.#native.getTables(sheet);
-  }
-
-  /** Delete a table from a sheet by name. */
-  deleteTable(sheet: string, name: string): void {
-    this.#native.deleteTable(sheet, name);
   }
 
   /** Set sheet view options (gridlines, zoom, view mode, etc.). */
