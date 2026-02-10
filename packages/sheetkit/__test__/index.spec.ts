@@ -3736,7 +3736,7 @@ describe('Slicers', () => {
       name: 'Table1',
       displayName: 'Table1',
       range: 'A1:D10',
-      columns: ['Status', 'Region', 'Category', 'Sales'],
+      columns: [{ name: 'Status' }, { name: 'Region' }, { name: 'Category' }, { name: 'Sales' }],
       showHeaderRow: true,
       autoFilter: false,
     });
@@ -3759,7 +3759,7 @@ describe('Slicers', () => {
       name: 'Table1',
       displayName: 'Table1',
       range: 'A1:D10',
-      columns: ['Status', 'Region', 'Category', 'Sales'],
+      columns: [{ name: 'Status' }, { name: 'Region' }, { name: 'Category' }, { name: 'Sales' }],
       showHeaderRow: true,
       autoFilter: false,
     });
@@ -3788,7 +3788,7 @@ describe('Slicers', () => {
       name: 'T1',
       displayName: 'T1',
       range: 'A1:B10',
-      columns: ['Col1', 'Col2'],
+      columns: [{ name: 'Col1' }, { name: 'Col2' }],
       showHeaderRow: true,
       autoFilter: false,
     });
@@ -3810,7 +3810,7 @@ describe('Slicers', () => {
       name: 'Table1',
       displayName: 'Table1',
       range: 'A1:D10',
-      columns: ['Status', 'Region', 'Category', 'Sales'],
+      columns: [{ name: 'Status' }, { name: 'Region' }, { name: 'Category' }, { name: 'Sales' }],
       showHeaderRow: true,
       autoFilter: false,
     });
@@ -3825,15 +3825,6 @@ describe('Slicers', () => {
 
     await wb.save(out);
     const wb2 = await Workbook.open(out);
-    // Re-register table since table registry is not persisted yet.
-    wb2.addTable('Sheet1', {
-      name: 'Table1',
-      displayName: 'Table1',
-      range: 'A1:D10',
-      columns: ['Status', 'Region', 'Category', 'Sales'],
-      showHeaderRow: true,
-      autoFilter: false,
-    });
     const slicers = wb2.getSlicers('Sheet1');
     expect(slicers.length).toBe(1);
     expect(slicers[0].name).toBe('CategoryFilter');
@@ -3846,7 +3837,7 @@ describe('Slicers', () => {
       name: 'T1',
       displayName: 'T1',
       range: 'A1:B10',
-      columns: ['Col1', 'Col2'],
+      columns: [{ name: 'Col1' }, { name: 'Col2' }],
       showHeaderRow: true,
       autoFilter: false,
     });
@@ -3878,7 +3869,7 @@ describe('Slicers', () => {
       name: 'T1',
       displayName: 'T1',
       range: 'A1:B10',
-      columns: ['Col1', 'Col2'],
+      columns: [{ name: 'Col1' }, { name: 'Col2' }],
       showHeaderRow: true,
       autoFilter: false,
     });
@@ -3917,7 +3908,7 @@ describe('Slicers', () => {
       name: 'T1',
       displayName: 'T1',
       range: 'A1:B10',
-      columns: ['Col1', 'Col2'],
+      columns: [{ name: 'Col1' }, { name: 'Col2' }],
       showHeaderRow: true,
       autoFilter: false,
     });
@@ -3937,7 +3928,7 @@ describe('Slicers', () => {
       name: 'SalesTable',
       displayName: 'SalesTable',
       range: 'A1:C10',
-      columns: ['Region', 'Product', 'Amount'],
+      columns: [{ name: 'Region' }, { name: 'Product' }, { name: 'Amount' }],
       showHeaderRow: true,
       autoFilter: false,
     });
@@ -3962,7 +3953,7 @@ describe('Tables', () => {
       name: 'Sales',
       displayName: 'Sales',
       range: 'A1:D10',
-      columns: ['Name', 'Region', 'Product', 'Amount'],
+      columns: [{ name: 'Name' }, { name: 'Region' }, { name: 'Product' }, { name: 'Amount' }],
       showHeaderRow: true,
       autoFilter: false,
     });
@@ -3980,7 +3971,7 @@ describe('Tables', () => {
       name: 'T1',
       displayName: 'T1',
       range: 'A1:B10',
-      columns: ['Col1', 'Col2'],
+      columns: [{ name: 'Col1' }, { name: 'Col2' }],
       showHeaderRow: true,
       autoFilter: false,
     });
@@ -3988,7 +3979,7 @@ describe('Tables', () => {
       name: 'T2',
       displayName: 'T2',
       range: 'D1:F10',
-      columns: ['X', 'Y', 'Z'],
+      columns: [{ name: 'X' }, { name: 'Y' }, { name: 'Z' }],
       showHeaderRow: true,
       autoFilter: false,
     });
@@ -4005,7 +3996,7 @@ describe('Tables', () => {
       name: 'T1',
       displayName: 'T1',
       range: 'A1:B10',
-      columns: ['Col1', 'Col2'],
+      columns: [{ name: 'Col1' }, { name: 'Col2' }],
       showHeaderRow: true,
       autoFilter: false,
     });
@@ -4014,7 +4005,7 @@ describe('Tables', () => {
         name: 'T1',
         displayName: 'T1',
         range: 'D1:E10',
-        columns: ['X', 'Y'],
+        columns: [{ name: 'X' }, { name: 'Y' }],
         showHeaderRow: true,
         autoFilter: false,
       }),
