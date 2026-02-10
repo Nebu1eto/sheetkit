@@ -1035,6 +1035,7 @@ class Workbook {
 
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 export { JsStreamWriter, SheetData, Workbook };
 export type { CellTypeName, CellValue };
