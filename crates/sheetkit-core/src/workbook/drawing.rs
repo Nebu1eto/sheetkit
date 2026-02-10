@@ -384,13 +384,13 @@ impl Workbook {
     /// Resolve a relationship target to a full zip path.
     fn resolve_drawing_rel_target(&self, drawing_idx: usize, rid: &str) -> Option<String> {
         self.drawing_rels.get(&drawing_idx).and_then(|rels| {
-            rels.relationships.iter().find(|r| r.id == rid).map(|r| {
-                let drawing_path = &self.drawings[drawing_idx].0;
+            rels.relationships.iter().find(|r| r.id == rid).and_then(|r| {
+                let drawing_path = &self.drawings.get(drawing_idx)?.0;
                 let base_dir = drawing_path
                     .rfind('/')
                     .map(|i| &drawing_path[..i])
                     .unwrap_or("");
-                if r.target.starts_with("../") {
+                Some(if r.target.starts_with("../") {
                     let rel_target = r.target.trim_start_matches("../");
                     let parent = base_dir.rfind('/').map(|i| &base_dir[..i]).unwrap_or("");
                     if parent.is_empty() {
@@ -400,7 +400,7 @@ impl Workbook {
                     }
                 } else {
                     format!("{}/{}", base_dir, r.target)
-                }
+                })
             })
         })
     }
@@ -420,7 +420,10 @@ impl Workbook {
             None => return Ok(vec![]),
         };
 
-        let drawing = &self.drawings[drawing_idx].1;
+        let drawing = match self.drawings.get(drawing_idx) {
+            Some((_, d)) => d,
+            None => return Ok(vec![]),
+        };
         let mut results = Vec::new();
 
         for anchor in &drawing.one_cell_anchors {
@@ -495,7 +498,10 @@ impl Workbook {
             None => return Ok(vec![]),
         };
 
-        let drawing = &self.drawings[drawing_idx].1;
+        let drawing = match self.drawings.get(drawing_idx) {
+            Some((_, d)) => d,
+            None => return Ok(vec![]),
+        };
         let mut cells = Vec::new();
 
         for anchor in &drawing.one_cell_anchors {
