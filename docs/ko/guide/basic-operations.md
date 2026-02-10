@@ -151,6 +151,70 @@ const wb3 = await Workbook.openBuffer(buf2);
 
 ---
 
+### 워크북 형식 및 VBA 보존
+
+SheetKit은 표준 `.xlsx` 외에도 다양한 Excel 파일 형식을 지원합니다. 파일을 열 때 패키지 콘텐츠 타입에서 형식이 자동으로 감지되며, 저장 시 파일 확장자에서 형식이 유추됩니다.
+
+#### 지원 형식
+
+| 확장자 | 설명 |
+|--------|------|
+| `.xlsx` | 표준 스프레드시트 (기본값) |
+| `.xlsm` | 매크로 사용 스프레드시트 |
+| `.xltx` | 템플릿 |
+| `.xltm` | 매크로 사용 템플릿 |
+| `.xlam` | 매크로 사용 추가 기능 |
+
+#### Rust
+
+```rust
+use sheetkit::{Workbook, WorkbookFormat};
+
+// 열 때 형식이 자동 감지됩니다
+let wb = Workbook::open("macros.xlsm")?;
+assert_eq!(wb.format(), WorkbookFormat::Xlsm);
+
+// 저장 시 확장자에서 형식이 유추됩니다
+let mut wb2 = Workbook::new();
+wb2.save("template.xltx")?;  // 템플릿 형식으로 저장됩니다
+
+// 명시적 형식 제어
+let mut wb3 = Workbook::new();
+wb3.set_format(WorkbookFormat::Xlsm);
+wb3.save_to_buffer()?;  // Buffer에 xlsm 콘텐츠 타입이 사용됩니다
+```
+
+#### TypeScript
+
+```typescript
+// 열 때 형식이 자동 감지됩니다
+const wb = await Workbook.open("macros.xlsm");
+console.log(wb.format);  // "xlsm"
+
+// 저장 시 확장자에서 형식이 유추됩니다
+const wb2 = new Workbook();
+await wb2.save("template.xltx");  // 템플릿 형식으로 저장됩니다
+
+// 명시적 형식 제어
+const wb3 = new Workbook();
+wb3.format = "xlsm";
+const buf = wb3.writeBufferSync();  // Buffer에 xlsm 콘텐츠 타입이 사용됩니다
+```
+
+#### VBA 보존
+
+매크로 사용 파일(`.xlsm`, `.xltm`)은 열기/저장 라운드트립을 통해 VBA 프로젝트를 보존합니다. 별도의 코드가 필요하지 않으며, VBA 바이너리 blob이 메모리에 유지되어 저장 시 자동으로 다시 기록됩니다.
+
+```typescript
+const wb = await Workbook.open("with_macros.xlsm");
+wb.setCellValue("Sheet1", "A1", "Updated");
+await wb.save("with_macros.xlsm");  // 매크로가 보존됩니다
+```
+
+자세한 API 설명은 [API 레퍼런스](../api-reference/workbook.md)를 참조하세요.
+
+---
+
 ### 셀 조작
 
 셀 값을 읽고 씁니다. 셀은 시트 이름과 셀 참조(예: `"A1"`, `"B2"`, `"AA100"`)로 식별합니다.

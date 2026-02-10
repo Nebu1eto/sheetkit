@@ -6,15 +6,15 @@ SheetKit is a Rust library for reading and writing Excel (.xlsx) files, with Nod
 
 ## Table of Contents
 
-- [Workbook I/O](./workbook.md) - Create, open, and save workbooks
+- [Workbook I/O](./workbook.md) - Create, open, and save workbooks; workbook format profiling, VBA preservation, extension-based save
 - [Cell Operations](./cell.md) - Get and set cell values, cell value types
 - [Sheet Management](./sheet.md) - Create, delete, rename, and copy sheets
 - [Row and Column Operations](./row-column.md) - Insert, delete, duplicate rows and columns; manage heights, widths, visibility, and outline levels
 - [Styles](./style.md) - Font, fill, border, alignment, number format, and protection styles; style builder and deduplication
 - [Charts](./chart.md) - Create and manage charts (43 chart types)
 - [Images](./image.md) - Insert and manage images
-- [Data Features](./data-features.md) - Merge cells, hyperlinks, data validation, comments, auto-filter, conditional formatting
-- [Advanced](./advanced.md) - Freeze/split panes, page layout, defined names, document properties, workbook and sheet protection, formula evaluation, pivot tables, streaming writer, utilities, sparklines, theme colors, rich text, and file encryption
+- [Data Features](./data-features.md) - Merge cells, hyperlinks, data validation, comments, auto-filter, conditional formatting, tables, data conversion utilities
+- [Advanced](./advanced.md) - Freeze/split panes, page layout, defined names, document properties, workbook and sheet protection, formula evaluation, pivot tables, streaming writer, utilities, sparklines, theme colors, rich text, file encryption, sheet view options, sheet visibility
 
 ---
 
@@ -34,7 +34,7 @@ SheetKit is a Rust library for reading and writing Excel (.xlsx) files, with Nod
 
 **Data and Content:**
 - [Cell Operations](./cell.md)
-- [Data Features](./data-features.md) (merge cells, hyperlinks, validation, comments, filters)
+- [Data Features](./data-features.md) (merge cells, hyperlinks, validation, comments, filters, tables, data conversion)
 - [Charts](./chart.md)
 - [Images](./image.md)
 
@@ -53,6 +53,8 @@ SheetKit is a Rust library for reading and writing Excel (.xlsx) files, with Nod
 - [Theme Colors](./advanced.md#27-theme-colors)
 - [Rich Text](./advanced.md#28-rich-text)
 - [File Encryption](./advanced.md#29-file-encryption)
+- [Sheet View Options](./advanced.md#31-sheet-view-options)
+- [Sheet Visibility](./advanced.md#32-sheet-visibility)
 
 ---
 

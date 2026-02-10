@@ -127,4 +127,96 @@ const names: string[] = wb.sheetNames;
 
 > TypeScript에서는 getter 프로퍼티로 접근합니다.
 
+### `wb.format()` / `wb.format`
+
+워크북 형식을 반환합니다. 파일을 열 때 패키지의 콘텐츠 타입에서 자동으로 감지됩니다. 이 형식은 저장 시 `xl/workbook.xml`에 사용되는 OOXML 콘텐츠 타입을 결정합니다.
+
+**Rust:**
+
+```rust
+use sheetkit::{Workbook, WorkbookFormat};
+
+let wb = Workbook::open("report.xlsm")?;
+let fmt: WorkbookFormat = wb.format();
+assert_eq!(fmt, WorkbookFormat::Xlsm);
+```
+
+**TypeScript:**
+
+```typescript
+const wb = await Workbook.open("report.xlsm");
+const fmt: string = wb.format; // "xlsm"
+```
+
+### `wb.set_format(format)` / `wb.format = ...`
+
+워크북 형식을 명시적으로 설정합니다. 자동 감지된 형식을 덮어쓰며 저장 시 출력되는 콘텐츠 타입을 제어합니다.
+
+**Rust:**
+
+```rust
+use sheetkit::{Workbook, WorkbookFormat};
+
+let mut wb = Workbook::new();
+wb.set_format(WorkbookFormat::Xlsm);
+wb.save("macros.xlsm")?;
+```
+
+**TypeScript:**
+
+```typescript
+const wb = new Workbook();
+wb.format = "xlsm";
+await wb.save("macros.xlsm");
+```
+
+### WorkbookFormat
+
+| Rust | TypeScript | 확장자 | 설명 |
+|---|---|---|---|
+| `WorkbookFormat::Xlsx` | `"xlsx"` | `.xlsx` | 표준 스프레드시트 (기본값) |
+| `WorkbookFormat::Xlsm` | `"xlsm"` | `.xlsm` | 매크로 사용 스프레드시트 |
+| `WorkbookFormat::Xltx` | `"xltx"` | `.xltx` | 템플릿 |
+| `WorkbookFormat::Xltm` | `"xltm"` | `.xltm` | 매크로 사용 템플릿 |
+| `WorkbookFormat::Xlam` | `"xlam"` | `.xlam` | 매크로 사용 추가 기능 |
+
+### 확장자 기반 저장
+
+저장 시 파일 확장자에서 대상 형식이 자동으로 유추됩니다. 인식되는 확장자(`.xlsx`, `.xlsm`, `.xltx`, `.xltm`, `.xlam`)가 있으면 워크북 형식이 쓰기 전에 업데이트됩니다. 인식되지 않는 확장자는 오류를 반환합니다.
+
+**Rust:**
+
+```rust
+let mut wb = Workbook::new();
+// ".xlsm" 확장자에서 형식이 유추됩니다
+wb.save("output.xlsm")?;
+assert_eq!(wb.format(), WorkbookFormat::Xlsm);
+```
+
+**TypeScript:**
+
+```typescript
+const wb = new Workbook();
+await wb.save("output.xlsm"); // 형식이 자동으로 xlsm으로 설정됩니다
+```
+
+`save_to_buffer()` / `writeBufferSync()` 사용 시에는 파일 확장자가 없으므로 저장된 형식이 그대로 사용됩니다. Buffer 저장 전에 `set_format()`으로 형식을 명시적으로 설정하세요.
+
+### VBA 보존
+
+매크로 사용 워크북(`.xlsm`, `.xltm`)에는 VBA 프로젝트 blob(`xl/vbaProject.bin`)이 포함됩니다. 이러한 파일을 열고 다시 저장하면 VBA 프로젝트가 투명하게 보존됩니다. 추가 API 호출이 필요하지 않습니다.
+
+```rust
+// 매크로 사용 파일을 열고 데이터를 수정한 후 저장하면 VBA 매크로가 보존됩니다
+let mut wb = Workbook::open("with_macros.xlsm")?;
+wb.set_cell_value("Sheet1", "A1", CellValue::String("Updated".into()))?;
+wb.save("with_macros.xlsm")?;
+```
+
+```typescript
+const wb = await Workbook.open("with_macros.xlsm");
+wb.setCellValue("Sheet1", "A1", "Updated");
+await wb.save("with_macros.xlsm"); // VBA가 보존됩니다
+```
+
 ---

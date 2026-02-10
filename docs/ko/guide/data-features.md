@@ -631,3 +631,111 @@ wb.removeAutoFilter('Sheet1');
 ```
 
 ---
+
+### 테이블
+
+테이블은 열 헤더, 스타일, 선택적 자동 필터가 포함된 구조화된 데이터 범위입니다. 테이블은 별도의 OOXML 파트로 저장되며 저장/열기 라운드트립을 완벽하게 지원합니다.
+
+#### Rust
+
+```rust
+use sheetkit::table::{TableConfig, TableColumn};
+
+let mut wb = Workbook::new();
+
+// 테이블 생성
+let config = TableConfig {
+    name: "EmployeeList".to_string(),
+    display_name: "EmployeeList".to_string(),
+    range: "A1:C5".to_string(),
+    columns: vec![
+        TableColumn { name: "Name".to_string(), totals_row_function: None, totals_row_label: None },
+        TableColumn { name: "Department".to_string(), totals_row_function: None, totals_row_label: None },
+        TableColumn { name: "Salary".to_string(), totals_row_function: None, totals_row_label: None },
+    ],
+    style_name: Some("TableStyleMedium2".to_string()),
+    ..TableConfig::default()
+};
+wb.add_table("Sheet1", &config)?;
+
+// 테이블 목록 조회
+let tables = wb.get_tables("Sheet1")?;
+
+// 테이블 삭제
+wb.delete_table("Sheet1", "EmployeeList")?;
+```
+
+#### TypeScript
+
+```typescript
+const wb = new Workbook();
+
+// 테이블 생성
+wb.addTable("Sheet1", {
+    name: "EmployeeList",
+    displayName: "EmployeeList",
+    range: "A1:C5",
+    columns: [
+        { name: "Name" },
+        { name: "Department" },
+        { name: "Salary" },
+    ],
+    styleName: "TableStyleMedium2",
+});
+
+// 테이블 목록 조회
+const tables = wb.getTables("Sheet1");
+
+// 테이블 삭제
+wb.deleteTable("Sheet1", "EmployeeList");
+```
+
+자세한 API 설명은 [API 레퍼런스](../api-reference/data-features.md#16-테이블)를 참조하세요.
+
+---
+
+### 데이터 변환 유틸리티 (Node.js 전용)
+
+SheetKit은 시트 데이터와 JSON, CSV, HTML 등 일반적인 형식 간의 변환을 위한 편의 메서드를 제공합니다. TypeScript/Node.js 바인딩에서만 사용할 수 있습니다.
+
+#### JSON 변환
+
+```typescript
+import { Workbook } from '@sheetkit/node';
+
+// 시트를 객체 배열로 읽기
+const wb = await Workbook.open("data.xlsx");
+const records = wb.toJSON("Sheet1");
+// [{ Name: "Alice", Age: 30 }, { Name: "Bob", Age: 25 }, ...]
+
+// 객체 배열을 시트에 쓰기
+const wb2 = new Workbook();
+wb2.fromJSON("Sheet1", [
+    { Name: "Alice", Age: 30, City: "Seoul" },
+    { Name: "Bob", Age: 25, City: "Busan" },
+]);
+await wb2.save("output.xlsx");
+```
+
+#### CSV 내보내기
+
+```typescript
+const csv = wb.toCSV("Sheet1");
+// "Name,Age,City\nAlice,30,Seoul\n..."
+
+// 탭 구분 값
+const tsv = wb.toCSV("Sheet1", { separator: "\t" });
+```
+
+#### HTML 내보내기
+
+```typescript
+const html = wb.toHTML("Sheet1");
+// "<table><thead><tr><th>Name</th>..."
+
+const html2 = wb.toHTML("Sheet1", { tableClass: "data-table" });
+```
+
+자세한 API 설명은 [API 레퍼런스](../api-reference/data-features.md#17-데이터-변환-유틸리티-nodejs-전용)를 참조하세요.
+
+---
