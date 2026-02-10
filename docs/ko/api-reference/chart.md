@@ -57,6 +57,31 @@ wb.addChart("Sheet1", "E1", "L15", {
 | `x_values` / `xValues` | `string?` | X | Scatter/Bubble용 X 축 범위 |
 | `bubble_sizes` / `bubbleSizes` | `string?` | X | Bubble 차트용 크기 범위 |
 
+### `delete_chart(sheet, cell)` / `deleteChart(sheet, cell)`
+
+지정된 셀에 고정된 차트를 삭제합니다. 차트 데이터, drawing anchor, relationship 항목, content type override를 모두 제거합니다.
+
+해당 셀에 차트가 없으면 오류가 반환됩니다.
+
+**매개변수:**
+
+| 매개변수 | 타입 | 설명 |
+|----------|------|------|
+| `sheet` | `&str` / `string` | 시트 이름 |
+| `cell` | `&str` / `string` | 차트의 anchor 셀 (예: `"D1"`) |
+
+**Rust:**
+
+```rust
+wb.delete_chart("Sheet1", "D1")?;
+```
+
+**TypeScript:**
+
+```typescript
+wb.deleteChart("Sheet1", "D1");
+```
+
 ### View3DConfig 구조
 
 3D 차트의 시점을 설정합니다. 3D 차트 유형에서는 지정하지 않으면 자동으로 기본값이 적용됩니다.
