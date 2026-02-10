@@ -161,6 +161,11 @@ class Workbook {
     return this.#native.getCellValue(sheet, cell);
   }
 
+  /** Get the formatted display text for a cell, applying its number format. */
+  getCellFormattedValue(sheet: string, cell: string): string {
+    return this.#native.getCellFormattedValue(sheet, cell);
+  }
+
   /** Set the value of a cell. Pass string, number, boolean, DateValue, or null to clear. */
   setCellValue(sheet: string, cell: string, value: CellValueInput): void {
     this.#native.setCellValue(sheet, cell, value);
@@ -691,5 +696,15 @@ class Workbook {
   }
 }
 
-export { JsStreamWriter, SheetData, Workbook };
+/** Format a numeric value using an Excel format code string. */
+function formatNumber(value: number, formatCode: string): string {
+  return NativeWorkbook.formatNumber(value, formatCode);
+}
+
+/** Get the format code string for a built-in number format ID (0-49). Returns null if unknown. */
+function builtinFormatCode(id: number): string | null {
+  return NativeWorkbook.builtinFormatCode(id);
+}
+
+export { builtinFormatCode, formatNumber, JsStreamWriter, SheetData, Workbook };
 export type { CellTypeName, CellValue };

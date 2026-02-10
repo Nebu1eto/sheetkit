@@ -189,6 +189,80 @@ impl Workbook {
         false
     }
 
+    /// Get the formatted display text for a cell, applying its number format.
+    ///
+    /// If the cell has a style with a number format, the raw numeric value is
+    /// formatted according to that format code. String and boolean cells return
+    /// their default display text. Empty cells return an empty string.
+    pub fn get_cell_formatted_value(&self, sheet: &str, cell: &str) -> Result<String> {
+        let ws = self.worksheet_ref(sheet)?;
+        let (col, row) = cell_name_to_coordinates(cell)?;
+
+        let xml_row = match ws.sheet_data.rows.binary_search_by_key(&row, |r| r.r) {
+            Ok(idx) => &ws.sheet_data.rows[idx],
+            Err(_) => return Ok(String::new()),
+        };
+
+        let xml_cell = match xml_row.cells.binary_search_by_key(&col, |c| c.col) {
+            Ok(idx) => &xml_row.cells[idx],
+            Err(_) => return Ok(String::new()),
+        };
+
+        let cell_value = self.xml_cell_to_value(xml_cell)?;
+
+        let numeric_val = match &cell_value {
+            CellValue::Number(n) => Some(*n),
+            CellValue::Date(n) => Some(*n),
+            CellValue::Formula {
+                result: Some(boxed),
+                ..
+            } => match boxed.as_ref() {
+                CellValue::Number(n) => Some(*n),
+                CellValue::Date(n) => Some(*n),
+                _ => None,
+            },
+            _ => None,
+        };
+
+        if let Some(val) = numeric_val {
+            if let Some(format_code) = self.cell_format_code(xml_cell) {
+                return Ok(crate::numfmt::format_number(val, &format_code));
+            }
+        }
+
+        Ok(cell_value.to_string())
+    }
+
+    /// Get the number format code string for a cell from its style.
+    /// Returns `None` if the cell has no style or the default "General" format.
+    pub(crate) fn cell_format_code(&self, xml_cell: &Cell) -> Option<String> {
+        let style_idx = xml_cell.s? as usize;
+        let xf = self.stylesheet.cell_xfs.xfs.get(style_idx)?;
+        let num_fmt_id = xf.num_fmt_id.unwrap_or(0);
+
+        if num_fmt_id == 0 {
+            return None;
+        }
+
+        // Try built-in format
+        if let Some(code) = crate::numfmt::builtin_format_code(num_fmt_id) {
+            return Some(code.to_string());
+        }
+
+        // Try custom format
+        if let Some(ref num_fmts) = self.stylesheet.num_fmts {
+            if let Some(nf) = num_fmts
+                .num_fmts
+                .iter()
+                .find(|nf| nf.num_fmt_id == num_fmt_id)
+            {
+                return Some(nf.format_code.clone());
+            }
+        }
+
+        None
+    }
+
     /// Register a new style and return its ID.
     ///
     /// The style is deduplicated: if an identical style already exists in

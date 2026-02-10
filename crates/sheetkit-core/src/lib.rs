@@ -15,6 +15,7 @@ pub mod formula;
 pub mod hyperlink;
 pub mod image;
 pub mod merge;
+pub mod numfmt;
 pub mod page_layout;
 pub mod pivot;
 pub mod protection;
