@@ -572,7 +572,7 @@ wb.setColStyle('Sheet1', 'A', styleId);
 
 ### 수식 계산
 
-셀 수식을 평가합니다. `evaluate_formula`는 단일 수식을 계산하고, `calculate_all`은 워크북의 모든 수식 셀을 의존성 순서대로 재계산합니다. 110개 이상의 함수를 지원합니다 (SUM, VLOOKUP, IF, DATE 등).
+셀 수식을 평가합니다. `evaluate_formula`는 단일 수식을 계산하고, `calculate_all`은 워크북의 모든 수식 셀을 의존성 순서대로 재계산합니다. 수학, 통계, 텍스트, 논리, 정보, 날짜/시각, 찾기/참조, 재무, 공학 카테고리에 걸쳐 160개 이상의 함수를 지원합니다.
 
 #### Rust
 

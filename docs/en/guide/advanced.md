@@ -263,7 +263,7 @@ wb.removeAutoFilter('Sheet1');
 
 ### Formula Evaluation
 
-Evaluate formulas against workbook data. The evaluator supports 110+ Excel functions including SUM, AVERAGE, IF, VLOOKUP, INDEX, MATCH, DATE, and more. Function names are case-insensitive.
+Evaluate formulas against workbook data. The evaluator supports 160+ Excel functions across math, statistical, text, logical, information, date/time, lookup, financial, and engineering categories. Function names are case-insensitive.
 
 #### Rust
 
