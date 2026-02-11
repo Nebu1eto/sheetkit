@@ -108,7 +108,7 @@ mod io;
 mod open_options;
 mod sheet_ops;
 
-pub use open_options::OpenOptions;
+pub use open_options::{OpenOptions, ParseMode};
 
 /// XML declaration prepended to every XML part in the package.
 const XML_DECLARATION: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#;
@@ -164,6 +164,10 @@ pub struct Workbook {
     /// ZIP entries not recognized by the parser, preserved for round-trip fidelity.
     /// Each entry is (zip_path, raw_bytes).
     unknown_parts: Vec<(String, Vec<u8>)>,
+    /// Auxiliary parts deferred during ReadFast open. Stored as raw bytes and
+    /// written back unchanged on save unless parsed on demand. Keyed by ZIP
+    /// path (e.g. "xl/charts/chart1.xml").
+    deferred_parts: HashMap<String, Vec<u8>>,
     /// Raw VBA project binary blob (`xl/vbaProject.bin`), preserved for round-trip
     /// and used for VBA module extraction. `None` for non-macro workbooks.
     vba_blob: Option<Vec<u8>>,

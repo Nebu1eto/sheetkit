@@ -513,6 +513,9 @@ pub struct JsOpenOptions {
     pub max_unzip_size: Option<f64>,
     /// Maximum number of ZIP entries allowed.
     pub max_zip_entries: Option<u32>,
+    /// Parse mode: "full" (default) or "readfast". ReadFast skips auxiliary
+    /// parts (comments, charts, images, etc.) for faster read-only workloads.
+    pub parse_mode: Option<String>,
 }
 
 /// A cell reference and value pair for batch operations.

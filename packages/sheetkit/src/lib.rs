@@ -781,7 +781,7 @@ impl Workbook {
 
     /// Get all comments on a sheet.
     #[napi]
-    pub fn get_comments(&self, sheet: String) -> Result<Vec<JsCommentConfig>> {
+    pub fn get_comments(&mut self, sheet: String) -> Result<Vec<JsCommentConfig>> {
         let comments = self
             .inner
             .get_comments(&sheet)

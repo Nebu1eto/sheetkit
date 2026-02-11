@@ -1158,11 +1158,16 @@ pub(crate) fn js_open_options_to_core(
     let Some(js) = js else {
         return sheetkit_core::workbook::OpenOptions::default();
     };
+    let parse_mode = match js.parse_mode.as_deref() {
+        Some("readfast") => sheetkit_core::workbook::ParseMode::ReadFast,
+        _ => sheetkit_core::workbook::ParseMode::Full,
+    };
     sheetkit_core::workbook::OpenOptions {
         sheet_rows: js.sheet_rows,
         sheets: js.sheets.clone(),
         max_unzip_size: js.max_unzip_size.map(|v| v as u64),
         max_zip_entries: js.max_zip_entries.map(|v| v as usize),
+        parse_mode,
     }
 }
 
