@@ -511,6 +511,8 @@ impl Workbook {
                 for mc in &mut merges.merge_cells {
                     mc.reference = shift_cell_references_in_text(&mc.reference, shift_cell)?;
                 }
+                // Invalidate the coordinate cache since references changed.
+                merges.cached_coords.clear();
             }
 
             // Auto-filter.

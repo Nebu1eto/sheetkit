@@ -688,13 +688,29 @@ pub struct DataValidation {
 }
 
 /// Merge cells container.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// `PartialEq` is implemented manually to exclude `cached_coords`, which is a
+/// transient performance cache. Two values with the same `count` and
+/// `merge_cells` are semantically equal regardless of cache state.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MergeCells {
     #[serde(rename = "@count", skip_serializing_if = "Option::is_none")]
     pub count: Option<u32>,
 
     #[serde(rename = "mergeCell", default)]
     pub merge_cells: Vec<MergeCell>,
+
+    /// Cached parsed coordinates `(min_col, min_row, max_col, max_row)` for each
+    /// merge region, kept in parallel with `merge_cells`. Populated lazily on
+    /// first overlap check and maintained during add/remove. Not serialized.
+    #[serde(skip)]
+    pub cached_coords: Vec<(u32, u32, u32, u32)>,
+}
+
+impl PartialEq for MergeCells {
+    fn eq(&self, other: &Self) -> bool {
+        self.count == other.count && self.merge_cells == other.merge_cells
+    }
 }
 
 /// Individual merge cell reference.
@@ -1189,6 +1205,7 @@ mod tests {
                 merge_cells: vec![MergeCell {
                     reference: "A1:B2".to_string(),
                 }],
+                cached_coords: Vec::new(),
             }),
             ..WorksheetXml::default()
         };
