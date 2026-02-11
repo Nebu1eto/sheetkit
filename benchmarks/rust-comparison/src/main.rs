@@ -17,10 +17,6 @@ use std::time::Instant;
 const WARMUP_RUNS: usize = 1;
 const BENCH_RUNS: usize = 5;
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 fn fixtures_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
@@ -156,10 +152,6 @@ fn detect_rustc_version() -> String {
         .unwrap_or_else(|| "Unknown".to_string())
 }
 
-// ---------------------------------------------------------------------------
-// BenchResult
-// ---------------------------------------------------------------------------
-
 #[derive(Clone)]
 struct BenchResult {
     scenario: String,
@@ -200,10 +192,6 @@ impl BenchResult {
             .fold(0.0_f64, f64::max)
     }
 }
-
-// ---------------------------------------------------------------------------
-// Bench harness
-// ---------------------------------------------------------------------------
 
 fn bench<F>(
     scenario: &str,
@@ -279,10 +267,6 @@ where
 fn cleanup(path: &Path) {
     let _ = fs::remove_file(path);
 }
-
-// ===================================================================
-// READ BENCHMARKS: SheetKit vs calamine
-// ===================================================================
 
 fn bench_read_file(results: &mut Vec<BenchResult>, filename: &str, label: &str, category: &str) {
     let filepath = fixtures_dir().join(filename);
@@ -374,10 +358,6 @@ fn bench_read_file(results: &mut Vec<BenchResult>, filename: &str, label: &str, 
         println!("  [edit-xlsx     ] Read {label:<40} SKIP (cannot open fixture)",);
     }
 }
-
-// ===================================================================
-// WRITE BENCHMARKS: SheetKit vs rust_xlsxwriter vs edit-xlsx
-// ===================================================================
 
 fn bench_write_large_data(results: &mut Vec<BenchResult>) {
     let rows: u32 = 50_000;
@@ -1031,10 +1011,6 @@ fn bench_write_merged_cells(results: &mut Vec<BenchResult>) {
     cleanup(&out);
 }
 
-// ===================================================================
-// WRITE SCALING
-// ===================================================================
-
 fn bench_write_scale(results: &mut Vec<BenchResult>, rows: u32) {
     let cols: u32 = 10;
     let tag = if rows >= 1000 {
@@ -1160,10 +1136,6 @@ fn bench_write_scale(results: &mut Vec<BenchResult>, rows: u32) {
     cleanup(&out);
 }
 
-// ===================================================================
-// BUFFER ROUND-TRIP (SheetKit only -- others lack buffer API or read)
-// ===================================================================
-
 fn bench_buffer_round_trip(results: &mut Vec<BenchResult>) {
     let rows: u32 = 10_000;
     let cols: u32 = 10;
@@ -1220,10 +1192,6 @@ fn bench_buffer_round_trip(results: &mut Vec<BenchResult>) {
         },
     ));
 }
-
-// ===================================================================
-// STREAMING WRITE (SheetKit only -- others have no streaming API)
-// ===================================================================
 
 fn bench_streaming_write(results: &mut Vec<BenchResult>) {
     let rows: u32 = 50_000;
@@ -1294,10 +1262,6 @@ fn bench_streaming_write(results: &mut Vec<BenchResult>) {
     ));
     cleanup(&out);
 }
-
-// ===================================================================
-// RANDOM ACCESS READ
-// ===================================================================
 
 fn bench_random_access_read(results: &mut Vec<BenchResult>) {
     let filepath = fixtures_dir().join("large-data.xlsx");
@@ -1372,10 +1336,6 @@ fn bench_random_access_read(results: &mut Vec<BenchResult>) {
     ));
 }
 
-// ===================================================================
-// MODIFY BENCHMARK (SheetKit vs edit-xlsx)
-// ===================================================================
-
 fn bench_modify_file(results: &mut Vec<BenchResult>) {
     let filepath = fixtures_dir().join("large-data.xlsx");
     if !filepath.exists() {
@@ -1447,10 +1407,6 @@ fn bench_modify_file(results: &mut Vec<BenchResult>) {
     println!("  [calamine       ] N/A (read-only)");
     println!("  [rust_xlsxwriter] N/A (write-only, cannot open existing files)");
 }
-
-// ===================================================================
-// Summary and report
-// ===================================================================
 
 fn print_summary_table(results: &[BenchResult]) {
     println!("\n\n========================================");
@@ -1718,10 +1674,6 @@ fn generate_markdown_report(results: &[BenchResult]) -> String {
 
     lines.join("\n")
 }
-
-// ===================================================================
-// Main
-// ===================================================================
 
 fn main() {
     println!("Rust Excel Library Comparison Benchmark");
