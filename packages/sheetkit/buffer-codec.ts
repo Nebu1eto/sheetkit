@@ -76,16 +76,6 @@ function cachedColumnName(n: number): string {
   return colNameCache[idx];
 }
 
-function columnNumberToName(n: number): string {
-  let name = '';
-  while (n > 0) {
-    n--;
-    name = String.fromCharCode(65 + (n % 26)) + name;
-    n = Math.floor(n / 26);
-  }
-  return name;
-}
-
 function readHeader(view: DataView): BufferHeader {
   const magic = view.getUint32(0, true);
   if (magic !== MAGIC) {

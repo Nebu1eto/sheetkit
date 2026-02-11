@@ -5569,11 +5569,7 @@ describe('Async worker thread offloading', () => {
     const wb3 = new Workbook();
     wb3.setCellValue('Sheet1', 'A1', 'save-3');
 
-    await Promise.all([
-      wb1.save(asyncOut1),
-      wb2.save(asyncOut2),
-      wb3.save(asyncOut3),
-    ]);
+    await Promise.all([wb1.save(asyncOut1), wb2.save(asyncOut2), wb3.save(asyncOut3)]);
 
     expect(Workbook.openSync(asyncOut1).getCellValue('Sheet1', 'A1')).toBe('save-1');
     expect(Workbook.openSync(asyncOut2).getCellValue('Sheet1', 'A1')).toBe('save-2');
