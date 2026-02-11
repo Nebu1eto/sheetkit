@@ -833,20 +833,10 @@ fn bench_streaming_write(results: &mut Vec<BenchResult>) {
     cleanup(&out);
 }
 
-fn bench_random_access_read(results: &mut Vec<BenchResult>) {
-    let filepath = fixtures_dir().join("large-data.xlsx");
-    if !filepath.exists() {
-        println!("  SKIP: large-data.xlsx not found. Run pnpm generate first.");
-        return;
-    }
-
-    let lookups: usize = 1_000;
-    let label = format!("Random-access read ({lookups} cells from 50k-row file)");
-    println!("\n--- {label} ---");
-
-    let mut cells = Vec::with_capacity(lookups);
+fn random_cell_addresses(count: usize) -> Vec<String> {
+    let mut cells = Vec::with_capacity(count);
     let mut seed: u64 = 42;
-    for _ in 0..lookups {
+    for _ in 0..count {
         seed = seed
             .wrapping_mul(6364136223846793005)
             .wrapping_add(1442695040888963407);
@@ -857,13 +847,48 @@ fn bench_random_access_read(results: &mut Vec<BenchResult>) {
         let c = ((seed >> 33) % 20) as u32 + 1;
         cells.push(cell_ref(r, c));
     }
+    cells
+}
+
+fn bench_random_access_read(results: &mut Vec<BenchResult>) {
+    let filepath = fixtures_dir().join("large-data.xlsx");
+    if !filepath.exists() {
+        println!("  SKIP: large-data.xlsx not found. Run pnpm generate first.");
+        return;
+    }
+
+    let lookups: usize = 1_000;
+    let cells = random_cell_addresses(lookups);
+
+    // Open+lookup: measures file open overhead together with cell lookups.
+    let label_open = format!("Random-access (open+{lookups} lookups)");
+    println!("\n--- {label_open} ---");
 
     let fp = filepath.clone();
-    results.push(bench(&label, "Random Access", None, move || {
+    let cells_clone = cells.clone();
+    results.push(bench(&label_open, "Random Access", None, move || {
         let fp = fp.clone();
-        let cells = cells.clone();
+        let cells_clone = cells_clone.clone();
         Box::new(move || {
             let wb = Workbook::open(&fp).unwrap();
+            for cell in &cells_clone {
+                let _ = wb.get_cell_value("Sheet1", cell);
+            }
+        })
+    }));
+
+    // Lookup-only: opens a fresh workbook per run inside `make_fn` (not timed),
+    // then the returned closure only performs cell lookups (timed). Each run gets
+    // its own Workbook instance so internal caches from previous runs do not
+    // accumulate and distort the measurement.
+    let label_lookup = format!("Random-access (lookup-only, {lookups} cells)");
+    println!("\n--- {label_lookup} ---");
+
+    let fp = filepath.clone();
+    results.push(bench(&label_lookup, "Random Access", None, move || {
+        let wb = Workbook::open(&fp).unwrap();
+        let cells = cells.clone();
+        Box::new(move || {
             for cell in &cells {
                 let _ = wb.get_cell_value("Sheet1", cell);
             }

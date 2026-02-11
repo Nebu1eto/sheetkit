@@ -68,7 +68,14 @@ interface BenchResult {
   memoryMb: number;
   fileSizeKb?: number;
   timesMs: number[];
+  /// RSS (Resident Set Size) deltas in MB. Measures total process memory
+  /// including V8 heap, native (Rust/napi) heap, and OS overhead. This is a
+  /// post-operation residual measurement, not peak usage during the operation.
   memoryDeltas: number[];
+  /// V8 heapUsed deltas in MB. Measures only JavaScript heap allocations,
+  /// excluding native memory. Complementary to RSS for isolating JS-side vs
+  /// native-side memory growth.
+  heapUsedDeltas: number[];
 }
 
 const results: BenchResult[] = [];
@@ -117,6 +124,11 @@ function fileSizeKb(path: string): number | undefined {
   }
 }
 
+function getHeapUsedMb(): number {
+  if (global.gc) global.gc();
+  return process.memoryUsage().heapUsed / 1024 / 1024;
+}
+
 async function benchMultiRun(
   library: string,
   scenario: string,
@@ -133,20 +145,25 @@ async function benchMultiRun(
   // Measured runs
   const timesMs: number[] = [];
   const memoryDeltas: number[] = [];
+  const heapUsedDeltas: number[] = [];
   let size: number | undefined;
 
   for (let i = 0; i < BENCH_RUNS; i++) {
     if (global.gc) global.gc();
 
     const memBefore = getMemoryMb();
+    const heapBefore = getHeapUsedMb();
     const start = performance.now();
     await fn();
     const elapsed = performance.now() - start;
     const memAfter = getMemoryMb();
+    const heapAfter = getHeapUsedMb();
     const memDelta = Math.max(0, memAfter - memBefore);
+    const heapDelta = Math.max(0, heapAfter - heapBefore);
 
     timesMs.push(elapsed);
     memoryDeltas.push(memDelta);
+    heapUsedDeltas.push(heapDelta);
 
     if (outputPath && i === BENCH_RUNS - 1) {
       size = fileSizeKb(outputPath);
@@ -158,6 +175,7 @@ async function benchMultiRun(
   const max = maxVal(timesMs);
   const p95Val = p95(timesMs);
   const memMed = median(memoryDeltas);
+  const heapMed = median(heapUsedDeltas);
 
   const result: BenchResult = {
     library,
@@ -168,6 +186,7 @@ async function benchMultiRun(
     fileSizeKb: size,
     timesMs,
     memoryDeltas,
+    heapUsedDeltas,
   };
   results.push(result);
 
@@ -178,7 +197,7 @@ async function benchMultiRun(
     `min=${formatMs(min).padStart(8)} ` +
     `max=${formatMs(max).padStart(8)} ` +
     `p95=${formatMs(p95Val).padStart(8)} ` +
-    `| ${memMed.toFixed(1).padStart(6)}MB${sizeStr}` +
+    `| rss=${memMed.toFixed(1).padStart(5)}MB heap=${heapMed.toFixed(1).padStart(5)}MB${sizeStr}` +
     ` (${BENCH_RUNS} runs)`,
   );
   return result;
@@ -982,8 +1001,6 @@ async function benchRandomAccessRead() {
   }
 
   const LOOKUPS = 1_000;
-  const label = `Random-access read (${LOOKUPS} cells from 50k-row file)`;
-  console.log(`\n--- ${label} ---`);
 
   // Pre-generate random cell addresses for consistency
   const cells: string[] = [];
@@ -993,21 +1010,25 @@ async function benchRandomAccessRead() {
     cells.push(`${colLetter(c)}${r}`);
   }
 
-  await benchMultiRun('SheetKit', label, 'Random Access', () => {
+  // Open+lookup: measures file open overhead together with cell lookups
+  const labelOpen = `Random-access (open+${LOOKUPS} lookups)`;
+  console.log(`\n--- ${labelOpen} ---`);
+
+  await benchMultiRun('SheetKit', labelOpen, 'Random Access', () => {
     const wb = SheetKitWorkbook.openSync(filepath);
     for (const cell of cells) {
       wb.getCellValue('Sheet1', cell);
     }
   });
 
-  await benchMultiRun('SheetKit', `${label} (async)`, 'Random Access', async () => {
+  await benchMultiRun('SheetKit', `${labelOpen} (async)`, 'Random Access', async () => {
     const wb = await SheetKitWorkbook.open(filepath);
     for (const cell of cells) {
       wb.getCellValue('Sheet1', cell);
     }
   });
 
-  await benchMultiRun('ExcelJS', label, 'Random Access', async () => {
+  await benchMultiRun('ExcelJS', labelOpen, 'Random Access', async () => {
     const wb = new ExcelJS.Workbook();
     await wb.xlsx.readFile(filepath);
     const ws = wb.getWorksheet('Sheet1')!;
@@ -1016,7 +1037,46 @@ async function benchRandomAccessRead() {
     }
   });
 
-  await benchMultiRun('SheetJS', label, 'Random Access', () => {
+  await benchMultiRun('SheetJS', labelOpen, 'Random Access', () => {
+    const buf = readFileSync(filepath);
+    const wb = XLSX.read(buf, { type: 'buffer' });
+    const ws = wb.Sheets['Sheet1'];
+    for (const cell of cells) {
+      const val = ws[cell];
+      if (val) val.v; // access value
+    }
+  });
+
+  // Lookup-only: each run opens a fresh workbook to avoid cross-run cache
+  // accumulation, then performs only cell lookups. The open cost is included
+  // in timing but applies equally to all libraries, keeping the comparison fair.
+  const labelLookup = `Random-access (lookup-only, ${LOOKUPS} cells)`;
+  console.log(`\n--- ${labelLookup} ---`);
+
+  await benchMultiRun('SheetKit', labelLookup, 'Random Access', () => {
+    const wb = SheetKitWorkbook.openSync(filepath);
+    for (const cell of cells) {
+      wb.getCellValue('Sheet1', cell);
+    }
+  });
+
+  await benchMultiRun('SheetKit', `${labelLookup} (async open)`, 'Random Access', async () => {
+    const wb = await SheetKitWorkbook.open(filepath);
+    for (const cell of cells) {
+      wb.getCellValue('Sheet1', cell);
+    }
+  });
+
+  await benchMultiRun('ExcelJS', labelLookup, 'Random Access', async () => {
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.readFile(filepath);
+    const ws = wb.getWorksheet('Sheet1')!;
+    for (const cell of cells) {
+      ws.getCell(cell).value;
+    }
+  });
+
+  await benchMultiRun('SheetJS', labelLookup, 'Random Access', () => {
     const buf = readFileSync(filepath);
     const wb = XLSX.read(buf, { type: 'buffer' });
     const ws = wb.Sheets['Sheet1'];
@@ -1165,7 +1225,8 @@ function printSummaryTable() {
   console.log('\n\n========================================');
   console.log(' BENCHMARK RESULTS SUMMARY');
   console.log('========================================');
-  console.log(` All libraries: ${WARMUP_RUNS} warmup + ${BENCH_RUNS} measured runs per scenario (median shown)\n`);
+  console.log(` All libraries: ${WARMUP_RUNS} warmup + ${BENCH_RUNS} measured runs per scenario (median shown)`);
+  console.log(' Memory: RSS=Resident Set Size delta, Heap=V8 heapUsed delta (post-operation residual)\n');
 
   const scenarios = [...new Set(results.map((r) => r.scenario))];
 
@@ -1174,9 +1235,9 @@ function printSummaryTable() {
     '| SheetKit'.padEnd(26) +
     '| ExcelJS'.padEnd(26) +
     '| SheetJS'.padEnd(26) +
-    '| Mem(SK)'.padEnd(11) +
-    '| Mem(EJ)'.padEnd(11) +
-    '| Mem(SJ)'.padEnd(11) +
+    '| RSS(SK)'.padEnd(11) +
+    '| RSS(EJ)'.padEnd(11) +
+    '| RSS(SJ)'.padEnd(11) +
     '| Winner |'
   );
   console.log(
@@ -1227,7 +1288,7 @@ function printSummaryTable() {
   // Detailed statistics for all libraries
   const multiRunResults = results.filter((r) => r.timesMs.length > 1);
   if (multiRunResults.length > 0) {
-    console.log('\n--- Detailed Statistics ---');
+    console.log('\n--- Detailed Statistics (RSS=total process, Heap=V8 only) ---');
     console.log(
       '| Scenario'.padEnd(51) +
       '| Library'.padEnd(12) +
@@ -1235,7 +1296,8 @@ function printSummaryTable() {
       '| Min'.padEnd(12) +
       '| Max'.padEnd(12) +
       '| P95'.padEnd(12) +
-      '| Memory |'
+      '| RSS'.padEnd(11) +
+      '| Heap   |'
     );
     console.log(
       '|' + '-'.repeat(50) +
@@ -1244,6 +1306,7 @@ function printSummaryTable() {
       '|' + '-'.repeat(11) +
       '|' + '-'.repeat(11) +
       '|' + '-'.repeat(11) +
+      '|' + '-'.repeat(10) +
       '|--------|'
     );
 
@@ -1254,7 +1317,8 @@ function printSummaryTable() {
         const min = formatMs(minVal(r.timesMs));
         const max = formatMs(maxVal(r.timesMs));
         const p95v = formatMs(p95(r.timesMs));
-        const mem = `${median(r.memoryDeltas).toFixed(1)}MB`;
+        const rss = `${median(r.memoryDeltas).toFixed(1)}MB`;
+        const heap = `${median(r.heapUsedDeltas).toFixed(1)}MB`;
         console.log(
           `| ${r.scenario.padEnd(49)}` +
           `| ${r.library.padEnd(10)}` +
@@ -1262,7 +1326,8 @@ function printSummaryTable() {
           `| ${min.padEnd(10)}` +
           `| ${max.padEnd(10)}` +
           `| ${p95v.padEnd(10)}` +
-          `| ${mem.padEnd(7)}|`
+          `| ${rss.padEnd(9)}` +
+          `| ${heap.padEnd(7)}|`
         );
       }
     }
@@ -1309,7 +1374,10 @@ function generateMarkdownReport(): string {
   lines.push('## Methodology');
   lines.push('');
   lines.push(`- **All libraries**: ${WARMUP_RUNS} warmup run(s) + ${BENCH_RUNS} measured runs per scenario. Median time reported.`);
-  lines.push('- **Memory**: Measured as RSS (Resident Set Size) delta before/after each run. RSS includes both V8 heap and native (Rust) heap allocations, providing accurate measurements for napi-rs based libraries.');
+  lines.push('- **RSS (Resident Set Size)**: Total process memory delta measured before/after each run via `process.memoryUsage().rss`. Includes V8 heap, native (Rust/napi) allocations, and OS overhead. This is a post-operation residual measurement, not peak usage during the operation.');
+  lines.push('- **Heap Used**: V8 heap delta measured before/after each run via `process.memoryUsage().heapUsed`. Isolates JavaScript-side memory growth, excluding native allocations. Useful for comparing JS-only libraries against napi-rs libraries where native memory dominates.');
+  lines.push('- **GC**: When `--expose-gc` is enabled, `global.gc()` is called before each measurement to reduce noise from deferred garbage collection.');
+  lines.push('- **Limitations**: Both RSS and heapUsed measure post-operation residual, not peak. Actual peak memory during an operation may be higher due to intermediate allocations freed before measurement. For napi-rs libraries, most memory lives in native heap (visible in RSS but not heapUsed).');
   lines.push('');
 
   lines.push('## Libraries');
@@ -1384,8 +1452,8 @@ function generateMarkdownReport(): string {
   if (multiRunResults.length > 0) {
     lines.push('### Detailed Statistics');
     lines.push('');
-    lines.push('| Scenario | Library | Median | Min | Max | P95 | Memory (median) |');
-    lines.push('|----------|---------|--------|-----|-----|-----|-----------------|');
+    lines.push('| Scenario | Library | Median | Min | Max | P95 | RSS (median) | Heap (median) |');
+    lines.push('|----------|---------|--------|-----|-----|-----|--------------|---------------|');
 
     const allScenarioNames = [...new Set(multiRunResults.map((r) => r.scenario))];
     for (const scenario of allScenarioNames) {
@@ -1395,27 +1463,33 @@ function generateMarkdownReport(): string {
         const min = formatMs(minVal(r.timesMs));
         const max = formatMs(maxVal(r.timesMs));
         const p95v = formatMs(p95(r.timesMs));
-        const mem = `${median(r.memoryDeltas).toFixed(1)}MB`;
-        lines.push(`| ${r.scenario} | ${r.library} | ${med} | ${min} | ${max} | ${p95v} | ${mem} |`);
+        const rss = `${median(r.memoryDeltas).toFixed(1)}MB`;
+        const heap = `${median(r.heapUsedDeltas).toFixed(1)}MB`;
+        lines.push(`| ${r.scenario} | ${r.library} | ${med} | ${min} | ${max} | ${p95v} | ${rss} | ${heap} |`);
       }
     }
     lines.push('');
   }
 
-  // Memory comparison table
+  // Memory comparison table (RSS + heapUsed)
   const memScenarios = [...new Set(results.map((r) => r.scenario))];
-  lines.push('### Memory Usage');
+  lines.push('### Memory Usage (RSS / Heap Used)');
   lines.push('');
-  lines.push('| Scenario | SheetKit | ExcelJS | SheetJS |');
-  lines.push('|----------|----------|---------|---------|');
+  lines.push('RSS = Resident Set Size delta (total process memory). Heap = V8 heapUsed delta (JS-only memory).');
+  lines.push('');
+  lines.push('| Scenario | SheetKit (RSS/Heap) | ExcelJS (RSS/Heap) | SheetJS (RSS/Heap) |');
+  lines.push('|----------|---------------------|--------------------|--------------------|');
   for (const scenario of memScenarios) {
     const sk = results.find((r) => r.scenario === scenario && r.library === 'SheetKit');
     const ej = results.find((r) => r.scenario === scenario && r.library === 'ExcelJS');
     const sj = results.find((r) => r.scenario === scenario && r.library === 'SheetJS');
-    const skMem = sk ? `${median(sk.memoryDeltas).toFixed(1)}MB` : 'N/A';
-    const ejMem = ej ? `${median(ej.memoryDeltas).toFixed(1)}MB` : 'N/A';
-    const sjMem = sj ? `${median(sj.memoryDeltas).toFixed(1)}MB` : 'N/A';
-    lines.push(`| ${scenario} | ${skMem} | ${ejMem} | ${sjMem} |`);
+    const fmtMem = (r: BenchResult | undefined) => {
+      if (!r) return 'N/A';
+      const rss = median(r.memoryDeltas).toFixed(1);
+      const heap = median(r.heapUsedDeltas).toFixed(1);
+      return `${rss}MB / ${heap}MB`;
+    };
+    lines.push(`| ${scenario} | ${fmtMem(sk)} | ${fmtMem(ej)} | ${fmtMem(sj)} |`);
   }
   lines.push('');
 
@@ -1458,7 +1532,8 @@ async function main() {
     console.log('WARNING: --expose-gc not enabled. Memory measurements may be less accurate.');
     console.log('Run with: node --expose-gc --import tsx benchmark.ts\n');
   } else {
-    console.log('GC exposed: memory measurements use RSS (Resident Set Size).\n');
+    console.log('GC exposed. Memory metrics: RSS (total process) + heapUsed (V8 only).');
+    console.log('Both are post-operation residual deltas, not peak usage.\n');
   }
 
   const { mkdirSync } = await import('node:fs');
