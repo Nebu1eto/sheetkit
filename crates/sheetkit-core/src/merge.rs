@@ -361,6 +361,25 @@ mod tests {
     }
 
     #[test]
+    fn test_equality_ignores_cache_state() {
+        let with_cache = MergeCells {
+            count: Some(1),
+            merge_cells: vec![MergeCell {
+                reference: "A1:B2".to_string(),
+            }],
+            cached_coords: vec![(1, 1, 2, 2)],
+        };
+        let without_cache = MergeCells {
+            count: Some(1),
+            merge_cells: vec![MergeCell {
+                reference: "A1:B2".to_string(),
+            }],
+            cached_coords: Vec::new(),
+        };
+        assert_eq!(with_cache, without_cache);
+    }
+
+    #[test]
     fn test_cache_not_serialized() {
         let mc = MergeCells {
             count: Some(1),
