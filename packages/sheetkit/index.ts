@@ -44,8 +44,8 @@ import type {
   JsWorkbookProtectionConfig,
 } from './binding.js';
 import { JsStreamWriter, Workbook as NativeWorkbook } from './binding.js';
-import { decodeRowsBuffer, decodeRowsIterator, decodeRowsRawBuffer } from './buffer-codec.js';
 import type { RawRowsResult } from './buffer-codec.js';
+import { decodeRowsBuffer, decodeRowsIterator, decodeRowsRawBuffer } from './buffer-codec.js';
 import type { CellTypeName, CellValue } from './sheet-data.js';
 import { SheetData } from './sheet-data.js';
 

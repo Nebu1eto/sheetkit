@@ -361,7 +361,16 @@ export function decodeRowsRawBuffer(buf: Buffer | null): RawRowsResult {
         if (type !== TYPE_EMPTY) {
           cellColumns[cellIdx] = minCol + col;
           cellTypes[cellIdx] = type;
-          fillCellValue(view, pos + 3, type, strings, cellNumericValues, cellStringValues, cellBoolValues, cellIdx);
+          fillCellValue(
+            view,
+            pos + 3,
+            type,
+            strings,
+            cellNumericValues,
+            cellStringValues,
+            cellBoolValues,
+            cellIdx,
+          );
           cellIdx++;
         }
         pos += SPARSE_ENTRY_SIZE;
@@ -374,7 +383,16 @@ export function decodeRowsRawBuffer(buf: Buffer | null): RawRowsResult {
         if (type === TYPE_EMPTY) continue;
         cellColumns[cellIdx] = minCol + c;
         cellTypes[cellIdx] = type;
-        fillCellValue(view, cellPos + 1, type, strings, cellNumericValues, cellStringValues, cellBoolValues, cellIdx);
+        fillCellValue(
+          view,
+          cellPos + 1,
+          type,
+          strings,
+          cellNumericValues,
+          cellStringValues,
+          cellBoolValues,
+          cellIdx,
+        );
         cellIdx++;
       }
     }
