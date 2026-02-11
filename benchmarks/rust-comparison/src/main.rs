@@ -196,6 +196,15 @@ impl BenchResult {
     }
 }
 
+/// Returns true when a benchmark result should be excluded from winner
+/// determination due to non-equivalent work.
+///
+/// Current rule: read scenarios with `cells_read == 0` are considered
+/// non-comparable and cannot win.
+fn non_comparable_for_winner(result: &BenchResult) -> bool {
+    matches!(result.cells_read, Some(0))
+}
+
 fn bench<F>(
     scenario: &str,
     library: &str,
@@ -1602,6 +1611,7 @@ fn print_summary_table(results: &[BenchResult]) {
     println!("|{:-<17}|", "");
 
     // Rows
+    let mut has_non_comparable_entries = false;
     for scenario in &scenarios {
         print!("| {:<46}", scenario);
         let mut best_lib = String::new();
@@ -1612,8 +1622,15 @@ fn print_summary_table(results: &[BenchResult]) {
                 .find(|r| &r.scenario == scenario && &r.library == lib)
             {
                 let med = r.median();
-                print!("| {:>16} ", format_ms(med));
-                if med < best_ms {
+                let comparable = !non_comparable_for_winner(r);
+                let display = if comparable {
+                    format_ms(med)
+                } else {
+                    has_non_comparable_entries = true;
+                    format!("{}*", format_ms(med))
+                };
+                print!("| {:>16} ", display);
+                if comparable && med < best_ms {
                     best_ms = med;
                     best_lib = lib.clone();
                 }
@@ -1621,7 +1638,17 @@ fn print_summary_table(results: &[BenchResult]) {
                 print!("| {:>16} ", "N/A");
             }
         }
-        println!("| {:<16}|", best_lib);
+        let winner = if best_lib.is_empty() {
+            "N/A".to_string()
+        } else {
+            best_lib
+        };
+        println!("| {:<16}|", winner);
+    }
+    if has_non_comparable_entries {
+        println!(
+            "\n* Entries marked with '*' had cells_read=0 and were excluded from winner selection."
+        );
     }
 }
 
@@ -1694,6 +1721,8 @@ fn generate_markdown_report(results: &[BenchResult]) -> String {
     ));
     lines.push(String::new());
 
+    let mut has_non_comparable_entries = false;
+
     // Results by category
     let categories: Vec<String> = {
         let mut seen = Vec::new();
@@ -1757,8 +1786,15 @@ fn generate_markdown_report(results: &[BenchResult]) -> String {
                     .find(|r| &r.scenario == scenario && &r.library == lib)
                 {
                     let med = r.median();
-                    row.push_str(&format!("| {} ", format_ms(med)));
-                    if med < best_ms {
+                    let comparable = !non_comparable_for_winner(r);
+                    let display = if comparable {
+                        format_ms(med)
+                    } else {
+                        has_non_comparable_entries = true;
+                        format!("{}*", format_ms(med))
+                    };
+                    row.push_str(&format!("| {} ", display));
+                    if comparable && med < best_ms {
                         best_ms = med;
                         best_lib = lib.clone();
                     }
@@ -1766,9 +1802,20 @@ fn generate_markdown_report(results: &[BenchResult]) -> String {
                     row.push_str("| N/A ");
                 }
             }
+            if best_lib.is_empty() {
+                best_lib = "N/A".to_string();
+            }
             row.push_str(&format!("| {best_lib} |"));
             lines.push(row);
         }
+        lines.push(String::new());
+    }
+
+    if has_non_comparable_entries {
+        lines.push(
+            "* `*` indicates `cells_read = 0`; excluded from Winner selection as non-comparable."
+                .to_string(),
+        );
         lines.push(String::new());
     }
 
@@ -1813,10 +1860,14 @@ fn generate_markdown_report(results: &[BenchResult]) -> String {
         seen
     };
     let mut wins: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut comparable_scenarios = 0usize;
     for scenario in &all_scenarios {
         let mut best_lib = String::new();
         let mut best_ms = f64::INFINITY;
         for r in results.iter().filter(|r| &r.scenario == scenario) {
+            if non_comparable_for_winner(r) {
+                continue;
+            }
             let med = r.median();
             if med < best_ms {
                 best_ms = med;
@@ -1824,6 +1875,7 @@ fn generate_markdown_report(results: &[BenchResult]) -> String {
             }
         }
         if !best_lib.is_empty() {
+            comparable_scenarios += 1;
             *wins.entry(best_lib).or_default() += 1;
         }
     }
@@ -1834,7 +1886,7 @@ fn generate_markdown_report(results: &[BenchResult]) -> String {
     let mut sorted_wins: Vec<_> = wins.into_iter().collect();
     sorted_wins.sort_by(|a, b| b.1.cmp(&a.1));
     for (lib, count) in &sorted_wins {
-        lines.push(format!("| {lib} | {count}/{} |", all_scenarios.len()));
+        lines.push(format!("| {lib} | {count}/{comparable_scenarios} |"));
     }
     lines.push(String::new());
 
