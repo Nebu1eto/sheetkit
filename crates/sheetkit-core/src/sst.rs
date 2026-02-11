@@ -39,21 +39,35 @@ impl SharedStringTable {
 
     /// Build from an XML [`Sst`], taking ownership to avoid cloning items.
     ///
-    /// Plain-text items use the `t` field directly. Rich-text items
-    /// concatenate all run texts. Pre-sizes internal containers.
+    /// Plain-text items consume the `t.value` String directly (zero-copy into
+    /// `Arc<str>`). Rich-text items concatenate all run texts. Pre-sizes
+    /// internal containers.
     pub fn from_sst(sst: Sst) -> Self {
         let cap = sst.items.len();
         let mut strings = Vec::with_capacity(cap);
         let mut index_map = HashMap::with_capacity(cap);
         let mut si_items: Vec<Option<Si>> = Vec::with_capacity(cap);
 
-        for si in sst.items {
-            let text: Arc<str> = si_to_string(&si).into();
-            let idx = strings.len();
-            index_map.entry(Arc::clone(&text)).or_insert(idx);
+        for mut si in sst.items {
             let is_rich = si.t.is_none() && !si.r.is_empty();
             let has_space_attr = si.t.as_ref().is_some_and(|t| t.xml_space.is_some());
-            if is_rich || has_space_attr {
+            let preserve_si = is_rich || has_space_attr;
+
+            let text: Arc<str> = if preserve_si {
+                // Rich text or space-preserved: extract text without consuming
+                // the Si, since we need to store it.
+                si_to_string(&si).into()
+            } else if let Some(ref mut t) = si.t {
+                // Plain text: take ownership of the string to avoid cloning.
+                std::mem::take(&mut t.value).into()
+            } else {
+                // Empty item.
+                Arc::from("")
+            };
+
+            let idx = strings.len();
+            index_map.entry(Arc::clone(&text)).or_insert(idx);
+            if preserve_si {
                 si_items.push(Some(si));
             } else {
                 si_items.push(None);
@@ -440,5 +454,109 @@ mod tests {
         let sst = table.to_sst();
         assert_eq!(sst.items.len(), 1);
         assert_eq!(sst.items[0].t.as_ref().unwrap().value, "test");
+    }
+
+    #[test]
+    fn test_from_sst_zero_copy_plain_text() {
+        let xml_sst = Sst {
+            xmlns: sheetkit_xml::namespaces::SPREADSHEET_ML.to_string(),
+            count: Some(3),
+            unique_count: Some(3),
+            items: vec![
+                Si {
+                    t: Some(T {
+                        xml_space: None,
+                        value: "Alpha".to_string(),
+                    }),
+                    r: vec![],
+                },
+                Si {
+                    t: Some(T {
+                        xml_space: None,
+                        value: "Beta".to_string(),
+                    }),
+                    r: vec![],
+                },
+                Si {
+                    t: Some(T {
+                        xml_space: None,
+                        value: "Gamma".to_string(),
+                    }),
+                    r: vec![],
+                },
+            ],
+        };
+        let table = SharedStringTable::from_sst(xml_sst);
+        assert_eq!(table.len(), 3);
+        assert_eq!(table.get(0), Some("Alpha"));
+        assert_eq!(table.get(1), Some("Beta"));
+        assert_eq!(table.get(2), Some("Gamma"));
+        let back = table.to_sst();
+        assert_eq!(back.items[0].t.as_ref().unwrap().value, "Alpha");
+        assert_eq!(back.items[1].t.as_ref().unwrap().value, "Beta");
+        assert_eq!(back.items[2].t.as_ref().unwrap().value, "Gamma");
+    }
+
+    #[test]
+    fn test_from_sst_mixed_plain_and_rich_text() {
+        let xml_sst = Sst {
+            xmlns: sheetkit_xml::namespaces::SPREADSHEET_ML.to_string(),
+            count: Some(3),
+            unique_count: Some(3),
+            items: vec![
+                Si {
+                    t: Some(T {
+                        xml_space: None,
+                        value: "Plain".to_string(),
+                    }),
+                    r: vec![],
+                },
+                Si {
+                    t: None,
+                    r: vec![
+                        R {
+                            r_pr: None,
+                            t: T {
+                                xml_space: None,
+                                value: "Rich".to_string(),
+                            },
+                        },
+                        R {
+                            r_pr: None,
+                            t: T {
+                                xml_space: None,
+                                value: " Text".to_string(),
+                            },
+                        },
+                    ],
+                },
+                Si {
+                    t: Some(T {
+                        xml_space: Some("preserve".to_string()),
+                        value: " spaced ".to_string(),
+                    }),
+                    r: vec![],
+                },
+            ],
+        };
+        let table = SharedStringTable::from_sst(xml_sst);
+        assert_eq!(table.len(), 3);
+        assert_eq!(table.get(0), Some("Plain"));
+        assert_eq!(table.get(1), Some("Rich Text"));
+        assert_eq!(table.get(2), Some(" spaced "));
+        assert!(table.get_rich_text(0).is_none());
+        assert!(table.get_rich_text(1).is_some());
+    }
+
+    #[test]
+    fn test_from_sst_empty_items() {
+        let xml_sst = Sst {
+            xmlns: sheetkit_xml::namespaces::SPREADSHEET_ML.to_string(),
+            count: Some(0),
+            unique_count: Some(0),
+            items: vec![],
+        };
+        let table = SharedStringTable::from_sst(xml_sst);
+        assert!(table.is_empty());
     }
 }
