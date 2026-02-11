@@ -290,6 +290,7 @@ fn bench_read_file(results: &mut Vec<BenchResult>, filename: &str, label: &str, 
         println!("  SKIP: {filepath:?} not found. Run 'pnpm generate' in benchmarks/node first.");
         return;
     }
+    let filepath = filepath.canonicalize().unwrap();
 
     println!("\n--- Read: {label} ---");
 
@@ -335,37 +336,43 @@ fn bench_read_file(results: &mut Vec<BenchResult>, filename: &str, label: &str, 
         },
     ));
 
-    // edit-xlsx (read support)
+    // edit-xlsx (read support) -- may fail on files not created by edit-xlsx
     let fp = filepath.clone();
-    results.push(bench(
-        &format!("Read {label}"),
-        "edit-xlsx",
-        category,
-        None,
-        move || {
-            let fp = fp.clone();
-            Box::new(move || {
-                use edit_xlsx::{Read as _, Workbook as EditWorkbook};
-                let wb = EditWorkbook::from_path(&fp).unwrap();
-                // edit-xlsx worksheets are 1-indexed; iterate up to a
-                // reasonable count (stop on first error).
-                for id in 1..=100u32 {
-                    match wb.get_worksheet(id) {
-                        Ok(ws) => {
-                            let max_row = ws.max_row();
-                            let max_col = ws.max_column();
-                            for r in 1..=max_row {
-                                for c in 1..=max_col {
-                                    let _ = ws.read_cell((r, c));
+    let can_open = {
+        use edit_xlsx::Workbook as EditWorkbook;
+        EditWorkbook::from_path(&fp).is_ok()
+    };
+    if can_open {
+        results.push(bench(
+            &format!("Read {label}"),
+            "edit-xlsx",
+            category,
+            None,
+            move || {
+                let fp = fp.clone();
+                Box::new(move || {
+                    use edit_xlsx::{Read as _, Workbook as EditWorkbook};
+                    let wb = EditWorkbook::from_path(&fp).unwrap();
+                    for id in 1..=100u32 {
+                        match wb.get_worksheet(id) {
+                            Ok(ws) => {
+                                let max_row = ws.max_row();
+                                let max_col = ws.max_column();
+                                for r in 1..=max_row {
+                                    for c in 1..=max_col {
+                                        let _ = ws.read_cell((r, c));
+                                    }
                                 }
                             }
+                            Err(_) => break,
                         }
-                        Err(_) => break,
                     }
-                }
-            })
-        },
-    ));
+                })
+            },
+        ));
+    } else {
+        println!("  [edit-xlsx     ] Read {label:<40} SKIP (cannot open fixture)",);
+    }
 }
 
 // ===================================================================
@@ -1298,6 +1305,7 @@ fn bench_random_access_read(results: &mut Vec<BenchResult>) {
         println!("  SKIP: large-data.xlsx not found. Run pnpm generate first.");
         return;
     }
+    let filepath = filepath.canonicalize().unwrap();
 
     let lookups: usize = 1_000;
     let label = format!("Random-access read ({lookups} cells)");
@@ -1374,6 +1382,8 @@ fn bench_modify_file(results: &mut Vec<BenchResult>) {
         println!("  SKIP: large-data.xlsx not found. Run pnpm generate first.");
         return;
     }
+    // Canonicalize so edit-xlsx (which may resolve differently) finds the file.
+    let filepath = filepath.canonicalize().unwrap();
 
     let label = "Modify 1000 cells in 50k-row file";
     println!("\n--- {label} ---");
@@ -1396,24 +1406,42 @@ fn bench_modify_file(results: &mut Vec<BenchResult>) {
     }));
     cleanup(&out);
 
-    // edit-xlsx
+    // edit-xlsx -- may fail on files not created by edit-xlsx itself.
+    // Probe: try a full open-modify-save cycle before benchmarking.
     let fp = filepath.clone();
-    let out = output_dir().join("cmp-modify-editxlsx.xlsx");
-    results.push(bench(label, "edit-xlsx", "Modify", Some(&out), move || {
-        let fp = fp.clone();
+    let probe_ok = {
+        use edit_xlsx::{Workbook as EditWorkbook, Write as _};
+        let probe_path = output_dir().join("cmp-modify-probe.xlsx");
+        (|| -> Result<(), Box<dyn std::error::Error>> {
+            let mut wb = EditWorkbook::from_path(&fp)?;
+            let ws = wb.get_worksheet_mut(1)?;
+            ws.write((2, 1), "probe")?;
+            wb.save_as(&probe_path)?;
+            let _ = std::fs::remove_file(&probe_path);
+            Ok(())
+        })()
+        .is_ok()
+    };
+    if probe_ok {
         let out = output_dir().join("cmp-modify-editxlsx.xlsx");
-        Box::new(move || {
-            use edit_xlsx::{Workbook as EditWorkbook, Write as _};
-            let mut wb = EditWorkbook::from_path(&fp).unwrap();
-            let ws = wb.get_worksheet_mut(1).unwrap();
-            for i in 0..1000u32 {
-                let r = i + 2;
-                ws.write((r, 1), format!("Modified_{i}")).unwrap();
-            }
-            wb.save_as(&out).unwrap();
-        })
-    }));
-    cleanup(&out);
+        results.push(bench(label, "edit-xlsx", "Modify", Some(&out), move || {
+            let fp = fp.clone();
+            let out = output_dir().join("cmp-modify-editxlsx.xlsx");
+            Box::new(move || {
+                use edit_xlsx::{Workbook as EditWorkbook, Write as _};
+                let mut wb = EditWorkbook::from_path(&fp).unwrap();
+                let ws = wb.get_worksheet_mut(1).unwrap();
+                for i in 0..1000u32 {
+                    let r = i + 2;
+                    ws.write((r, 1), format!("Modified_{i}")).unwrap();
+                }
+                wb.save_as(&out).unwrap();
+            })
+        }));
+        cleanup(&out);
+    } else {
+        println!("  [edit-xlsx     ] SKIP (cannot modify fixture file)");
+    }
 
     // calamine + rust_xlsxwriter cannot modify
     println!("  [calamine       ] N/A (read-only)");
