@@ -51,6 +51,7 @@ impl Workbook {
             sheet_threaded_comments: vec![None],
             person_list: sheetkit_xml::threaded_comment::PersonList::default(),
             sheet_form_controls: vec![vec![]],
+            streamed_sheets: HashMap::new(),
         }
     }
 
@@ -616,6 +617,7 @@ impl Workbook {
             sheet_threaded_comments,
             person_list,
             sheet_form_controls,
+            streamed_sheets: HashMap::new(),
         })
     }
 
@@ -1062,6 +1064,12 @@ impl Workbook {
         // xl/worksheets/sheet{N}.xml
         for (i, (_name, ws)) in self.worksheets.iter().enumerate() {
             let entry_name = self.sheet_part_path(i);
+
+            // If the sheet has streamed data, write it directly from the temp file.
+            if let Some(streamed) = self.streamed_sheets.get(&i) {
+                crate::stream::write_streamed_sheet(zip, &entry_name, streamed, options)?;
+                continue;
+            }
 
             // If the sheet was not parsed (selective open), write raw bytes directly.
             if let Some(Some(raw_bytes)) = self.raw_sheet_xml.get(i) {

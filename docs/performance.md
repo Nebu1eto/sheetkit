@@ -141,7 +141,7 @@ const wb = await Workbook.open("huge.xlsx", {
 
 ### For Write-Heavy Workloads
 
-Use `StreamWriter` for sequential row writes:
+Use `StreamWriter` for sequential row writes. Each `write_row()` writes directly to a temp file on disk, so memory usage stays constant regardless of the number of rows:
 
 ```typescript
 const wb = new Workbook();
@@ -170,6 +170,8 @@ const sw = wb.newStreamWriter("ProcessedData");
 // ... process data ...
 wb.applyStreamWriter(sw);
 ```
+
+> **Note:** Cell values in streamed sheets cannot be read directly after `applyStreamWriter`. Save the workbook and reopen it to read the data.
 
 ## Next Steps
 

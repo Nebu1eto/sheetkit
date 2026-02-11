@@ -186,6 +186,10 @@ pub struct Workbook {
     /// O(1) sheet name -> index lookup cache. Must be kept in sync with
     /// `worksheets` via [`rebuild_sheet_index`].
     sheet_name_index: HashMap<String, usize>,
+    /// Streamed sheet data keyed by sheet index. During save, these sheets
+    /// are written by streaming from their temp files instead of serializing
+    /// the (empty placeholder) WorksheetXml.
+    streamed_sheets: HashMap<usize, crate::stream::StreamedSheetData>,
 }
 
 impl Workbook {

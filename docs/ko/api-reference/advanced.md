@@ -1067,7 +1067,9 @@ wb.deletePivotTable("SalesPivot");
 
 ## 24. 스트림 라이터
 
-대용량 데이터를 메모리 효율적으로 쓰기 위한 스트리밍 API입니다. 행은 오름차순으로만 쓸 수 있으며, 전체 워크시트 XML을 메모리에 구축하지 않고 직접 버퍼에 기록합니다.
+대용량 데이터를 일정한 메모리 사용량으로 쓰기 위한 스트리밍 API입니다. 각 `write_row()` 호출은 디스크의 임시 파일에 직접 기록하며, 저장 시 임시 파일에서 ZIP 아카이브로 행 데이터를 직접 스트리밍합니다. 인라인 문자열을 사용하여 SST 인덱스 재매핑이 필요하지 않습니다.
+
+행은 오름차순으로만 쓸 수 있습니다. `apply_stream_writer` 이후 스트리밍된 시트의 셀 값은 직접 읽을 수 없으며, 데이터를 읽으려면 저장 후 다시 열어야 합니다.
 
 ### 사용 흐름
 
@@ -1161,7 +1163,27 @@ await wb.save("large_data.xlsx");
 
 #### `apply_stream_writer(writer)` / `applyStreamWriter(writer)`
 
-스트림 라이터의 결과를 워크북에 적용합니다. 시트 인덱스를 반환합니다. 적용 후 스트림 라이터는 소비(consumed)되어 더 이상 사용할 수 없습니다.
+스트리밍된 데이터를 워크북에 적용합니다. 시트 인덱스를 반환합니다. 적용 후 스트림 라이터는 소비(consumed)되어 더 이상 사용할 수 없습니다. 스트리밍된 시트의 셀 값은 저장 전에 읽을 수 없습니다.
+
+#### `set_freeze_panes(cell)` / `setFreezePanes(cell)`
+
+스트리밍 시트의 틀 고정을 설정합니다. 행을 쓰기 전에 호출해야 합니다.
+
+#### `set_col_style(col, style_id)` / `setColStyle(col, styleId)`
+
+열 스타일을 설정합니다. 행을 쓰기 전에 호출해야 합니다.
+
+#### `set_col_visible(col, visible)` / `setColVisible(col, visible)`
+
+열 가시성을 설정합니다. 행을 쓰기 전에 호출해야 합니다.
+
+#### `set_col_outline_level(col, level)` / `setColOutlineLevel(col, level)`
+
+열 아웃라인 수준을 설정합니다 (0-7). 행을 쓰기 전에 호출해야 합니다.
+
+#### `write_row_with_style(row, values, style_id)` / `writeRowWithStyle(row, values, styleId)`
+
+특정 스타일 ID를 모든 셀에 적용하여 행을 기록합니다.
 
 ### StreamRowOptions (Rust 전용)
 

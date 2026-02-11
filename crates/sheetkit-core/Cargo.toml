@@ -21,6 +21,7 @@ serde = { workspace = true }
 nom = { workspace = true }
 uuid = { workspace = true }
 cfb = { workspace = true }
+tempfile = { workspace = true }
 
 # Encryption (optional, behind "encryption" feature)
 aes = { workspace = true, optional = true }

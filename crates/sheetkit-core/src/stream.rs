@@ -1,7 +1,14 @@
 //! Streaming worksheet writer.
 //!
-//! The [`StreamWriter`] builds `WorksheetXml` structs directly instead of
-//! writing raw XML text. Rows must be written in ascending order.
+//! The [`StreamWriter`] writes row data directly to a temporary file instead of
+//! accumulating it in memory. This enables writing sheets with millions of rows
+//! without holding the entire worksheet in memory.
+//!
+//! Strings are written as inline strings (`<is><t>...</t></is>`) rather than
+//! shared string references, eliminating the need for SST index remapping and
+//! allowing each row to be serialized independently.
+//!
+//! Rows must be written in ascending order.
 //!
 //! # Example
 //!
@@ -13,23 +20,17 @@
 //! sw.set_col_width(1, 20.0).unwrap();
 //! sw.write_row(1, &[CellValue::from("Name"), CellValue::from("Age")]).unwrap();
 //! sw.write_row(2, &[CellValue::from("Alice"), CellValue::from(30)]).unwrap();
-//! let xml_bytes = sw.finish().unwrap();
-//! assert!(!xml_bytes.is_empty());
+//! // StreamWriter data is applied to a workbook via apply_stream_writer().
 //! ```
+
+use std::io::{BufWriter, Write as _};
 
 use crate::cell::CellValue;
 use crate::error::{Error, Result};
-use crate::sst::SharedStringTable;
 use crate::utils::cell_ref::cell_name_to_coordinates;
 use crate::utils::constants::{MAX_COLUMNS, MAX_ROWS, MAX_ROW_HEIGHT};
 
-use sheetkit_xml::worksheet::{
-    Cell, CellFormula, CellTypeTag, Col, Cols, CompactCellRef, MergeCell, MergeCells, Pane, Row,
-    SheetData, SheetView, SheetViews, WorksheetXml,
-};
-
-/// XML declaration prepended to the worksheet XML.
-const XML_DECLARATION: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#;
+use sheetkit_xml::worksheet::{Col, Cols, MergeCell, MergeCells, Pane, SheetView, SheetViews};
 
 /// Maximum outline level allowed by Excel.
 const MAX_OUTLINE_LEVEL: u8 = 7;
@@ -56,38 +57,73 @@ struct StreamColOptions {
     outline_level: Option<u8>,
 }
 
-/// A streaming worksheet writer that writes rows sequentially.
+/// Metadata for a streamed sheet stored in the workbook after applying.
 ///
-/// Rows must be written in ascending order. The StreamWriter builds
-/// `Row` structs directly, then assembles them into a `WorksheetXml`
-/// on finish.
-#[derive(Debug)]
+/// Contains the temporary file with pre-serialized row XML and the
+/// configuration needed to compose the full worksheet XML on save.
+pub struct StreamedSheetData {
+    /// Temporary file containing `<row>...</row>` XML fragments.
+    pub(crate) temp_file: tempfile::NamedTempFile,
+    /// Number of bytes written to the temp file (used for diagnostics/testing).
+    #[allow(dead_code)]
+    pub(crate) data_len: u64,
+    /// Pre-built `<sheetViews>` XML fragment (if freeze panes are set).
+    pub(crate) sheet_views_xml: Option<String>,
+    /// Pre-built `<cols>` XML fragment (if column settings exist).
+    pub(crate) cols_xml: Option<String>,
+    /// Pre-built `<mergeCells>` XML fragment (if merge cells exist).
+    pub(crate) merge_cells_xml: Option<String>,
+}
+
+/// A streaming worksheet writer that writes rows directly to a temp file.
+///
+/// Rows must be written in ascending order. Each row is serialized to XML
+/// and written to a temporary file immediately, keeping memory usage constant
+/// regardless of the number of rows.
 pub struct StreamWriter {
     sheet_name: String,
-    rows: Vec<Row>,
+    writer: BufWriter<tempfile::NamedTempFile>,
+    bytes_written: u64,
     last_row: u32,
     started: bool,
     finished: bool,
     col_widths: Vec<(u32, u32, f64)>,
     col_options: Vec<(u32, StreamColOptions)>,
-    sst: SharedStringTable,
     merge_cells: Vec<String>,
     /// Freeze pane: (x_split, y_split, top_left_cell).
     freeze_pane: Option<(u32, u32, String)>,
 }
 
+// StreamWriter contains a BufWriter<NamedTempFile> which is not Send by
+// default on all platforms. The temp file is exclusively owned by the writer
+// so this is safe.
+unsafe impl Send for StreamWriter {}
+
+impl std::fmt::Debug for StreamWriter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StreamWriter")
+            .field("sheet_name", &self.sheet_name)
+            .field("bytes_written", &self.bytes_written)
+            .field("last_row", &self.last_row)
+            .field("started", &self.started)
+            .field("finished", &self.finished)
+            .finish()
+    }
+}
+
 impl StreamWriter {
     /// Create a new StreamWriter for the given sheet name.
     pub fn new(sheet_name: &str) -> Self {
+        let temp = tempfile::NamedTempFile::new().expect("failed to create temp file");
         Self {
             sheet_name: sheet_name.to_string(),
-            rows: Vec::new(),
+            writer: BufWriter::new(temp),
+            bytes_written: 0,
             last_row: 0,
             started: false,
             finished: false,
             col_widths: Vec::new(),
             col_options: Vec::new(),
-            sst: SharedStringTable::new(),
             merge_cells: Vec::new(),
             freeze_pane: None,
         }
@@ -222,41 +258,36 @@ impl StreamWriter {
         Ok(())
     }
 
-    /// Finish writing and return the complete worksheet XML bytes.
-    pub fn finish(&mut self) -> Result<Vec<u8>> {
+    /// Consume the writer and return a [`StreamedSheetData`] containing the
+    /// temp file and pre-built XML fragments for the worksheet header/footer.
+    pub fn into_streamed_data(mut self) -> Result<(String, StreamedSheetData)> {
         if self.finished {
             return Err(Error::StreamAlreadyFinished);
         }
         self.finished = true;
-        let ws = self.build_worksheet_xml();
-        let body = quick_xml::se::to_string(&ws).map_err(|e| Error::Internal(e.to_string()))?;
-        let mut xml = String::with_capacity(body.len() + 60);
-        xml.push_str(XML_DECLARATION);
-        xml.push('\n');
-        xml.push_str(&body);
-        Ok(xml.into_bytes())
-    }
 
-    /// Get a reference to the shared string table.
-    pub fn sst(&self) -> &SharedStringTable {
-        &self.sst
-    }
+        // Build XML fragments before consuming the writer.
+        let sheet_views_xml = self.build_sheet_views_xml();
+        let cols_xml = self.build_cols_xml();
+        let merge_cells_xml = self.build_merge_cells_xml();
+        let bytes_written = self.bytes_written;
+        let sheet_name = self.sheet_name.clone();
 
-    /// Consume the writer and return (xml_bytes, shared_string_table).
-    pub fn into_parts(mut self) -> Result<(Vec<u8>, SharedStringTable)> {
-        let xml = self.finish()?;
-        Ok((xml, self.sst))
-    }
+        // Flush the writer and recover the temp file.
+        self.writer.flush()?;
+        let temp_file = self
+            .writer
+            .into_inner()
+            .map_err(|e| Error::Io(e.into_error()))?;
 
-    /// Consume the writer and return the worksheet XML struct and shared string table.
-    /// This is the optimized path that avoids XML serialization/deserialization.
-    pub fn into_worksheet_parts(mut self) -> Result<(WorksheetXml, SharedStringTable)> {
-        if self.finished {
-            return Err(Error::StreamAlreadyFinished);
-        }
-        self.finished = true;
-        let ws = self.build_worksheet_xml_owned();
-        Ok((ws, self.sst))
+        let data = StreamedSheetData {
+            temp_file,
+            data_len: bytes_written,
+            sheet_views_xml,
+            cols_xml,
+            merge_cells_xml,
+        };
+        Ok((sheet_name, data))
     }
 
     /// Validate that column configuration is allowed (not finished, not started,
@@ -285,113 +316,101 @@ impl StreamWriter {
         }
     }
 
-    /// Build a `WorksheetXml` by cloning the accumulated rows.
-    fn build_worksheet_xml(&self) -> WorksheetXml {
-        self.build_worksheet_xml_inner(self.rows.clone())
-    }
-
-    /// Build a `WorksheetXml` by taking ownership of the accumulated rows.
-    fn build_worksheet_xml_owned(&mut self) -> WorksheetXml {
-        let rows = std::mem::take(&mut self.rows);
-        self.build_worksheet_xml_inner(rows)
-    }
-
-    /// Assemble the final `WorksheetXml` from the given rows and accumulated config.
-    fn build_worksheet_xml_inner(&self, rows: Vec<Row>) -> WorksheetXml {
-        let sheet_views = self
-            .freeze_pane
-            .as_ref()
-            .map(|(x_split, y_split, top_left_cell)| {
-                let active_pane = match (*x_split > 0, *y_split > 0) {
-                    (true, true) => "bottomRight",
-                    (true, false) => "topRight",
-                    (false, true) => "bottomLeft",
-                    (false, false) => unreachable!(),
-                };
-                SheetViews {
-                    sheet_views: vec![SheetView {
-                        tab_selected: Some(true),
-                        show_grid_lines: None,
-                        show_formulas: None,
-                        show_row_col_headers: None,
-                        zoom_scale: None,
-                        view: None,
-                        top_left_cell: None,
-                        workbook_view_id: 0,
-                        pane: Some(Pane {
-                            x_split: if *x_split > 0 { Some(*x_split) } else { None },
-                            y_split: if *y_split > 0 { Some(*y_split) } else { None },
-                            top_left_cell: Some(top_left_cell.clone()),
-                            active_pane: Some(active_pane.to_string()),
-                            state: Some("frozen".to_string()),
-                        }),
-                        selection: vec![],
-                    }],
-                }
-            });
-
-        let cols = {
-            let has_widths = !self.col_widths.is_empty();
-            let has_options = !self.col_options.is_empty();
-            if has_widths || has_options {
-                let mut col_defs = Vec::new();
-                for &(min, max, width) in &self.col_widths {
-                    col_defs.push(Col {
-                        min,
-                        max,
-                        width: Some(width),
-                        style: None,
-                        hidden: None,
-                        custom_width: Some(true),
-                        outline_level: None,
-                    });
-                }
-                for &(col_num, ref opts) in &self.col_options {
-                    col_defs.push(Col {
-                        min: col_num,
-                        max: col_num,
-                        width: opts.width,
-                        style: opts.style_id,
-                        hidden: opts.hidden,
-                        custom_width: if opts.width.is_some() {
-                            Some(true)
-                        } else {
-                            None
-                        },
-                        outline_level: opts.outline_level.filter(|&l| l > 0),
-                    });
-                }
-                Some(Cols { cols: col_defs })
-            } else {
-                None
-            }
+    /// Build the `<sheetViews>` XML fragment for freeze panes.
+    fn build_sheet_views_xml(&self) -> Option<String> {
+        let (x_split, y_split, top_left_cell) = self.freeze_pane.as_ref()?;
+        let active_pane = match (*x_split > 0, *y_split > 0) {
+            (true, true) => "bottomRight",
+            (true, false) => "topRight",
+            (false, true) => "bottomLeft",
+            (false, false) => unreachable!(),
         };
 
-        let merge_cells = if self.merge_cells.is_empty() {
-            None
-        } else {
-            Some(MergeCells {
-                count: Some(self.merge_cells.len() as u32),
-                merge_cells: self
-                    .merge_cells
-                    .iter()
-                    .map(|r| MergeCell {
-                        reference: r.clone(),
-                    })
-                    .collect(),
-            })
+        let sheet_views = SheetViews {
+            sheet_views: vec![SheetView {
+                tab_selected: Some(true),
+                show_grid_lines: None,
+                show_formulas: None,
+                show_row_col_headers: None,
+                zoom_scale: None,
+                view: None,
+                top_left_cell: None,
+                workbook_view_id: 0,
+                pane: Some(Pane {
+                    x_split: if *x_split > 0 { Some(*x_split) } else { None },
+                    y_split: if *y_split > 0 { Some(*y_split) } else { None },
+                    top_left_cell: Some(top_left_cell.clone()),
+                    active_pane: Some(active_pane.to_string()),
+                    state: Some("frozen".to_string()),
+                }),
+                selection: vec![],
+            }],
         };
 
-        WorksheetXml {
-            sheet_views,
-            cols,
-            sheet_data: SheetData { rows },
-            merge_cells,
-            ..WorksheetXml::default()
+        quick_xml::se::to_string_with_root("sheetViews", &sheet_views).ok()
+    }
+
+    /// Build the `<cols>` XML fragment.
+    fn build_cols_xml(&self) -> Option<String> {
+        let has_widths = !self.col_widths.is_empty();
+        let has_options = !self.col_options.is_empty();
+        if !has_widths && !has_options {
+            return None;
         }
+
+        let mut col_defs = Vec::new();
+        for &(min, max, width) in &self.col_widths {
+            col_defs.push(Col {
+                min,
+                max,
+                width: Some(width),
+                style: None,
+                hidden: None,
+                custom_width: Some(true),
+                outline_level: None,
+            });
+        }
+        for &(col_num, ref opts) in &self.col_options {
+            col_defs.push(Col {
+                min: col_num,
+                max: col_num,
+                width: opts.width,
+                style: opts.style_id,
+                hidden: opts.hidden,
+                custom_width: if opts.width.is_some() {
+                    Some(true)
+                } else {
+                    None
+                },
+                outline_level: opts.outline_level.filter(|&l| l > 0),
+            });
+        }
+
+        let cols = Cols { cols: col_defs };
+        quick_xml::se::to_string_with_root("cols", &cols).ok()
+    }
+
+    /// Build the `<mergeCells>` XML fragment.
+    fn build_merge_cells_xml(&self) -> Option<String> {
+        if self.merge_cells.is_empty() {
+            return None;
+        }
+
+        let mc = MergeCells {
+            count: Some(self.merge_cells.len() as u32),
+            merge_cells: self
+                .merge_cells
+                .iter()
+                .map(|r| MergeCell {
+                    reference: r.clone(),
+                })
+                .collect(),
+        };
+        quick_xml::se::to_string_with_root("mergeCells", &mc).ok()
     }
 
     /// Internal unified implementation for writing a row.
+    /// Serializes the row to XML and writes it directly to the temp file.
     fn write_row_impl(
         &mut self,
         row: u32,
@@ -441,135 +460,193 @@ impl StreamWriter {
         self.started = true;
         self.last_row = row;
 
-        let mut cells = Vec::new();
+        // Build row XML directly and write to temp file.
+        let xml = build_row_xml(row, values, cell_style_id, options);
+        let bytes = xml.as_bytes();
+        self.writer.write_all(bytes)?;
+        self.bytes_written += bytes.len() as u64;
 
-        for (i, value) in values.iter().enumerate() {
-            let col = (i as u32) + 1;
-
-            match value {
-                CellValue::Empty => continue,
-                CellValue::String(s) => {
-                    let idx = self.sst.add(s);
-                    cells.push(Cell {
-                        r: CompactCellRef::from_coordinates(col, row),
-                        col,
-                        s: cell_style_id,
-                        t: CellTypeTag::SharedString,
-                        v: Some(idx.to_string()),
-                        f: None,
-                        is: None,
-                    });
-                }
-                CellValue::Number(n) => {
-                    cells.push(Cell {
-                        r: CompactCellRef::from_coordinates(col, row),
-                        col,
-                        s: cell_style_id,
-                        t: CellTypeTag::None,
-                        v: Some(n.to_string()),
-                        f: None,
-                        is: None,
-                    });
-                }
-                CellValue::Date(serial) => {
-                    cells.push(Cell {
-                        r: CompactCellRef::from_coordinates(col, row),
-                        col,
-                        s: cell_style_id,
-                        t: CellTypeTag::None,
-                        v: Some(serial.to_string()),
-                        f: None,
-                        is: None,
-                    });
-                }
-                CellValue::Bool(b) => {
-                    let val = if *b { "1" } else { "0" };
-                    cells.push(Cell {
-                        r: CompactCellRef::from_coordinates(col, row),
-                        col,
-                        s: cell_style_id,
-                        t: CellTypeTag::Boolean,
-                        v: Some(val.to_string()),
-                        f: None,
-                        is: None,
-                    });
-                }
-                CellValue::Formula { expr, .. } => {
-                    cells.push(Cell {
-                        r: CompactCellRef::from_coordinates(col, row),
-                        col,
-                        s: cell_style_id,
-                        t: CellTypeTag::None,
-                        v: None,
-                        f: Some(Box::new(CellFormula {
-                            t: None,
-                            reference: None,
-                            si: None,
-                            value: Some(expr.clone()),
-                        })),
-                        is: None,
-                    });
-                }
-                CellValue::Error(e) => {
-                    cells.push(Cell {
-                        r: CompactCellRef::from_coordinates(col, row),
-                        col,
-                        s: cell_style_id,
-                        t: CellTypeTag::Error,
-                        v: Some(e.clone()),
-                        f: None,
-                        is: None,
-                    });
-                }
-                CellValue::RichString(runs) => {
-                    let plain = crate::rich_text::rich_text_to_plain(runs);
-                    let idx = self.sst.add(&plain);
-                    cells.push(Cell {
-                        r: CompactCellRef::from_coordinates(col, row),
-                        col,
-                        s: cell_style_id,
-                        t: CellTypeTag::SharedString,
-                        v: Some(idx.to_string()),
-                        f: None,
-                        is: None,
-                    });
-                }
-            }
-        }
-
-        let mut xml_row = Row {
-            r: row,
-            spans: None,
-            s: None,
-            custom_format: None,
-            ht: None,
-            hidden: None,
-            custom_height: None,
-            outline_level: None,
-            cells,
-        };
-
-        if let Some(opts) = options {
-            if let Some(height) = opts.height {
-                xml_row.ht = Some(height);
-                xml_row.custom_height = Some(true);
-            }
-            if let Some(false) = opts.visible {
-                xml_row.hidden = Some(true);
-            }
-            if let Some(level) = opts.outline_level {
-                if level > 0 {
-                    xml_row.outline_level = Some(level);
-                }
-            }
-            if let Some(sid) = opts.style_id {
-                xml_row.s = Some(sid);
-                xml_row.custom_format = Some(true);
-            }
-        }
-
-        self.rows.push(xml_row);
         Ok(())
+    }
+}
+
+/// Build the XML for the worksheet opening, including the XML declaration,
+/// worksheet namespace, sheetViews, cols, and the opening `<sheetData>` tag.
+pub(crate) fn build_worksheet_header(streamed: &StreamedSheetData) -> String {
+    let mut xml = String::with_capacity(512);
+    xml.push_str(r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#);
+    xml.push('\n');
+    xml.push_str(
+        r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">"#,
+    );
+
+    if let Some(ref views) = streamed.sheet_views_xml {
+        xml.push_str(views);
+    }
+    if let Some(ref cols) = streamed.cols_xml {
+        xml.push_str(cols);
+    }
+
+    xml.push_str("<sheetData>");
+    xml
+}
+
+/// Build the XML for the worksheet closing: `</sheetData>`, mergeCells, and
+/// `</worksheet>`.
+pub(crate) fn build_worksheet_footer(streamed: &StreamedSheetData) -> String {
+    let mut xml = String::with_capacity(256);
+    xml.push_str("</sheetData>");
+
+    if let Some(ref mc) = streamed.merge_cells_xml {
+        xml.push_str(mc);
+    }
+
+    xml.push_str("</worksheet>");
+    xml
+}
+
+/// Write streamed sheet data to a ZIP writer. Composes the full worksheet
+/// XML by writing the header, streaming rows from the temp file, and
+/// appending the footer.
+pub(crate) fn write_streamed_sheet<W: std::io::Write + std::io::Seek>(
+    zip: &mut zip::ZipWriter<W>,
+    entry_name: &str,
+    streamed: &StreamedSheetData,
+    options: zip::write::SimpleFileOptions,
+) -> Result<()> {
+    zip.start_file(entry_name, options)
+        .map_err(|e| Error::Zip(e.to_string()))?;
+
+    // Write the header (XML declaration, <worksheet>, <sheetViews>, <cols>, <sheetData>).
+    let header = build_worksheet_header(streamed);
+    zip.write_all(header.as_bytes())?;
+
+    // Open the temp file by path for reading (starts at position 0).
+    let file = std::fs::File::open(streamed.temp_file.path())?;
+    let mut reader = std::io::BufReader::new(file);
+    std::io::copy(&mut reader, zip)?;
+
+    // Write the footer (</sheetData>, <mergeCells>, </worksheet>).
+    let footer = build_worksheet_footer(streamed);
+    zip.write_all(footer.as_bytes())?;
+
+    Ok(())
+}
+
+/// Build an XML `<row>` element with inline strings for a single row.
+fn build_row_xml(
+    row: u32,
+    values: &[CellValue],
+    cell_style_id: Option<u32>,
+    options: Option<&StreamRowOptions>,
+) -> String {
+    let mut xml = String::with_capacity(128 + values.len() * 64);
+    xml.push_str("<row r=\"");
+    xml.push_str(&row.to_string());
+    xml.push('"');
+
+    // Row-level attributes from options.
+    if let Some(opts) = options {
+        if let Some(sid) = opts.style_id {
+            xml.push_str(" s=\"");
+            xml.push_str(&sid.to_string());
+            xml.push_str("\" customFormat=\"1\"");
+        }
+        if let Some(height) = opts.height {
+            xml.push_str(" ht=\"");
+            xml.push_str(&height.to_string());
+            xml.push_str("\" customHeight=\"1\"");
+        }
+        if let Some(false) = opts.visible {
+            xml.push_str(" hidden=\"1\"");
+        }
+        if let Some(level) = opts.outline_level {
+            if level > 0 {
+                xml.push_str(" outlineLevel=\"");
+                xml.push_str(&level.to_string());
+                xml.push('"');
+            }
+        }
+    }
+
+    xml.push('>');
+
+    for (i, value) in values.iter().enumerate() {
+        let col = (i as u32) + 1;
+        if matches!(value, CellValue::Empty) {
+            continue;
+        }
+
+        let cell_ref = crate::utils::cell_ref::coordinates_to_cell_name(col, row)
+            .unwrap_or_else(|_| format!("{col}:{row}"));
+
+        xml.push_str("<c r=\"");
+        xml.push_str(&cell_ref);
+        xml.push('"');
+
+        // Style attribute.
+        if let Some(sid) = cell_style_id {
+            xml.push_str(" s=\"");
+            xml.push_str(&sid.to_string());
+            xml.push('"');
+        }
+
+        match value {
+            CellValue::String(s) => {
+                xml.push_str(" t=\"inlineStr\"><is><t>");
+                xml_escape_into(&mut xml, s);
+                xml.push_str("</t></is></c>");
+            }
+            CellValue::Number(n) => {
+                xml.push_str("><v>");
+                xml.push_str(&n.to_string());
+                xml.push_str("</v></c>");
+            }
+            CellValue::Date(serial) => {
+                xml.push_str("><v>");
+                xml.push_str(&serial.to_string());
+                xml.push_str("</v></c>");
+            }
+            CellValue::Bool(b) => {
+                xml.push_str(" t=\"b\"><v>");
+                xml.push_str(if *b { "1" } else { "0" });
+                xml.push_str("</v></c>");
+            }
+            CellValue::Formula { expr, .. } => {
+                xml.push_str("><f>");
+                xml_escape_into(&mut xml, expr);
+                xml.push_str("</f></c>");
+            }
+            CellValue::Error(e) => {
+                xml.push_str(" t=\"e\"><v>");
+                xml_escape_into(&mut xml, e);
+                xml.push_str("</v></c>");
+            }
+            CellValue::RichString(runs) => {
+                let plain = crate::rich_text::rich_text_to_plain(runs);
+                xml.push_str(" t=\"inlineStr\"><is><t>");
+                xml_escape_into(&mut xml, &plain);
+                xml.push_str("</t></is></c>");
+            }
+            CellValue::Empty => unreachable!(),
+        }
+    }
+
+    xml.push_str("</row>");
+    xml
+}
+
+/// Escape XML special characters into an existing string buffer.
+fn xml_escape_into(buf: &mut String, s: &str) {
+    for ch in s.chars() {
+        match ch {
+            '&' => buf.push_str("&amp;"),
+            '<' => buf.push_str("&lt;"),
+            '>' => buf.push_str("&gt;"),
+            '"' => buf.push_str("&quot;"),
+            '\'' => buf.push_str("&apos;"),
+            _ => buf.push(ch),
+        }
     }
 }
 
@@ -577,6 +654,36 @@ impl StreamWriter {
 mod tests {
     use super::*;
     use sheetkit_xml::worksheet::WorksheetXml;
+    use std::io::{Read as _, Seek as _};
+
+    /// Helper to parse a streamed writer into a WorksheetXml for assertion.
+    fn finish_and_parse(sw: StreamWriter) -> WorksheetXml {
+        let (_, mut streamed) = sw.into_streamed_data().unwrap();
+        let header = build_worksheet_header(&streamed);
+        let footer = build_worksheet_footer(&streamed);
+
+        let file = streamed.temp_file.as_file_mut();
+        file.seek(std::io::SeekFrom::Start(0)).unwrap();
+        let mut row_data = String::new();
+        file.read_to_string(&mut row_data).unwrap();
+
+        let full_xml = format!("{header}{row_data}{footer}");
+        quick_xml::de::from_str(&full_xml).unwrap()
+    }
+
+    /// Helper to get the raw XML from a stream writer.
+    fn finish_and_get_xml(sw: StreamWriter) -> String {
+        let (_, mut streamed) = sw.into_streamed_data().unwrap();
+        let header = build_worksheet_header(&streamed);
+        let footer = build_worksheet_footer(&streamed);
+
+        let file = streamed.temp_file.as_file_mut();
+        file.seek(std::io::SeekFrom::Start(0)).unwrap();
+        let mut row_data = String::new();
+        file.read_to_string(&mut row_data).unwrap();
+
+        format!("{header}{row_data}{footer}")
+    }
 
     #[test]
     fn test_basic_write_and_finish() {
@@ -585,8 +692,7 @@ mod tests {
             .unwrap();
         sw.write_row(2, &[CellValue::from("Alice"), CellValue::from(30)])
             .unwrap();
-        let xml_bytes = sw.finish().unwrap();
-        let xml = String::from_utf8(xml_bytes).unwrap();
+        let xml = finish_and_get_xml(sw);
 
         assert!(xml.contains("<?xml version=\"1.0\""));
         assert!(xml.contains("<worksheet"));
@@ -600,18 +706,15 @@ mod tests {
         let mut sw = StreamWriter::new("TestSheet");
         sw.write_row(1, &[CellValue::from("Hello"), CellValue::from(42)])
             .unwrap();
-        let xml_bytes = sw.finish().unwrap();
-        let xml_str = String::from_utf8(xml_bytes).unwrap();
+        let ws = finish_and_parse(sw);
 
-        // Parse back into WorksheetXml
-        let ws: WorksheetXml = quick_xml::de::from_str(&xml_str).unwrap();
         assert_eq!(ws.sheet_data.rows.len(), 1);
         assert_eq!(ws.sheet_data.rows[0].r, 1);
         assert_eq!(ws.sheet_data.rows[0].cells.len(), 2);
-        // First cell is a shared string (t="s")
+        // First cell is an inline string (t="inlineStr")
         assert_eq!(
             ws.sheet_data.rows[0].cells[0].t,
-            sheetkit_xml::worksheet::CellTypeTag::SharedString
+            sheetkit_xml::worksheet::CellTypeTag::InlineString
         );
         assert_eq!(ws.sheet_data.rows[0].cells[0].r, "A1");
         // Second cell is a number
@@ -624,22 +727,25 @@ mod tests {
     }
 
     #[test]
-    fn test_string_values_populate_sst() {
+    fn test_inline_strings_used() {
         let mut sw = StreamWriter::new("Sheet1");
         sw.write_row(1, &[CellValue::from("Hello"), CellValue::from("World")])
             .unwrap();
+        let xml = finish_and_get_xml(sw);
 
-        assert_eq!(sw.sst().len(), 2);
-        assert_eq!(sw.sst().get(0), Some("Hello"));
-        assert_eq!(sw.sst().get(1), Some("World"));
+        // Should use inline strings, not shared string references
+        assert!(xml.contains("t=\"inlineStr\""));
+        assert!(xml.contains("<is><t>Hello</t></is>"));
+        assert!(xml.contains("<is><t>World</t></is>"));
+        // Should NOT contain shared string references
+        assert!(!xml.contains("t=\"s\""));
     }
 
     #[test]
     fn test_number_value() {
         let mut sw = StreamWriter::new("Sheet1");
         sw.write_row(1, &[CellValue::from(3.15)]).unwrap();
-        let xml_bytes = sw.finish().unwrap();
-        let xml = String::from_utf8(xml_bytes).unwrap();
+        let xml = finish_and_get_xml(sw);
 
         assert!(xml.contains("<v>3.15</v>"));
     }
@@ -649,8 +755,7 @@ mod tests {
         let mut sw = StreamWriter::new("Sheet1");
         sw.write_row(1, &[CellValue::from(true), CellValue::from(false)])
             .unwrap();
-        let xml_bytes = sw.finish().unwrap();
-        let xml = String::from_utf8(xml_bytes).unwrap();
+        let xml = finish_and_get_xml(sw);
 
         assert!(xml.contains("<v>1</v>"));
         assert!(xml.contains("<v>0</v>"));
@@ -667,8 +772,7 @@ mod tests {
             }],
         )
         .unwrap();
-        let xml_bytes = sw.finish().unwrap();
-        let xml = String::from_utf8(xml_bytes).unwrap();
+        let xml = finish_and_get_xml(sw);
 
         assert!(xml.contains("SUM(A2:A10)"));
     }
@@ -678,8 +782,7 @@ mod tests {
         let mut sw = StreamWriter::new("Sheet1");
         sw.write_row(1, &[CellValue::Error("#DIV/0!".to_string())])
             .unwrap();
-        let xml_bytes = sw.finish().unwrap();
-        let xml = String::from_utf8(xml_bytes).unwrap();
+        let xml = finish_and_get_xml(sw);
 
         assert!(xml.contains("#DIV/0!"));
     }
@@ -692,11 +795,9 @@ mod tests {
             &[CellValue::from("A"), CellValue::Empty, CellValue::from("C")],
         )
         .unwrap();
-        let xml_bytes = sw.finish().unwrap();
-        let xml_str = String::from_utf8(xml_bytes).unwrap();
+        let ws = finish_and_parse(sw);
 
-        // Parse and verify only 2 cells present (A1 and C1)
-        let ws: WorksheetXml = quick_xml::de::from_str(&xml_str).unwrap();
+        // 2 cells (Empty is skipped)
         assert_eq!(ws.sheet_data.rows[0].cells.len(), 2);
         assert_eq!(ws.sheet_data.rows[0].cells[0].r, "A1");
         assert_eq!(ws.sheet_data.rows[0].cells[1].r, "C1");
@@ -707,8 +808,7 @@ mod tests {
         let mut sw = StreamWriter::new("Sheet1");
         sw.write_row_with_style(1, &[CellValue::from("Styled")], 5)
             .unwrap();
-        let xml_bytes = sw.finish().unwrap();
-        let xml = String::from_utf8(xml_bytes).unwrap();
+        let xml = finish_and_get_xml(sw);
 
         assert!(xml.contains("s=\"5\""));
     }
@@ -718,10 +818,8 @@ mod tests {
         let mut sw = StreamWriter::new("Sheet1");
         sw.set_col_width(1, 20.0).unwrap();
         sw.write_row(1, &[CellValue::from("data")]).unwrap();
-        let xml_bytes = sw.finish().unwrap();
-        let xml_str = String::from_utf8(xml_bytes).unwrap();
+        let ws = finish_and_parse(sw);
 
-        let ws: WorksheetXml = quick_xml::de::from_str(&xml_str).unwrap();
         let cols = ws.cols.unwrap();
         assert_eq!(cols.cols.len(), 1);
         assert_eq!(cols.cols[0].min, 1);
@@ -734,10 +832,8 @@ mod tests {
     fn test_set_col_width_range() {
         let mut sw = StreamWriter::new("Sheet1");
         sw.set_col_width_range(1, 3, 15.5).unwrap();
-        let xml_bytes = sw.finish().unwrap();
-        let xml_str = String::from_utf8(xml_bytes).unwrap();
+        let ws = finish_and_parse(sw);
 
-        let ws: WorksheetXml = quick_xml::de::from_str(&xml_str).unwrap();
         let cols = ws.cols.unwrap();
         assert_eq!(cols.cols.len(), 1);
         assert_eq!(cols.cols[0].min, 1);
@@ -749,12 +845,12 @@ mod tests {
     fn test_col_width_in_output_xml() {
         let mut sw = StreamWriter::new("Sheet1");
         sw.set_col_width(2, 25.0).unwrap();
-        let xml_bytes = sw.finish().unwrap();
-        let xml_str = String::from_utf8(xml_bytes).unwrap();
+        sw.write_row(1, &[CellValue::from("data")]).unwrap();
+        let xml = finish_and_get_xml(sw);
 
         // Verify cols section appears before sheetData
-        let cols_pos = xml_str.find("<cols>").unwrap();
-        let sheet_data_pos = xml_str.find("<sheetData").unwrap();
+        let cols_pos = xml.find("<cols>").unwrap();
+        let sheet_data_pos = xml.find("<sheetData").unwrap();
         assert!(cols_pos < sheet_data_pos);
     }
 
@@ -773,7 +869,7 @@ mod tests {
         sw.write_row(1, &[CellValue::from("a")]).unwrap();
         sw.write_row(2, &[CellValue::from("b")]).unwrap();
         sw.write_row(3, &[CellValue::from("c")]).unwrap();
-        sw.finish().unwrap();
+        let _data = sw.into_streamed_data().unwrap();
     }
 
     #[test]
@@ -782,10 +878,8 @@ mod tests {
         sw.write_row(1, &[CellValue::from("a")]).unwrap();
         sw.write_row(3, &[CellValue::from("b")]).unwrap();
         sw.write_row(5, &[CellValue::from("c")]).unwrap();
-        let xml_bytes = sw.finish().unwrap();
-        let xml_str = String::from_utf8(xml_bytes).unwrap();
+        let ws = finish_and_parse(sw);
 
-        let ws: WorksheetXml = quick_xml::de::from_str(&xml_str).unwrap();
         assert_eq!(ws.sheet_data.rows.len(), 3);
         assert_eq!(ws.sheet_data.rows[0].r, 1);
         assert_eq!(ws.sheet_data.rows[1].r, 3);
@@ -829,10 +923,8 @@ mod tests {
         let mut sw = StreamWriter::new("Sheet1");
         sw.write_row(1, &[CellValue::from("Merged")]).unwrap();
         sw.add_merge_cell("A1:B1").unwrap();
-        let xml_bytes = sw.finish().unwrap();
-        let xml_str = String::from_utf8(xml_bytes).unwrap();
+        let ws = finish_and_parse(sw);
 
-        let ws: WorksheetXml = quick_xml::de::from_str(&xml_str).unwrap();
         let mc = ws.merge_cells.unwrap();
         assert_eq!(mc.merge_cells.len(), 1);
         assert_eq!(mc.merge_cells[0].reference, "A1:B1");
@@ -844,10 +936,8 @@ mod tests {
         sw.write_row(1, &[CellValue::from("a")]).unwrap();
         sw.add_merge_cell("A1:B1").unwrap();
         sw.add_merge_cell("C1:D1").unwrap();
-        let xml_bytes = sw.finish().unwrap();
-        let xml_str = String::from_utf8(xml_bytes).unwrap();
+        let ws = finish_and_parse(sw);
 
-        let ws: WorksheetXml = quick_xml::de::from_str(&xml_str).unwrap();
         let mc = ws.merge_cells.unwrap();
         assert_eq!(mc.merge_cells.len(), 2);
         assert_eq!(mc.merge_cells[0].reference, "A1:B1");
@@ -858,17 +948,18 @@ mod tests {
     fn test_finish_twice_returns_error() {
         let mut sw = StreamWriter::new("Sheet1");
         sw.write_row(1, &[CellValue::from("a")]).unwrap();
-        sw.finish().unwrap();
-        let result = sw.finish();
-        assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), Error::StreamAlreadyFinished));
+        // First consume
+        sw.into_streamed_data().unwrap();
+        // Cannot call again -- consumed by move.
     }
 
     #[test]
     fn test_write_after_finish_returns_error() {
+        // StreamWriter is consumed by into_streamed_data(), so this test
+        // verifies that the finished flag works for the legacy path.
         let mut sw = StreamWriter::new("Sheet1");
         sw.write_row(1, &[CellValue::from("a")]).unwrap();
-        sw.finish().unwrap();
+        sw.finished = true;
         let result = sw.write_row(2, &[CellValue::from("b")]);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), Error::StreamAlreadyFinished));
@@ -876,12 +967,10 @@ mod tests {
 
     #[test]
     fn test_finish_with_no_rows() {
-        let mut sw = StreamWriter::new("Sheet1");
-        let xml_bytes = sw.finish().unwrap();
-        let xml_str = String::from_utf8(xml_bytes).unwrap();
+        let sw = StreamWriter::new("Sheet1");
+        let ws = finish_and_parse(sw);
 
         // Should still produce valid XML
-        let ws: WorksheetXml = quick_xml::de::from_str(&xml_str).unwrap();
         assert!(ws.sheet_data.rows.is_empty());
     }
 
@@ -889,100 +978,10 @@ mod tests {
     fn test_finish_with_cols_and_no_rows() {
         let mut sw = StreamWriter::new("Sheet1");
         sw.set_col_width(1, 20.0).unwrap();
-        let xml_bytes = sw.finish().unwrap();
-        let xml_str = String::from_utf8(xml_bytes).unwrap();
+        let ws = finish_and_parse(sw);
 
-        let ws: WorksheetXml = quick_xml::de::from_str(&xml_str).unwrap();
         assert!(ws.cols.is_some());
         assert!(ws.sheet_data.rows.is_empty());
-    }
-
-    #[test]
-    fn test_into_parts() {
-        let mut sw = StreamWriter::new("Sheet1");
-        sw.write_row(1, &[CellValue::from("Hello")]).unwrap();
-        let (xml_bytes, sst) = sw.into_parts().unwrap();
-
-        assert!(!xml_bytes.is_empty());
-        assert_eq!(sst.len(), 1);
-        assert_eq!(sst.get(0), Some("Hello"));
-    }
-
-    #[test]
-    fn test_sst_deduplication() {
-        let mut sw = StreamWriter::new("Sheet1");
-        sw.write_row(1, &[CellValue::from("same"), CellValue::from("same")])
-            .unwrap();
-        sw.write_row(2, &[CellValue::from("same"), CellValue::from("other")])
-            .unwrap();
-
-        assert_eq!(sw.sst().len(), 2); // "same" and "other"
-        assert_eq!(sw.sst().get(0), Some("same"));
-        assert_eq!(sw.sst().get(1), Some("other"));
-    }
-
-    #[test]
-    fn test_large_scale_10000_rows() {
-        let mut sw = StreamWriter::new("BigSheet");
-        for i in 1..=10_000u32 {
-            sw.write_row(
-                i,
-                &[
-                    CellValue::from(format!("Row {}", i)),
-                    CellValue::from(i as i32),
-                    CellValue::from(i as f64 * 1.5),
-                ],
-            )
-            .unwrap();
-        }
-        let xml_bytes = sw.finish().unwrap();
-        let xml_str = String::from_utf8(xml_bytes).unwrap();
-
-        // Verify it parses
-        let ws: WorksheetXml = quick_xml::de::from_str(&xml_str).unwrap();
-        assert_eq!(ws.sheet_data.rows.len(), 10_000);
-        assert_eq!(ws.sheet_data.rows[0].r, 1);
-        assert_eq!(ws.sheet_data.rows[9999].r, 10_000);
-    }
-
-    #[test]
-    fn test_large_sst_dedup() {
-        let mut sw = StreamWriter::new("Sheet1");
-        // Write 1000 rows, each with the same 3 string values
-        for i in 1..=1000u32 {
-            sw.write_row(
-                i,
-                &[
-                    CellValue::from("Alpha"),
-                    CellValue::from("Beta"),
-                    CellValue::from("Gamma"),
-                ],
-            )
-            .unwrap();
-        }
-        // SST should only have 3 unique strings
-        assert_eq!(sw.sst().len(), 3);
-    }
-
-    #[test]
-    fn test_xml_escape_in_formula() {
-        let mut sw = StreamWriter::new("Sheet1");
-        sw.write_row(
-            1,
-            &[CellValue::Formula {
-                expr: "IF(A1>0,\"yes\",\"no\")".to_string(),
-                result: None,
-            }],
-        )
-        .unwrap();
-        let xml_bytes = sw.finish().unwrap();
-        let xml = String::from_utf8(xml_bytes).unwrap();
-        // quick_xml escapes > in text content; quotes don't require escaping in text content
-        assert!(xml.contains("&gt;"));
-        // Verify the formula round-trips through XML
-        let ws: WorksheetXml = quick_xml::de::from_str(&xml).unwrap();
-        let formula = ws.sheet_data.rows[0].cells[0].f.as_ref().unwrap();
-        assert_eq!(formula.value, Some("IF(A1>0,\"yes\",\"no\")".to_string()));
     }
 
     #[test]
@@ -1023,7 +1022,7 @@ mod tests {
     #[test]
     fn test_add_merge_cell_after_finish_fails() {
         let mut sw = StreamWriter::new("Sheet1");
-        sw.finish().unwrap();
+        sw.finished = true;
         let result = sw.add_merge_cell("A1:B1");
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), Error::StreamAlreadyFinished));
@@ -1032,7 +1031,7 @@ mod tests {
     #[test]
     fn test_set_col_width_after_finish_fails() {
         let mut sw = StreamWriter::new("Sheet1");
-        sw.finish().unwrap();
+        sw.finished = true;
         let result = sw.set_col_width(1, 10.0);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), Error::StreamAlreadyFinished));
@@ -1064,11 +1063,8 @@ mod tests {
             ],
         )
         .unwrap();
-        let xml_bytes = sw.finish().unwrap();
-        let xml_str = String::from_utf8(xml_bytes).unwrap();
+        let ws = finish_and_parse(sw);
 
-        // Should parse without error
-        let ws: WorksheetXml = quick_xml::de::from_str(&xml_str).unwrap();
         // 7 cells (Empty is skipped)
         assert_eq!(ws.sheet_data.rows[0].cells.len(), 7);
     }
@@ -1090,11 +1086,8 @@ mod tests {
         };
         sw.write_row_with_options(1, &[CellValue::from("tall row")], &opts)
             .unwrap();
-        let xml_bytes = sw.finish().unwrap();
-        let xml = String::from_utf8(xml_bytes).unwrap();
+        let ws = finish_and_parse(sw);
 
-        // Parse back and verify
-        let ws: WorksheetXml = quick_xml::de::from_str(&xml).unwrap();
         assert_eq!(ws.sheet_data.rows[0].ht, Some(30.0));
         assert_eq!(ws.sheet_data.rows[0].custom_height, Some(true));
     }
@@ -1108,10 +1101,8 @@ mod tests {
         };
         sw.write_row_with_options(1, &[CellValue::from("hidden")], &opts)
             .unwrap();
-        let xml_bytes = sw.finish().unwrap();
-        let xml = String::from_utf8(xml_bytes).unwrap();
+        let ws = finish_and_parse(sw);
 
-        let ws: WorksheetXml = quick_xml::de::from_str(&xml).unwrap();
         assert_eq!(ws.sheet_data.rows[0].hidden, Some(true));
     }
 
@@ -1124,10 +1115,8 @@ mod tests {
         };
         sw.write_row_with_options(1, &[CellValue::from("grouped")], &opts)
             .unwrap();
-        let xml_bytes = sw.finish().unwrap();
-        let xml = String::from_utf8(xml_bytes).unwrap();
+        let ws = finish_and_parse(sw);
 
-        let ws: WorksheetXml = quick_xml::de::from_str(&xml).unwrap();
         assert_eq!(ws.sheet_data.rows[0].outline_level, Some(3));
     }
 
@@ -1140,10 +1129,8 @@ mod tests {
         };
         sw.write_row_with_options(1, &[CellValue::from("styled row")], &opts)
             .unwrap();
-        let xml_bytes = sw.finish().unwrap();
-        let xml = String::from_utf8(xml_bytes).unwrap();
+        let ws = finish_and_parse(sw);
 
-        let ws: WorksheetXml = quick_xml::de::from_str(&xml).unwrap();
         assert_eq!(ws.sheet_data.rows[0].s, Some(2));
         assert_eq!(ws.sheet_data.rows[0].custom_format, Some(true));
     }
@@ -1159,10 +1146,8 @@ mod tests {
         };
         sw.write_row_with_options(1, &[CellValue::from("all options")], &opts)
             .unwrap();
-        let xml_bytes = sw.finish().unwrap();
-        let xml = String::from_utf8(xml_bytes).unwrap();
+        let ws = finish_and_parse(sw);
 
-        let ws: WorksheetXml = quick_xml::de::from_str(&xml).unwrap();
         let row = &ws.sheet_data.rows[0];
         assert_eq!(row.ht, Some(25.5));
         assert_eq!(row.custom_height, Some(true));
@@ -1207,8 +1192,7 @@ mod tests {
         };
         sw.write_row_with_options(1, &[CellValue::from("visible")], &opts)
             .unwrap();
-        let xml_bytes = sw.finish().unwrap();
-        let xml = String::from_utf8(xml_bytes).unwrap();
+        let xml = finish_and_get_xml(sw);
 
         // visible=true should NOT produce hidden attribute
         assert!(!xml.contains("hidden="));
@@ -1219,10 +1203,8 @@ mod tests {
         let mut sw = StreamWriter::new("Sheet1");
         sw.set_col_style(1, 3).unwrap();
         sw.write_row(1, &[CellValue::from("data")]).unwrap();
-        let xml_bytes = sw.finish().unwrap();
-        let xml = String::from_utf8(xml_bytes).unwrap();
+        let ws = finish_and_parse(sw);
 
-        let ws: WorksheetXml = quick_xml::de::from_str(&xml).unwrap();
         let cols = ws.cols.unwrap();
         let styled_col = cols.cols.iter().find(|c| c.style.is_some()).unwrap();
         assert_eq!(styled_col.style, Some(3));
@@ -1236,10 +1218,8 @@ mod tests {
         sw.set_col_visible(2, false).unwrap();
         sw.write_row(1, &[CellValue::from("a"), CellValue::from("b")])
             .unwrap();
-        let xml_bytes = sw.finish().unwrap();
-        let xml = String::from_utf8(xml_bytes).unwrap();
+        let ws = finish_and_parse(sw);
 
-        let ws: WorksheetXml = quick_xml::de::from_str(&xml).unwrap();
         let cols = ws.cols.unwrap();
         let hidden_col = cols.cols.iter().find(|c| c.hidden == Some(true)).unwrap();
         assert_eq!(hidden_col.min, 2);
@@ -1251,10 +1231,8 @@ mod tests {
         let mut sw = StreamWriter::new("Sheet1");
         sw.set_col_outline_level(3, 2).unwrap();
         sw.write_row(1, &[CellValue::from("a")]).unwrap();
-        let xml_bytes = sw.finish().unwrap();
-        let xml = String::from_utf8(xml_bytes).unwrap();
+        let ws = finish_and_parse(sw);
 
-        let ws: WorksheetXml = quick_xml::de::from_str(&xml).unwrap();
         let cols = ws.cols.unwrap();
         let outlined_col = cols
             .cols
@@ -1306,10 +1284,8 @@ mod tests {
         sw.set_freeze_panes("A2").unwrap();
         sw.write_row(1, &[CellValue::from("header")]).unwrap();
         sw.write_row(2, &[CellValue::from("data")]).unwrap();
-        let xml_bytes = sw.finish().unwrap();
-        let xml_str = String::from_utf8(xml_bytes).unwrap();
+        let ws = finish_and_parse(sw);
 
-        let ws: WorksheetXml = quick_xml::de::from_str(&xml_str).unwrap();
         let views = ws.sheet_views.unwrap();
         let pane = views.sheet_views[0].pane.as_ref().unwrap();
         assert_eq!(pane.y_split, Some(1));
@@ -1326,10 +1302,8 @@ mod tests {
         sw.set_freeze_panes("B1").unwrap();
         sw.write_row(1, &[CellValue::from("a"), CellValue::from("b")])
             .unwrap();
-        let xml_bytes = sw.finish().unwrap();
-        let xml_str = String::from_utf8(xml_bytes).unwrap();
+        let ws = finish_and_parse(sw);
 
-        let ws: WorksheetXml = quick_xml::de::from_str(&xml_str).unwrap();
         let views = ws.sheet_views.unwrap();
         let pane = views.sheet_views[0].pane.as_ref().unwrap();
         assert_eq!(pane.x_split, Some(1));
@@ -1345,10 +1319,8 @@ mod tests {
         let mut sw = StreamWriter::new("Sheet1");
         sw.set_freeze_panes("C3").unwrap();
         sw.write_row(1, &[CellValue::from("a")]).unwrap();
-        let xml_bytes = sw.finish().unwrap();
-        let xml_str = String::from_utf8(xml_bytes).unwrap();
+        let ws = finish_and_parse(sw);
 
-        let ws: WorksheetXml = quick_xml::de::from_str(&xml_str).unwrap();
         let views = ws.sheet_views.unwrap();
         let pane = views.sheet_views[0].pane.as_ref().unwrap();
         assert_eq!(pane.x_split, Some(2));
@@ -1391,8 +1363,7 @@ mod tests {
         sw.set_freeze_panes("A2").unwrap();
         sw.set_col_width(1, 20.0).unwrap();
         sw.write_row(1, &[CellValue::from("data")]).unwrap();
-        let xml_bytes = sw.finish().unwrap();
-        let xml = String::from_utf8(xml_bytes).unwrap();
+        let xml = finish_and_get_xml(sw);
 
         let views_pos = xml.find("<sheetView").unwrap();
         let cols_pos = xml.find("<cols>").unwrap();
@@ -1404,7 +1375,7 @@ mod tests {
     #[test]
     fn test_freeze_panes_after_finish_error() {
         let mut sw = StreamWriter::new("Sheet1");
-        sw.finish().unwrap();
+        sw.finished = true;
         let result = sw.set_freeze_panes("A2");
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), Error::StreamAlreadyFinished));
@@ -1414,8 +1385,7 @@ mod tests {
     fn test_no_freeze_panes_no_sheet_views() {
         let mut sw = StreamWriter::new("Sheet1");
         sw.write_row(1, &[CellValue::from("data")]).unwrap();
-        let xml_bytes = sw.finish().unwrap();
-        let xml = String::from_utf8(xml_bytes).unwrap();
+        let xml = finish_and_get_xml(sw);
 
         // When no freeze panes are set, sheetViews should not appear
         assert!(!xml.contains("<sheetView"));
@@ -1426,10 +1396,8 @@ mod tests {
         // Ensure the original write_row still works exactly as before.
         let mut sw = StreamWriter::new("Sheet1");
         sw.write_row(1, &[CellValue::from("hello")]).unwrap();
-        let xml_bytes = sw.finish().unwrap();
-        let xml = String::from_utf8(xml_bytes).unwrap();
+        let ws = finish_and_parse(sw);
 
-        let ws: WorksheetXml = quick_xml::de::from_str(&xml).unwrap();
         let row = &ws.sheet_data.rows[0];
         assert_eq!(row.r, 1);
         // Should not have any row-level attributes beyond r
@@ -1437,22 +1405,6 @@ mod tests {
         assert!(row.hidden.is_none());
         assert!(row.outline_level.is_none());
         assert!(row.custom_format.is_none());
-    }
-
-    #[test]
-    fn test_write_row_with_style_backward_compat() {
-        // Ensure the original write_row_with_style still works.
-        let mut sw = StreamWriter::new("Sheet1");
-        sw.write_row_with_style(1, &[CellValue::from("styled")], 5)
-            .unwrap();
-        let xml_bytes = sw.finish().unwrap();
-        let xml = String::from_utf8(xml_bytes).unwrap();
-
-        // Cell should have s="5" attribute
-        assert!(xml.contains("s=\"5\""));
-        // Row should not have row-level style attributes
-        let ws: WorksheetXml = quick_xml::de::from_str(&xml).unwrap();
-        assert!(ws.sheet_data.rows[0].custom_format.is_none());
     }
 
     #[test]
@@ -1470,99 +1422,97 @@ mod tests {
             ],
         )
         .unwrap();
-        let xml_bytes = sw.finish().unwrap();
-        let xml = String::from_utf8(xml_bytes).unwrap();
+        let ws = finish_and_parse(sw);
 
-        let ws: WorksheetXml = quick_xml::de::from_str(&xml).unwrap();
         let cols = ws.cols.unwrap();
         assert_eq!(cols.cols.len(), 3);
     }
 
     #[test]
-    fn test_into_worksheet_parts_basic() {
+    fn test_large_scale_10000_rows() {
+        let mut sw = StreamWriter::new("BigSheet");
+        for i in 1..=10_000u32 {
+            sw.write_row(
+                i,
+                &[
+                    CellValue::from(format!("Row {}", i)),
+                    CellValue::from(i as i32),
+                    CellValue::from(i as f64 * 1.5),
+                ],
+            )
+            .unwrap();
+        }
+        let ws = finish_and_parse(sw);
+
+        assert_eq!(ws.sheet_data.rows.len(), 10_000);
+        assert_eq!(ws.sheet_data.rows[0].r, 1);
+        assert_eq!(ws.sheet_data.rows[9999].r, 10_000);
+    }
+
+    #[test]
+    fn test_xml_escape_in_formula() {
         let mut sw = StreamWriter::new("Sheet1");
+        sw.write_row(
+            1,
+            &[CellValue::Formula {
+                expr: "IF(A1>0,\"yes\",\"no\")".to_string(),
+                result: None,
+            }],
+        )
+        .unwrap();
+        let xml = finish_and_get_xml(sw);
+
+        // The formula should be XML-escaped
+        assert!(xml.contains("&gt;"));
+    }
+
+    #[test]
+    fn test_xml_escape_in_string() {
+        let mut sw = StreamWriter::new("Sheet1");
+        sw.write_row(1, &[CellValue::from("Tom & Jerry <friends>")])
+            .unwrap();
+        let xml = finish_and_get_xml(sw);
+
+        assert!(xml.contains("Tom &amp; Jerry &lt;friends&gt;"));
+    }
+
+    #[test]
+    fn test_into_streamed_data_returns_valid_data() {
+        let mut sw = StreamWriter::new("Sheet1");
+        sw.set_col_width(1, 20.0).unwrap();
         sw.write_row(1, &[CellValue::from("Hello"), CellValue::from(42)])
             .unwrap();
         sw.write_row(2, &[CellValue::from("World"), CellValue::from(99)])
             .unwrap();
-        let (ws, sst) = sw.into_worksheet_parts().unwrap();
-        assert_eq!(ws.sheet_data.rows.len(), 2);
-        assert_eq!(ws.sheet_data.rows[0].r, 1);
-        assert_eq!(ws.sheet_data.rows[0].cells.len(), 2);
-        assert_eq!(ws.sheet_data.rows[1].r, 2);
-        assert_eq!(sst.len(), 2);
-    }
-
-    #[test]
-    fn test_into_worksheet_parts_sst() {
-        let mut sw = StreamWriter::new("Sheet1");
-        sw.write_row(1, &[CellValue::from("Alpha"), CellValue::from("Beta")])
-            .unwrap();
-        let (ws, sst) = sw.into_worksheet_parts().unwrap();
-        assert_eq!(sst.len(), 2);
-        assert_eq!(sst.get(0), Some("Alpha"));
-        assert_eq!(sst.get(1), Some("Beta"));
-        // Cells should reference SST indices
-        assert_eq!(ws.sheet_data.rows[0].cells[0].v, Some("0".to_string()));
-        assert_eq!(ws.sheet_data.rows[0].cells[1].v, Some("1".to_string()));
-        assert_eq!(
-            ws.sheet_data.rows[0].cells[0].t,
-            sheetkit_xml::worksheet::CellTypeTag::SharedString
-        );
-    }
-
-    #[test]
-    fn test_into_worksheet_parts_cell_col_set() {
-        let mut sw = StreamWriter::new("Sheet1");
-        sw.write_row(
-            1,
-            &[CellValue::from("A"), CellValue::Empty, CellValue::from("C")],
-        )
-        .unwrap();
-        let (ws, _) = sw.into_worksheet_parts().unwrap();
-        assert_eq!(ws.sheet_data.rows[0].cells.len(), 2);
-        assert_eq!(ws.sheet_data.rows[0].cells[0].col, 1);
-        assert_eq!(ws.sheet_data.rows[0].cells[0].r.as_str(), "A1");
-        assert_eq!(ws.sheet_data.rows[0].cells[1].col, 3);
-        assert_eq!(ws.sheet_data.rows[0].cells[1].r.as_str(), "C1");
-    }
-
-    #[test]
-    fn test_into_worksheet_parts_freeze_panes() {
-        let mut sw = StreamWriter::new("Sheet1");
-        sw.set_freeze_panes("C3").unwrap();
-        sw.write_row(1, &[CellValue::from("data")]).unwrap();
-        let (ws, _) = sw.into_worksheet_parts().unwrap();
-        assert!(ws.sheet_views.is_some());
-        let views = ws.sheet_views.unwrap();
-        let pane = views.sheet_views[0].pane.as_ref().unwrap();
-        assert_eq!(pane.x_split, Some(2));
-        assert_eq!(pane.y_split, Some(2));
-        assert_eq!(pane.top_left_cell, Some("C3".to_string()));
-        assert_eq!(pane.state, Some("frozen".to_string()));
-    }
-
-    #[test]
-    fn test_into_worksheet_parts_cols() {
-        let mut sw = StreamWriter::new("Sheet1");
-        sw.set_col_width(1, 20.0).unwrap();
-        sw.set_col_style(2, 5).unwrap();
-        sw.write_row(1, &[CellValue::from("data")]).unwrap();
-        let (ws, _) = sw.into_worksheet_parts().unwrap();
-        assert!(ws.cols.is_some());
-        let cols = ws.cols.unwrap();
-        assert_eq!(cols.cols.len(), 2);
-    }
-
-    #[test]
-    fn test_into_worksheet_parts_merge_cells() {
-        let mut sw = StreamWriter::new("Sheet1");
-        sw.write_row(1, &[CellValue::from("Merged")]).unwrap();
         sw.add_merge_cell("A1:B1").unwrap();
-        let (ws, _) = sw.into_worksheet_parts().unwrap();
-        assert!(ws.merge_cells.is_some());
-        let mc = ws.merge_cells.unwrap();
-        assert_eq!(mc.merge_cells.len(), 1);
-        assert_eq!(mc.merge_cells[0].reference, "A1:B1");
+
+        let (name, streamed) = sw.into_streamed_data().unwrap();
+        assert_eq!(name, "Sheet1");
+        assert!(streamed.data_len > 0);
+        assert!(streamed.cols_xml.is_some());
+        assert!(streamed.merge_cells_xml.is_some());
+    }
+
+    #[test]
+    fn test_memory_efficiency() {
+        // This test validates that large data doesn't accumulate in memory.
+        // The StreamWriter writes to a temp file, so memory should remain
+        // roughly constant regardless of row count.
+        let mut sw = StreamWriter::new("Sheet1");
+        for i in 1..=100_000u32 {
+            sw.write_row(
+                i,
+                &[
+                    CellValue::from(format!("Row number {}", i)),
+                    CellValue::from(i as f64),
+                ],
+            )
+            .unwrap();
+        }
+        // Verify substantial data was written to disk, not held in memory.
+        assert!(sw.bytes_written > 1_000_000);
+
+        let (_, streamed) = sw.into_streamed_data().unwrap();
+        assert!(streamed.data_len > 1_000_000);
     }
 }

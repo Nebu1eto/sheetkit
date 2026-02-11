@@ -71,6 +71,15 @@ impl Workbook {
                 *si -= 1;
             }
         }
+
+        // Remove and reindex streamed sheet data.
+        self.streamed_sheets.remove(&idx);
+        self.streamed_sheets = self
+            .streamed_sheets
+            .drain()
+            .map(|(i, data)| if i > idx { (i - 1, data) } else { (i, data) })
+            .collect();
+
         self.reindex_sheet_maps_after_delete(idx);
         self.rebuild_sheet_index();
         Ok(())
@@ -190,45 +199,28 @@ impl Workbook {
     /// Apply a completed [`StreamWriter`](crate::stream::StreamWriter) to the
     /// workbook, adding it as a new sheet.
     ///
+    /// The streamed row data stays on disk (in a temp file) and is written
+    /// directly to the ZIP archive during save, keeping memory usage constant
+    /// regardless of the number of rows.
+    ///
+    /// **Note:** Cell values in streamed sheets cannot be read back via
+    /// [`get_cell_value`](Self::get_cell_value) before saving. Save the
+    /// workbook and reopen it to read the data.
+    ///
     /// Returns the 0-based index of the new sheet.
     pub fn apply_stream_writer(&mut self, writer: crate::stream::StreamWriter) -> Result<usize> {
-        let sheet_name = writer.sheet_name().to_string();
-        let (mut ws, sst) = writer.into_worksheet_parts()?;
+        let (sheet_name, streamed_data) = writer.into_streamed_data()?;
 
-        // Merge SST entries and build index mapping (old_index -> new_index)
-        let mut sst_remap: Vec<usize> = Vec::with_capacity(sst.len());
-        for i in 0..sst.len() {
-            if let Some(s) = sst.get(i) {
-                let new_idx = self.sst_runtime.add(s);
-                sst_remap.push(new_idx);
-            }
-        }
-
-        // Remap SST indices in the worksheet cells
-        for row in &mut ws.sheet_data.rows {
-            for cell in &mut row.cells {
-                if cell.t == CellTypeTag::SharedString {
-                    if let Some(ref v) = cell.v {
-                        if let Ok(old_idx) = v.parse::<usize>() {
-                            if let Some(&new_idx) = sst_remap.get(old_idx) {
-                                cell.v = Some(new_idx.to_string());
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Cell.col is already set by StreamWriter, rows are already in ascending
-        // order, and cells are already in column order -- no sorting needed.
-
+        // Add an empty WorksheetXml placeholder for sheet management
+        // (sheet names, indices, metadata). The actual data lives in the
+        // temp file and is streamed to the ZIP during save.
         let idx = crate::sheet::add_sheet(
             &mut self.workbook_xml,
             &mut self.workbook_rels,
             &mut self.content_types,
             &mut self.worksheets,
             &sheet_name,
-            ws,
+            WorksheetXml::default(),
         )?;
         if self.sheet_comments.len() < self.worksheets.len() {
             self.sheet_comments.push(None);
@@ -248,6 +240,10 @@ impl Workbook {
         if self.sheet_form_controls.len() < self.worksheets.len() {
             self.sheet_form_controls.push(vec![]);
         }
+
+        // Store the streamed data for use during save.
+        self.streamed_sheets.insert(idx, streamed_data);
+
         self.rebuild_sheet_index();
         Ok(idx)
     }
@@ -1103,16 +1099,19 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_stream_writer_merges_sst() {
+    fn test_apply_stream_writer_uses_inline_strings() {
+        // Streamed sheets use inline strings, not the shared string table.
         let mut wb = Workbook::new();
         wb.set_cell_value("Sheet1", "A1", "Existing").unwrap();
+        let sst_before = wb.sst_runtime.len();
 
         let mut sw = wb.new_stream_writer("StreamSheet").unwrap();
         sw.write_row(1, &[CellValue::from("New"), CellValue::from("Existing")])
             .unwrap();
         wb.apply_stream_writer(sw).unwrap();
 
-        assert!(wb.sst_runtime.len() >= 2);
+        // SST should not grow because streamed sheets use inline strings.
+        assert_eq!(wb.sst_runtime.len(), sst_before);
     }
 
     #[test]
@@ -1221,7 +1220,30 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_stream_writer_cells_readable_without_reopen() {
+    fn test_streamed_sheet_cells_empty_before_save() {
+        // Streamed sheet data lives in a temp file, not in the WorksheetXml.
+        // Reading cells before save returns Empty.
+        let mut wb = Workbook::new();
+        let mut sw = wb.new_stream_writer("Streamed").unwrap();
+        sw.write_row(1, &[CellValue::from("Name"), CellValue::from("Age")])
+            .unwrap();
+        wb.apply_stream_writer(sw).unwrap();
+
+        assert_eq!(
+            wb.get_cell_value("Streamed", "A1").unwrap(),
+            CellValue::Empty
+        );
+        assert_eq!(
+            wb.get_cell_value("Streamed", "B1").unwrap(),
+            CellValue::Empty
+        );
+    }
+
+    #[test]
+    fn test_streamed_sheet_readable_after_save_reopen() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("stream_reopen.xlsx");
+
         let mut wb = Workbook::new();
         let mut sw = wb.new_stream_writer("Streamed").unwrap();
         sw.write_row(1, &[CellValue::from("Name"), CellValue::from("Age")])
@@ -1229,23 +1251,23 @@ mod tests {
         sw.write_row(2, &[CellValue::from("Alice"), CellValue::from(30)])
             .unwrap();
         wb.apply_stream_writer(sw).unwrap();
+        wb.save(&path).unwrap();
 
-        // Reading cells directly (without save/reopen) must work because
-        // apply_stream_writer should populate cell.col and sort cells.
+        let wb2 = Workbook::open(&path).unwrap();
         assert_eq!(
-            wb.get_cell_value("Streamed", "A1").unwrap(),
+            wb2.get_cell_value("Streamed", "A1").unwrap(),
             CellValue::String("Name".to_string())
         );
         assert_eq!(
-            wb.get_cell_value("Streamed", "B1").unwrap(),
+            wb2.get_cell_value("Streamed", "B1").unwrap(),
             CellValue::String("Age".to_string())
         );
         assert_eq!(
-            wb.get_cell_value("Streamed", "A2").unwrap(),
+            wb2.get_cell_value("Streamed", "A2").unwrap(),
             CellValue::String("Alice".to_string())
         );
         assert_eq!(
-            wb.get_cell_value("Streamed", "B2").unwrap(),
+            wb2.get_cell_value("Streamed", "B2").unwrap(),
             CellValue::Number(30.0)
         );
     }
@@ -1271,7 +1293,10 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_stream_optimized_basic() {
+    fn test_stream_save_reopen_basic() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("stream_basic.xlsx");
+
         let mut wb = Workbook::new();
         let mut sw = wb.new_stream_writer("Optimized").unwrap();
         sw.write_row(1, &[CellValue::from("Hello"), CellValue::from(42)])
@@ -1281,54 +1306,31 @@ mod tests {
         let idx = wb.apply_stream_writer(sw).unwrap();
         assert_eq!(idx, 1);
 
+        wb.save(&path).unwrap();
+        let wb2 = Workbook::open(&path).unwrap();
         assert_eq!(
-            wb.get_cell_value("Optimized", "A1").unwrap(),
+            wb2.get_cell_value("Optimized", "A1").unwrap(),
             CellValue::String("Hello".to_string())
         );
         assert_eq!(
-            wb.get_cell_value("Optimized", "B1").unwrap(),
+            wb2.get_cell_value("Optimized", "B1").unwrap(),
             CellValue::Number(42.0)
         );
         assert_eq!(
-            wb.get_cell_value("Optimized", "A2").unwrap(),
+            wb2.get_cell_value("Optimized", "A2").unwrap(),
             CellValue::String("World".to_string())
         );
         assert_eq!(
-            wb.get_cell_value("Optimized", "B2").unwrap(),
+            wb2.get_cell_value("Optimized", "B2").unwrap(),
             CellValue::Number(99.0)
         );
     }
 
     #[test]
-    fn test_apply_stream_optimized_sst_merge() {
-        let mut wb = Workbook::new();
-        wb.set_cell_value("Sheet1", "A1", "Existing").unwrap();
+    fn test_stream_save_reopen_all_types() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("stream_types.xlsx");
 
-        let mut sw = wb.new_stream_writer("Streamed").unwrap();
-        sw.write_row(
-            1,
-            &[
-                CellValue::from("New"),
-                CellValue::from("Existing"),
-                CellValue::from("New"),
-            ],
-        )
-        .unwrap();
-        wb.apply_stream_writer(sw).unwrap();
-
-        assert_eq!(
-            wb.get_cell_value("Streamed", "A1").unwrap(),
-            CellValue::String("New".to_string())
-        );
-        assert_eq!(
-            wb.get_cell_value("Streamed", "B1").unwrap(),
-            CellValue::String("Existing".to_string())
-        );
-        assert!(wb.sst_runtime.len() >= 2);
-    }
-
-    #[test]
-    fn test_apply_stream_optimized_all_types() {
         let mut wb = Workbook::new();
         let mut sw = wb.new_stream_writer("Types").unwrap();
         sw.write_row(
@@ -1349,27 +1351,29 @@ mod tests {
         .unwrap();
         wb.apply_stream_writer(sw).unwrap();
 
+        wb.save(&path).unwrap();
+        let wb2 = Workbook::open(&path).unwrap();
         assert_eq!(
-            wb.get_cell_value("Types", "A1").unwrap(),
+            wb2.get_cell_value("Types", "A1").unwrap(),
             CellValue::String("text".to_string())
         );
         assert_eq!(
-            wb.get_cell_value("Types", "B1").unwrap(),
+            wb2.get_cell_value("Types", "B1").unwrap(),
             CellValue::Number(42.0)
         );
         assert_eq!(
-            wb.get_cell_value("Types", "D1").unwrap(),
+            wb2.get_cell_value("Types", "D1").unwrap(),
             CellValue::Bool(true)
         );
-        match wb.get_cell_value("Types", "E1").unwrap() {
+        match wb2.get_cell_value("Types", "E1").unwrap() {
             CellValue::Formula { expr, .. } => assert_eq!(expr, "SUM(B1:C1)"),
             other => panic!("expected formula, got {other:?}"),
         }
         assert_eq!(
-            wb.get_cell_value("Types", "F1").unwrap(),
+            wb2.get_cell_value("Types", "F1").unwrap(),
             CellValue::Error("#N/A".to_string())
         );
-        assert_eq!(wb.get_cell_value("Types", "G1").unwrap(), CellValue::Empty);
+        assert_eq!(wb2.get_cell_value("Types", "G1").unwrap(), CellValue::Empty);
     }
 
     #[test]

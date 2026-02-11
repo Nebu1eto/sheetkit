@@ -10,8 +10,21 @@ export declare class JsStreamWriter {
   setColWidthRange(minCol: number, maxCol: number, width: number): void
   /** Write a row of values. Rows must be written in ascending order. */
   writeRow(row: number, values: Array<string | number | boolean | null>): void
+  /** Write a row with a specific style ID applied to all cells. */
+  writeRowWithStyle(row: number, values: Array<string | number | boolean | null>, styleId: number): void
   /** Add a merge cell reference (e.g., "A1:C3"). */
   addMergeCell(reference: string): void
+  /** Set column style for a single column (1-based). */
+  setColStyle(col: number, styleId: number): void
+  /** Set column visibility (1-based). */
+  setColVisible(col: number, visible: boolean): void
+  /** Set column outline level (1-based, level 0-7). */
+  setColOutlineLevel(col: number, level: number): void
+  /**
+   * Set freeze panes. The top_left_cell is the cell below and to the right
+   * of the frozen area (e.g., "A2" freezes row 1).
+   */
+  setFreezePanes(topLeftCell: string): void
 }
 
 /** Excel workbook for reading and writing .xlsx files. */

@@ -166,11 +166,18 @@ Each pivot table gets its own dedicated cache. The cache definition specifies th
 
 ### StreamWriter
 
-The StreamWriter provides a forward-only API for generating large .xlsx files. Instead of building the full worksheet XML in memory, it writes XML elements directly to the output as rows are added. Constraints:
+The StreamWriter provides a forward-only API for generating large .xlsx files with constant memory usage regardless of the number of rows. Each `write_row()` call serializes the row as XML and appends it to a temporary file on disk. When the stream is applied to the workbook, a `StreamedSheetData` handle (containing the temp file reference and pre-built XML fragments for `<sheetViews>`, `<cols>`, `<mergeCells>`) is stored in the workbook. During save, the worksheet XML is composed by writing the header, streaming row data from the temp file directly into the ZIP entry, and appending the footer -- the full sheet XML never exists in memory at once.
+
+Key design decisions:
+
+- **Inline strings (`t="inlineStr"`)** are used instead of the shared string table (SST). This eliminates SST index remapping and allows each row to be serialized independently.
+- **Temp file buffering**: `BufWriter<NamedTempFile>` gives OS-level write buffering with automatic cleanup.
+- **Cell values cannot be read from streamed sheets before save.** The workbook stores an empty placeholder `WorksheetXml` for sheet management; the actual data is only in the temp file. Save and reopen to read cells.
+
+Constraints:
 
 - Rows must be written in ascending order (no random access).
-- The sheet XML is finalized when `flush()` is called.
-- SST entries from the stream are merged into the workbook SST on flush.
+- Column widths, styles, visibility, outline levels, and freeze panes must be set before writing any rows.
 - Supports freeze panes, row options (height, visibility, outline), and column-level style/visibility/outline.
 
 ### napi Bindings Design
