@@ -163,9 +163,8 @@ impl Workbook {
     }
 
     /// Save the workbook as an encrypted .xlsx file asynchronously.
-    /// Note: the workbook is first serialized to an in-memory buffer, then
-    /// encrypted and written to disk. This increases peak memory usage compared
-    /// to `saveWithPasswordSync`. Avoid for very large workbooks.
+    /// Both sync and async encrypted saves buffer the ZIP data in memory
+    /// before encrypting, so peak memory is similar to `saveWithPasswordSync`.
     #[napi]
     pub async fn save_with_password(&self, path: String, password: String) -> Result<()> {
         let buf = self

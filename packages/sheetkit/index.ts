@@ -240,7 +240,7 @@ class Workbook {
     this.#native.saveSync(path);
   }
 
-  /** Save the workbook to a .xlsx file asynchronously. */
+  /** Save the workbook to a .xlsx file asynchronously. Serializes to an in-memory buffer before writing; use saveSync for lower peak memory on large workbooks. */
   async save(path: string): Promise<void> {
     await this.#native.save(path);
   }
@@ -260,7 +260,7 @@ class Workbook {
     this.#native.saveWithPasswordSync(path, password);
   }
 
-  /** Save the workbook as an encrypted .xlsx file asynchronously. */
+  /** Save the workbook as an encrypted .xlsx file asynchronously. Both sync and async encrypted saves buffer in memory before encrypting, so peak memory is similar. */
   async saveWithPassword(path: string, password: string): Promise<void> {
     await this.#native.saveWithPassword(path, password);
   }
