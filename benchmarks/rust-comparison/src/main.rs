@@ -160,6 +160,9 @@ struct BenchResult {
     times_ms: Vec<f64>,
     memory_deltas_mb: Vec<f64>,
     file_size_kb: Option<f64>,
+    /// Number of cells actually read/parsed during the benchmark.
+    /// Used for read scenarios to verify libraries do equivalent work.
+    cells_read: Option<u64>,
 }
 
 impl BenchResult {
@@ -198,6 +201,20 @@ fn bench<F>(
     library: &str,
     category: &str,
     output_path: Option<&Path>,
+    make_fn: F,
+) -> BenchResult
+where
+    F: Fn() -> Box<dyn FnOnce()>,
+{
+    bench_with_cell_count(scenario, library, category, output_path, None, make_fn)
+}
+
+fn bench_with_cell_count<F>(
+    scenario: &str,
+    library: &str,
+    category: &str,
+    output_path: Option<&Path>,
+    cells_read: Option<u64>,
     make_fn: F,
 ) -> BenchResult
 where
@@ -244,14 +261,19 @@ where
         times_ms: times,
         memory_deltas_mb: mem_deltas,
         file_size_kb: last_size,
+        cells_read,
     };
 
     let size_str = match result.file_size_kb {
         Some(kb) => format!(" | {:.1}MB", kb / 1024.0),
         None => String::new(),
     };
+    let cells_str = match result.cells_read {
+        Some(n) => format!(" cells={n}"),
+        None => String::new(),
+    };
     println!(
-        "  [{:<14}] {:<40} med={:>8} min={:>8} max={:>8} p95={:>8} mem={:.1}MB{size_str}",
+        "  [{:<14}] {:<40} med={:>8} min={:>8} max={:>8} p95={:>8} mem={:.1}MB{size_str}{cells_str}",
         library,
         scenario,
         format_ms(result.median()),
@@ -268,6 +290,59 @@ fn cleanup(path: &Path) {
     let _ = fs::remove_file(path);
 }
 
+/// Count cells read by SheetKit for a given file (one-time probe).
+fn count_cells_sheetkit(filepath: &Path) -> u64 {
+    let wb = Workbook::open(filepath).unwrap();
+    let mut count: u64 = 0;
+    for name in wb.sheet_names() {
+        for (_row_num, cells) in wb.get_rows(name).unwrap() {
+            count += cells.len() as u64;
+        }
+    }
+    count
+}
+
+/// Count cells read by calamine for a given file (one-time probe).
+fn count_cells_calamine(filepath: &Path) -> u64 {
+    use calamine::{open_workbook, Reader, Xlsx};
+    let mut wb: Xlsx<_> = open_workbook(filepath).unwrap();
+    let names: Vec<String> = wb.sheet_names().to_vec();
+    let mut count: u64 = 0;
+    for name in &names {
+        if let Ok(range) = wb.worksheet_range(name) {
+            for row in range.rows() {
+                count += row.len() as u64;
+            }
+        }
+    }
+    count
+}
+
+/// Count cells read by edit-xlsx for a given file (one-time probe).
+/// Returns None if the file cannot be opened.
+fn count_cells_edit_xlsx(filepath: &Path) -> Option<u64> {
+    use edit_xlsx::{Read as _, Workbook as EditWorkbook};
+    let wb = EditWorkbook::from_path(filepath).ok()?;
+    let mut count: u64 = 0;
+    for id in 1..=100u32 {
+        match wb.get_worksheet(id) {
+            Ok(ws) => {
+                let max_row = ws.max_row();
+                let max_col = ws.max_column();
+                for r in 1..=max_row {
+                    for c in 1..=max_col {
+                        if ws.read_cell((r, c)).is_ok() {
+                            count += 1;
+                        }
+                    }
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    Some(count)
+}
+
 fn bench_read_file(results: &mut Vec<BenchResult>, filename: &str, label: &str, category: &str) {
     let filepath = fixtures_dir().join(filename);
     if !filepath.exists() {
@@ -278,13 +353,19 @@ fn bench_read_file(results: &mut Vec<BenchResult>, filename: &str, label: &str, 
 
     println!("\n--- Read: {label} ---");
 
+    // Pre-count cells for each library to verify equivalent work
+    let sk_cells = count_cells_sheetkit(&filepath);
+    let cal_cells = count_cells_calamine(&filepath);
+    let edit_cells = count_cells_edit_xlsx(&filepath);
+
     // SheetKit
     let fp = filepath.clone();
-    results.push(bench(
+    results.push(bench_with_cell_count(
         &format!("Read {label}"),
         "SheetKit",
         category,
         None,
+        Some(sk_cells),
         move || {
             let fp = fp.clone();
             Box::new(move || {
@@ -298,11 +379,12 @@ fn bench_read_file(results: &mut Vec<BenchResult>, filename: &str, label: &str, 
 
     // calamine
     let fp = filepath.clone();
-    results.push(bench(
+    results.push(bench_with_cell_count(
         &format!("Read {label}"),
         "calamine",
         category,
         None,
+        Some(cal_cells),
         move || {
             let fp = fp.clone();
             Box::new(move || {
@@ -322,16 +404,13 @@ fn bench_read_file(results: &mut Vec<BenchResult>, filename: &str, label: &str, 
 
     // edit-xlsx (read support) -- may fail on files not created by edit-xlsx
     let fp = filepath.clone();
-    let can_open = {
-        use edit_xlsx::Workbook as EditWorkbook;
-        EditWorkbook::from_path(&fp).is_ok()
-    };
-    if can_open {
-        results.push(bench(
+    if let Some(cells) = edit_cells {
+        results.push(bench_with_cell_count(
             &format!("Read {label}"),
             "edit-xlsx",
             category,
             None,
+            Some(cells),
             move || {
                 let fp = fp.clone();
                 Box::new(move || {
@@ -1290,15 +1369,17 @@ fn bench_random_access_read(results: &mut Vec<BenchResult>) {
         cells_rc.push((r, c));
     }
     let cells_str: Vec<String> = cells_rc.iter().map(|(r, c)| cell_ref(*r, *c)).collect();
+    let cell_count = lookups as u64;
 
     // SheetKit
     let fp = filepath.clone();
     let cells = cells_str.clone();
-    results.push(bench(
+    results.push(bench_with_cell_count(
         &label,
         "SheetKit",
         "Random Access",
         None,
+        Some(cell_count),
         move || {
             let fp = fp.clone();
             let cells = cells.clone();
@@ -1314,11 +1395,12 @@ fn bench_random_access_read(results: &mut Vec<BenchResult>) {
     // calamine
     let fp = filepath.clone();
     let cells_rc2 = cells_rc.clone();
-    results.push(bench(
+    results.push(bench_with_cell_count(
         &label,
         "calamine",
         "Random Access",
         None,
+        Some(cell_count),
         move || {
             let fp = fp.clone();
             let cells_rc2 = cells_rc2.clone();
@@ -1620,11 +1702,20 @@ fn generate_markdown_report(results: &[BenchResult]) -> String {
     // Detailed stats
     lines.push("## Detailed Statistics".to_string());
     lines.push(String::new());
-    lines.push("| Scenario | Library | Median | Min | Max | P95 | Peak Mem (MB) |".to_string());
-    lines.push("|----------|---------|--------|-----|-----|-----|---------------|".to_string());
+    lines.push(
+        "| Scenario | Library | Median | Min | Max | P95 | Peak Mem (MB) | Cells Read |"
+            .to_string(),
+    );
+    lines.push(
+        "|----------|---------|--------|-----|-----|-----|---------------|------------|".to_string(),
+    );
     for r in results {
+        let cells_str = match r.cells_read {
+            Some(n) => n.to_string(),
+            None => "N/A".to_string(),
+        };
         lines.push(format!(
-            "| {} | {} | {} | {} | {} | {} | {:.1} |",
+            "| {} | {} | {} | {} | {} | {} | {:.1} | {} |",
             r.scenario,
             r.library,
             format_ms(r.median()),
@@ -1632,6 +1723,7 @@ fn generate_markdown_report(results: &[BenchResult]) -> String {
             format_ms(r.max()),
             format_ms(r.p95()),
             r.peak_mem_mb(),
+            cells_str,
         ));
     }
     lines.push(String::new());
