@@ -1707,7 +1707,8 @@ fn generate_markdown_report(results: &[BenchResult]) -> String {
             .to_string(),
     );
     lines.push(
-        "|----------|---------|--------|-----|-----|-----|---------------|------------|".to_string(),
+        "|----------|---------|--------|-----|-----|-----|---------------|------------|"
+            .to_string(),
     );
     for r in results {
         let cells_str = match r.cells_read {
