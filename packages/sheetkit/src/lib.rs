@@ -59,7 +59,14 @@ impl Workbook {
     /// Open an existing .xlsx file from disk asynchronously.
     #[napi(factory)]
     pub async fn open(path: String, options: Option<JsOpenOptions>) -> Result<Self> {
-        Self::open_sync(path, options)
+        let opts = js_open_options_to_core(options.as_ref());
+        let inner = tokio::task::spawn_blocking(move || {
+            sheetkit_core::workbook::Workbook::open_with_options(&path, &opts)
+                .map_err(|e| Error::from_reason(e.to_string()))
+        })
+        .await
+        .unwrap_or_else(|e| Err(Error::from_reason(e.to_string())))?;
+        Ok(Self { inner })
     }
 
     /// Save the workbook to a .xlsx file.
@@ -71,9 +78,20 @@ impl Workbook {
     }
 
     /// Save the workbook to a .xlsx file asynchronously.
+    /// Note: the workbook is first serialized to an in-memory buffer, then
+    /// written to disk. This increases peak memory usage compared to `saveSync`,
+    /// which streams directly to disk. Avoid for very large workbooks.
     #[napi]
     pub async fn save(&self, path: String) -> Result<()> {
-        self.save_sync(path)
+        let buf = self
+            .inner
+            .save_to_buffer()
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        tokio::task::spawn_blocking(move || {
+            std::fs::write(&path, &buf).map_err(|e| Error::from_reason(e.to_string()))
+        })
+        .await
+        .unwrap_or_else(|e| Err(Error::from_reason(e.to_string())))
     }
 
     /// Open a workbook from an in-memory Buffer.
@@ -88,7 +106,15 @@ impl Workbook {
     /// Open a workbook from an in-memory Buffer asynchronously.
     #[napi(factory)]
     pub async fn open_buffer(data: Buffer, options: Option<JsOpenOptions>) -> Result<Self> {
-        Self::open_buffer_sync(data, options)
+        let opts = js_open_options_to_core(options.as_ref());
+        let buf: Vec<u8> = data.to_vec();
+        let inner = tokio::task::spawn_blocking(move || {
+            sheetkit_core::workbook::Workbook::open_from_buffer_with_options(&buf, &opts)
+                .map_err(|e| Error::from_reason(e.to_string()))
+        })
+        .await
+        .unwrap_or_else(|e| Err(Error::from_reason(e.to_string())))?;
+        Ok(Self { inner })
     }
 
     /// Open an encrypted .xlsx file using a password.
@@ -102,7 +128,13 @@ impl Workbook {
     /// Open an encrypted .xlsx file using a password asynchronously.
     #[napi(factory)]
     pub async fn open_with_password(path: String, password: String) -> Result<Self> {
-        Self::open_with_password_sync(path, password)
+        let inner = tokio::task::spawn_blocking(move || {
+            sheetkit_core::workbook::Workbook::open_with_password(&path, &password)
+                .map_err(|e| Error::from_reason(e.to_string()))
+        })
+        .await
+        .unwrap_or_else(|e| Err(Error::from_reason(e.to_string())))?;
+        Ok(Self { inner })
     }
 
     /// Serialize the workbook to an in-memory Buffer.
@@ -116,6 +148,7 @@ impl Workbook {
     }
 
     /// Serialize the workbook to an in-memory Buffer asynchronously.
+    /// Delegates to `writeBufferSync` internally.
     #[napi]
     pub async fn write_buffer(&self) -> Result<Buffer> {
         self.write_buffer_sync()
@@ -130,9 +163,21 @@ impl Workbook {
     }
 
     /// Save the workbook as an encrypted .xlsx file asynchronously.
+    /// Both sync and async encrypted saves buffer the ZIP data in memory
+    /// before encrypting, so peak memory is similar to `saveWithPasswordSync`.
     #[napi]
     pub async fn save_with_password(&self, path: String, password: String) -> Result<()> {
-        self.save_with_password_sync(path, password)
+        let buf = self
+            .inner
+            .save_to_buffer()
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        tokio::task::spawn_blocking(move || {
+            let cfb_data = sheetkit_core::crypt::encrypt_xlsx(&buf, &password)
+                .map_err(|e| Error::from_reason(e.to_string()))?;
+            std::fs::write(&path, &cfb_data).map_err(|e| Error::from_reason(e.to_string()))
+        })
+        .await
+        .unwrap_or_else(|e| Err(Error::from_reason(e.to_string())))
     }
 
     /// Get the names of all sheets in workbook order.

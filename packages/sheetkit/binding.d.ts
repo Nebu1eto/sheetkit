@@ -37,7 +37,12 @@ export declare class Workbook {
   static open(path: string, options?: JsOpenOptions | undefined | null): Promise<Workbook>
   /** Save the workbook to a .xlsx file. */
   saveSync(path: string): void
-  /** Save the workbook to a .xlsx file asynchronously. */
+  /**
+   * Save the workbook to a .xlsx file asynchronously.
+   * Note: the workbook is first serialized to an in-memory buffer, then
+   * written to disk. This increases peak memory usage compared to `saveSync`,
+   * which streams directly to disk. Avoid for very large workbooks.
+   */
   save(path: string): Promise<void>
   /** Open a workbook from an in-memory Buffer. */
   static openBufferSync(data: Buffer, options?: JsOpenOptions | undefined | null): Workbook
@@ -49,11 +54,18 @@ export declare class Workbook {
   static openWithPassword(path: string, password: string): Promise<Workbook>
   /** Serialize the workbook to an in-memory Buffer. */
   writeBufferSync(): Buffer
-  /** Serialize the workbook to an in-memory Buffer asynchronously. */
+  /**
+   * Serialize the workbook to an in-memory Buffer asynchronously.
+   * Delegates to `writeBufferSync` internally.
+   */
   writeBuffer(): Promise<Buffer>
   /** Save the workbook as an encrypted .xlsx file. */
   saveWithPasswordSync(path: string, password: string): void
-  /** Save the workbook as an encrypted .xlsx file asynchronously. */
+  /**
+   * Save the workbook as an encrypted .xlsx file asynchronously.
+   * Both sync and async encrypted saves buffer the ZIP data in memory
+   * before encrypting, so peak memory is similar to `saveWithPasswordSync`.
+   */
   saveWithPassword(path: string, password: string): Promise<void>
   /** Get the names of all sheets in workbook order. */
   get sheetNames(): Array<string>
