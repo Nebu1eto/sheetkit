@@ -356,8 +356,11 @@ await wb.save("chart.xlsx");
 
 ## StreamWriter for Large Files
 
-The `StreamWriter` writes rows sequentially to an internal buffer without building the entire worksheet in memory. Rows must be written in ascending order.
-Use this pattern for batch exports, ETL jobs, and other pipelines that produce row data incrementally. Set headers and column widths first, then append data rows in order, and finally apply the stream output to the workbook.
+The `StreamWriter` writes rows directly to a temporary file on disk, keeping memory usage constant regardless of the number of rows. Each `write_row()` call serializes the row as XML and appends it to the temp file. When saved, the row data is streamed from the temp file directly into the ZIP archive.
+
+Rows must be written in ascending order, and column widths must be set before writing any rows. After `apply_stream_writer`, cell values in the streamed sheet cannot be read directly -- save the workbook and reopen it to read the data.
+
+Use this pattern for batch exports, ETL jobs, and other pipelines that produce row data incrementally.
 
 **Rust**
 

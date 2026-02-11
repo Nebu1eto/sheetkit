@@ -1096,6 +1096,124 @@ describe('Phase 9 - StreamWriter', () => {
     expect(wb2.getCellValue('Data', 'A1')).toBe('Name');
     expect(wb2.getCellValue('Data', 'B2')).toBe(100);
   });
+
+  it('should roundtrip freeze panes', async () => {
+    const wb = new Workbook();
+    const sw = wb.newStreamWriter('Frozen');
+    sw.setFreezePanes('A2');
+    sw.writeRow(1, ['Header1', 'Header2']);
+    sw.writeRow(2, ['Data1', 'Data2']);
+    wb.applyStreamWriter(sw);
+    await wb.save(out);
+
+    const wb2 = await Workbook.open(out);
+    expect(wb2.sheetNames).toContain('Frozen');
+    expect(wb2.getCellValue('Frozen', 'A1')).toBe('Header1');
+    expect(wb2.getCellValue('Frozen', 'A2')).toBe('Data1');
+  });
+
+  it('should roundtrip merge cells', async () => {
+    const wb = new Workbook();
+    const sw = wb.newStreamWriter('Merged');
+    sw.writeRow(1, ['Title', null, null]);
+    sw.addMergeCell('A1:C1');
+    wb.applyStreamWriter(sw);
+    await wb.save(out);
+
+    const wb2 = await Workbook.open(out);
+    expect(wb2.sheetNames).toContain('Merged');
+    expect(wb2.getCellValue('Merged', 'A1')).toBe('Title');
+  });
+
+  it('should roundtrip column widths', async () => {
+    const wb = new Workbook();
+    const sw = wb.newStreamWriter('Cols');
+    sw.setColWidth(1, 25);
+    sw.setColWidthRange(2, 3, 15);
+    sw.writeRow(1, ['Wide', 'Medium', 'Medium']);
+    wb.applyStreamWriter(sw);
+    await wb.save(out);
+
+    const wb2 = await Workbook.open(out);
+    expect(wb2.sheetNames).toContain('Cols');
+    expect(wb2.getCellValue('Cols', 'A1')).toBe('Wide');
+  });
+
+  it('should support writeRowWithStyle', async () => {
+    const wb = new Workbook();
+    const sw = wb.newStreamWriter('Styled');
+    sw.writeRowWithStyle(1, ['Bold text'], 1);
+    sw.writeRow(2, ['Normal text']);
+    wb.applyStreamWriter(sw);
+    await wb.save(out);
+
+    const wb2 = await Workbook.open(out);
+    expect(wb2.getCellValue('Styled', 'A1')).toBe('Bold text');
+    expect(wb2.getCellValue('Styled', 'A2')).toBe('Normal text');
+  });
+
+  it('should set column style', () => {
+    const wb = new Workbook();
+    const sw = wb.newStreamWriter('ColStyle');
+    sw.setColStyle(1, 2);
+    sw.writeRow(1, ['data']);
+    wb.applyStreamWriter(sw);
+    expect(wb.sheetNames).toContain('ColStyle');
+  });
+
+  it('should set column visibility', () => {
+    const wb = new Workbook();
+    const sw = wb.newStreamWriter('ColVis');
+    sw.setColVisible(2, false);
+    sw.writeRow(1, ['a', 'hidden', 'c']);
+    wb.applyStreamWriter(sw);
+    expect(wb.sheetNames).toContain('ColVis');
+  });
+
+  it('should set column outline level', () => {
+    const wb = new Workbook();
+    const sw = wb.newStreamWriter('ColOutline');
+    sw.setColOutlineLevel(1, 2);
+    sw.writeRow(1, ['grouped']);
+    wb.applyStreamWriter(sw);
+    expect(wb.sheetNames).toContain('ColOutline');
+  });
+
+  it('should support multiple streamed sheets', async () => {
+    const wb = new Workbook();
+    const sw1 = wb.newStreamWriter('StreamA');
+    sw1.writeRow(1, ['A1']);
+    wb.applyStreamWriter(sw1);
+
+    const sw2 = wb.newStreamWriter('StreamB');
+    sw2.writeRow(1, ['B1']);
+    wb.applyStreamWriter(sw2);
+
+    await wb.save(out);
+
+    const wb2 = await Workbook.open(out);
+    expect(wb2.sheetNames).toContain('StreamA');
+    expect(wb2.sheetNames).toContain('StreamB');
+    expect(wb2.getCellValue('StreamA', 'A1')).toBe('A1');
+    expect(wb2.getCellValue('StreamB', 'A1')).toBe('B1');
+  });
+
+  it('should support combined features', async () => {
+    const wb = new Workbook();
+    const sw = wb.newStreamWriter('Combined');
+    sw.setFreezePanes('B2');
+    sw.setColWidth(1, 30);
+    sw.setColStyle(2, 1);
+    sw.writeRow(1, ['Header1', 'Header2']);
+    sw.writeRow(2, ['Data1', 'Data2']);
+    sw.addMergeCell('A1:B1');
+    wb.applyStreamWriter(sw);
+    await wb.save(out);
+
+    const wb2 = await Workbook.open(out);
+    expect(wb2.sheetNames).toContain('Combined');
+    expect(wb2.getCellValue('Combined', 'A1')).toBe('Header1');
+  });
 });
 
 describe('Phase 10 - Document Properties', () => {

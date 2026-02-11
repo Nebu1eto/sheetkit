@@ -186,6 +186,10 @@ pub struct Workbook {
     /// O(1) sheet name -> index lookup cache. Must be kept in sync with
     /// `worksheets` via [`rebuild_sheet_index`].
     sheet_name_index: HashMap<String, usize>,
+    /// Streamed sheet data keyed by sheet index. During save, these sheets
+    /// are written by streaming from their temp files instead of serializing
+    /// the (empty placeholder) WorksheetXml.
+    streamed_sheets: HashMap<usize, crate::stream::StreamedSheetData>,
 }
 
 impl Workbook {
@@ -210,9 +214,21 @@ impl Workbook {
             })
     }
 
+    /// Invalidate streamed data for a sheet by index. Must be called before
+    /// any mutation to a sheet that may have been created via StreamWriter,
+    /// so that the normal WorksheetXml serialization path is used on save.
+    pub(crate) fn invalidate_streamed(&mut self, idx: usize) {
+        self.streamed_sheets.remove(&idx);
+    }
+
     /// Get a mutable reference to the worksheet XML for the named sheet.
+    ///
+    /// If the sheet has streamed data (from [`apply_stream_writer`]), the
+    /// streamed entry is removed so that subsequent edits are not silently
+    /// ignored on save.
     pub(crate) fn worksheet_mut(&mut self, sheet: &str) -> Result<&mut WorksheetXml> {
         let idx = self.sheet_index(sheet)?;
+        self.invalidate_streamed(idx);
         Ok(&mut self.worksheets[idx].1)
     }
 

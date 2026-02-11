@@ -978,7 +978,9 @@ wb.deletePivotTable("SalesPivot");
 
 ## 24. StreamWriter
 
-The `StreamWriter` provides a forward-only streaming API for writing large sheets without holding the entire worksheet in memory. Rows must be written in ascending order.
+The `StreamWriter` provides a forward-only streaming API for writing large sheets with constant memory usage. Each `write_row()` call writes directly to a temporary file on disk. During save, the row data is streamed from the temp file into the ZIP archive without loading the full sheet into memory.
+
+Rows must be written in ascending order. Streamed sheets use inline strings instead of the shared string table. Cell values in streamed sheets cannot be read directly after `apply_stream_writer` -- save and reopen the workbook to read the data.
 
 ### Basic Workflow
 
@@ -1069,15 +1071,29 @@ sw.add_merge_cell("A1:C1")?;
 sw.addMergeCell("A1:C1");
 ```
 
-#### Rust-Only StreamWriter Methods
+#### Additional StreamWriter Methods
 
-The following methods are available only in the Rust API:
+##### `set_freeze_panes(cell)` / `setFreezePanes(cell)`
 
-- `set_freeze_panes(cell)` -- Set freeze panes for the streamed sheet (must be called before writing rows)
-- `set_col_visible(col, visible)` -- Set column visibility
-- `set_col_outline_level(col, level)` -- Set column outline level (0-7)
-- `set_col_style(col, style_id)` -- Set column style
-- `write_row_with_options(row, values, options)` -- Write a row with custom options (height, visibility, outline level, style)
+Set freeze panes for the streamed sheet. Must be called before writing any rows.
+
+##### `set_col_style(col, style_id)` / `setColStyle(col, styleId)`
+
+Set column style. Must be called before writing any rows.
+
+##### `set_col_visible(col, visible)` / `setColVisible(col, visible)`
+
+Set column visibility. Must be called before writing any rows.
+
+##### `set_col_outline_level(col, level)` / `setColOutlineLevel(col, level)`
+
+Set column outline level (0-7). Must be called before writing any rows.
+
+##### `write_row_with_style(row, values, style_id)` / `writeRowWithStyle(row, values, styleId)`
+
+Write a row with a specific style ID applied to all cells.
+
+**Rust:**
 
 ```rust
 use sheetkit::stream::StreamRowOptions;
@@ -1086,12 +1102,24 @@ sw.set_freeze_panes("A2")?; // freeze row 1
 sw.set_col_visible(3, false)?; // hide column C
 sw.set_col_style(1, style_id)?;
 
-sw.write_row_with_options(1, &values, &StreamRowOptions {
+sw.write_row_with_style(1, &values, style_id)?;
+
+// For more control, use write_row_with_options (Rust only):
+sw.write_row_with_options(2, &values, &StreamRowOptions {
     height: Some(25.0),
     visible: Some(true),
     outline_level: Some(1),
     style_id: Some(style_id),
 })?;
+```
+
+**TypeScript:**
+
+```typescript
+sw.setFreezePanes("A2"); // freeze row 1
+sw.setColVisible(3, false); // hide column C
+sw.setColStyle(1, styleId);
+sw.writeRowWithStyle(1, ["Name", "Score"], styleId);
 ```
 
 > Important: Column widths, visibility, styles, outline levels, and freeze panes must ALL be set before the first `write_row` call. Setting them after writing any rows returns an error.

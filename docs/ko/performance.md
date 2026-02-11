@@ -141,7 +141,7 @@ const wb = await Workbook.open("huge.xlsx", {
 
 ### 쓰기 위주 워크로드
 
-순차적 행 쓰기에는 `StreamWriter`를 사용합니다:
+순차적 행 쓰기에는 `StreamWriter`를 사용합니다. 각 `write_row()` 호출은 디스크의 임시 파일에 직접 기록하므로, 행 수에 관계없이 메모리 사용량이 일정하게 유지됩니다:
 
 ```typescript
 const wb = new Workbook();
@@ -170,6 +170,8 @@ const sw = wb.newStreamWriter("ProcessedData");
 // ... 데이터 처리 ...
 wb.applyStreamWriter(sw);
 ```
+
+> **참고:** 스트리밍된 시트의 셀 값은 `applyStreamWriter` 이후 직접 읽을 수 없습니다. 데이터를 읽으려면 워크북을 저장한 후 다시 열어야 합니다.
 
 ## 다음 단계
 
