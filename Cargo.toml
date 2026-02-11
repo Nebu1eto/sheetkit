@@ -7,6 +7,7 @@ members = [
     "packages/sheetkit",
     "examples/rust",
     "benchmarks/rust",
+    "benchmarks/rust-comparison",
 ]
 
 [workspace.package]

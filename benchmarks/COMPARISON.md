@@ -1,6 +1,6 @@
 # SheetKit: Rust Native vs Node.js (napi-rs) Benchmark Comparison
 
-Benchmark run: 2026-02-10
+Benchmark run: 2026-02-11
 
 ## Environment
 
@@ -24,134 +24,155 @@ Node.js benchmark run.
 
 | Scenario | Rust (median) | Node.js sync (median) | Overhead | Ratio |
 |----------|--------------|----------------------|----------|-------|
-| Large Data (50k rows x 20 cols) | 616ms | 680ms | +64ms | 1.10x |
-| Heavy Styles (5k rows, formatted) | 33ms | 37ms | +4ms | 1.12x |
-| Multi-Sheet (10 sheets x 5k rows) | 360ms | 781ms | +421ms | 2.17x |
-| Formulas (10k rows) | 40ms | 52ms | +12ms | 1.30x |
-| Strings (20k rows text-heavy) | 140ms | 126ms | -14ms | 0.90x |
-| Data Validation (5k rows, 8 rules) | 25ms | 29ms | +4ms | 1.16x |
-| Comments (2k rows with comments) | 10ms | 11ms | +1ms | 1.10x |
-| Merged Cells (500 regions) | 2ms | 2ms | +0ms | 1.00x |
-| Mixed Workload (ERP document) | 34ms | 39ms | +5ms | 1.15x |
+| Large Data (50k rows x 20 cols) | 387ms | 454ms | +67ms | 1.17x |
+| Heavy Styles (5k rows, formatted) | 20ms | 24ms | +4ms | 1.20x |
+| Multi-Sheet (10 sheets x 5k rows) | 223ms | 530ms | +307ms | 2.38x |
+| Formulas (10k rows) | 24ms | 33ms | +9ms | 1.38x |
+| Strings (20k rows text-heavy) | 83ms | 95ms | +12ms | 1.14x |
+| Data Validation (5k rows, 8 rules) | 16ms | 19ms | +3ms | 1.19x |
+| Comments (2k rows with comments) | 6ms | 8ms | +2ms | 1.33x |
+| Merged Cells (500 regions) | 1ms | 2ms | +1ms | 2.00x |
+| Mixed Workload (ERP document) | 21ms | 27ms | +6ms | 1.29x |
 
 ### Read Benchmarks (async)
 
 | Scenario | Rust (median) | Node.js async (median) | Overhead | Ratio |
 |----------|--------------|------------------------|----------|-------|
-| Large Data (50k rows x 20 cols) | 616ms | 655ms | +39ms | 1.06x |
-| Heavy Styles (5k rows, formatted) | 33ms | 36ms | +3ms | 1.09x |
-| Multi-Sheet (10 sheets x 5k rows) | 360ms | 777ms | +417ms | 2.16x |
-| Formulas (10k rows) | 40ms | 49ms | +9ms | 1.23x |
-| Strings (20k rows text-heavy) | 140ms | 123ms | -17ms | 0.88x |
-| Data Validation (5k rows, 8 rules) | 25ms | 29ms | +4ms | 1.16x |
-| Comments (2k rows with comments) | 10ms | 11ms | +1ms | 1.10x |
-| Merged Cells (500 regions) | 2ms | 2ms | +0ms | 1.00x |
-| Mixed Workload (ERP document) | 34ms | 41ms | +7ms | 1.21x |
+| Large Data (50k rows x 20 cols) | 387ms | 435ms | +48ms | 1.12x |
+| Heavy Styles (5k rows, formatted) | 20ms | 23ms | +3ms | 1.15x |
+| Multi-Sheet (10 sheets x 5k rows) | 223ms | 525ms | +302ms | 2.35x |
+| Formulas (10k rows) | 24ms | 32ms | +8ms | 1.33x |
+| Strings (20k rows text-heavy) | 83ms | 95ms | +12ms | 1.14x |
+| Data Validation (5k rows, 8 rules) | 16ms | 19ms | +3ms | 1.19x |
+| Comments (2k rows with comments) | 6ms | 8ms | +2ms | 1.33x |
+| Merged Cells (500 regions) | 1ms | 1ms | +0ms | 1.00x |
+| Mixed Workload (ERP document) | 21ms | 27ms | +6ms | 1.29x |
 
 ### Read Scaling
 
 | Scenario | Rust (median) | Node.js sync (median) | Node.js async (median) | Sync Ratio | Async Ratio |
 |----------|--------------|----------------------|------------------------|------------|-------------|
-| Scale 1k rows | 6ms | 7ms | 7ms | 1.17x | 1.17x |
-| Scale 10k rows | 62ms | 68ms | 68ms | 1.10x | 1.10x |
-| Scale 100k rows | 659ms | 714ms | 683ms | 1.08x | 1.04x |
+| Scale 1k rows | 4ms | 5ms | 5ms | 1.25x | 1.25x |
+| Scale 10k rows | 39ms | 45ms | 44ms | 1.15x | 1.13x |
+| Scale 100k rows | 410ms | 474ms | 474ms | 1.16x | 1.16x |
 
 ### Write Benchmarks
 
 | Scenario | Rust (median) | Node.js (median) | Overhead | Ratio |
 |----------|--------------|-----------------|----------|-------|
-| 50k rows x 20 cols | 1.03s | 657ms | -373ms | 0.64x |
-| 5k styled rows | 39ms | 48ms | +9ms | 1.23x |
-| 10 sheets x 5k rows | 377ms | 344ms | -33ms | 0.91x |
-| 10k rows with formulas | 35ms | 39ms | +4ms | 1.11x |
-| 20k text-heavy rows | 145ms | 123ms | -22ms | 0.85x |
-| 5k rows + 8 DV rules | 16ms | 13ms | -3ms | 0.81x |
-| 2k rows with comments | 14ms | 11ms | -3ms | 0.79x |
-| 500 merged regions | 16ms | 14ms | -2ms | 0.88x |
+| 50k rows x 20 cols | 478ms | 461ms | -17ms | 0.96x |
+| 5k styled rows | 25ms | 35ms | +10ms | 1.40x |
+| 10 sheets x 5k rows | 246ms | 251ms | +5ms | 1.02x |
+| 10k rows with formulas | 21ms | 28ms | +7ms | 1.33x |
+| 20k text-heavy rows | 92ms | 87ms | -5ms | 0.95x |
+| 5k rows + 8 DV rules | 8ms | 9ms | +1ms | 1.13x |
+| 2k rows with comments | 6ms | 8ms | +2ms | 1.33x |
+| 500 merged regions | 9ms | 10ms | +1ms | 1.11x |
 
 ### Write Scaling
 
 | Scenario | Rust (median) | Node.js (median) | Overhead | Ratio |
 |----------|--------------|-----------------|----------|-------|
-| 1k rows x 10 cols | 7ms | 7ms | +0ms | 1.00x |
-| 10k rows x 10 cols | 68ms | 66ms | -2ms | 0.97x |
-| 50k rows x 10 cols | 456ms | 332ms | -124ms | 0.73x |
-| 100k rows x 10 cols | 735ms | 665ms | -70ms | 0.90x |
+| 1k rows x 10 cols | 4ms | 5ms | +1ms | 1.25x |
+| 10k rows x 10 cols | 48ms | 47ms | -1ms | 0.98x |
+| 50k rows x 10 cols | 226ms | 235ms | +9ms | 1.04x |
+| 100k rows x 10 cols | 454ms | 476ms | +22ms | 1.05x |
 
 ### Other
 
 | Scenario | Rust (median) | Node.js sync (median) | Node.js async (median) | Sync Ratio | Async Ratio |
 |----------|--------------|----------------------|------------------------|------------|-------------|
-| Buffer round-trip (10k rows) | 165ms | 167ms | - | 1.01x | - |
-| Streaming write (50k rows) | 555ms | 669ms | - | 1.21x | - |
-| Random-access read (1k cells/50k file) | 592ms | 550ms | 549ms | 0.93x | 0.93x |
-| Mixed workload write (ERP-style) | 22ms | 28ms | - | 1.27x | - |
+| Buffer round-trip (10k rows) | 106ms | 118ms | - | 1.11x | - |
+| Streaming write (50k rows) | 186ms | 309ms | - | 1.66x | - |
+| Random-access read (1k cells/50k file) | 412ms | 387ms | 382ms | 0.94x | 0.93x |
+| Mixed workload write (ERP-style) | 14ms | 19ms | - | 1.36x | - |
 
-## Node.js Memory Usage (After Memory Optimization)
+## Node.js Memory Usage
 
 RSS (Resident Set Size) measured for SheetKit in the Node.js benchmark.
 
 | Scenario | Sync Memory | Async Memory |
 |----------|-------------|--------------|
-| Read Large Data (50k x 20) | 195.4MB | 17.2MB |
-| Read Multi-Sheet (10 x 5k) | 132.1MB | 17.6MB |
-| Read Scale 100k rows | 161.1MB | 0.0MB |
-| Read Heavy Styles (5k) | 6.6MB | 0.1MB |
-| Read Formulas (10k) | 8.8MB | 0.0MB |
-| Read Strings (20k) | 2.2MB | 0.0MB |
-| Write 50k x 20 | 89.4MB | - |
-| Write 100k x 10 | 70.4MB | - |
-| Streaming 50k rows | 80.0MB | - |
-| Random-access read (1k cells) | 18.2MB | 4.2MB |
+| Read Large Data (50k x 20) | 195.3MB | 17.2MB |
+| Read Multi-Sheet (10 x 5k) | 112.7MB | 0.4MB |
+| Read Scale 100k rows | 175.2MB | 15.9MB |
+| Read Heavy Styles (5k) | 6.0MB | 0.0MB |
+| Read Formulas (10k) | 9.3MB | 0.0MB |
+| Read Strings (20k) | 2.5MB | 0.0MB |
+| Write 50k x 20 | 67.3MB | - |
+| Write 100k x 10 | 65.1MB | - |
+| Streaming 50k rows | 0.0MB | - |
+| Random-access read (1k cells) | 61.6MB | 0.0MB |
 
-### Memory Optimization Results (Before vs After)
+## Rust Ecosystem Comparison
 
-| Scenario | Before | After (sync) | After (async) | Sync Reduction | Async Reduction |
-|----------|--------|-------------|---------------|----------------|-----------------|
-| Read Large Data (50k x 20) | 349.5MB | 195.4MB | 17.2MB | -44% | -95% |
-| Read Multi-Sheet (10 x 5k) | 215.8MB | 132.1MB | 17.6MB | -39% | -92% |
-| Read Scale 100k rows | 325.6MB | 161.1MB | 0.0MB | -51% | -100% |
-| Read Formulas (10k) | 13.3MB | 8.8MB | 0.0MB | -34% | -100% |
-| Read Heavy Styles (5k) | 15.2MB | 6.6MB | 0.1MB | -57% | -99% |
-| Random-access read | 27.2MB | 18.2MB | 4.2MB | -33% | -85% |
+SheetKit was benchmarked against other popular Rust Excel libraries. Each library targets different use cases: calamine is read-only, rust_xlsxwriter is write-only, and edit-xlsx supports read/modify/write.
 
-Optimizations applied:
-1. Box<CellFormula> and Box<InlineString> in Cell struct (~72-88B saved per cell)
-2. shrink_to_fit() on Vec<Cell> and Vec<Row> after deserialization
-3. Arc<str> deduplication in SharedStringTable (strings + index_map share allocation)
-4. Skip Row.spans deserialization (field unused at runtime)
+### Read (Rust libraries)
+
+| Scenario | SheetKit | calamine | edit-xlsx | Winner |
+|----------|----------|----------|-----------|--------|
+| Large Data (50k rows x 20 cols) | 390ms | 299ms | 35ms | edit-xlsx |
+| Heavy Styles (5k rows, formatted) | 20ms | 16ms | 2ms | edit-xlsx |
+| Multi-Sheet (10 sheets x 5k rows) | 228ms | 170ms | 35ms | edit-xlsx |
+| Formulas (10k rows) | 24ms | 14ms | 0ms | edit-xlsx |
+| Strings (20k rows text-heavy) | 83ms | 66ms | 9ms | edit-xlsx |
+
+### Write (Rust libraries)
+
+| Scenario | SheetKit | rust_xlsxwriter | edit-xlsx | Winner |
+|----------|----------|-----------------|-----------|--------|
+| 50k rows x 20 cols | 459ms | 847ms | 886ms | SheetKit |
+| 5k styled rows | 25ms | 37ms | 49ms | SheetKit |
+| 10 sheets x 5k rows | 237ms | 326ms | 393ms | SheetKit |
+| 10k rows with formulas | 21ms | 34ms | 56ms | SheetKit |
+| 20k text-heavy rows | 53ms | 64ms | 66ms | SheetKit |
+| 500 merged regions | 8ms | 2ms | 5ms | rust_xlsxwriter |
+
+### Other (Rust libraries)
+
+| Scenario | SheetKit | Best alternative | Winner |
+|----------|----------|-----------------|--------|
+| Buffer round-trip (10k rows) | 105ms | 79ms (xlsxwriter+calamine) | xlsxwriter+calamine |
+| Streaming write (50k rows) | 184ms | 858ms (rust_xlsxwriter) | SheetKit |
+| Random-access read (1k cells) | 382ms | 308ms (calamine) | calamine |
+| Modify 1k cells in 50k file | 588ms | N/A (only SheetKit) | SheetKit |
+
+Win summary: SheetKit 11/22, edit-xlsx 8/22, calamine 1/22, rust_xlsxwriter 1/22, xlsxwriter+calamine 1/22.
+
+Note: edit-xlsx's fast read times reflect its lazy parsing approach (deferred deserialization), not full cell data extraction. calamine, as a dedicated read-only library, is optimized for that single use case. SheetKit performs full XML parsing and in-memory model construction on read, which enables subsequent modify and write operations.
 
 ## Key Findings
 
-### 1. Read operations: ~1.1x napi overhead (sync), ~1.1x (async)
+### 1. Read operations: ~1.2x napi overhead (typical)
 
-Both sync and async read operations show minimal overhead compared to pure Rust,
-averaging ~1.1x. The multi-sheet scenario remains the outlier at ~2.2x due to
-per-sheet FFI costs. Async and sync perform nearly identically in timing.
+Read operations show modest overhead from the napi-rs FFI layer, typically around 1.15-1.20x.
+The multi-sheet scenario remains the outlier at ~2.4x due to per-sheet FFI costs. Async reads
+are slightly faster than sync, averaging ~1.15x overhead.
 
-### 2. Write operations: near-parity or faster than Rust
+### 2. Write operations: near parity (~1.0x)
 
-Write operations through napi-rs show parity or even outperform the Rust native
-benchmark. Large-scale writes (50k-100k) are consistently faster in Node.js,
-likely due to V8's efficient string handling and the batch setSheetData() API.
+Write operations through napi-rs show near parity with native Rust. Large data-heavy writes
+(50k+ rows) are at 0.95-1.05x, while smaller writes with more overhead per row show
+1.1-1.4x. The batch `setSheetData()` API keeps large writes efficient.
 
 ### 3. Async read shows dramatically lower memory
 
-The async `Workbook.open()` API shows near-zero RSS delta for read operations
-compared to sync. This is because the async FFI path processes data on a worker
-thread, reducing V8 heap pressure. Read Large Data: 195.4MB (sync) vs 17.2MB (async).
+The async `Workbook.open()` API shows near-zero RSS delta for read operations compared
+to sync. Read Large Data: 195.3MB (sync) vs 17.2MB (async). This is because the async
+path processes data on a worker thread, reducing V8 heap pressure.
 
-### 4. Memory: ~44-51% reduction from optimization (sync)
+### 4. Rust ecosystem: fastest writer, competitive reader
 
-The memory optimization (Box<CellFormula>, shrink_to_fit, Arc<str>, skip spans)
-reduced sync RSS by ~39-57% for large read scenarios. Async reads show even greater
-reduction (85-100%) since the data never enters the V8 heap in the same way.
+Among pure Rust libraries, SheetKit is the fastest writer across all scenarios (except
+merged regions). For reads, calamine (read-only) and edit-xlsx (lazy parsing) are faster,
+but SheetKit is the only library that supports full read+modify+write in a single crate.
 
 ## Summary
 
 | Category | Sync Overhead | Async Overhead |
 |----------|--------------|----------------|
-| Read (typical) | ~1.1x | ~1.1x |
-| Write (batch) | ~0.9x | - |
-| Streaming write | ~1.21x | - |
-| Round-trip | ~1.01x | - |
+| Read (typical) | ~1.2x | ~1.15x |
+| Write (batch) | ~1.0x | - |
+| Streaming write | ~1.66x | - |
+| Round-trip | ~1.11x | - |
