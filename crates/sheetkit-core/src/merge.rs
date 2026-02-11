@@ -35,6 +35,20 @@ fn ranges_overlap(a: (u32, u32, u32, u32), b: (u32, u32, u32, u32)) -> bool {
         && a_max_row >= b_min_row
 }
 
+/// Populate the coordinate cache from the reference strings if it is stale.
+/// This handles worksheets deserialized from XML where the cache starts empty.
+fn ensure_cache(mc: &mut MergeCells) -> Result<()> {
+    if mc.cached_coords.len() == mc.merge_cells.len() {
+        return Ok(());
+    }
+    mc.cached_coords.clear();
+    mc.cached_coords.reserve(mc.merge_cells.len());
+    for entry in &mc.merge_cells {
+        mc.cached_coords.push(parse_range(&entry.reference)?);
+    }
+    Ok(())
+}
+
 /// Merge a range of cells on the given worksheet.
 ///
 /// `top_left` and `bottom_right` are cell references like "A1" and "C3".
@@ -51,25 +65,27 @@ pub fn merge_cells(ws: &mut WorksheetXml, top_left: &str, bottom_right: &str) ->
 
     let reference = format!("{top_left}:{bottom_right}");
 
-    // Check for overlaps with existing merge regions.
-    if let Some(ref mc) = ws.merge_cells {
-        for existing in &mc.merge_cells {
-            let existing_range = parse_range(&existing.reference)?;
-            if ranges_overlap(new_range, existing_range) {
+    // Check for overlaps using cached coordinates (no string parsing per check).
+    if let Some(ref mut mc) = ws.merge_cells {
+        ensure_cache(mc)?;
+        for (i, coords) in mc.cached_coords.iter().enumerate() {
+            if ranges_overlap(new_range, *coords) {
                 return Err(Error::MergeCellOverlap {
                     new: reference,
-                    existing: existing.reference.clone(),
+                    existing: mc.merge_cells[i].reference.clone(),
                 });
             }
         }
     }
 
-    // Add the merge cell entry.
+    // Add the merge cell entry and its cached coordinates.
     let merge_cells = ws.merge_cells.get_or_insert_with(|| MergeCells {
         count: None,
         merge_cells: Vec::new(),
+        cached_coords: Vec::new(),
     });
     merge_cells.merge_cells.push(MergeCell { reference });
+    merge_cells.cached_coords.push(new_range);
     merge_cells.count = Some(merge_cells.merge_cells.len() as u32);
 
     Ok(())
@@ -85,11 +101,16 @@ pub fn unmerge_cell(ws: &mut WorksheetXml, reference: &str) -> Result<()> {
         .as_mut()
         .ok_or_else(|| Error::MergeCellNotFound(reference.to_string()))?;
 
-    let initial_len = mc.merge_cells.len();
-    mc.merge_cells.retain(|m| m.reference != reference);
+    let pos = mc.merge_cells.iter().position(|m| m.reference == reference);
 
-    if mc.merge_cells.len() == initial_len {
-        return Err(Error::MergeCellNotFound(reference.to_string()));
+    match pos {
+        Some(idx) => {
+            mc.merge_cells.remove(idx);
+            if mc.cached_coords.len() > idx {
+                mc.cached_coords.remove(idx);
+            }
+        }
+        None => return Err(Error::MergeCellNotFound(reference.to_string())),
     }
 
     if mc.merge_cells.is_empty() {
@@ -257,5 +278,99 @@ mod tests {
         assert!(!ranges_overlap((1, 1, 2, 2), (1, 3, 2, 4)));
         // Completely disjoint.
         assert!(!ranges_overlap((1, 1, 2, 2), (5, 5, 6, 6)));
+    }
+
+    #[test]
+    fn test_merge_cache_stays_in_sync_after_add_and_remove() {
+        let mut ws = new_ws();
+        merge_cells(&mut ws, "A1", "B2").unwrap();
+        merge_cells(&mut ws, "D1", "F3").unwrap();
+        merge_cells(&mut ws, "A5", "C7").unwrap();
+
+        let mc = ws.merge_cells.as_ref().unwrap();
+        assert_eq!(mc.cached_coords.len(), 3);
+        assert_eq!(mc.cached_coords[0], (1, 1, 2, 2));
+        assert_eq!(mc.cached_coords[1], (4, 1, 6, 3));
+        assert_eq!(mc.cached_coords[2], (1, 5, 3, 7));
+
+        unmerge_cell(&mut ws, "D1:F3").unwrap();
+        let mc = ws.merge_cells.as_ref().unwrap();
+        assert_eq!(mc.cached_coords.len(), 2);
+        assert_eq!(mc.cached_coords[0], (1, 1, 2, 2));
+        assert_eq!(mc.cached_coords[1], (1, 5, 3, 7));
+    }
+
+    #[test]
+    fn test_merge_cache_lazy_init_from_deserialized_data() {
+        let mut ws = new_ws();
+        // Simulate a worksheet loaded from XML (cache is empty but merge_cells has entries).
+        ws.merge_cells = Some(MergeCells {
+            count: Some(2),
+            merge_cells: vec![
+                MergeCell {
+                    reference: "A1:B2".to_string(),
+                },
+                MergeCell {
+                    reference: "D5:F8".to_string(),
+                },
+            ],
+            cached_coords: Vec::new(),
+        });
+
+        // Adding a non-overlapping merge should succeed after lazy cache init.
+        merge_cells(&mut ws, "H1", "J3").unwrap();
+        let mc = ws.merge_cells.as_ref().unwrap();
+        assert_eq!(mc.merge_cells.len(), 3);
+        assert_eq!(mc.cached_coords.len(), 3);
+
+        // Adding an overlapping merge should still be detected.
+        let err = merge_cells(&mut ws, "A1", "A1").unwrap_err();
+        assert!(err.to_string().contains("overlaps"));
+    }
+
+    #[test]
+    fn test_merge_many_non_overlapping_regions() {
+        let mut ws = new_ws();
+        // Add 500 non-overlapping single-row merges across different rows.
+        for i in 0..500u32 {
+            let row = i + 1;
+            let top_left = format!("A{row}");
+            let bottom_right = format!("C{row}");
+            merge_cells(&mut ws, &top_left, &bottom_right).unwrap();
+        }
+        assert_eq!(get_merge_cells(&ws).len(), 500);
+        let mc = ws.merge_cells.as_ref().unwrap();
+        assert_eq!(mc.cached_coords.len(), 500);
+        assert_eq!(mc.count, Some(500));
+    }
+
+    #[test]
+    fn test_unmerge_then_add_reuses_cache_correctly() {
+        let mut ws = new_ws();
+        merge_cells(&mut ws, "A1", "B2").unwrap();
+        merge_cells(&mut ws, "D1", "E2").unwrap();
+        unmerge_cell(&mut ws, "A1:B2").unwrap();
+
+        // Now A1:B2 region is free -- adding it again should succeed.
+        merge_cells(&mut ws, "A1", "B2").unwrap();
+        assert_eq!(get_merge_cells(&ws).len(), 2);
+
+        // But D1:E2 overlap should still be caught.
+        let err = merge_cells(&mut ws, "D1", "D1").unwrap_err();
+        assert!(err.to_string().contains("overlaps"));
+    }
+
+    #[test]
+    fn test_cache_not_serialized() {
+        let mc = MergeCells {
+            count: Some(1),
+            merge_cells: vec![MergeCell {
+                reference: "A1:B2".to_string(),
+            }],
+            cached_coords: vec![(1, 1, 2, 2)],
+        };
+        let xml = quick_xml::se::to_string(&mc).unwrap();
+        assert!(!xml.contains("cached"));
+        assert!(xml.contains("A1:B2"));
     }
 }

@@ -422,6 +422,7 @@ impl StreamWriter {
                     reference: r.clone(),
                 })
                 .collect(),
+            cached_coords: Vec::new(),
         };
         quick_xml::se::to_string_with_root("mergeCells", &mc).ok()
     }

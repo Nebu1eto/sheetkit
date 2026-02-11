@@ -695,6 +695,12 @@ pub struct MergeCells {
 
     #[serde(rename = "mergeCell", default)]
     pub merge_cells: Vec<MergeCell>,
+
+    /// Cached parsed coordinates `(min_col, min_row, max_col, max_row)` for each
+    /// merge region, kept in parallel with `merge_cells`. Populated lazily on
+    /// first overlap check and maintained during add/remove. Not serialized.
+    #[serde(skip)]
+    pub cached_coords: Vec<(u32, u32, u32, u32)>,
 }
 
 /// Individual merge cell reference.
@@ -1189,6 +1195,7 @@ mod tests {
                 merge_cells: vec![MergeCell {
                     reference: "A1:B2".to_string(),
                 }],
+                cached_coords: Vec::new(),
             }),
             ..WorksheetXml::default()
         };
