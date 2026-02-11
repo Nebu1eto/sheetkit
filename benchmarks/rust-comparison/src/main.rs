@@ -386,8 +386,8 @@ fn bench_read_file(results: &mut Vec<BenchResult>, filename: &str, label: &str, 
     // SheetKit (ReadFast)
     let fp = filepath.clone();
     results.push(bench_with_cell_count(
-        &format!("Read {label} (readfast)"),
-        "SheetKit (RF)",
+        &format!("Read {label}"),
+        "SheetKit (readfast)",
         category,
         None,
         Some(sk_cells),
@@ -1422,8 +1422,8 @@ fn bench_random_access_read(results: &mut Vec<BenchResult>) {
     let fp = filepath.clone();
     let cells = cells_str.clone();
     results.push(bench_with_cell_count(
-        &format!("{label} (readfast)"),
-        "SheetKit (RF)",
+        &format!("{label}"),
+        "SheetKit (readfast)",
         "Random Access",
         None,
         Some(cell_count),
@@ -1500,8 +1500,8 @@ fn bench_modify_file(results: &mut Vec<BenchResult>) {
     let fp = filepath.clone();
     let out = output_dir().join("cmp-modify-sheetkit-rf.xlsx");
     results.push(bench(
-        &format!("{label} (readfast)"),
-        "SheetKit (RF)",
+        &format!("{label}"),
+        "SheetKit (readfast)",
         "Modify",
         Some(&out),
         move || {
