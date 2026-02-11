@@ -302,24 +302,28 @@ fn count_cells_sheetkit(filepath: &Path) -> u64 {
     count
 }
 
-/// Count cells read by calamine for a given file (one-time probe).
+/// Count non-empty cells read by calamine for a given file (one-time probe).
+/// Filters out `Data::Empty` so the count is comparable to SheetKit's sparse
+/// cell iteration, which only yields non-empty cells.
 fn count_cells_calamine(filepath: &Path) -> u64 {
-    use calamine::{open_workbook, Reader, Xlsx};
+    use calamine::{open_workbook, Data, Reader, Xlsx};
     let mut wb: Xlsx<_> = open_workbook(filepath).unwrap();
     let names: Vec<String> = wb.sheet_names().to_vec();
     let mut count: u64 = 0;
     for name in &names {
         if let Ok(range) = wb.worksheet_range(name) {
             for row in range.rows() {
-                count += row.len() as u64;
+                count += row.iter().filter(|c| !matches!(c, Data::Empty)).count() as u64;
             }
         }
     }
     count
 }
 
-/// Count cells read by edit-xlsx for a given file (one-time probe).
+/// Count non-empty cells read by edit-xlsx for a given file (one-time probe).
 /// Returns None if the file cannot be opened.
+/// Only counts cells whose text content is non-empty, matching how SheetKit's
+/// sparse iterator only yields cells with actual values.
 fn count_cells_edit_xlsx(filepath: &Path) -> Option<u64> {
     use edit_xlsx::{Read as _, Workbook as EditWorkbook};
     let wb = EditWorkbook::from_path(filepath).ok()?;
@@ -331,8 +335,10 @@ fn count_cells_edit_xlsx(filepath: &Path) -> Option<u64> {
                 let max_col = ws.max_column();
                 for r in 1..=max_row {
                     for c in 1..=max_col {
-                        if ws.read_cell((r, c)).is_ok() {
-                            count += 1;
+                        if let Ok(cell) = ws.read_cell((r, c)) {
+                            if cell.text.as_ref().is_some_and(|t| !t.is_empty()) {
+                                count += 1;
+                            }
                         }
                     }
                 }

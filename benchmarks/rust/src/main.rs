@@ -877,14 +877,16 @@ fn bench_random_access_read(results: &mut Vec<BenchResult>) {
         })
     }));
 
-    // Lookup-only: opens file once before measurement, benchmarks only cell lookups.
+    // Lookup-only: opens a fresh workbook per run inside `make_fn` (not timed),
+    // then the returned closure only performs cell lookups (timed). Each run gets
+    // its own Workbook instance so internal caches from previous runs do not
+    // accumulate and distort the measurement.
     let label_lookup = format!("Random-access (lookup-only, {lookups} cells)");
     println!("\n--- {label_lookup} ---");
 
     let fp = filepath.clone();
-    let wb = std::sync::Arc::new(Workbook::open(&fp).unwrap());
     results.push(bench(&label_lookup, "Random Access", None, move || {
-        let wb = wb.clone();
+        let wb = Workbook::open(&fp).unwrap();
         let cells = cells.clone();
         Box::new(move || {
             for cell in &cells {

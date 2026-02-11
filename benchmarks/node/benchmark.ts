@@ -1047,39 +1047,41 @@ async function benchRandomAccessRead() {
     }
   });
 
-  // Lookup-only: opens file once before measurement, benchmarks only cell lookups
+  // Lookup-only: each run opens a fresh workbook to avoid cross-run cache
+  // accumulation, then performs only cell lookups. The open cost is included
+  // in timing but applies equally to all libraries, keeping the comparison fair.
   const labelLookup = `Random-access (lookup-only, ${LOOKUPS} cells)`;
   console.log(`\n--- ${labelLookup} ---`);
 
-  const skWbSync = SheetKitWorkbook.openSync(filepath);
   await benchMultiRun('SheetKit', labelLookup, 'Random Access', () => {
+    const wb = SheetKitWorkbook.openSync(filepath);
     for (const cell of cells) {
-      skWbSync.getCellValue('Sheet1', cell);
+      wb.getCellValue('Sheet1', cell);
     }
   });
 
-  const skWbAsync = await SheetKitWorkbook.open(filepath);
-  await benchMultiRun('SheetKit', `${labelLookup} (async open)`, 'Random Access', () => {
+  await benchMultiRun('SheetKit', `${labelLookup} (async open)`, 'Random Access', async () => {
+    const wb = await SheetKitWorkbook.open(filepath);
     for (const cell of cells) {
-      skWbAsync.getCellValue('Sheet1', cell);
+      wb.getCellValue('Sheet1', cell);
     }
   });
 
-  const ejWb = new ExcelJS.Workbook();
-  await ejWb.xlsx.readFile(filepath);
-  const ejWs = ejWb.getWorksheet('Sheet1')!;
-  await benchMultiRun('ExcelJS', labelLookup, 'Random Access', () => {
+  await benchMultiRun('ExcelJS', labelLookup, 'Random Access', async () => {
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.readFile(filepath);
+    const ws = wb.getWorksheet('Sheet1')!;
     for (const cell of cells) {
-      ejWs.getCell(cell).value;
+      ws.getCell(cell).value;
     }
   });
 
-  const sjBuf = readFileSync(filepath);
-  const sjWb = XLSX.read(sjBuf, { type: 'buffer' });
-  const sjWs = sjWb.Sheets['Sheet1'];
   await benchMultiRun('SheetJS', labelLookup, 'Random Access', () => {
+    const buf = readFileSync(filepath);
+    const wb = XLSX.read(buf, { type: 'buffer' });
+    const ws = wb.Sheets['Sheet1'];
     for (const cell of cells) {
-      const val = sjWs[cell];
+      const val = ws[cell];
       if (val) val.v; // access value
     }
   });
