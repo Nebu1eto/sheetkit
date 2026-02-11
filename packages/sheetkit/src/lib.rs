@@ -57,8 +57,6 @@ impl Workbook {
     }
 
     /// Open an existing .xlsx file from disk asynchronously.
-    /// The file parsing runs on a worker thread so the Node.js event loop
-    /// remains free during the operation.
     #[napi(factory)]
     pub async fn open(path: String, options: Option<JsOpenOptions>) -> Result<Self> {
         let opts = js_open_options_to_core(options.as_ref());
@@ -80,9 +78,9 @@ impl Workbook {
     }
 
     /// Save the workbook to a .xlsx file asynchronously.
-    /// Serialization happens on the current thread, then the file write
-    /// runs on a worker thread so the Node.js event loop is freed during
-    /// disk I/O.
+    /// Note: the workbook is first serialized to an in-memory buffer, then
+    /// written to disk. This increases peak memory usage compared to `saveSync`,
+    /// which streams directly to disk. Avoid for very large workbooks.
     #[napi]
     pub async fn save(&self, path: String) -> Result<()> {
         let buf = self
@@ -106,8 +104,6 @@ impl Workbook {
     }
 
     /// Open a workbook from an in-memory Buffer asynchronously.
-    /// The parsing runs on a worker thread so the Node.js event loop
-    /// remains free during the operation.
     #[napi(factory)]
     pub async fn open_buffer(data: Buffer, options: Option<JsOpenOptions>) -> Result<Self> {
         let opts = js_open_options_to_core(options.as_ref());
@@ -130,8 +126,6 @@ impl Workbook {
     }
 
     /// Open an encrypted .xlsx file using a password asynchronously.
-    /// Decryption and parsing run on a worker thread so the Node.js event
-    /// loop remains free during the operation.
     #[napi(factory)]
     pub async fn open_with_password(path: String, password: String) -> Result<Self> {
         let inner = tokio::task::spawn_blocking(move || {
@@ -154,9 +148,7 @@ impl Workbook {
     }
 
     /// Serialize the workbook to an in-memory Buffer asynchronously.
-    /// Note: serialization requires access to workbook state and runs on the
-    /// tokio runtime thread. Use `writeBufferSync` if you do not need the
-    /// Promise-based API.
+    /// Delegates to `writeBufferSync` internally.
     #[napi]
     pub async fn write_buffer(&self) -> Result<Buffer> {
         self.write_buffer_sync()
@@ -171,8 +163,9 @@ impl Workbook {
     }
 
     /// Save the workbook as an encrypted .xlsx file asynchronously.
-    /// Serialization and encryption happen on the current thread, then
-    /// the file write runs on a worker thread.
+    /// Note: the workbook is first serialized to an in-memory buffer, then
+    /// encrypted and written to disk. This increases peak memory usage compared
+    /// to `saveWithPasswordSync`. Avoid for very large workbooks.
     #[napi]
     pub async fn save_with_password(&self, path: String, password: String) -> Result<()> {
         let buf = self
