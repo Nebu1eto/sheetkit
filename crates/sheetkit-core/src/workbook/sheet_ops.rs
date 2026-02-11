@@ -1410,4 +1410,191 @@ mod tests {
             CellValue::String("Bob".to_string())
         );
     }
+
+    #[test]
+    fn test_stream_freeze_panes_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("stream_freeze.xlsx");
+
+        let mut wb = Workbook::new();
+        let mut sw = wb.new_stream_writer("FreezeSheet").unwrap();
+        sw.set_freeze_panes("B3").unwrap();
+        sw.write_row(1, &[CellValue::from("A"), CellValue::from("B")])
+            .unwrap();
+        sw.write_row(2, &[CellValue::from("C"), CellValue::from("D")])
+            .unwrap();
+        wb.apply_stream_writer(sw).unwrap();
+        wb.save(&path).unwrap();
+
+        let wb2 = Workbook::open(&path).unwrap();
+        assert_eq!(
+            wb2.get_panes("FreezeSheet").unwrap(),
+            Some("B3".to_string())
+        );
+        assert_eq!(
+            wb2.get_cell_value("FreezeSheet", "A1").unwrap(),
+            CellValue::String("A".to_string())
+        );
+    }
+
+    #[test]
+    fn test_stream_merge_cells_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("stream_merge.xlsx");
+
+        let mut wb = Workbook::new();
+        let mut sw = wb.new_stream_writer("MergeSheet").unwrap();
+        sw.add_merge_cell("A1:C1").unwrap();
+        sw.add_merge_cell("A3:B4").unwrap();
+        sw.write_row(1, &[CellValue::from("Header")]).unwrap();
+        sw.write_row(2, &[CellValue::from("Data")]).unwrap();
+        wb.apply_stream_writer(sw).unwrap();
+        wb.save(&path).unwrap();
+
+        let wb2 = Workbook::open(&path).unwrap();
+        let merges = wb2.get_merge_cells("MergeSheet").unwrap();
+        assert!(merges.contains(&"A1:C1".to_string()));
+        assert!(merges.contains(&"A3:B4".to_string()));
+        assert_eq!(
+            wb2.get_cell_value("MergeSheet", "A1").unwrap(),
+            CellValue::String("Header".to_string())
+        );
+    }
+
+    #[test]
+    fn test_stream_col_widths_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("stream_colw.xlsx");
+
+        let mut wb = Workbook::new();
+        let mut sw = wb.new_stream_writer("ColSheet").unwrap();
+        sw.set_col_width(1, 25.0).unwrap();
+        sw.set_col_width(2, 12.5).unwrap();
+        sw.write_row(1, &[CellValue::from("Wide"), CellValue::from("Narrow")])
+            .unwrap();
+        wb.apply_stream_writer(sw).unwrap();
+        wb.save(&path).unwrap();
+
+        let wb2 = Workbook::open(&path).unwrap();
+        let w1 = wb2.get_col_width("ColSheet", "A").unwrap().unwrap();
+        let w2 = wb2.get_col_width("ColSheet", "B").unwrap().unwrap();
+        assert!((w1 - 25.0).abs() < 0.01);
+        assert!((w2 - 12.5).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_stream_multiple_sheets() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("stream_multi.xlsx");
+
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", "Normal").unwrap();
+
+        let mut sw1 = wb.new_stream_writer("Stream1").unwrap();
+        sw1.write_row(1, &[CellValue::from("S1R1")]).unwrap();
+        sw1.write_row(2, &[CellValue::from("S1R2")]).unwrap();
+        wb.apply_stream_writer(sw1).unwrap();
+
+        let mut sw2 = wb.new_stream_writer("Stream2").unwrap();
+        sw2.write_row(1, &[CellValue::from("S2R1")]).unwrap();
+        wb.apply_stream_writer(sw2).unwrap();
+
+        wb.save(&path).unwrap();
+
+        let wb2 = Workbook::open(&path).unwrap();
+        assert_eq!(wb2.sheet_names(), vec!["Sheet1", "Stream1", "Stream2"]);
+        assert_eq!(
+            wb2.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("Normal".to_string())
+        );
+        assert_eq!(
+            wb2.get_cell_value("Stream1", "A1").unwrap(),
+            CellValue::String("S1R1".to_string())
+        );
+        assert_eq!(
+            wb2.get_cell_value("Stream1", "A2").unwrap(),
+            CellValue::String("S1R2".to_string())
+        );
+        assert_eq!(
+            wb2.get_cell_value("Stream2", "A1").unwrap(),
+            CellValue::String("S2R1".to_string())
+        );
+    }
+
+    #[test]
+    fn test_stream_delete_sheet() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("stream_delete.xlsx");
+
+        let mut wb = Workbook::new();
+        let mut sw = wb.new_stream_writer("ToDelete").unwrap();
+        sw.write_row(1, &[CellValue::from("Gone")]).unwrap();
+        wb.apply_stream_writer(sw).unwrap();
+
+        let mut sw2 = wb.new_stream_writer("Kept").unwrap();
+        sw2.write_row(1, &[CellValue::from("Stays")]).unwrap();
+        wb.apply_stream_writer(sw2).unwrap();
+
+        wb.delete_sheet("ToDelete").unwrap();
+        wb.save(&path).unwrap();
+
+        let wb2 = Workbook::open(&path).unwrap();
+        assert_eq!(wb2.sheet_names(), vec!["Sheet1", "Kept"]);
+        assert_eq!(
+            wb2.get_cell_value("Kept", "A1").unwrap(),
+            CellValue::String("Stays".to_string())
+        );
+    }
+
+    #[test]
+    fn test_stream_combined_features_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("stream_combined.xlsx");
+
+        let mut wb = Workbook::new();
+        let mut sw = wb.new_stream_writer("Combined").unwrap();
+        sw.set_freeze_panes("A2").unwrap();
+        sw.set_col_width(1, 30.0).unwrap();
+        sw.set_col_width_range(2, 3, 15.0).unwrap();
+        sw.add_merge_cell("B1:C1").unwrap();
+        sw.write_row(
+            1,
+            &[
+                CellValue::from("Name"),
+                CellValue::from("Merged Header"),
+                CellValue::Empty,
+            ],
+        )
+        .unwrap();
+        sw.write_row(
+            2,
+            &[
+                CellValue::from("Alice"),
+                CellValue::from(100),
+                CellValue::from(true),
+            ],
+        )
+        .unwrap();
+        wb.apply_stream_writer(sw).unwrap();
+        wb.save(&path).unwrap();
+
+        let wb2 = Workbook::open(&path).unwrap();
+        assert_eq!(wb2.get_panes("Combined").unwrap(), Some("A2".to_string()));
+        let merges = wb2.get_merge_cells("Combined").unwrap();
+        assert!(merges.contains(&"B1:C1".to_string()));
+        let w1 = wb2.get_col_width("Combined", "A").unwrap().unwrap();
+        assert!((w1 - 30.0).abs() < 0.01);
+        assert_eq!(
+            wb2.get_cell_value("Combined", "A1").unwrap(),
+            CellValue::String("Name".to_string())
+        );
+        assert_eq!(
+            wb2.get_cell_value("Combined", "B2").unwrap(),
+            CellValue::Number(100.0)
+        );
+        assert_eq!(
+            wb2.get_cell_value("Combined", "C2").unwrap(),
+            CellValue::Bool(true)
+        );
+    }
 }

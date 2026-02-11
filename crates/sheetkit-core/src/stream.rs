@@ -612,10 +612,41 @@ fn build_row_xml(
                 xml.push_str(if *b { "1" } else { "0" });
                 xml.push_str("</v></c>");
             }
-            CellValue::Formula { expr, .. } => {
+            CellValue::Formula { expr, result } => {
                 xml.push_str("><f>");
                 xml_escape_into(&mut xml, expr);
-                xml.push_str("</f></c>");
+                xml.push_str("</f>");
+                if let Some(res) = result {
+                    match res.as_ref() {
+                        CellValue::String(s) => {
+                            xml.push_str("<v>");
+                            xml_escape_into(&mut xml, s);
+                            xml.push_str("</v>");
+                        }
+                        CellValue::Number(n) => {
+                            xml.push_str("<v>");
+                            xml.push_str(&n.to_string());
+                            xml.push_str("</v>");
+                        }
+                        CellValue::Bool(b) => {
+                            xml.push_str("<v>");
+                            xml.push_str(if *b { "1" } else { "0" });
+                            xml.push_str("</v>");
+                        }
+                        CellValue::Date(d) => {
+                            xml.push_str("<v>");
+                            xml.push_str(&d.to_string());
+                            xml.push_str("</v>");
+                        }
+                        CellValue::Error(e) => {
+                            xml.push_str("<v>");
+                            xml_escape_into(&mut xml, e);
+                            xml.push_str("</v>");
+                        }
+                        _ => {}
+                    }
+                }
+                xml.push_str("</c>");
             }
             CellValue::Error(e) => {
                 xml.push_str(" t=\"e\"><v>");
@@ -1491,6 +1522,178 @@ mod tests {
         assert!(streamed.data_len > 0);
         assert!(streamed.cols_xml.is_some());
         assert!(streamed.merge_cells_xml.is_some());
+    }
+
+    #[test]
+    fn test_date_value() {
+        let mut sw = StreamWriter::new("Sheet1");
+        // Excel serial number for 2024-01-15 = 45306
+        sw.write_row(1, &[CellValue::Date(45306.0)]).unwrap();
+        let xml = finish_and_get_xml(sw);
+
+        // Date is serialized as a plain numeric <v> with no type tag
+        assert!(xml.contains("<v>45306</v>"));
+        // Should not have t="..." attribute (same as Number)
+        assert!(!xml.contains("t=\"inlineStr\""));
+        assert!(!xml.contains("t=\"b\""));
+    }
+
+    #[test]
+    fn test_date_value_with_time() {
+        let mut sw = StreamWriter::new("Sheet1");
+        // Excel serial with fractional time (noon)
+        sw.write_row(1, &[CellValue::Date(45306.5)]).unwrap();
+        let xml = finish_and_get_xml(sw);
+
+        assert!(xml.contains("<v>45306.5</v>"));
+    }
+
+    #[test]
+    fn test_rich_string_to_inline_plain_text() {
+        use crate::rich_text::RichTextRun;
+        let mut sw = StreamWriter::new("Sheet1");
+        sw.write_row(
+            1,
+            &[CellValue::RichString(vec![
+                RichTextRun {
+                    text: "Hello ".to_string(),
+                    font: None,
+                    size: None,
+                    bold: true,
+                    italic: false,
+                    color: None,
+                },
+                RichTextRun {
+                    text: "World".to_string(),
+                    font: None,
+                    size: None,
+                    bold: false,
+                    italic: true,
+                    color: None,
+                },
+            ])],
+        )
+        .unwrap();
+        let xml = finish_and_get_xml(sw);
+
+        // RichString is flattened to plain inline string
+        assert!(xml.contains("t=\"inlineStr\""));
+        assert!(xml.contains("<is><t>Hello World</t></is>"));
+    }
+
+    #[test]
+    fn test_rich_string_xml_escaping() {
+        use crate::rich_text::RichTextRun;
+        let mut sw = StreamWriter::new("Sheet1");
+        sw.write_row(
+            1,
+            &[CellValue::RichString(vec![RichTextRun {
+                text: "A & B <C>".to_string(),
+                font: None,
+                size: None,
+                bold: false,
+                italic: false,
+                color: None,
+            }])],
+        )
+        .unwrap();
+        let xml = finish_and_get_xml(sw);
+
+        assert!(xml.contains("A &amp; B &lt;C&gt;"));
+    }
+
+    #[test]
+    fn test_formula_with_numeric_result() {
+        let mut sw = StreamWriter::new("Sheet1");
+        sw.write_row(
+            1,
+            &[CellValue::Formula {
+                expr: "SUM(A2:A10)".to_string(),
+                result: Some(Box::new(CellValue::Number(55.0))),
+            }],
+        )
+        .unwrap();
+        let xml = finish_and_get_xml(sw);
+
+        assert!(xml.contains("<f>SUM(A2:A10)</f>"));
+        assert!(xml.contains("<v>55</v>"));
+    }
+
+    #[test]
+    fn test_formula_with_string_result() {
+        let mut sw = StreamWriter::new("Sheet1");
+        sw.write_row(
+            1,
+            &[CellValue::Formula {
+                expr: "IF(A1>0,\"yes\",\"no\")".to_string(),
+                result: Some(Box::new(CellValue::String("yes".to_string()))),
+            }],
+        )
+        .unwrap();
+        let xml = finish_and_get_xml(sw);
+
+        assert!(xml.contains("<f>"));
+        assert!(xml.contains("<v>yes</v>"));
+    }
+
+    #[test]
+    fn test_formula_with_bool_result() {
+        let mut sw = StreamWriter::new("Sheet1");
+        sw.write_row(
+            1,
+            &[CellValue::Formula {
+                expr: "A1>0".to_string(),
+                result: Some(Box::new(CellValue::Bool(true))),
+            }],
+        )
+        .unwrap();
+        let xml = finish_and_get_xml(sw);
+
+        assert!(xml.contains("<f>A1&gt;0</f>"));
+        assert!(xml.contains("<v>1</v>"));
+    }
+
+    #[test]
+    fn test_formula_without_result() {
+        let mut sw = StreamWriter::new("Sheet1");
+        sw.write_row(
+            1,
+            &[CellValue::Formula {
+                expr: "A1+B1".to_string(),
+                result: None,
+            }],
+        )
+        .unwrap();
+        let xml = finish_and_get_xml(sw);
+
+        assert!(xml.contains("<f>A1+B1</f></c>"));
+        // No <v> tag when result is None
+        assert!(!xml.contains("<v>"));
+    }
+
+    #[test]
+    fn test_error_value_xml_escaping() {
+        let mut sw = StreamWriter::new("Sheet1");
+        sw.write_row(1, &[CellValue::Error("#VALUE!".to_string())])
+            .unwrap();
+        let xml = finish_and_get_xml(sw);
+
+        assert!(xml.contains("t=\"e\""));
+        assert!(xml.contains("#VALUE!"));
+    }
+
+    #[test]
+    fn test_empty_row_produces_valid_xml() {
+        let mut sw = StreamWriter::new("Sheet1");
+        // Row with only empty values
+        sw.write_row(1, &[CellValue::Empty, CellValue::Empty])
+            .unwrap();
+        let ws = finish_and_parse(sw);
+
+        assert_eq!(ws.sheet_data.rows.len(), 1);
+        assert_eq!(ws.sheet_data.rows[0].r, 1);
+        // All empties are skipped, row has no cells
+        assert_eq!(ws.sheet_data.rows[0].cells.len(), 0);
     }
 
     #[test]
