@@ -5480,3 +5480,111 @@ describe('decodeRowsIterator', () => {
     expect(iterated).toEqual(decoded);
   });
 });
+
+describe('Async worker thread offloading', () => {
+  const asyncOut1 = tmpFile('test-async-1.xlsx');
+  const asyncOut2 = tmpFile('test-async-2.xlsx');
+  const asyncOut3 = tmpFile('test-async-3.xlsx');
+  afterEach(async () => cleanup(asyncOut1, asyncOut2, asyncOut3));
+
+  it('async open produces same result as sync open', async () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'hello');
+    wb.setCellValue('Sheet1', 'B1', 42);
+    wb.saveSync(asyncOut1);
+
+    const syncWb = Workbook.openSync(asyncOut1);
+    const asyncWb = await Workbook.open(asyncOut1);
+
+    expect(asyncWb.getCellValue('Sheet1', 'A1')).toBe('hello');
+    expect(asyncWb.getCellValue('Sheet1', 'B1')).toBe(42);
+    expect(asyncWb.sheetNames).toEqual(syncWb.sheetNames);
+  });
+
+  it('async openBuffer produces same result as sync openBuffer', async () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'buffer-test');
+    wb.setCellValue('Sheet1', 'A2', 3.14);
+    const buf = wb.writeBufferSync();
+
+    const syncWb = Workbook.openBufferSync(buf);
+    const asyncWb = await Workbook.openBuffer(buf);
+
+    expect(asyncWb.getCellValue('Sheet1', 'A1')).toBe('buffer-test');
+    expect(asyncWb.getCellValue('Sheet1', 'A2')).toBeCloseTo(3.14);
+    expect(asyncWb.sheetNames).toEqual(syncWb.sheetNames);
+  });
+
+  it('async save produces a valid file', async () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'async-save');
+    await wb.save(asyncOut1);
+
+    const wb2 = Workbook.openSync(asyncOut1);
+    expect(wb2.getCellValue('Sheet1', 'A1')).toBe('async-save');
+  });
+
+  it('async writeBuffer produces same result as sync writeBuffer', async () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'C3', 'write-buf');
+
+    const syncBuf = wb.writeBufferSync();
+    const asyncBuf = await wb.writeBuffer();
+
+    const wb1 = Workbook.openBufferSync(syncBuf);
+    const wb2 = Workbook.openBufferSync(asyncBuf);
+    expect(wb2.getCellValue('Sheet1', 'C3')).toBe('write-buf');
+    expect(wb1.getCellValue('Sheet1', 'C3')).toBe(wb2.getCellValue('Sheet1', 'C3'));
+  });
+
+  it('concurrent async opens do not interfere', async () => {
+    const wb1 = new Workbook();
+    wb1.setCellValue('Sheet1', 'A1', 'file-1');
+    wb1.saveSync(asyncOut1);
+
+    const wb2 = new Workbook();
+    wb2.setCellValue('Sheet1', 'A1', 'file-2');
+    wb2.saveSync(asyncOut2);
+
+    const wb3 = new Workbook();
+    wb3.setCellValue('Sheet1', 'A1', 'file-3');
+    wb3.saveSync(asyncOut3);
+
+    const [r1, r2, r3] = await Promise.all([
+      Workbook.open(asyncOut1),
+      Workbook.open(asyncOut2),
+      Workbook.open(asyncOut3),
+    ]);
+
+    expect(r1.getCellValue('Sheet1', 'A1')).toBe('file-1');
+    expect(r2.getCellValue('Sheet1', 'A1')).toBe('file-2');
+    expect(r3.getCellValue('Sheet1', 'A1')).toBe('file-3');
+  });
+
+  it('concurrent async saves do not interfere', async () => {
+    const wb1 = new Workbook();
+    wb1.setCellValue('Sheet1', 'A1', 'save-1');
+    const wb2 = new Workbook();
+    wb2.setCellValue('Sheet1', 'A1', 'save-2');
+    const wb3 = new Workbook();
+    wb3.setCellValue('Sheet1', 'A1', 'save-3');
+
+    await Promise.all([
+      wb1.save(asyncOut1),
+      wb2.save(asyncOut2),
+      wb3.save(asyncOut3),
+    ]);
+
+    expect(Workbook.openSync(asyncOut1).getCellValue('Sheet1', 'A1')).toBe('save-1');
+    expect(Workbook.openSync(asyncOut2).getCellValue('Sheet1', 'A1')).toBe('save-2');
+    expect(Workbook.openSync(asyncOut3).getCellValue('Sheet1', 'A1')).toBe('save-3');
+  });
+
+  it('async open propagates errors correctly', async () => {
+    await expect(Workbook.open('/nonexistent/path.xlsx')).rejects.toThrow();
+  });
+
+  it('async openBuffer propagates errors for invalid data', async () => {
+    await expect(Workbook.openBuffer(Buffer.from('not-a-zip'))).rejects.toThrow();
+  });
+});

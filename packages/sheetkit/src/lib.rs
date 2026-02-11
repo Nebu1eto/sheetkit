@@ -57,9 +57,18 @@ impl Workbook {
     }
 
     /// Open an existing .xlsx file from disk asynchronously.
+    /// The file parsing runs on a worker thread so the Node.js event loop
+    /// remains free during the operation.
     #[napi(factory)]
     pub async fn open(path: String, options: Option<JsOpenOptions>) -> Result<Self> {
-        Self::open_sync(path, options)
+        let opts = js_open_options_to_core(options.as_ref());
+        let inner = tokio::task::spawn_blocking(move || {
+            sheetkit_core::workbook::Workbook::open_with_options(&path, &opts)
+                .map_err(|e| Error::from_reason(e.to_string()))
+        })
+        .await
+        .unwrap_or_else(|e| Err(Error::from_reason(e.to_string())))?;
+        Ok(Self { inner })
     }
 
     /// Save the workbook to a .xlsx file.
@@ -71,9 +80,20 @@ impl Workbook {
     }
 
     /// Save the workbook to a .xlsx file asynchronously.
+    /// Serialization happens on the current thread, then the file write
+    /// runs on a worker thread so the Node.js event loop is freed during
+    /// disk I/O.
     #[napi]
     pub async fn save(&self, path: String) -> Result<()> {
-        self.save_sync(path)
+        let buf = self
+            .inner
+            .save_to_buffer()
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        tokio::task::spawn_blocking(move || {
+            std::fs::write(&path, &buf).map_err(|e| Error::from_reason(e.to_string()))
+        })
+        .await
+        .unwrap_or_else(|e| Err(Error::from_reason(e.to_string())))
     }
 
     /// Open a workbook from an in-memory Buffer.
@@ -86,9 +106,19 @@ impl Workbook {
     }
 
     /// Open a workbook from an in-memory Buffer asynchronously.
+    /// The parsing runs on a worker thread so the Node.js event loop
+    /// remains free during the operation.
     #[napi(factory)]
     pub async fn open_buffer(data: Buffer, options: Option<JsOpenOptions>) -> Result<Self> {
-        Self::open_buffer_sync(data, options)
+        let opts = js_open_options_to_core(options.as_ref());
+        let buf: Vec<u8> = data.to_vec();
+        let inner = tokio::task::spawn_blocking(move || {
+            sheetkit_core::workbook::Workbook::open_from_buffer_with_options(&buf, &opts)
+                .map_err(|e| Error::from_reason(e.to_string()))
+        })
+        .await
+        .unwrap_or_else(|e| Err(Error::from_reason(e.to_string())))?;
+        Ok(Self { inner })
     }
 
     /// Open an encrypted .xlsx file using a password.
@@ -100,9 +130,17 @@ impl Workbook {
     }
 
     /// Open an encrypted .xlsx file using a password asynchronously.
+    /// Decryption and parsing run on a worker thread so the Node.js event
+    /// loop remains free during the operation.
     #[napi(factory)]
     pub async fn open_with_password(path: String, password: String) -> Result<Self> {
-        Self::open_with_password_sync(path, password)
+        let inner = tokio::task::spawn_blocking(move || {
+            sheetkit_core::workbook::Workbook::open_with_password(&path, &password)
+                .map_err(|e| Error::from_reason(e.to_string()))
+        })
+        .await
+        .unwrap_or_else(|e| Err(Error::from_reason(e.to_string())))?;
+        Ok(Self { inner })
     }
 
     /// Serialize the workbook to an in-memory Buffer.
@@ -116,6 +154,9 @@ impl Workbook {
     }
 
     /// Serialize the workbook to an in-memory Buffer asynchronously.
+    /// Note: serialization requires access to workbook state and runs on the
+    /// tokio runtime thread. Use `writeBufferSync` if you do not need the
+    /// Promise-based API.
     #[napi]
     pub async fn write_buffer(&self) -> Result<Buffer> {
         self.write_buffer_sync()
@@ -130,9 +171,21 @@ impl Workbook {
     }
 
     /// Save the workbook as an encrypted .xlsx file asynchronously.
+    /// Serialization and encryption happen on the current thread, then
+    /// the file write runs on a worker thread.
     #[napi]
     pub async fn save_with_password(&self, path: String, password: String) -> Result<()> {
-        self.save_with_password_sync(path, password)
+        let buf = self
+            .inner
+            .save_to_buffer()
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        tokio::task::spawn_blocking(move || {
+            let cfb_data = sheetkit_core::crypt::encrypt_xlsx(&buf, &password)
+                .map_err(|e| Error::from_reason(e.to_string()))?;
+            std::fs::write(&path, &cfb_data).map_err(|e| Error::from_reason(e.to_string()))
+        })
+        .await
+        .unwrap_or_else(|e| Err(Error::from_reason(e.to_string())))
     }
 
     /// Get the names of all sheets in workbook order.

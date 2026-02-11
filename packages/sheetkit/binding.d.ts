@@ -33,27 +33,53 @@ export declare class Workbook {
   constructor()
   /** Open an existing .xlsx file from disk. */
   static openSync(path: string, options?: JsOpenOptions | undefined | null): Workbook
-  /** Open an existing .xlsx file from disk asynchronously. */
+  /**
+   * Open an existing .xlsx file from disk asynchronously.
+   * The file parsing runs on a worker thread so the Node.js event loop
+   * remains free during the operation.
+   */
   static open(path: string, options?: JsOpenOptions | undefined | null): Promise<Workbook>
   /** Save the workbook to a .xlsx file. */
   saveSync(path: string): void
-  /** Save the workbook to a .xlsx file asynchronously. */
+  /**
+   * Save the workbook to a .xlsx file asynchronously.
+   * Serialization happens on the current thread, then the file write
+   * runs on a worker thread so the Node.js event loop is freed during
+   * disk I/O.
+   */
   save(path: string): Promise<void>
   /** Open a workbook from an in-memory Buffer. */
   static openBufferSync(data: Buffer, options?: JsOpenOptions | undefined | null): Workbook
-  /** Open a workbook from an in-memory Buffer asynchronously. */
+  /**
+   * Open a workbook from an in-memory Buffer asynchronously.
+   * The parsing runs on a worker thread so the Node.js event loop
+   * remains free during the operation.
+   */
   static openBuffer(data: Buffer, options?: JsOpenOptions | undefined | null): Promise<Workbook>
   /** Open an encrypted .xlsx file using a password. */
   static openWithPasswordSync(path: string, password: string): Workbook
-  /** Open an encrypted .xlsx file using a password asynchronously. */
+  /**
+   * Open an encrypted .xlsx file using a password asynchronously.
+   * Decryption and parsing run on a worker thread so the Node.js event
+   * loop remains free during the operation.
+   */
   static openWithPassword(path: string, password: string): Promise<Workbook>
   /** Serialize the workbook to an in-memory Buffer. */
   writeBufferSync(): Buffer
-  /** Serialize the workbook to an in-memory Buffer asynchronously. */
+  /**
+   * Serialize the workbook to an in-memory Buffer asynchronously.
+   * Note: serialization requires access to workbook state and runs on the
+   * tokio runtime thread. Use `writeBufferSync` if you do not need the
+   * Promise-based API.
+   */
   writeBuffer(): Promise<Buffer>
   /** Save the workbook as an encrypted .xlsx file. */
   saveWithPasswordSync(path: string, password: string): void
-  /** Save the workbook as an encrypted .xlsx file asynchronously. */
+  /**
+   * Save the workbook as an encrypted .xlsx file asynchronously.
+   * Serialization and encryption happen on the current thread, then
+   * the file write runs on a worker thread.
+   */
   saveWithPassword(path: string, password: string): Promise<void>
   /** Get the names of all sheets in workbook order. */
   get sheetNames(): Array<string>
