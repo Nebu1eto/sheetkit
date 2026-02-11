@@ -982,8 +982,6 @@ async function benchRandomAccessRead() {
   }
 
   const LOOKUPS = 1_000;
-  const label = `Random-access read (${LOOKUPS} cells from 50k-row file)`;
-  console.log(`\n--- ${label} ---`);
 
   // Pre-generate random cell addresses for consistency
   const cells: string[] = [];
@@ -993,21 +991,25 @@ async function benchRandomAccessRead() {
     cells.push(`${colLetter(c)}${r}`);
   }
 
-  await benchMultiRun('SheetKit', label, 'Random Access', () => {
+  // Open+lookup: measures file open overhead together with cell lookups
+  const labelOpen = `Random-access (open+${LOOKUPS} lookups)`;
+  console.log(`\n--- ${labelOpen} ---`);
+
+  await benchMultiRun('SheetKit', labelOpen, 'Random Access', () => {
     const wb = SheetKitWorkbook.openSync(filepath);
     for (const cell of cells) {
       wb.getCellValue('Sheet1', cell);
     }
   });
 
-  await benchMultiRun('SheetKit', `${label} (async)`, 'Random Access', async () => {
+  await benchMultiRun('SheetKit', `${labelOpen} (async)`, 'Random Access', async () => {
     const wb = await SheetKitWorkbook.open(filepath);
     for (const cell of cells) {
       wb.getCellValue('Sheet1', cell);
     }
   });
 
-  await benchMultiRun('ExcelJS', label, 'Random Access', async () => {
+  await benchMultiRun('ExcelJS', labelOpen, 'Random Access', async () => {
     const wb = new ExcelJS.Workbook();
     await wb.xlsx.readFile(filepath);
     const ws = wb.getWorksheet('Sheet1')!;
@@ -1016,12 +1018,49 @@ async function benchRandomAccessRead() {
     }
   });
 
-  await benchMultiRun('SheetJS', label, 'Random Access', () => {
+  await benchMultiRun('SheetJS', labelOpen, 'Random Access', () => {
     const buf = readFileSync(filepath);
     const wb = XLSX.read(buf, { type: 'buffer' });
     const ws = wb.Sheets['Sheet1'];
     for (const cell of cells) {
       const val = ws[cell];
+      if (val) val.v; // access value
+    }
+  });
+
+  // Lookup-only: opens file once before measurement, benchmarks only cell lookups
+  const labelLookup = `Random-access (lookup-only, ${LOOKUPS} cells)`;
+  console.log(`\n--- ${labelLookup} ---`);
+
+  const skWbSync = SheetKitWorkbook.openSync(filepath);
+  await benchMultiRun('SheetKit', labelLookup, 'Random Access', () => {
+    for (const cell of cells) {
+      skWbSync.getCellValue('Sheet1', cell);
+    }
+  });
+
+  const skWbAsync = await SheetKitWorkbook.open(filepath);
+  await benchMultiRun('SheetKit', `${labelLookup} (async open)`, 'Random Access', () => {
+    for (const cell of cells) {
+      skWbAsync.getCellValue('Sheet1', cell);
+    }
+  });
+
+  const ejWb = new ExcelJS.Workbook();
+  await ejWb.xlsx.readFile(filepath);
+  const ejWs = ejWb.getWorksheet('Sheet1')!;
+  await benchMultiRun('ExcelJS', labelLookup, 'Random Access', () => {
+    for (const cell of cells) {
+      ejWs.getCell(cell).value;
+    }
+  });
+
+  const sjBuf = readFileSync(filepath);
+  const sjWb = XLSX.read(sjBuf, { type: 'buffer' });
+  const sjWs = sjWb.Sheets['Sheet1'];
+  await benchMultiRun('SheetJS', labelLookup, 'Random Access', () => {
+    for (const cell of cells) {
+      const val = sjWs[cell];
       if (val) val.v; // access value
     }
   });
