@@ -217,9 +217,13 @@ export function decodeRowsBuffer(buf: Buffer | null): JsRowData[] {
   if (!parsed) return [];
   const { view, header, rowIndex, strings, cellDataStart, minCol } = parsed;
 
-  // Pre-warm the column name cache for all columns we will encounter
-  const maxCol = minCol + header.colCount - 1;
-  cachedColumnName(maxCol);
+  // Pre-warm the column name cache only for dense layout where every column
+  // will be visited. For sparse layout, column names are resolved lazily per
+  // encountered cell to avoid O(colCount) work on wide sparse sheets.
+  if (!header.isSparse) {
+    const maxCol = minCol + header.colCount - 1;
+    cachedColumnName(maxCol);
+  }
 
   const rows: JsRowData[] = [];
 
@@ -449,8 +453,13 @@ export function* decodeRowsIterator(buf: Buffer | null): Generator<JsRowData> {
   if (!parsed) return;
   const { view, header, rowIndex, strings, cellDataStart, minCol } = parsed;
 
-  const maxCol = minCol + header.colCount - 1;
-  cachedColumnName(maxCol);
+  // Pre-warm only for dense layout. For sparse layout, column names are
+  // resolved lazily per cell to preserve streaming semantics and avoid
+  // O(colCount) upfront work on wide sparse sheets.
+  if (!header.isSparse) {
+    const maxCol = minCol + header.colCount - 1;
+    cachedColumnName(maxCol);
+  }
 
   for (let ri = 0; ri < rowIndex.length; ri++) {
     const entry = rowIndex[ri];
