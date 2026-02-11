@@ -8,8 +8,8 @@ use sheetkit::utils::column_number_to_name;
 /// Each scenario runs multiple iterations to collect statistical
 /// metrics: min, max, median, p95, and peak RSS delta.
 use sheetkit::{
-    CellValue, CommentConfig, DataValidationConfig, Style, ValidationOperator, ValidationType,
-    Workbook,
+    CellValue, CommentConfig, DataValidationConfig, OpenOptions, ParseMode, Style,
+    ValidationOperator, ValidationType, Workbook,
 };
 
 use std::fs;
@@ -302,6 +302,31 @@ fn bench_read_file(results: &mut Vec<BenchResult>, filename: &str, label: &str, 
         let fp = fp.clone();
         Box::new(move || {
             let wb = Workbook::open(&fp).unwrap();
+            for name in wb.sheet_names() {
+                let _ = wb.get_rows(name).unwrap();
+            }
+        })
+    }));
+}
+
+fn bench_read_file_readfast(
+    results: &mut Vec<BenchResult>,
+    filename: &str,
+    label: &str,
+    category: &str,
+) {
+    let filepath = fixtures_dir().join(filename);
+    if !filepath.exists() {
+        return;
+    }
+
+    let scenario = format!("Read {label} (readfast)");
+    let fp = filepath.clone();
+    results.push(bench(&scenario, category, None, move || {
+        let fp = fp.clone();
+        Box::new(move || {
+            let opts = OpenOptions::new().parse_mode(ParseMode::ReadFast);
+            let wb = Workbook::open_with_options(&fp, &opts).unwrap();
             for name in wb.sheet_names() {
                 let _ = wb.get_rows(name).unwrap();
             }
@@ -877,6 +902,24 @@ fn bench_random_access_read(results: &mut Vec<BenchResult>) {
         })
     }));
 
+    // Open+lookup with ReadFast parse mode
+    let label_open_rf = format!("Random-access (open+{lookups} lookups, readfast)");
+    println!("\n--- {label_open_rf} ---");
+
+    let fp = filepath.clone();
+    let cells_clone = cells.clone();
+    results.push(bench(&label_open_rf, "Random Access", None, move || {
+        let fp = fp.clone();
+        let cells_clone = cells_clone.clone();
+        Box::new(move || {
+            let opts = OpenOptions::new().parse_mode(ParseMode::ReadFast);
+            let wb = Workbook::open_with_options(&fp, &opts).unwrap();
+            for cell in &cells_clone {
+                let _ = wb.get_cell_value("Sheet1", cell);
+            }
+        })
+    }));
+
     // Lookup-only: opens a fresh workbook per run inside `make_fn` (not timed),
     // then the returned closure only performs cell lookups (timed). Each run gets
     // its own Workbook instance so internal caches from previous runs do not
@@ -1164,7 +1207,19 @@ fn main() {
         "Large Data (50k rows x 20 cols)",
         "Read",
     );
+    bench_read_file_readfast(
+        &mut results,
+        "large-data.xlsx",
+        "Large Data (50k rows x 20 cols)",
+        "Read",
+    );
     bench_read_file(
+        &mut results,
+        "heavy-styles.xlsx",
+        "Heavy Styles (5k rows, formatted)",
+        "Read",
+    );
+    bench_read_file_readfast(
         &mut results,
         "heavy-styles.xlsx",
         "Heavy Styles (5k rows, formatted)",
@@ -1176,8 +1231,21 @@ fn main() {
         "Multi-Sheet (10 sheets x 5k rows)",
         "Read",
     );
+    bench_read_file_readfast(
+        &mut results,
+        "multi-sheet.xlsx",
+        "Multi-Sheet (10 sheets x 5k rows)",
+        "Read",
+    );
     bench_read_file(&mut results, "formulas.xlsx", "Formulas (10k rows)", "Read");
+    bench_read_file_readfast(&mut results, "formulas.xlsx", "Formulas (10k rows)", "Read");
     bench_read_file(
+        &mut results,
+        "strings.xlsx",
+        "Strings (20k rows text-heavy)",
+        "Read",
+    );
+    bench_read_file_readfast(
         &mut results,
         "strings.xlsx",
         "Strings (20k rows text-heavy)",
@@ -1189,7 +1257,19 @@ fn main() {
         "Data Validation (5k rows, 8 rules)",
         "Read",
     );
+    bench_read_file_readfast(
+        &mut results,
+        "data-validation.xlsx",
+        "Data Validation (5k rows, 8 rules)",
+        "Read",
+    );
     bench_read_file(
+        &mut results,
+        "comments.xlsx",
+        "Comments (2k rows with comments)",
+        "Read",
+    );
+    bench_read_file_readfast(
         &mut results,
         "comments.xlsx",
         "Comments (2k rows with comments)",
@@ -1201,7 +1281,19 @@ fn main() {
         "Merged Cells (500 regions)",
         "Read",
     );
+    bench_read_file_readfast(
+        &mut results,
+        "merged-cells.xlsx",
+        "Merged Cells (500 regions)",
+        "Read",
+    );
     bench_read_file(
+        &mut results,
+        "mixed-workload.xlsx",
+        "Mixed Workload (ERP document)",
+        "Read",
+    );
+    bench_read_file_readfast(
         &mut results,
         "mixed-workload.xlsx",
         "Mixed Workload (ERP document)",
@@ -1216,13 +1308,31 @@ fn main() {
         "Scale 1k rows",
         "Read (Scale)",
     );
+    bench_read_file_readfast(
+        &mut results,
+        "scale-1k.xlsx",
+        "Scale 1k rows",
+        "Read (Scale)",
+    );
     bench_read_file(
         &mut results,
         "scale-10k.xlsx",
         "Scale 10k rows",
         "Read (Scale)",
     );
+    bench_read_file_readfast(
+        &mut results,
+        "scale-10k.xlsx",
+        "Scale 10k rows",
+        "Read (Scale)",
+    );
     bench_read_file(
+        &mut results,
+        "scale-100k.xlsx",
+        "Scale 100k rows",
+        "Read (Scale)",
+    );
+    bench_read_file_readfast(
         &mut results,
         "scale-100k.xlsx",
         "Scale 100k rows",

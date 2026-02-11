@@ -245,6 +245,30 @@ async function benchReadFile(filename: string, label: string, category: string) 
     }
   });
 
+  // SheetKit with readfast parse mode
+  await benchMultiRun('SheetKit', `Read ${label} (readfast)`, category, () => {
+    const wb = SheetKitWorkbook.openSync(filepath, { parseMode: 'readfast' });
+    for (const name of wb.sheetNames) {
+      wb.getRows(name);
+    }
+  });
+
+  // SheetKit with getRowsRaw (typed arrays)
+  await benchMultiRun('SheetKit', `Read ${label} (getRowsRaw)`, category, () => {
+    const wb = SheetKitWorkbook.openSync(filepath);
+    for (const name of wb.sheetNames) {
+      wb.getRowsRaw(name);
+    }
+  });
+
+  // SheetKit with readfast + getRowsRaw (best combo)
+  await benchMultiRun('SheetKit', `Read ${label} (readfast+raw)`, category, () => {
+    const wb = SheetKitWorkbook.openSync(filepath, { parseMode: 'readfast' });
+    for (const name of wb.sheetNames) {
+      wb.getRowsRaw(name);
+    }
+  });
+
   await benchMultiRun('ExcelJS', `Read ${label}`, category, async () => {
     const wb = new ExcelJS.Workbook();
     await wb.xlsx.readFile(filepath);
@@ -900,6 +924,23 @@ async function benchBufferRoundTrip() {
     wb2.getRows('Sheet1');
   });
 
+  await benchMultiRun('SheetKit', `${label} (readfast)`, 'Round-Trip', () => {
+    const wb = new SheetKitWorkbook();
+    const sheet = 'Sheet1';
+    const data: (string | number | boolean | null)[][] = [];
+    for (let r = 1; r <= ROWS; r++) {
+      const row: (string | number | boolean | null)[] = [];
+      for (let c = 0; c < COLS; c++) {
+        row.push(r * (c + 1));
+      }
+      data.push(row);
+    }
+    wb.setSheetData(sheet, data);
+    const buf = wb.writeBufferSync();
+    const wb2 = SheetKitWorkbook.openBufferSync(buf, { parseMode: 'readfast' });
+    wb2.getRows('Sheet1');
+  });
+
   await benchMultiRun('ExcelJS', label, 'Round-Trip', async () => {
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet('Sheet1');
@@ -1023,6 +1064,14 @@ async function benchRandomAccessRead() {
 
   await benchMultiRun('SheetKit', `${labelOpen} (async)`, 'Random Access', async () => {
     const wb = await SheetKitWorkbook.open(filepath);
+    for (const cell of cells) {
+      wb.getCellValue('Sheet1', cell);
+    }
+  });
+
+  // SheetKit with readfast (sync)
+  await benchMultiRun('SheetKit', `${labelOpen} (readfast)`, 'Random Access', () => {
+    const wb = SheetKitWorkbook.openSync(filepath, { parseMode: 'readfast' });
     for (const cell of cells) {
       wb.getCellValue('Sheet1', cell);
     }
