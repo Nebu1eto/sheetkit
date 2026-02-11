@@ -1,0 +1,13 @@
+[package]
+name = "sheetkit-bench-comparison"
+edition = "2021"
+publish = false
+
+[dependencies]
+sheetkit = { path = "../../crates/sheetkit" }
+calamine = "0.26"
+rust_xlsxwriter = "0.79"
+edit-xlsx = "0.4"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
