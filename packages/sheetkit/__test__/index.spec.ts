@@ -1,7 +1,7 @@
 import { access, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { decodeRowsBuffer } from '../buffer-codec.js';
+import { decodeRowsBuffer, decodeRowsIterator, decodeRowsRawBuffer } from '../buffer-codec.js';
 import { builtinFormatCode, formatNumber, Workbook } from '../index.js';
 import { SheetData } from '../sheet-data.js';
 
@@ -5158,5 +5158,325 @@ describe('Form Controls', () => {
     expect(comments3[0].text).toBe('A comment');
 
     await cleanup(out2);
+  });
+});
+
+describe('getRowsRaw', () => {
+  it('should return empty result for empty sheet', () => {
+    const wb = new Workbook();
+    const raw = wb.getRowsRaw('Sheet1');
+    expect(raw.totalRows).toBe(0);
+    expect(raw.totalCells).toBe(0);
+    expect(raw.rowNumbers).toHaveLength(0);
+    expect(raw.cellColumns).toHaveLength(0);
+  });
+
+  it('should return correct typed arrays for mixed cell types', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'hello');
+    wb.setCellValue('Sheet1', 'B1', 42);
+    wb.setCellValue('Sheet1', 'C1', true);
+    wb.setCellValue('Sheet1', 'A2', 99.5);
+
+    const raw = wb.getRowsRaw('Sheet1');
+    expect(raw.totalRows).toBe(2);
+    expect(raw.totalCells).toBe(4);
+
+    expect(raw.rowNumbers[0]).toBe(1);
+    expect(raw.rowNumbers[1]).toBe(2);
+
+    expect(raw.rowCellCounts[0]).toBe(3);
+    expect(raw.rowCellCounts[1]).toBe(1);
+
+    // Row 1, cell 0: string "hello" at column A (1)
+    const r1start = raw.rowCellOffsets[0];
+    expect(raw.cellColumns[r1start]).toBe(1);
+    expect(raw.cellTypes[r1start]).toBe(2); // TYPE_STRING
+    expect(raw.cellStringValues[r1start]).toBe('hello');
+
+    // Row 1, cell 1: number 42 at column B (2)
+    expect(raw.cellColumns[r1start + 1]).toBe(2);
+    expect(raw.cellTypes[r1start + 1]).toBe(1); // TYPE_NUMBER
+    expect(raw.cellNumericValues[r1start + 1]).toBe(42);
+
+    // Row 1, cell 2: boolean true at column C (3)
+    expect(raw.cellColumns[r1start + 2]).toBe(3);
+    expect(raw.cellTypes[r1start + 2]).toBe(3); // TYPE_BOOL
+    expect(raw.cellBoolValues[r1start + 2]).toBe(1);
+
+    // Row 2, cell 0: number 99.5 at column A (1)
+    const r2start = raw.rowCellOffsets[1];
+    expect(raw.cellColumns[r2start]).toBe(1);
+    expect(raw.cellTypes[r2start]).toBe(1); // TYPE_NUMBER
+    expect(raw.cellNumericValues[r2start]).toBe(99.5);
+  });
+
+  it('should return NaN for non-numeric cells in numericValues', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'text');
+    wb.setCellValue('Sheet1', 'B1', true);
+
+    const raw = wb.getRowsRaw('Sheet1');
+    expect(Number.isNaN(raw.cellNumericValues[0])).toBe(true);
+    expect(Number.isNaN(raw.cellNumericValues[1])).toBe(true);
+  });
+
+  it('should return empty string for non-string cells in stringValues', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 42);
+    wb.setCellValue('Sheet1', 'B1', true);
+
+    const raw = wb.getRowsRaw('Sheet1');
+    expect(raw.cellStringValues[0]).toBe('');
+    expect(raw.cellStringValues[1]).toBe('');
+  });
+
+  it('should handle formula cells', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 10);
+    wb.setCellFormula('Sheet1', 'B1', 'A1*2');
+    wb.calculateAll();
+
+    const raw = wb.getRowsRaw('Sheet1');
+    expect(raw.totalCells).toBe(2);
+    expect(raw.cellTypes[1]).toBe(6); // TYPE_FORMULA
+    expect(raw.cellStringValues[1]).toBe('A1*2');
+  });
+
+  it('should handle sparse data', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'first');
+    wb.setCellValue('Sheet1', 'Z50', 'last');
+
+    const raw = wb.getRowsRaw('Sheet1');
+    expect(raw.totalRows).toBe(2);
+    expect(raw.totalCells).toBe(2);
+    expect(raw.rowNumbers[0]).toBe(1);
+    expect(raw.rowNumbers[1]).toBe(50);
+    expect(raw.cellColumns[0]).toBe(1);
+    expect(raw.cellColumns[1]).toBe(26);
+    expect(raw.cellStringValues[0]).toBe('first');
+    expect(raw.cellStringValues[1]).toBe('last');
+  });
+
+  it('should handle large datasets', () => {
+    const wb = new Workbook();
+    const rows = 500;
+    const cols = 10;
+    const data: number[][] = [];
+    for (let r = 0; r < rows; r++) {
+      const row: number[] = [];
+      for (let c = 0; c < cols; c++) {
+        row.push(r * cols + c);
+      }
+      data.push(row);
+    }
+    wb.setSheetData('Sheet1', data);
+
+    const raw = wb.getRowsRaw('Sheet1');
+    expect(raw.totalRows).toBe(rows);
+    expect(raw.totalCells).toBe(rows * cols);
+
+    // Check first and last values
+    expect(raw.cellNumericValues[raw.rowCellOffsets[0]]).toBe(0);
+    const lastRowStart = raw.rowCellOffsets[rows - 1];
+    const lastRowEnd = lastRowStart + raw.rowCellCounts[rows - 1] - 1;
+    expect(raw.cellNumericValues[lastRowEnd]).toBe(rows * cols - 1);
+  });
+
+  it('should be consistent with getRows for all cell types', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'text');
+    wb.setCellValue('Sheet1', 'B1', 42);
+    wb.setCellValue('Sheet1', 'C1', true);
+    wb.setCellValue('Sheet1', 'A2', 'another');
+    wb.setCellValue('Sheet1', 'B2', -3.14);
+
+    const rows = wb.getRows('Sheet1');
+    const raw = wb.getRowsRaw('Sheet1');
+
+    expect(raw.totalRows).toBe(rows.length);
+
+    let totalCells = 0;
+    for (const r of rows) {
+      totalCells += r.cells.length;
+    }
+    expect(raw.totalCells).toBe(totalCells);
+
+    for (let ri = 0; ri < rows.length; ri++) {
+      expect(raw.rowNumbers[ri]).toBe(rows[ri].row);
+      expect(raw.rowCellCounts[ri]).toBe(rows[ri].cells.length);
+    }
+  });
+
+  it('should throw for non-existent sheet', () => {
+    const wb = new Workbook();
+    expect(() => wb.getRowsRaw('NoSheet')).toThrow();
+  });
+});
+
+describe('decodeRowsRawBuffer', () => {
+  it('should return empty result for null buffer', () => {
+    const raw = decodeRowsRawBuffer(null);
+    expect(raw.totalRows).toBe(0);
+    expect(raw.totalCells).toBe(0);
+  });
+
+  it('should return empty result for tiny buffer', () => {
+    const raw = decodeRowsRawBuffer(Buffer.alloc(5));
+    expect(raw.totalRows).toBe(0);
+  });
+
+  it('should decode the same data as decodeRowsBuffer', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'Name');
+    wb.setCellValue('Sheet1', 'B1', 100);
+    wb.setCellValue('Sheet1', 'C1', true);
+    wb.setCellValue('Sheet1', 'A2', 'Alice');
+    wb.setCellValue('Sheet1', 'B2', 55.5);
+
+    const buf = wb.getRowsBuffer('Sheet1');
+    const decoded = decodeRowsBuffer(buf);
+    const raw = decodeRowsRawBuffer(buf);
+
+    expect(raw.totalRows).toBe(decoded.length);
+    let ci = 0;
+    for (let ri = 0; ri < decoded.length; ri++) {
+      expect(raw.rowNumbers[ri]).toBe(decoded[ri].row);
+      expect(raw.rowCellCounts[ri]).toBe(decoded[ri].cells.length);
+      for (const cell of decoded[ri].cells) {
+        if (cell.valueType === 'number') {
+          expect(raw.cellNumericValues[ci]).toBe(cell.numberValue);
+        } else if (cell.valueType === 'string') {
+          expect(raw.cellStringValues[ci]).toBe(cell.value);
+        } else if (cell.valueType === 'boolean') {
+          expect(raw.cellBoolValues[ci]).toBe(cell.boolValue ? 1 : 0);
+        }
+        ci++;
+      }
+    }
+  });
+});
+
+describe('getRowsIterator', () => {
+  it('should yield nothing for empty sheet', () => {
+    const wb = new Workbook();
+    const items = [...wb.getRowsIterator('Sheet1')];
+    expect(items).toEqual([]);
+  });
+
+  it('should yield rows matching getRows output', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'Name');
+    wb.setCellValue('Sheet1', 'B1', 100);
+    wb.setCellValue('Sheet1', 'A2', 'Alice');
+    wb.setCellValue('Sheet1', 'B2', true);
+
+    const rows = wb.getRows('Sheet1');
+    const iterated = [...wb.getRowsIterator('Sheet1')];
+    expect(iterated).toEqual(rows);
+  });
+
+  it('should yield rows one at a time', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'row1');
+    wb.setCellValue('Sheet1', 'A2', 'row2');
+    wb.setCellValue('Sheet1', 'A3', 'row3');
+
+    const gen = wb.getRowsIterator('Sheet1');
+    const first = gen.next();
+    expect(first.done).toBe(false);
+    expect(first.value.row).toBe(1);
+    expect(first.value.cells[0].value).toBe('row1');
+
+    const second = gen.next();
+    expect(second.done).toBe(false);
+    expect(second.value.row).toBe(2);
+
+    const third = gen.next();
+    expect(third.done).toBe(false);
+    expect(third.value.row).toBe(3);
+
+    const done = gen.next();
+    expect(done.done).toBe(true);
+  });
+
+  it('should handle sparse data correctly', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'first');
+    wb.setCellValue('Sheet1', 'Z50', 'last');
+
+    const items = [...wb.getRowsIterator('Sheet1')];
+    expect(items.length).toBe(2);
+    expect(items[0].row).toBe(1);
+    expect(items[0].cells[0].column).toBe('A');
+    expect(items[0].cells[0].value).toBe('first');
+    expect(items[1].row).toBe(50);
+    expect(items[1].cells[0].column).toBe('Z');
+    expect(items[1].cells[0].value).toBe('last');
+  });
+
+  it('should handle mixed cell types', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'text');
+    wb.setCellValue('Sheet1', 'B1', 42);
+    wb.setCellValue('Sheet1', 'C1', true);
+    wb.setCellFormula('Sheet1', 'D1', 'B1+1');
+    wb.calculateAll();
+
+    const items = [...wb.getRowsIterator('Sheet1')];
+    expect(items.length).toBe(1);
+    expect(items[0].cells.length).toBe(4);
+    expect(items[0].cells[0].valueType).toBe('string');
+    expect(items[0].cells[1].valueType).toBe('number');
+    expect(items[0].cells[2].valueType).toBe('boolean');
+    expect(items[0].cells[3].valueType).toBe('formula');
+  });
+
+  it('should throw for non-existent sheet', () => {
+    const wb = new Workbook();
+    expect(() => [...wb.getRowsIterator('NoSheet')]).toThrow();
+  });
+
+  it('should handle large dataset consistently with getRows', () => {
+    const wb = new Workbook();
+    const data: (string | number)[][] = [];
+    for (let r = 0; r < 100; r++) {
+      const row: (string | number)[] = [];
+      for (let c = 0; c < 10; c++) {
+        row.push(r % 2 === 0 ? r * 10 + c : `val_${r}_${c}`);
+      }
+      data.push(row);
+    }
+    wb.setSheetData('Sheet1', data);
+
+    const rows = wb.getRows('Sheet1');
+    const iterated = [...wb.getRowsIterator('Sheet1')];
+    expect(iterated).toEqual(rows);
+  });
+});
+
+describe('decodeRowsIterator', () => {
+  it('should return empty iterator for null buffer', () => {
+    const items = [...decodeRowsIterator(null)];
+    expect(items).toEqual([]);
+  });
+
+  it('should return empty iterator for tiny buffer', () => {
+    const items = [...decodeRowsIterator(Buffer.alloc(5))];
+    expect(items).toEqual([]);
+  });
+
+  it('should yield the same rows as decodeRowsBuffer', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'Name');
+    wb.setCellValue('Sheet1', 'B1', 100);
+    wb.setCellValue('Sheet1', 'A2', 'Bob');
+    wb.setCellValue('Sheet1', 'B2', false);
+
+    const buf = wb.getRowsBuffer('Sheet1');
+    const decoded = decodeRowsBuffer(buf);
+    const iterated = [...decodeRowsIterator(buf)];
+    expect(iterated).toEqual(decoded);
   });
 });
