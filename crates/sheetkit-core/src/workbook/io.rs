@@ -1115,7 +1115,8 @@ impl Workbook {
             let sparklines = self.sheet_sparklines.get(i).unwrap_or(&empty_sparklines);
             let legacy_rid = legacy_drawing_rids.get(&i).map(|s| s.as_str());
             let sheet_table_rids = table_parts_by_sheet.get(&i);
-            let stale_table_parts = sheet_table_rids.is_none() && ws.table_parts.is_some();
+            let stale_table_parts =
+                !has_deferred && sheet_table_rids.is_none() && ws.table_parts.is_some();
             let has_extras = legacy_rid.is_some()
                 || !sparklines.is_empty()
                 || sheet_table_rids.is_some()
@@ -1311,10 +1312,103 @@ impl Workbook {
         }
 
         // Write back deferred parts from ReadFast open (raw bytes, unparsed).
-        for (path, data) in &self.deferred_parts {
-            zip.start_file(path, options)
-                .map_err(|e| Error::Zip(e.to_string()))?;
-            zip.write_all(data)?;
+        // Skip any path that was already written by the normal code above. This
+        // prevents duplicate ZIP entries when an auxiliary part (comments, doc
+        // properties, etc.) is mutated after a ReadFast open.
+        if !self.deferred_parts.is_empty() {
+            let mut emitted_owned: HashSet<String> = HashSet::new();
+            // Essential parts always written.
+            emitted_owned.insert("[Content_Types].xml".to_string());
+            emitted_owned.insert("_rels/.rels".to_string());
+            emitted_owned.insert("xl/workbook.xml".to_string());
+            emitted_owned.insert("xl/_rels/workbook.xml.rels".to_string());
+            emitted_owned.insert("xl/styles.xml".to_string());
+            emitted_owned.insert("xl/sharedStrings.xml".to_string());
+            emitted_owned.insert("xl/theme/theme1.xml".to_string());
+            // Per-sheet worksheet paths.
+            for i in 0..self.worksheets.len() {
+                emitted_owned.insert(self.sheet_part_path(i));
+            }
+            for (i, comments) in self.sheet_comments.iter().enumerate() {
+                if comments.is_some() {
+                    emitted_owned.insert(format!("xl/comments{}.xml", i + 1));
+                }
+            }
+            for (_sheet_idx, vml_path, _) in &vml_parts_to_write {
+                emitted_owned.insert(vml_path.clone());
+            }
+            for (path, _) in &self.drawings {
+                emitted_owned.insert(path.clone());
+            }
+            for (path, _) in &self.charts {
+                emitted_owned.insert(path.clone());
+            }
+            for (path, _) in &self.raw_charts {
+                emitted_owned.insert(path.clone());
+            }
+            for (path, _) in &self.images {
+                emitted_owned.insert(path.clone());
+            }
+            for sheet_idx in worksheet_rels.keys() {
+                let sheet_path = self.sheet_part_path(*sheet_idx);
+                emitted_owned.insert(relationship_part_path(&sheet_path));
+            }
+            for drawing_idx in self.drawing_rels.keys() {
+                if let Some((drawing_path, _)) = self.drawings.get(*drawing_idx) {
+                    emitted_owned.insert(relationship_part_path(drawing_path));
+                }
+            }
+            for (path, _) in &self.pivot_tables {
+                emitted_owned.insert(path.clone());
+            }
+            for (path, _) in &self.pivot_cache_defs {
+                emitted_owned.insert(path.clone());
+            }
+            for (path, _) in &self.pivot_cache_records {
+                emitted_owned.insert(path.clone());
+            }
+            for (path, _, _) in &self.tables {
+                emitted_owned.insert(path.clone());
+            }
+            for (path, _) in &self.slicer_defs {
+                emitted_owned.insert(path.clone());
+            }
+            for (path, _) in &self.slicer_caches {
+                emitted_owned.insert(path.clone());
+            }
+            if self.vba_blob.is_some() {
+                emitted_owned.insert("xl/vbaProject.bin".to_string());
+            }
+            if self.core_properties.is_some() {
+                emitted_owned.insert("docProps/core.xml".to_string());
+            }
+            if self.app_properties.is_some() {
+                emitted_owned.insert("docProps/app.xml".to_string());
+            }
+            if self.custom_properties.is_some() {
+                emitted_owned.insert("docProps/custom.xml".to_string());
+            }
+            if has_any_threaded {
+                for (i, tc) in self.sheet_threaded_comments.iter().enumerate() {
+                    if tc.is_some() {
+                        emitted_owned
+                            .insert(format!("xl/threadedComments/threadedComment{}.xml", i + 1));
+                    }
+                }
+                emitted_owned.insert("xl/persons/person.xml".to_string());
+            }
+            for (path, _) in &self.unknown_parts {
+                emitted_owned.insert(path.clone());
+            }
+
+            for (path, data) in &self.deferred_parts {
+                if emitted_owned.contains(path) {
+                    continue;
+                }
+                zip.start_file(path, options)
+                    .map_err(|e| Error::Zip(e.to_string()))?;
+                zip.write_all(data)?;
+            }
         }
 
         Ok(())
@@ -3372,5 +3466,119 @@ mod tests {
             wb2.deferred_parts.is_empty(),
             "Full mode should not have deferred parts"
         );
+    }
+
+    #[test]
+    fn test_readfast_table_parts_preserved_on_roundtrip() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", CellValue::String("Name".to_string()))
+            .unwrap();
+        wb.set_cell_value("Sheet1", "B1", CellValue::String("Value".to_string()))
+            .unwrap();
+        wb.set_cell_value("Sheet1", "A2", CellValue::String("Alice".to_string()))
+            .unwrap();
+        wb.set_cell_value("Sheet1", "B2", CellValue::Number(10.0))
+            .unwrap();
+        wb.add_table(
+            "Sheet1",
+            &crate::table::TableConfig {
+                name: "Table1".to_string(),
+                display_name: "Table1".to_string(),
+                range: "A1:B2".to_string(),
+                columns: vec![
+                    crate::table::TableColumn {
+                        name: "Name".to_string(),
+                        totals_row_function: None,
+                        totals_row_label: None,
+                    },
+                    crate::table::TableColumn {
+                        name: "Value".to_string(),
+                        totals_row_function: None,
+                        totals_row_label: None,
+                    },
+                ],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let buf = wb.save_to_buffer().unwrap();
+
+        // Open in ReadFast mode and save.
+        let opts = OpenOptions::new().parse_mode(ParseMode::ReadFast);
+        let wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
+        let saved = wb2.save_to_buffer().unwrap();
+
+        // Re-open in Full mode and verify the table survived the round-trip.
+        let wb3 = Workbook::open_from_buffer(&saved).unwrap();
+        let tables = wb3.get_tables("Sheet1").unwrap();
+        assert_eq!(tables.len(), 1);
+        assert_eq!(tables[0].name, "Table1");
+    }
+
+    #[test]
+    fn test_readfast_add_comment_then_save_no_duplicate() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", CellValue::String("data".to_string()))
+            .unwrap();
+        wb.add_comment(
+            "Sheet1",
+            &crate::comment::CommentConfig {
+                cell: "A1".to_string(),
+                author: "Tester".to_string(),
+                text: "Original comment".to_string(),
+            },
+        )
+        .unwrap();
+        let buf = wb.save_to_buffer().unwrap();
+
+        // Open in ReadFast mode, add a new comment, and save.
+        let opts = OpenOptions::new().parse_mode(ParseMode::ReadFast);
+        let mut wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
+        wb2.add_comment(
+            "Sheet1",
+            &crate::comment::CommentConfig {
+                cell: "B1".to_string(),
+                author: "Tester".to_string(),
+                text: "New comment".to_string(),
+            },
+        )
+        .unwrap();
+        // This must not fail with a duplicate ZIP entry error.
+        let saved = wb2.save_to_buffer().unwrap();
+
+        // Re-open and verify the new comment is present.
+        let wb3 = Workbook::open_from_buffer(&saved).unwrap();
+        let comments = wb3.get_comments("Sheet1").unwrap();
+        assert!(
+            comments.iter().any(|c| c.text == "New comment"),
+            "New comment should be present after ReadFast + add_comment round-trip"
+        );
+    }
+
+    #[test]
+    fn test_readfast_set_doc_props_then_save_no_duplicate() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", CellValue::Number(1.0))
+            .unwrap();
+        wb.set_doc_props(crate::doc_props::DocProperties {
+            title: Some("Original Title".to_string()),
+            ..Default::default()
+        });
+        let buf = wb.save_to_buffer().unwrap();
+
+        // Open in ReadFast mode, update doc props, and save.
+        let opts = OpenOptions::new().parse_mode(ParseMode::ReadFast);
+        let mut wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
+        wb2.set_doc_props(crate::doc_props::DocProperties {
+            title: Some("Updated Title".to_string()),
+            ..Default::default()
+        });
+        // This must not fail with a duplicate ZIP entry error.
+        let saved = wb2.save_to_buffer().unwrap();
+
+        // Re-open and verify the updated doc props.
+        let wb3 = Workbook::open_from_buffer(&saved).unwrap();
+        let props = wb3.get_doc_props();
+        assert_eq!(props.title, Some("Updated Title".to_string()));
     }
 }
