@@ -727,6 +727,11 @@ export interface JsOpenOptions {
   maxUnzipSize?: number
   /** Maximum number of ZIP entries allowed. */
   maxZipEntries?: number
+  /**
+   * Parse mode: "full" (default) or "readfast". ReadFast skips auxiliary
+   * parts (comments, charts, images, etc.) for faster read-only workloads.
+   */
+  parseMode?: string
 }
 
 /** Page margins configuration in inches. */

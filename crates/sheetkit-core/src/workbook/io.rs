@@ -43,6 +43,7 @@ impl Workbook {
             sheet_sparklines: vec![vec![]],
             sheet_vml: vec![None],
             unknown_parts: vec![],
+            deferred_parts: HashMap::new(),
             vba_blob: None,
             tables: vec![],
             raw_sheet_xml: vec![None],
@@ -203,6 +204,7 @@ impl Workbook {
         known_paths.insert("xl/theme/theme1.xml".to_string());
 
         // Parse per-sheet worksheet relationship files (optional).
+        // Always loaded: needed for hyperlinks, on-demand comment loading, etc.
         let mut worksheet_rels: HashMap<usize, Relationships> = HashMap::with_capacity(sheet_count);
         for (i, sheet_path) in worksheet_paths.iter().enumerate() {
             let rels_path = relationship_part_path(sheet_path);
@@ -212,330 +214,341 @@ impl Workbook {
             }
         }
 
-        // Parse comments, VML drawings, drawings, drawing rels, charts, and images.
+        let read_fast = options.is_read_fast();
+
+        // Auxiliary part parsing: skipped in ReadFast mode.
         let mut sheet_comments: Vec<Option<Comments>> = vec![None; worksheets.len()];
         let mut sheet_vml: Vec<Option<Vec<u8>>> = vec![None; worksheets.len()];
         let mut drawings: Vec<(String, WsDr)> = Vec::new();
         let mut worksheet_drawings: HashMap<usize, usize> = HashMap::new();
-        let mut drawing_path_to_idx: HashMap<String, usize> = HashMap::new();
-
-        for (sheet_idx, sheet_path) in worksheet_paths.iter().enumerate() {
-            let Some(rels) = worksheet_rels.get(&sheet_idx) else {
-                continue;
-            };
-
-            if let Some(comment_rel) = rels
-                .relationships
-                .iter()
-                .find(|r| r.rel_type == rel_types::COMMENTS)
-            {
-                let comment_path = resolve_relationship_target(sheet_path, &comment_rel.target);
-                if let Ok(comments) = read_xml_part::<Comments, _>(archive, &comment_path) {
-                    sheet_comments[sheet_idx] = Some(comments);
-                    known_paths.insert(comment_path);
-                }
-            }
-
-            if let Some(vml_rel) = rels
-                .relationships
-                .iter()
-                .find(|r| r.rel_type == rel_types::VML_DRAWING)
-            {
-                let vml_path = resolve_relationship_target(sheet_path, &vml_rel.target);
-                if let Ok(bytes) = read_bytes_part(archive, &vml_path) {
-                    sheet_vml[sheet_idx] = Some(bytes);
-                    known_paths.insert(vml_path);
-                }
-            }
-
-            if let Some(drawing_rel) = rels
-                .relationships
-                .iter()
-                .find(|r| r.rel_type == rel_types::DRAWING)
-            {
-                let drawing_path = resolve_relationship_target(sheet_path, &drawing_rel.target);
-                let drawing_idx = if let Some(idx) = drawing_path_to_idx.get(&drawing_path) {
-                    *idx
-                } else if let Ok(drawing) = read_xml_part::<WsDr, _>(archive, &drawing_path) {
-                    let idx = drawings.len();
-                    drawings.push((drawing_path.clone(), drawing));
-                    drawing_path_to_idx.insert(drawing_path.clone(), idx);
-                    known_paths.insert(drawing_path);
-                    idx
-                } else {
-                    continue;
-                };
-                worksheet_drawings.insert(sheet_idx, drawing_idx);
-            }
-        }
-
-        // Fallback: load drawing parts listed in content types even when they
-        // are not discoverable via worksheet rel parsing.
-        for ovr in &content_types.overrides {
-            if ovr.content_type != mime_types::DRAWING {
-                continue;
-            }
-            let drawing_path = ovr.part_name.trim_start_matches('/').to_string();
-            if drawing_path_to_idx.contains_key(&drawing_path) {
-                continue;
-            }
-            if let Ok(drawing) = read_xml_part::<WsDr, _>(archive, &drawing_path) {
-                let idx = drawings.len();
-                drawings.push((drawing_path.clone(), drawing));
-                known_paths.insert(drawing_path.clone());
-                drawing_path_to_idx.insert(drawing_path, idx);
-            }
-        }
-
         let mut drawing_rels: HashMap<usize, Relationships> = HashMap::new();
         let mut charts: Vec<(String, ChartSpace)> = Vec::new();
         let mut raw_charts: Vec<(String, Vec<u8>)> = Vec::new();
         let mut images: Vec<(String, Vec<u8>)> = Vec::new();
-        let mut seen_chart_paths: HashSet<String> = HashSet::new();
-        let mut seen_image_paths: HashSet<String> = HashSet::new();
-
-        for (drawing_idx, (drawing_path, _)) in drawings.iter().enumerate() {
-            let drawing_rels_path = relationship_part_path(drawing_path);
-            let Ok(rels) = read_xml_part::<Relationships, _>(archive, &drawing_rels_path) else {
-                continue;
-            };
-            known_paths.insert(drawing_rels_path);
-
-            for rel in &rels.relationships {
-                if rel.rel_type == rel_types::CHART {
-                    let chart_path = resolve_relationship_target(drawing_path, &rel.target);
-                    if seen_chart_paths.insert(chart_path.clone()) {
-                        match read_xml_part::<ChartSpace, _>(archive, &chart_path) {
-                            Ok(chart) => {
-                                known_paths.insert(chart_path.clone());
-                                charts.push((chart_path, chart));
-                            }
-                            Err(_) => {
-                                if let Ok(bytes) = read_bytes_part(archive, &chart_path) {
-                                    known_paths.insert(chart_path.clone());
-                                    raw_charts.push((chart_path, bytes));
-                                }
-                            }
-                        }
-                    }
-                } else if rel.rel_type == rel_types::IMAGE {
-                    let image_path = resolve_relationship_target(drawing_path, &rel.target);
-                    if seen_image_paths.insert(image_path.clone()) {
-                        if let Ok(bytes) = read_bytes_part(archive, &image_path) {
-                            known_paths.insert(image_path.clone());
-                            images.push((image_path, bytes));
-                        }
-                    }
-                }
-            }
-
-            drawing_rels.insert(drawing_idx, rels);
-        }
-
-        // Fallback: load chart parts listed in content types even when no
-        // drawing relationship was read.
-        for ovr in &content_types.overrides {
-            if ovr.content_type != mime_types::CHART {
-                continue;
-            }
-            let chart_path = ovr.part_name.trim_start_matches('/').to_string();
-            if seen_chart_paths.insert(chart_path.clone()) {
-                match read_xml_part::<ChartSpace, _>(archive, &chart_path) {
-                    Ok(chart) => {
-                        known_paths.insert(chart_path.clone());
-                        charts.push((chart_path, chart));
-                    }
-                    Err(_) => {
-                        if let Ok(bytes) = read_bytes_part(archive, &chart_path) {
-                            known_paths.insert(chart_path.clone());
-                            raw_charts.push((chart_path, bytes));
-                        }
-                    }
-                }
-            }
-        }
-
-        // Parse docProps/core.xml (optional - uses manual XML parsing)
-        let core_properties = read_string_part(archive, "docProps/core.xml")
-            .ok()
-            .and_then(|xml_str| {
-                sheetkit_xml::doc_props::deserialize_core_properties(&xml_str).ok()
-            });
-        known_paths.insert("docProps/core.xml".to_string());
-
-        // Parse docProps/app.xml (optional - uses serde)
-        let app_properties: Option<sheetkit_xml::doc_props::ExtendedProperties> =
-            read_xml_part(archive, "docProps/app.xml").ok();
-        known_paths.insert("docProps/app.xml".to_string());
-
-        // Parse docProps/custom.xml (optional - uses manual XML parsing)
-        let custom_properties = read_string_part(archive, "docProps/custom.xml")
-            .ok()
-            .and_then(|xml_str| {
-                sheetkit_xml::doc_props::deserialize_custom_properties(&xml_str).ok()
-            });
-        known_paths.insert("docProps/custom.xml".to_string());
-
-        // Parse pivot cache definitions, pivot tables, and pivot cache records.
+        let mut core_properties: Option<sheetkit_xml::doc_props::CoreProperties> = None;
+        let mut app_properties: Option<sheetkit_xml::doc_props::ExtendedProperties> = None;
+        let mut custom_properties: Option<sheetkit_xml::doc_props::CustomProperties> = None;
         let mut pivot_cache_defs = Vec::new();
         let mut pivot_tables = Vec::new();
         let mut pivot_cache_records = Vec::new();
-        for ovr in &content_types.overrides {
-            let path = ovr.part_name.trim_start_matches('/');
-            if ovr.content_type == mime_types::PIVOT_CACHE_DEFINITION {
-                if let Ok(pcd) = read_xml_part::<sheetkit_xml::pivot_cache::PivotCacheDefinition, _>(
-                    archive, path,
-                ) {
-                    known_paths.insert(path.to_string());
-                    pivot_cache_defs.push((path.to_string(), pcd));
-                }
-            } else if ovr.content_type == mime_types::PIVOT_TABLE {
-                if let Ok(pt) = read_xml_part::<sheetkit_xml::pivot_table::PivotTableDefinition, _>(
-                    archive, path,
-                ) {
-                    known_paths.insert(path.to_string());
-                    pivot_tables.push((path.to_string(), pt));
-                }
-            } else if ovr.content_type == mime_types::PIVOT_CACHE_RECORDS {
-                if let Ok(pcr) =
-                    read_xml_part::<sheetkit_xml::pivot_cache::PivotCacheRecords, _>(archive, path)
-                {
-                    known_paths.insert(path.to_string());
-                    pivot_cache_records.push((path.to_string(), pcr));
-                }
-            }
-        }
-
-        // Parse slicer definitions and slicer cache definitions.
         let mut slicer_defs = Vec::new();
         let mut slicer_caches = Vec::new();
-        for ovr in &content_types.overrides {
-            let path = ovr.part_name.trim_start_matches('/');
-            if ovr.content_type == mime_types::SLICER {
-                if let Ok(sd) =
-                    read_xml_part::<sheetkit_xml::slicer::SlicerDefinitions, _>(archive, path)
-                {
-                    slicer_defs.push((path.to_string(), sd));
-                }
-            } else if ovr.content_type == mime_types::SLICER_CACHE {
-                if let Ok(raw) = read_string_part(archive, path) {
-                    if let Some(scd) = sheetkit_xml::slicer::parse_slicer_cache(&raw) {
-                        slicer_caches.push((path.to_string(), scd));
-                    }
-                }
-            }
-        }
-
-        // Parse threaded comments per-sheet and the workbook-level person list.
         let mut sheet_threaded_comments: Vec<
             Option<sheetkit_xml::threaded_comment::ThreadedComments>,
         > = vec![None; worksheets.len()];
-        for (sheet_idx, sheet_path) in worksheet_paths.iter().enumerate() {
-            let Some(rels) = worksheet_rels.get(&sheet_idx) else {
-                continue;
-            };
-            if let Some(tc_rel) = rels
-                .relationships
-                .iter()
-                .find(|r| r.rel_type == sheetkit_xml::threaded_comment::REL_TYPE_THREADED_COMMENT)
-            {
-                let tc_path = resolve_relationship_target(sheet_path, &tc_rel.target);
-                if let Ok(tc) = read_xml_part::<sheetkit_xml::threaded_comment::ThreadedComments, _>(
-                    archive, &tc_path,
-                ) {
-                    sheet_threaded_comments[sheet_idx] = Some(tc);
-                    known_paths.insert(tc_path);
-                }
-            }
-        }
-
-        // Parse person list (workbook-level).
-        let person_list: sheetkit_xml::threaded_comment::PersonList = {
-            let mut found = None;
-            // Check workbook rels for person relationship.
-            if let Some(person_rel) = workbook_rels
-                .relationships
-                .iter()
-                .find(|r| r.rel_type == sheetkit_xml::threaded_comment::REL_TYPE_PERSON)
-            {
-                let person_path =
-                    resolve_relationship_target("xl/workbook.xml", &person_rel.target);
-                if let Ok(pl) = read_xml_part::<sheetkit_xml::threaded_comment::PersonList, _>(
-                    archive,
-                    &person_path,
-                ) {
-                    known_paths.insert(person_path);
-                    found = Some(pl);
-                }
-            }
-            // Fallback: try the standard path.
-            if found.is_none() {
-                if let Ok(pl) = read_xml_part::<sheetkit_xml::threaded_comment::PersonList, _>(
-                    archive,
-                    "xl/persons/person.xml",
-                ) {
-                    known_paths.insert("xl/persons/person.xml".to_string());
-                    found = Some(pl);
-                }
-            }
-            found.unwrap_or_default()
-        };
-
-        // Parse sparklines from worksheet extension lists.
+        let mut person_list = sheetkit_xml::threaded_comment::PersonList::default();
         let mut sheet_sparklines: Vec<Vec<crate::sparkline::SparklineConfig>> =
             vec![vec![]; worksheets.len()];
-        for (i, ws_path) in worksheet_paths.iter().enumerate() {
-            if let Ok(raw) = read_string_part(archive, ws_path) {
-                let parsed = parse_sparklines_from_xml(&raw);
-                if !parsed.is_empty() {
-                    sheet_sparklines[i] = parsed;
+        let mut vba_blob: Option<Vec<u8>> = None;
+        let mut tables: Vec<(String, sheetkit_xml::table::TableXml, usize)> = Vec::new();
+
+        if !read_fast {
+            let mut drawing_path_to_idx: HashMap<String, usize> = HashMap::new();
+
+            for (sheet_idx, sheet_path) in worksheet_paths.iter().enumerate() {
+                let Some(rels) = worksheet_rels.get(&sheet_idx) else {
+                    continue;
+                };
+
+                if let Some(comment_rel) = rels
+                    .relationships
+                    .iter()
+                    .find(|r| r.rel_type == rel_types::COMMENTS)
+                {
+                    let comment_path = resolve_relationship_target(sheet_path, &comment_rel.target);
+                    if let Ok(comments) = read_xml_part::<Comments, _>(archive, &comment_path) {
+                        sheet_comments[sheet_idx] = Some(comments);
+                        known_paths.insert(comment_path);
+                    }
+                }
+
+                if let Some(vml_rel) = rels
+                    .relationships
+                    .iter()
+                    .find(|r| r.rel_type == rel_types::VML_DRAWING)
+                {
+                    let vml_path = resolve_relationship_target(sheet_path, &vml_rel.target);
+                    if let Ok(bytes) = read_bytes_part(archive, &vml_path) {
+                        sheet_vml[sheet_idx] = Some(bytes);
+                        known_paths.insert(vml_path);
+                    }
+                }
+
+                if let Some(drawing_rel) = rels
+                    .relationships
+                    .iter()
+                    .find(|r| r.rel_type == rel_types::DRAWING)
+                {
+                    let drawing_path = resolve_relationship_target(sheet_path, &drawing_rel.target);
+                    let drawing_idx = if let Some(idx) = drawing_path_to_idx.get(&drawing_path) {
+                        *idx
+                    } else if let Ok(drawing) = read_xml_part::<WsDr, _>(archive, &drawing_path) {
+                        let idx = drawings.len();
+                        drawings.push((drawing_path.clone(), drawing));
+                        drawing_path_to_idx.insert(drawing_path.clone(), idx);
+                        known_paths.insert(drawing_path);
+                        idx
+                    } else {
+                        continue;
+                    };
+                    worksheet_drawings.insert(sheet_idx, drawing_idx);
                 }
             }
-        }
 
-        // Load VBA project binary blob if present (macro-enabled files).
-        let vba_blob = read_bytes_part(archive, "xl/vbaProject.bin").ok();
-        if vba_blob.is_some() {
-            known_paths.insert("xl/vbaProject.bin".to_string());
-        }
-
-        // Parse table parts referenced from worksheet relationships.
-        let mut tables: Vec<(String, sheetkit_xml::table::TableXml, usize)> = Vec::new();
-        for (sheet_idx, sheet_path) in worksheet_paths.iter().enumerate() {
-            let Some(rels) = worksheet_rels.get(&sheet_idx) else {
-                continue;
-            };
-            for rel in &rels.relationships {
-                if rel.rel_type != rel_types::TABLE {
+            // Fallback: load drawing parts listed in content types even when they
+            // are not discoverable via worksheet rel parsing.
+            for ovr in &content_types.overrides {
+                if ovr.content_type != mime_types::DRAWING {
                     continue;
                 }
-                let table_path = resolve_relationship_target(sheet_path, &rel.target);
+                let drawing_path = ovr.part_name.trim_start_matches('/').to_string();
+                if drawing_path_to_idx.contains_key(&drawing_path) {
+                    continue;
+                }
+                if let Ok(drawing) = read_xml_part::<WsDr, _>(archive, &drawing_path) {
+                    let idx = drawings.len();
+                    drawings.push((drawing_path.clone(), drawing));
+                    known_paths.insert(drawing_path.clone());
+                    drawing_path_to_idx.insert(drawing_path, idx);
+                }
+            }
+
+            let mut seen_chart_paths: HashSet<String> = HashSet::new();
+            let mut seen_image_paths: HashSet<String> = HashSet::new();
+
+            for (drawing_idx, (drawing_path, _)) in drawings.iter().enumerate() {
+                let drawing_rels_path = relationship_part_path(drawing_path);
+                let Ok(rels) = read_xml_part::<Relationships, _>(archive, &drawing_rels_path)
+                else {
+                    continue;
+                };
+                known_paths.insert(drawing_rels_path);
+
+                for rel in &rels.relationships {
+                    if rel.rel_type == rel_types::CHART {
+                        let chart_path = resolve_relationship_target(drawing_path, &rel.target);
+                        if seen_chart_paths.insert(chart_path.clone()) {
+                            match read_xml_part::<ChartSpace, _>(archive, &chart_path) {
+                                Ok(chart) => {
+                                    known_paths.insert(chart_path.clone());
+                                    charts.push((chart_path, chart));
+                                }
+                                Err(_) => {
+                                    if let Ok(bytes) = read_bytes_part(archive, &chart_path) {
+                                        known_paths.insert(chart_path.clone());
+                                        raw_charts.push((chart_path, bytes));
+                                    }
+                                }
+                            }
+                        }
+                    } else if rel.rel_type == rel_types::IMAGE {
+                        let image_path = resolve_relationship_target(drawing_path, &rel.target);
+                        if seen_image_paths.insert(image_path.clone()) {
+                            if let Ok(bytes) = read_bytes_part(archive, &image_path) {
+                                known_paths.insert(image_path.clone());
+                                images.push((image_path, bytes));
+                            }
+                        }
+                    }
+                }
+
+                drawing_rels.insert(drawing_idx, rels);
+            }
+
+            // Fallback: load chart parts listed in content types even when no
+            // drawing relationship was read.
+            for ovr in &content_types.overrides {
+                if ovr.content_type != mime_types::CHART {
+                    continue;
+                }
+                let chart_path = ovr.part_name.trim_start_matches('/').to_string();
+                if seen_chart_paths.insert(chart_path.clone()) {
+                    match read_xml_part::<ChartSpace, _>(archive, &chart_path) {
+                        Ok(chart) => {
+                            known_paths.insert(chart_path.clone());
+                            charts.push((chart_path, chart));
+                        }
+                        Err(_) => {
+                            if let Ok(bytes) = read_bytes_part(archive, &chart_path) {
+                                known_paths.insert(chart_path.clone());
+                                raw_charts.push((chart_path, bytes));
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Parse docProps/core.xml (optional - uses manual XML parsing)
+            core_properties = read_string_part(archive, "docProps/core.xml")
+                .ok()
+                .and_then(|xml_str| {
+                    sheetkit_xml::doc_props::deserialize_core_properties(&xml_str).ok()
+                });
+            known_paths.insert("docProps/core.xml".to_string());
+
+            // Parse docProps/app.xml (optional - uses serde)
+            app_properties = read_xml_part(archive, "docProps/app.xml").ok();
+            known_paths.insert("docProps/app.xml".to_string());
+
+            // Parse docProps/custom.xml (optional - uses manual XML parsing)
+            custom_properties = read_string_part(archive, "docProps/custom.xml")
+                .ok()
+                .and_then(|xml_str| {
+                    sheetkit_xml::doc_props::deserialize_custom_properties(&xml_str).ok()
+                });
+            known_paths.insert("docProps/custom.xml".to_string());
+
+            // Parse pivot cache definitions, pivot tables, and pivot cache records.
+            for ovr in &content_types.overrides {
+                let path = ovr.part_name.trim_start_matches('/');
+                if ovr.content_type == mime_types::PIVOT_CACHE_DEFINITION {
+                    if let Ok(pcd) = read_xml_part::<
+                        sheetkit_xml::pivot_cache::PivotCacheDefinition,
+                        _,
+                    >(archive, path)
+                    {
+                        known_paths.insert(path.to_string());
+                        pivot_cache_defs.push((path.to_string(), pcd));
+                    }
+                } else if ovr.content_type == mime_types::PIVOT_TABLE {
+                    if let Ok(pt) = read_xml_part::<
+                        sheetkit_xml::pivot_table::PivotTableDefinition,
+                        _,
+                    >(archive, path)
+                    {
+                        known_paths.insert(path.to_string());
+                        pivot_tables.push((path.to_string(), pt));
+                    }
+                } else if ovr.content_type == mime_types::PIVOT_CACHE_RECORDS {
+                    if let Ok(pcr) = read_xml_part::<sheetkit_xml::pivot_cache::PivotCacheRecords, _>(
+                        archive, path,
+                    ) {
+                        known_paths.insert(path.to_string());
+                        pivot_cache_records.push((path.to_string(), pcr));
+                    }
+                }
+            }
+
+            // Parse slicer definitions and slicer cache definitions.
+            for ovr in &content_types.overrides {
+                let path = ovr.part_name.trim_start_matches('/');
+                if ovr.content_type == mime_types::SLICER {
+                    if let Ok(sd) =
+                        read_xml_part::<sheetkit_xml::slicer::SlicerDefinitions, _>(archive, path)
+                    {
+                        slicer_defs.push((path.to_string(), sd));
+                    }
+                } else if ovr.content_type == mime_types::SLICER_CACHE {
+                    if let Ok(raw) = read_string_part(archive, path) {
+                        if let Some(scd) = sheetkit_xml::slicer::parse_slicer_cache(&raw) {
+                            slicer_caches.push((path.to_string(), scd));
+                        }
+                    }
+                }
+            }
+
+            // Parse threaded comments per-sheet and the workbook-level person list.
+            for (sheet_idx, sheet_path) in worksheet_paths.iter().enumerate() {
+                let Some(rels) = worksheet_rels.get(&sheet_idx) else {
+                    continue;
+                };
+                if let Some(tc_rel) = rels.relationships.iter().find(|r| {
+                    r.rel_type == sheetkit_xml::threaded_comment::REL_TYPE_THREADED_COMMENT
+                }) {
+                    let tc_path = resolve_relationship_target(sheet_path, &tc_rel.target);
+                    if let Ok(tc) = read_xml_part::<
+                        sheetkit_xml::threaded_comment::ThreadedComments,
+                        _,
+                    >(archive, &tc_path)
+                    {
+                        sheet_threaded_comments[sheet_idx] = Some(tc);
+                        known_paths.insert(tc_path);
+                    }
+                }
+            }
+
+            // Parse person list (workbook-level).
+            person_list = {
+                let mut found = None;
+                if let Some(person_rel) = workbook_rels
+                    .relationships
+                    .iter()
+                    .find(|r| r.rel_type == sheetkit_xml::threaded_comment::REL_TYPE_PERSON)
+                {
+                    let person_path =
+                        resolve_relationship_target("xl/workbook.xml", &person_rel.target);
+                    if let Ok(pl) = read_xml_part::<sheetkit_xml::threaded_comment::PersonList, _>(
+                        archive,
+                        &person_path,
+                    ) {
+                        known_paths.insert(person_path);
+                        found = Some(pl);
+                    }
+                }
+                if found.is_none() {
+                    if let Ok(pl) = read_xml_part::<sheetkit_xml::threaded_comment::PersonList, _>(
+                        archive,
+                        "xl/persons/person.xml",
+                    ) {
+                        known_paths.insert("xl/persons/person.xml".to_string());
+                        found = Some(pl);
+                    }
+                }
+                found.unwrap_or_default()
+            };
+
+            // Parse sparklines from worksheet extension lists.
+            for (i, ws_path) in worksheet_paths.iter().enumerate() {
+                if let Ok(raw) = read_string_part(archive, ws_path) {
+                    let parsed = parse_sparklines_from_xml(&raw);
+                    if !parsed.is_empty() {
+                        sheet_sparklines[i] = parsed;
+                    }
+                }
+            }
+
+            // Load VBA project binary blob if present (macro-enabled files).
+            vba_blob = read_bytes_part(archive, "xl/vbaProject.bin").ok();
+            if vba_blob.is_some() {
+                known_paths.insert("xl/vbaProject.bin".to_string());
+            }
+
+            // Parse table parts referenced from worksheet relationships.
+            for (sheet_idx, sheet_path) in worksheet_paths.iter().enumerate() {
+                let Some(rels) = worksheet_rels.get(&sheet_idx) else {
+                    continue;
+                };
+                for rel in &rels.relationships {
+                    if rel.rel_type != rel_types::TABLE {
+                        continue;
+                    }
+                    let table_path = resolve_relationship_target(sheet_path, &rel.target);
+                    if let Ok(table_xml) =
+                        read_xml_part::<sheetkit_xml::table::TableXml, _>(archive, &table_path)
+                    {
+                        known_paths.insert(table_path.clone());
+                        tables.push((table_path, table_xml, sheet_idx));
+                    }
+                }
+            }
+            // Fallback: load table parts from content type overrides if not found via rels.
+            for ovr in &content_types.overrides {
+                if ovr.content_type != mime_types::TABLE {
+                    continue;
+                }
+                let table_path = ovr.part_name.trim_start_matches('/').to_string();
+                if tables.iter().any(|(p, _, _)| p == &table_path) {
+                    continue;
+                }
                 if let Ok(table_xml) =
                     read_xml_part::<sheetkit_xml::table::TableXml, _>(archive, &table_path)
                 {
                     known_paths.insert(table_path.clone());
-                    tables.push((table_path, table_xml, sheet_idx));
+                    tables.push((table_path, table_xml, 0));
                 }
             }
         }
-        // Fallback: load table parts from content type overrides if not found via rels.
-        for ovr in &content_types.overrides {
-            if ovr.content_type != mime_types::TABLE {
-                continue;
-            }
-            let table_path = ovr.part_name.trim_start_matches('/').to_string();
-            if tables.iter().any(|(p, _, _)| p == &table_path) {
-                continue;
-            }
-            if let Ok(table_xml) =
-                read_xml_part::<sheetkit_xml::table::TableXml, _>(archive, &table_path)
-            {
-                known_paths.insert(table_path.clone());
-                tables.push((table_path, table_xml, 0));
-            }
-        }
 
-        // Parse form controls from VML drawing bytes.
         let sheet_form_controls: Vec<Vec<crate::control::FormControlConfig>> =
             vec![vec![]; worksheets.len()];
 
@@ -545,8 +558,10 @@ impl Workbook {
             sheet_name_index.insert(name.clone(), i);
         }
 
-        // Collect all ZIP entries not explicitly handled as unknown parts.
+        // Collect remaining ZIP entries. In ReadFast mode, unhandled entries
+        // go into deferred_parts; in Full mode, they go into unknown_parts.
         let mut unknown_parts: Vec<(String, Vec<u8>)> = Vec::new();
+        let mut deferred_parts: HashMap<String, Vec<u8>> = HashMap::new();
         for i in 0..archive.len() {
             let Ok(entry) = archive.by_index(i) else {
                 continue;
@@ -555,7 +570,11 @@ impl Workbook {
             drop(entry);
             if !known_paths.contains(&name) {
                 if let Ok(bytes) = read_bytes_part(archive, &name) {
-                    unknown_parts.push((name, bytes));
+                    if read_fast {
+                        deferred_parts.insert(name, bytes);
+                    } else {
+                        unknown_parts.push((name, bytes));
+                    }
                 }
             }
         }
@@ -609,6 +628,7 @@ impl Workbook {
             sheet_sparklines,
             sheet_vml,
             unknown_parts,
+            deferred_parts,
             vba_blob,
             tables,
             raw_sheet_xml,
@@ -746,6 +766,8 @@ impl Workbook {
 
         // Ensure VBA project content type override and workbook relationship are
         // present when a VBA blob exists, and absent when it does not.
+        // Skip when deferred_parts is non-empty: relationships are already correct.
+        let has_deferred = !self.deferred_parts.is_empty();
         let mut workbook_rels = self.workbook_rels.clone();
         if self.vba_blob.is_some() {
             let vba_part_name = "/xl/vbaProject.bin";
@@ -778,7 +800,7 @@ impl Workbook {
                     target_mode: None,
                 });
             }
-        } else {
+        } else if !has_deferred {
             content_types
                 .overrides
                 .retain(|o| o.content_type != VBA_PROJECT_CONTENT_TYPE);
@@ -798,6 +820,9 @@ impl Workbook {
         // Ensure the vml extension default content type is present if any VML exists.
         let mut has_any_vml = false;
 
+        // When deferred_parts is non-empty (ReadFast open), skip comment/VML
+        // synchronization. The original relationships and content types are already
+        // correct, and deferred_parts will supply the raw bytes on save.
         for sheet_idx in 0..self.worksheets.len() {
             let has_comments = self
                 .sheet_comments
@@ -814,6 +839,10 @@ impl Workbook {
                 .get(sheet_idx)
                 .and_then(|v| v.as_ref())
                 .is_some();
+
+            if has_deferred {
+                continue;
+            }
 
             if let Some(rels) = worksheet_rels.get_mut(&sheet_idx) {
                 rels.relationships
@@ -946,16 +975,19 @@ impl Workbook {
 
         // Synchronize table parts with worksheet relationships and content types.
         // Also build tableParts references for each worksheet.
+        // Skip when deferred_parts is non-empty: relationships are already correct.
         let mut table_parts_by_sheet: HashMap<usize, Vec<String>> = HashMap::new();
-        for (sheet_idx, _) in self.worksheets.iter().enumerate() {
-            if let Some(rels) = worksheet_rels.get_mut(&sheet_idx) {
-                rels.relationships
-                    .retain(|r| r.rel_type != rel_types::TABLE);
+        if !has_deferred {
+            for (sheet_idx, _) in self.worksheets.iter().enumerate() {
+                if let Some(rels) = worksheet_rels.get_mut(&sheet_idx) {
+                    rels.relationships
+                        .retain(|r| r.rel_type != rel_types::TABLE);
+                }
             }
+            content_types
+                .overrides
+                .retain(|o| o.content_type != mime_types::TABLE);
         }
-        content_types
-            .overrides
-            .retain(|o| o.content_type != mime_types::TABLE);
         for (table_path, _table_xml, sheet_idx) in &self.tables {
             let part_name = format!("/{table_path}");
             content_types.overrides.push(ContentTypeOverride {
@@ -1273,6 +1305,13 @@ impl Workbook {
 
         // Write back unknown parts preserved from the original file.
         for (path, data) in &self.unknown_parts {
+            zip.start_file(path, options)
+                .map_err(|e| Error::Zip(e.to_string()))?;
+            zip.write_all(data)?;
+        }
+
+        // Write back deferred parts from ReadFast open (raw bytes, unparsed).
+        for (path, data) in &self.deferred_parts {
             zip.start_file(path, options)
                 .map_err(|e| Error::Zip(e.to_string()))?;
             zip.write_all(data)?;
@@ -2994,6 +3033,344 @@ mod tests {
         assert_eq!(
             wb2.get_cell_value("Sheet1", "A1").unwrap(),
             CellValue::String("Hello".to_string())
+        );
+    }
+
+    use crate::workbook::open_options::ParseMode;
+
+    #[test]
+    fn test_readfast_open_reads_cell_data() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", CellValue::String("Hello".to_string()))
+            .unwrap();
+        wb.set_cell_value("Sheet1", "B2", CellValue::Number(42.0))
+            .unwrap();
+        wb.set_cell_value("Sheet1", "C3", CellValue::Bool(true))
+            .unwrap();
+        let buf = wb.save_to_buffer().unwrap();
+
+        let opts = OpenOptions::new().parse_mode(ParseMode::ReadFast);
+        let wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
+        assert_eq!(wb2.sheet_names(), vec!["Sheet1"]);
+        assert_eq!(
+            wb2.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("Hello".to_string())
+        );
+        assert_eq!(
+            wb2.get_cell_value("Sheet1", "B2").unwrap(),
+            CellValue::Number(42.0)
+        );
+        assert_eq!(
+            wb2.get_cell_value("Sheet1", "C3").unwrap(),
+            CellValue::Bool(true)
+        );
+    }
+
+    #[test]
+    fn test_readfast_open_multi_sheet() {
+        let mut wb = Workbook::new();
+        wb.new_sheet("Sheet2").unwrap();
+        wb.set_cell_value("Sheet1", "A1", CellValue::String("S1".to_string()))
+            .unwrap();
+        wb.set_cell_value("Sheet2", "A1", CellValue::String("S2".to_string()))
+            .unwrap();
+        let buf = wb.save_to_buffer().unwrap();
+
+        let opts = OpenOptions::new().parse_mode(ParseMode::ReadFast);
+        let wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
+        assert_eq!(wb2.sheet_names(), vec!["Sheet1", "Sheet2"]);
+        assert_eq!(
+            wb2.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("S1".to_string())
+        );
+        assert_eq!(
+            wb2.get_cell_value("Sheet2", "A1").unwrap(),
+            CellValue::String("S2".to_string())
+        );
+    }
+
+    #[test]
+    fn test_readfast_skips_comments() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", CellValue::String("data".to_string()))
+            .unwrap();
+        wb.add_comment(
+            "Sheet1",
+            &crate::comment::CommentConfig {
+                cell: "A1".to_string(),
+                author: "Tester".to_string(),
+                text: "A test comment".to_string(),
+            },
+        )
+        .unwrap();
+        let buf = wb.save_to_buffer().unwrap();
+
+        let opts = OpenOptions::new().parse_mode(ParseMode::ReadFast);
+        let wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
+
+        // Cell data is readable.
+        assert_eq!(
+            wb2.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("data".to_string())
+        );
+        // Comments are not loaded in ReadFast mode.
+        let comments = wb2.get_comments("Sheet1").unwrap();
+        assert!(comments.is_empty());
+    }
+
+    #[test]
+    fn test_readfast_skips_doc_properties() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", CellValue::Number(1.0))
+            .unwrap();
+        wb.set_doc_props(crate::doc_props::DocProperties {
+            title: Some("Test Title".to_string()),
+            ..Default::default()
+        });
+        let buf = wb.save_to_buffer().unwrap();
+
+        let opts = OpenOptions::new().parse_mode(ParseMode::ReadFast);
+        let wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
+
+        // Cell data is readable.
+        assert_eq!(
+            wb2.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::Number(1.0)
+        );
+        // Doc properties are not loaded.
+        let props = wb2.get_doc_props();
+        assert!(props.title.is_none());
+    }
+
+    #[test]
+    fn test_readfast_save_roundtrip_preserves_all_parts() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", CellValue::String("data".to_string()))
+            .unwrap();
+        wb.add_comment(
+            "Sheet1",
+            &crate::comment::CommentConfig {
+                cell: "A1".to_string(),
+                author: "Tester".to_string(),
+                text: "A comment".to_string(),
+            },
+        )
+        .unwrap();
+        wb.set_doc_props(crate::doc_props::DocProperties {
+            title: Some("Title".to_string()),
+            ..Default::default()
+        });
+        let buf = wb.save_to_buffer().unwrap();
+
+        // Open in ReadFast mode.
+        let opts = OpenOptions::new().parse_mode(ParseMode::ReadFast);
+        let wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
+        let saved = wb2.save_to_buffer().unwrap();
+
+        // Re-open in Full mode and verify all parts were preserved.
+        let wb3 = Workbook::open_from_buffer(&saved).unwrap();
+        assert_eq!(
+            wb3.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("data".to_string())
+        );
+        let comments = wb3.get_comments("Sheet1").unwrap();
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments[0].text, "A comment");
+        let props = wb3.get_doc_props();
+        assert_eq!(props.title, Some("Title".to_string()));
+    }
+
+    #[test]
+    fn test_readfast_with_sheet_rows_limit() {
+        let mut wb = Workbook::new();
+        for i in 1..=100 {
+            wb.set_cell_value("Sheet1", &format!("A{}", i), CellValue::Number(i as f64))
+                .unwrap();
+        }
+        let buf = wb.save_to_buffer().unwrap();
+
+        let opts = OpenOptions::new()
+            .parse_mode(ParseMode::ReadFast)
+            .sheet_rows(10);
+        let wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
+        let rows = wb2.get_rows("Sheet1").unwrap();
+        assert_eq!(rows.len(), 10);
+    }
+
+    #[test]
+    fn test_readfast_with_sheets_filter() {
+        let mut wb = Workbook::new();
+        wb.new_sheet("Sheet2").unwrap();
+        wb.set_cell_value("Sheet1", "A1", CellValue::String("S1".to_string()))
+            .unwrap();
+        wb.set_cell_value("Sheet2", "A1", CellValue::String("S2".to_string()))
+            .unwrap();
+        let buf = wb.save_to_buffer().unwrap();
+
+        let opts = OpenOptions::new()
+            .parse_mode(ParseMode::ReadFast)
+            .sheets(vec!["Sheet2".to_string()]);
+        let wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
+        assert_eq!(wb2.sheet_names(), vec!["Sheet1", "Sheet2"]);
+        assert_eq!(
+            wb2.get_cell_value("Sheet2", "A1").unwrap(),
+            CellValue::String("S2".to_string())
+        );
+        // Sheet1 was not parsed, should return empty.
+        assert_eq!(
+            wb2.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::Empty
+        );
+    }
+
+    #[test]
+    fn test_readfast_preserves_styles() {
+        let mut wb = Workbook::new();
+        let style_id = wb
+            .add_style(&crate::style::Style {
+                font: Some(crate::style::FontStyle {
+                    bold: true,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })
+            .unwrap();
+        wb.set_cell_value("Sheet1", "A1", CellValue::String("bold".to_string()))
+            .unwrap();
+        wb.set_cell_style("Sheet1", "A1", style_id).unwrap();
+        let buf = wb.save_to_buffer().unwrap();
+
+        let opts = OpenOptions::new().parse_mode(ParseMode::ReadFast);
+        let wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
+        let sid = wb2.get_cell_style("Sheet1", "A1").unwrap();
+        assert!(sid.is_some());
+        let style = crate::style::get_style(&wb2.stylesheet, sid.unwrap());
+        assert!(style.is_some());
+        assert!(style.unwrap().font.map_or(false, |f| f.bold));
+    }
+
+    #[test]
+    fn test_readfast_full_mode_unchanged() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", CellValue::String("test".to_string()))
+            .unwrap();
+        wb.add_comment(
+            "Sheet1",
+            &crate::comment::CommentConfig {
+                cell: "A1".to_string(),
+                author: "Author".to_string(),
+                text: "comment text".to_string(),
+            },
+        )
+        .unwrap();
+        let buf = wb.save_to_buffer().unwrap();
+
+        // Full mode: everything should be parsed.
+        let opts = OpenOptions::new().parse_mode(ParseMode::Full);
+        let wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
+        let comments = wb2.get_comments("Sheet1").unwrap();
+        assert_eq!(comments.len(), 1);
+    }
+
+    #[test]
+    fn test_readfast_open_from_file() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("readfast_test.xlsx");
+
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", CellValue::String("file test".to_string()))
+            .unwrap();
+        wb.save(&path).unwrap();
+
+        let opts = OpenOptions::new().parse_mode(ParseMode::ReadFast);
+        let wb2 = Workbook::open_with_options(&path, &opts).unwrap();
+        assert_eq!(
+            wb2.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("file test".to_string())
+        );
+    }
+
+    #[test]
+    fn test_readfast_roundtrip_with_custom_zip_entries() {
+        let buf = create_xlsx_with_custom_entries();
+
+        let opts = OpenOptions::new().parse_mode(ParseMode::ReadFast);
+        let wb = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("hello".to_string())
+        );
+
+        let saved = wb.save_to_buffer().unwrap();
+        let cursor = std::io::Cursor::new(&saved);
+        let mut archive = zip::ZipArchive::new(cursor).unwrap();
+
+        // Custom entries should be preserved through ReadFast open/save.
+        let mut custom_xml = String::new();
+        std::io::Read::read_to_string(
+            &mut archive.by_name("customXml/item1.xml").unwrap(),
+            &mut custom_xml,
+        )
+        .unwrap();
+        assert_eq!(custom_xml, "<custom>data1</custom>");
+
+        let mut printer = Vec::new();
+        std::io::Read::read_to_end(
+            &mut archive
+                .by_name("xl/printerSettings/printerSettings1.bin")
+                .unwrap(),
+            &mut printer,
+        )
+        .unwrap();
+        assert_eq!(printer, b"\x00\x01\x02\x03PRINTER");
+    }
+
+    #[test]
+    fn test_readfast_deferred_parts_not_empty_when_auxiliary_exist() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", CellValue::String("data".to_string()))
+            .unwrap();
+        wb.add_comment(
+            "Sheet1",
+            &crate::comment::CommentConfig {
+                cell: "A1".to_string(),
+                author: "Tester".to_string(),
+                text: "comment".to_string(),
+            },
+        )
+        .unwrap();
+        let buf = wb.save_to_buffer().unwrap();
+
+        let opts = OpenOptions::new().parse_mode(ParseMode::ReadFast);
+        let wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
+        // When auxiliary parts exist, they should be captured in deferred_parts.
+        assert!(
+            !wb2.deferred_parts.is_empty(),
+            "deferred_parts should contain skipped auxiliary parts"
+        );
+    }
+
+    #[test]
+    fn test_readfast_default_mode_has_no_deferred_parts() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", CellValue::String("data".to_string()))
+            .unwrap();
+        wb.add_comment(
+            "Sheet1",
+            &crate::comment::CommentConfig {
+                cell: "A1".to_string(),
+                author: "Tester".to_string(),
+                text: "comment".to_string(),
+            },
+        )
+        .unwrap();
+        let buf = wb.save_to_buffer().unwrap();
+
+        // Full mode: deferred_parts should be empty.
+        let wb2 = Workbook::open_from_buffer(&buf).unwrap();
+        assert!(
+            wb2.deferred_parts.is_empty(),
+            "Full mode should not have deferred parts"
         );
     }
 }
