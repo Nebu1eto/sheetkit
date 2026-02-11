@@ -1434,20 +1434,28 @@ pub(crate) fn serialize_xml<T: Serialize>(value: &T) -> Result<String> {
     Ok(result)
 }
 
+/// BufReader capacity for large XML parts (worksheets, sharedStrings).
+/// 64 KB reduces read-syscall overhead compared to the 8 KB default.
+const LARGE_BUF_CAPACITY: usize = 64 * 1024;
+
 /// Read a ZIP entry and deserialize it from XML.
+///
+/// Uses `quick_xml::de::from_reader` to deserialize directly from the
+/// decompressed ZIP stream, avoiding the intermediate `String` allocation
+/// that `read_to_string` + `from_str` would require. The BufReader
+/// capacity is scaled based on the uncompressed entry size, up to 64 KB,
+/// to reduce read-syscall overhead on large parts.
 pub(crate) fn read_xml_part<T: serde::de::DeserializeOwned, R: std::io::Read + std::io::Seek>(
     archive: &mut zip::ZipArchive<R>,
     name: &str,
 ) -> Result<T> {
-    let mut entry = archive
+    let entry = archive
         .by_name(name)
         .map_err(|e| Error::Zip(e.to_string()))?;
-    let size_hint = entry.size() as usize;
-    let mut content = String::with_capacity(size_hint);
-    entry
-        .read_to_string(&mut content)
-        .map_err(|e| Error::Zip(e.to_string()))?;
-    quick_xml::de::from_str(&content).map_err(|e| Error::XmlDeserialize(e.to_string()))
+    let size = entry.size() as usize;
+    let buf_cap = size.min(LARGE_BUF_CAPACITY).max(8192);
+    let reader = std::io::BufReader::with_capacity(buf_cap, entry);
+    quick_xml::de::from_reader(reader).map_err(|e| Error::XmlDeserialize(e.to_string()))
 }
 
 /// Read a ZIP entry as a raw string (no serde deserialization).
@@ -3798,5 +3806,103 @@ mod tests {
         let wb3 = Workbook::open_from_buffer(&saved).unwrap();
         let props = wb3.get_doc_props();
         assert_eq!(props.title, Some("Updated Title".to_string()));
+    }
+
+    #[test]
+    fn test_read_xml_part_from_reader_worksheet() {
+        use sheetkit_xml::worksheet::WorksheetXml;
+        let ws_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheetData>
+    <row r="1"><c r="A1" t="s"><v>0</v></c></row>
+    <row r="2"><c r="A2"><v>42</v></c></row>
+  </sheetData>
+</worksheet>"#;
+        let mut buf = Vec::new();
+        {
+            let cursor = std::io::Cursor::new(&mut buf);
+            let mut zip = zip::ZipWriter::new(cursor);
+            let opts = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+            zip.start_file("test.xml", opts).unwrap();
+            use std::io::Write;
+            zip.write_all(ws_xml.as_bytes()).unwrap();
+            zip.finish().unwrap();
+        }
+        let cursor = std::io::Cursor::new(&buf);
+        let mut archive = zip::ZipArchive::new(cursor).unwrap();
+        let ws: WorksheetXml = read_xml_part(&mut archive, "test.xml").unwrap();
+        assert_eq!(ws.sheet_data.rows.len(), 2);
+        assert_eq!(ws.sheet_data.rows[0].r, 1);
+        assert_eq!(ws.sheet_data.rows[0].cells[0].r, "A1");
+        assert_eq!(ws.sheet_data.rows[1].r, 2);
+        assert_eq!(ws.sheet_data.rows[1].cells[0].v, Some("42".to_string()));
+    }
+
+    #[test]
+    fn test_read_xml_part_from_reader_sst() {
+        use sheetkit_xml::shared_strings::Sst;
+        let sst_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="2" uniqueCount="2">
+  <si><t>Hello</t></si>
+  <si><t>World</t></si>
+</sst>"#;
+        let mut buf = Vec::new();
+        {
+            let cursor = std::io::Cursor::new(&mut buf);
+            let mut zip = zip::ZipWriter::new(cursor);
+            let opts = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+            zip.start_file("sst.xml", opts).unwrap();
+            use std::io::Write;
+            zip.write_all(sst_xml.as_bytes()).unwrap();
+            zip.finish().unwrap();
+        }
+        let cursor = std::io::Cursor::new(&buf);
+        let mut archive = zip::ZipArchive::new(cursor).unwrap();
+        let sst: Sst = read_xml_part(&mut archive, "sst.xml").unwrap();
+        assert_eq!(sst.count, Some(2));
+        assert_eq!(sst.unique_count, Some(2));
+        assert_eq!(sst.items.len(), 2);
+        assert_eq!(sst.items[0].t.as_ref().unwrap().value, "Hello");
+        assert_eq!(sst.items[1].t.as_ref().unwrap().value, "World");
+    }
+
+    #[test]
+    fn test_read_xml_part_from_reader_large_worksheet() {
+        use sheetkit_xml::worksheet::WorksheetXml;
+        let mut ws_xml = String::from(
+            r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheetData>"#,
+        );
+        for i in 1..=500 {
+            ws_xml.push_str(&format!(
+                "<row r=\"{i}\"><c r=\"A{i}\"><v>{}</v></c><c r=\"B{i}\"><v>{}</v></c></row>",
+                i * 10,
+                i * 20,
+            ));
+        }
+        ws_xml.push_str("</sheetData></worksheet>");
+
+        let mut buf = Vec::new();
+        {
+            let cursor = std::io::Cursor::new(&mut buf);
+            let mut zip = zip::ZipWriter::new(cursor);
+            let opts = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+            zip.start_file("sheet.xml", opts).unwrap();
+            use std::io::Write;
+            zip.write_all(ws_xml.as_bytes()).unwrap();
+            zip.finish().unwrap();
+        }
+        let cursor = std::io::Cursor::new(&buf);
+        let mut archive = zip::ZipArchive::new(cursor).unwrap();
+        let ws: WorksheetXml = read_xml_part(&mut archive, "sheet.xml").unwrap();
+        assert_eq!(ws.sheet_data.rows.len(), 500);
+        assert_eq!(ws.sheet_data.rows[0].r, 1);
+        assert_eq!(ws.sheet_data.rows[0].cells[0].v, Some("10".to_string()));
+        assert_eq!(ws.sheet_data.rows[499].r, 500);
+        assert_eq!(
+            ws.sheet_data.rows[499].cells[1].v,
+            Some("10000".to_string())
+        );
     }
 }

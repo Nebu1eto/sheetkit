@@ -475,8 +475,31 @@ impl Serialize for CompactCellRef {
 
 impl<'de> Deserialize<'de> for CompactCellRef {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let s = String::deserialize(deserializer)?;
-        Ok(CompactCellRef::new(&s))
+        struct CompactCellRefVisitor;
+
+        impl serde::de::Visitor<'_> for CompactCellRefVisitor {
+            type Value = CompactCellRef;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("a cell reference string (e.g. \"A1\")")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<CompactCellRef, E> {
+                if v.len() > 10 {
+                    return Err(E::custom(format!(
+                        "cell reference too long ({} bytes): {v}",
+                        v.len()
+                    )));
+                }
+                Ok(CompactCellRef::new(v))
+            }
+
+            fn visit_string<E: serde::de::Error>(self, v: String) -> Result<CompactCellRef, E> {
+                self.visit_str(&v)
+            }
+        }
+
+        deserializer.deserialize_str(CompactCellRefVisitor)
     }
 }
 
@@ -567,17 +590,34 @@ impl Serialize for CellTypeTag {
 
 impl<'de> Deserialize<'de> for CellTypeTag {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let s = String::deserialize(deserializer)?;
-        match s.as_str() {
-            "s" => Ok(CellTypeTag::SharedString),
-            "n" => Ok(CellTypeTag::Number),
-            "b" => Ok(CellTypeTag::Boolean),
-            "e" => Ok(CellTypeTag::Error),
-            "inlineStr" => Ok(CellTypeTag::InlineString),
-            "str" => Ok(CellTypeTag::FormulaString),
-            "d" => Ok(CellTypeTag::Date),
-            _ => Ok(CellTypeTag::None),
+        struct CellTypeTagVisitor;
+
+        impl serde::de::Visitor<'_> for CellTypeTagVisitor {
+            type Value = CellTypeTag;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("a cell type string (e.g. \"s\", \"n\", \"b\")")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<CellTypeTag, E> {
+                Ok(match v {
+                    "s" => CellTypeTag::SharedString,
+                    "n" => CellTypeTag::Number,
+                    "b" => CellTypeTag::Boolean,
+                    "e" => CellTypeTag::Error,
+                    "inlineStr" => CellTypeTag::InlineString,
+                    "str" => CellTypeTag::FormulaString,
+                    "d" => CellTypeTag::Date,
+                    _ => CellTypeTag::None,
+                })
+            }
+
+            fn visit_string<E: serde::de::Error>(self, v: String) -> Result<CellTypeTag, E> {
+                self.visit_str(&v)
+            }
         }
+
+        deserializer.deserialize_str(CellTypeTagVisitor)
     }
 }
 
