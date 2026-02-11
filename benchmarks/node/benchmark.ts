@@ -246,24 +246,24 @@ async function benchReadFile(filename: string, label: string, category: string) 
   });
 
   // SheetKit with readfast parse mode
-  await benchMultiRun('SheetKit', `Read ${label} (readfast)`, category, () => {
-    const wb = SheetKitWorkbook.openSync(filepath, { parseMode: 'readfast' });
+  await benchMultiRun('SheetKit', `Read ${label} (readfast)`, category, async () => {
+    const wb = await SheetKitWorkbook.open(filepath, { parseMode: 'readfast' });
     for (const name of wb.sheetNames) {
       wb.getRows(name);
     }
   });
 
   // SheetKit with getRowsRaw (typed arrays)
-  await benchMultiRun('SheetKit', `Read ${label} (getRowsRaw)`, category, () => {
-    const wb = SheetKitWorkbook.openSync(filepath);
+  await benchMultiRun('SheetKit', `Read ${label} (getRowsRaw)`, category, async () => {
+    const wb = await SheetKitWorkbook.open(filepath);
     for (const name of wb.sheetNames) {
       wb.getRowsRaw(name);
     }
   });
 
   // SheetKit with readfast + getRowsRaw (best combo)
-  await benchMultiRun('SheetKit', `Read ${label} (readfast+raw)`, category, () => {
-    const wb = SheetKitWorkbook.openSync(filepath, { parseMode: 'readfast' });
+  await benchMultiRun('SheetKit', `Read ${label} (readfast+raw)`, category, async () => {
+    const wb = await SheetKitWorkbook.open(filepath, { parseMode: 'readfast' });
     for (const name of wb.sheetNames) {
       wb.getRowsRaw(name);
     }
@@ -924,7 +924,7 @@ async function benchBufferRoundTrip() {
     wb2.getRows('Sheet1');
   });
 
-  await benchMultiRun('SheetKit', `${label} (readfast)`, 'Round-Trip', () => {
+  await benchMultiRun('SheetKit', `${label} (readfast)`, 'Round-Trip', async () => {
     const wb = new SheetKitWorkbook();
     const sheet = 'Sheet1';
     const data: (string | number | boolean | null)[][] = [];
@@ -937,7 +937,7 @@ async function benchBufferRoundTrip() {
     }
     wb.setSheetData(sheet, data);
     const buf = wb.writeBufferSync();
-    const wb2 = SheetKitWorkbook.openBufferSync(buf, { parseMode: 'readfast' });
+    const wb2 = await SheetKitWorkbook.openBuffer(buf, { parseMode: 'readfast' });
     wb2.getRows('Sheet1');
   });
 
@@ -1069,9 +1069,9 @@ async function benchRandomAccessRead() {
     }
   });
 
-  // SheetKit with readfast (sync)
-  await benchMultiRun('SheetKit', `${labelOpen} (readfast)`, 'Random Access', () => {
-    const wb = SheetKitWorkbook.openSync(filepath, { parseMode: 'readfast' });
+  // SheetKit with readfast
+  await benchMultiRun('SheetKit', `${labelOpen} (readfast)`, 'Random Access', async () => {
+    const wb = await SheetKitWorkbook.open(filepath, { parseMode: 'readfast' });
     for (const cell of cells) {
       wb.getCellValue('Sheet1', cell);
     }
