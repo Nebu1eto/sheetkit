@@ -31,6 +31,51 @@ interface RowIndexEntry {
   cellOffset: number;
 }
 
+/** Result of getRowsRaw() -- typed arrays for minimal object creation. */
+export interface RawRowsResult {
+  /** 1-based row numbers for each row that has data. */
+  rowNumbers: Uint32Array;
+  /** Index into the cell arrays where each row's cells begin. */
+  rowCellOffsets: Uint32Array;
+  /** Number of cells per row. */
+  rowCellCounts: Uint32Array;
+  /** 1-based column number for each cell. */
+  cellColumns: Uint32Array;
+  /** Cell type tag (0=empty, 1=number, 2=string, 3=bool, 4=date, 5=error, 6=formula). */
+  cellTypes: Uint8Array;
+  /** Numeric value for number/date cells, NaN for others. */
+  cellNumericValues: Float64Array;
+  /** String value for string/error/formula cells, empty string for others. */
+  cellStringValues: string[];
+  /** Boolean value for boolean cells, false for others. */
+  cellBoolValues: Uint8Array;
+  /** Total number of rows with data. */
+  totalRows: number;
+  /** Total number of cells across all rows. */
+  totalCells: number;
+}
+
+const colNameCache: string[] = [];
+
+function cachedColumnName(n: number): string {
+  if (n <= 0) return '';
+  const idx = n - 1;
+  if (idx < colNameCache.length) {
+    return colNameCache[idx];
+  }
+  for (let i = colNameCache.length; i <= idx; i++) {
+    let num = i + 1;
+    let name = '';
+    while (num > 0) {
+      num--;
+      name = String.fromCharCode(65 + (num % 26)) + name;
+      num = Math.floor(num / 26);
+    }
+    colNameCache.push(name);
+  }
+  return colNameCache[idx];
+}
+
 function columnNumberToName(n: number): string {
   let name = '';
   while (n > 0) {
@@ -139,40 +184,66 @@ function decodeCellToRowCell(
   }
 }
 
-export function decodeRowsBuffer(buf: Buffer | null): JsRowData[] {
+/**
+ * Parse buffer header and shared data structures used by all decode functions.
+ * Returns null if the buffer is empty or invalid.
+ */
+function parseBuffer(buf: Buffer | null): {
+  view: DataView;
+  header: BufferHeader;
+  rowIndex: RowIndexEntry[];
+  strings: string[];
+  cellDataStart: number;
+  minCol: number;
+} | null {
   if (!buf || buf.length < HEADER_SIZE) {
-    return [];
+    return null;
   }
   const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
   const header = readHeader(view);
   if (header.rowCount === 0 || header.colCount === 0) {
-    return [];
+    return null;
   }
-
   const { entries: rowIndex, endOffset: riEnd } = readRowIndex(view, header.rowCount);
   const { strings, endOffset: stEnd } = readStringTable(buf, view, riEnd);
   const cellDataStart = stEnd;
   const minCol = header.minCol || 1;
+  return { view, header, rowIndex, strings, cellDataStart, minCol };
+}
+
+/** Decode a binary buffer into JsRowData objects. */
+export function decodeRowsBuffer(buf: Buffer | null): JsRowData[] {
+  const parsed = parseBuffer(buf);
+  if (!parsed) return [];
+  const { view, header, rowIndex, strings, cellDataStart, minCol } = parsed;
+
+  // Pre-warm the column name cache only for dense layout where every column
+  // will be visited. For sparse layout, column names are resolved lazily per
+  // encountered cell to avoid O(colCount) work on wide sparse sheets.
+  if (!header.isSparse) {
+    const maxCol = minCol + header.colCount - 1;
+    cachedColumnName(maxCol);
+  }
 
   const rows: JsRowData[] = [];
 
   for (let ri = 0; ri < rowIndex.length; ri++) {
-    const { rowNum, cellOffset } = rowIndex[ri];
-    if (cellOffset === EMPTY_ROW_OFFSET) {
+    const entry = rowIndex[ri];
+    if (entry.cellOffset === EMPTY_ROW_OFFSET) {
       continue;
     }
 
     const cells: JsRowCell[] = [];
 
     if (header.isSparse) {
-      const absOffset = cellDataStart + cellOffset;
+      const absOffset = cellDataStart + entry.cellOffset;
       const cellCount = view.getUint16(absOffset, true);
       let pos = absOffset + 2;
       for (let i = 0; i < cellCount; i++) {
         const col = view.getUint16(pos, true);
         const type = view.getUint8(pos + 2);
         if (type !== TYPE_EMPTY) {
-          const colName = columnNumberToName(minCol + col);
+          const colName = cachedColumnName(minCol + col);
           const cell = decodeCellToRowCell(view, pos + 2, type, strings, colName);
           if (cell) {
             cells.push(cell);
@@ -181,14 +252,14 @@ export function decodeRowsBuffer(buf: Buffer | null): JsRowData[] {
         pos += SPARSE_ENTRY_SIZE;
       }
     } else {
-      const rowStart = cellDataStart + cellOffset;
+      const rowStart = cellDataStart + entry.cellOffset;
       for (let c = 0; c < header.colCount; c++) {
         const cellPos = rowStart + c * CELL_STRIDE;
         const type = view.getUint8(cellPos);
         if (type === TYPE_EMPTY) {
           continue;
         }
-        const colName = columnNumberToName(minCol + c);
+        const colName = cachedColumnName(minCol + c);
         const cell = decodeCellToRowCell(view, cellPos, type, strings, colName);
         if (cell) {
           cells.push(cell);
@@ -197,9 +268,251 @@ export function decodeRowsBuffer(buf: Buffer | null): JsRowData[] {
     }
 
     if (cells.length > 0) {
-      rows.push({ row: rowNum, cells });
+      rows.push({ row: entry.rowNum, cells });
     }
   }
 
   return rows;
+}
+
+/**
+ * Decode a binary buffer into typed arrays with minimal object allocation.
+ * This avoids creating JsRowCell/JsRowData objects entirely.
+ */
+export function decodeRowsRawBuffer(buf: Buffer | null): RawRowsResult {
+  const empty: RawRowsResult = {
+    rowNumbers: new Uint32Array(0),
+    rowCellOffsets: new Uint32Array(0),
+    rowCellCounts: new Uint32Array(0),
+    cellColumns: new Uint32Array(0),
+    cellTypes: new Uint8Array(0),
+    cellNumericValues: new Float64Array(0),
+    cellStringValues: [],
+    cellBoolValues: new Uint8Array(0),
+    totalRows: 0,
+    totalCells: 0,
+  };
+
+  const parsed = parseBuffer(buf);
+  if (!parsed) return empty;
+  const { view, header, rowIndex, strings, cellDataStart, minCol } = parsed;
+
+  // First pass: count total non-empty rows and cells to pre-allocate
+  let totalRows = 0;
+  let totalCells = 0;
+
+  for (let ri = 0; ri < rowIndex.length; ri++) {
+    const entry = rowIndex[ri];
+    if (entry.cellOffset === EMPTY_ROW_OFFSET) continue;
+
+    let rowCells = 0;
+    if (header.isSparse) {
+      const absOffset = cellDataStart + entry.cellOffset;
+      const cellCount = view.getUint16(absOffset, true);
+      let pos = absOffset + 2;
+      for (let i = 0; i < cellCount; i++) {
+        const type = view.getUint8(pos + 2);
+        if (type !== TYPE_EMPTY) rowCells++;
+        pos += SPARSE_ENTRY_SIZE;
+      }
+    } else {
+      const rowStart = cellDataStart + entry.cellOffset;
+      for (let c = 0; c < header.colCount; c++) {
+        const type = view.getUint8(rowStart + c * CELL_STRIDE);
+        if (type !== TYPE_EMPTY) rowCells++;
+      }
+    }
+
+    if (rowCells > 0) {
+      totalRows++;
+      totalCells += rowCells;
+    }
+  }
+
+  if (totalRows === 0) return empty;
+
+  // Allocate typed arrays
+  const rowNumbers = new Uint32Array(totalRows);
+  const rowCellOffsets = new Uint32Array(totalRows);
+  const rowCellCounts = new Uint32Array(totalRows);
+  const cellColumns = new Uint32Array(totalCells);
+  const cellTypes = new Uint8Array(totalCells);
+  const cellNumericValues = new Float64Array(totalCells);
+  const cellStringValues = new Array<string>(totalCells);
+  const cellBoolValues = new Uint8Array(totalCells);
+
+  // Second pass: fill arrays
+  let rowIdx = 0;
+  let cellIdx = 0;
+
+  for (let ri = 0; ri < rowIndex.length; ri++) {
+    const entry = rowIndex[ri];
+    if (entry.cellOffset === EMPTY_ROW_OFFSET) continue;
+
+    const cellStart = cellIdx;
+
+    if (header.isSparse) {
+      const absOffset = cellDataStart + entry.cellOffset;
+      const cellCount = view.getUint16(absOffset, true);
+      let pos = absOffset + 2;
+      for (let i = 0; i < cellCount; i++) {
+        const col = view.getUint16(pos, true);
+        const type = view.getUint8(pos + 2);
+        if (type !== TYPE_EMPTY) {
+          cellColumns[cellIdx] = minCol + col;
+          cellTypes[cellIdx] = type;
+          fillCellValue(
+            view,
+            pos + 3,
+            type,
+            strings,
+            cellNumericValues,
+            cellStringValues,
+            cellBoolValues,
+            cellIdx,
+          );
+          cellIdx++;
+        }
+        pos += SPARSE_ENTRY_SIZE;
+      }
+    } else {
+      const rowStart = cellDataStart + entry.cellOffset;
+      for (let c = 0; c < header.colCount; c++) {
+        const cellPos = rowStart + c * CELL_STRIDE;
+        const type = view.getUint8(cellPos);
+        if (type === TYPE_EMPTY) continue;
+        cellColumns[cellIdx] = minCol + c;
+        cellTypes[cellIdx] = type;
+        fillCellValue(
+          view,
+          cellPos + 1,
+          type,
+          strings,
+          cellNumericValues,
+          cellStringValues,
+          cellBoolValues,
+          cellIdx,
+        );
+        cellIdx++;
+      }
+    }
+
+    const count = cellIdx - cellStart;
+    if (count > 0) {
+      rowNumbers[rowIdx] = entry.rowNum;
+      rowCellOffsets[rowIdx] = cellStart;
+      rowCellCounts[rowIdx] = count;
+      rowIdx++;
+    }
+  }
+
+  return {
+    rowNumbers,
+    rowCellOffsets,
+    rowCellCounts,
+    cellColumns,
+    cellTypes,
+    cellNumericValues,
+    cellStringValues,
+    cellBoolValues,
+    totalRows,
+    totalCells,
+  };
+}
+
+function fillCellValue(
+  view: DataView,
+  payloadOffset: number,
+  type: number,
+  strings: string[],
+  numericValues: Float64Array,
+  stringValues: string[],
+  boolValues: Uint8Array,
+  idx: number,
+): void {
+  switch (type) {
+    case TYPE_NUMBER:
+    case TYPE_DATE:
+      numericValues[idx] = view.getFloat64(payloadOffset, true);
+      stringValues[idx] = '';
+      break;
+    case TYPE_STRING:
+    case TYPE_RICH_STRING: {
+      const si = view.getUint32(payloadOffset, true);
+      numericValues[idx] = Number.NaN;
+      stringValues[idx] = strings[si] ?? '';
+      break;
+    }
+    case TYPE_BOOL:
+      boolValues[idx] = view.getUint8(payloadOffset);
+      numericValues[idx] = Number.NaN;
+      stringValues[idx] = '';
+      break;
+    case TYPE_ERROR:
+    case TYPE_FORMULA: {
+      const si = view.getUint32(payloadOffset, true);
+      numericValues[idx] = Number.NaN;
+      stringValues[idx] = strings[si] ?? '';
+      break;
+    }
+    default:
+      numericValues[idx] = Number.NaN;
+      stringValues[idx] = '';
+      break;
+  }
+}
+
+/**
+ * Generator that yields one JsRowData at a time from the buffer, avoiding
+ * materializing the entire result array at once.
+ */
+export function* decodeRowsIterator(buf: Buffer | null): Generator<JsRowData> {
+  const parsed = parseBuffer(buf);
+  if (!parsed) return;
+  const { view, header, rowIndex, strings, cellDataStart, minCol } = parsed;
+
+  // Pre-warm only for dense layout. For sparse layout, column names are
+  // resolved lazily per cell to preserve streaming semantics and avoid
+  // O(colCount) upfront work on wide sparse sheets.
+  if (!header.isSparse) {
+    const maxCol = minCol + header.colCount - 1;
+    cachedColumnName(maxCol);
+  }
+
+  for (let ri = 0; ri < rowIndex.length; ri++) {
+    const entry = rowIndex[ri];
+    if (entry.cellOffset === EMPTY_ROW_OFFSET) continue;
+
+    const cells: JsRowCell[] = [];
+
+    if (header.isSparse) {
+      const absOffset = cellDataStart + entry.cellOffset;
+      const cellCount = view.getUint16(absOffset, true);
+      let pos = absOffset + 2;
+      for (let i = 0; i < cellCount; i++) {
+        const col = view.getUint16(pos, true);
+        const type = view.getUint8(pos + 2);
+        if (type !== TYPE_EMPTY) {
+          const colName = cachedColumnName(minCol + col);
+          const cell = decodeCellToRowCell(view, pos + 2, type, strings, colName);
+          if (cell) cells.push(cell);
+        }
+        pos += SPARSE_ENTRY_SIZE;
+      }
+    } else {
+      const rowStart = cellDataStart + entry.cellOffset;
+      for (let c = 0; c < header.colCount; c++) {
+        const cellPos = rowStart + c * CELL_STRIDE;
+        const type = view.getUint8(cellPos);
+        if (type === TYPE_EMPTY) continue;
+        const colName = cachedColumnName(minCol + c);
+        const cell = decodeCellToRowCell(view, cellPos, type, strings, colName);
+        if (cell) cells.push(cell);
+      }
+    }
+
+    if (cells.length > 0) {
+      yield { row: entry.rowNum, cells };
+    }
+  }
 }

@@ -44,7 +44,8 @@ import type {
   JsWorkbookProtectionConfig,
 } from './binding.js';
 import { JsStreamWriter, Workbook as NativeWorkbook } from './binding.js';
-import { decodeRowsBuffer } from './buffer-codec.js';
+import type { RawRowsResult } from './buffer-codec.js';
+import { decodeRowsBuffer, decodeRowsIterator, decodeRowsRawBuffer } from './buffer-codec.js';
 import type { CellTypeName, CellValue } from './sheet-data.js';
 import { SheetData } from './sheet-data.js';
 
@@ -768,6 +769,26 @@ class Workbook {
     return this.#native.getRowsBuffer(sheet);
   }
 
+  /**
+   * Get all rows as typed arrays with minimal JS object creation.
+   * Returns column numbers (not names), cell types, and values in parallel
+   * typed arrays. Use this when processing large sheets where object creation
+   * overhead matters.
+   */
+  getRowsRaw(sheet: string): RawRowsResult {
+    const buf = this.#native.getRowsBuffer(sheet);
+    return decodeRowsRawBuffer(buf);
+  }
+
+  /**
+   * Get a generator that yields one row at a time from the sheet, avoiding
+   * materializing the entire result array in memory at once.
+   */
+  *getRowsIterator(sheet: string): Generator<JsRowData> {
+    const buf = this.#native.getRowsBuffer(sheet);
+    yield* decodeRowsIterator(buf);
+  }
+
   /** Apply cell data from a binary buffer to a sheet. */
   setSheetDataBuffer(sheet: string, buf: Buffer, startCell?: string | undefined | null): void {
     this.#native.setSheetDataBuffer(sheet, buf, startCell);
@@ -1103,4 +1124,4 @@ function builtinFormatCode(id: number): string | null {
 }
 
 export { builtinFormatCode, formatNumber, JsStreamWriter, SheetData, Workbook };
-export type { CellTypeName, CellValue };
+export type { CellTypeName, CellValue, RawRowsResult };
