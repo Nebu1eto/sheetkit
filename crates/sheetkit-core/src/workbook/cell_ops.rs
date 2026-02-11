@@ -50,6 +50,7 @@ impl Workbook {
         }
 
         let sheet_idx = self.sheet_index(sheet)?;
+        self.invalidate_streamed(sheet_idx);
         let ws = &mut self.worksheets[sheet_idx].1;
 
         let (col, row_num) = cell_name_to_coordinates(cell)?;
@@ -108,6 +109,9 @@ impl Workbook {
             let result = match (xml_cell.t, &xml_cell.v) {
                 (CellTypeTag::Boolean, Some(v)) => Some(Box::new(CellValue::Bool(v == "1"))),
                 (CellTypeTag::Error, Some(v)) => Some(Box::new(CellValue::Error(v.clone()))),
+                (CellTypeTag::FormulaString, Some(v)) => {
+                    Some(Box::new(CellValue::String(v.clone())))
+                }
                 (_, Some(v)) => v
                     .parse::<f64>()
                     .ok()
@@ -488,6 +492,7 @@ impl Workbook {
         entries: Vec<(String, CellValue)>,
     ) -> Result<()> {
         let sheet_idx = self.sheet_index(sheet)?;
+        self.invalidate_streamed(sheet_idx);
 
         for (cell, value) in entries {
             if let CellValue::String(ref s) = value {

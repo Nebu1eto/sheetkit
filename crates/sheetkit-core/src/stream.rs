@@ -75,6 +75,23 @@ pub struct StreamedSheetData {
     pub(crate) merge_cells_xml: Option<String>,
 }
 
+impl StreamedSheetData {
+    /// Create a deep copy of this streamed sheet data, duplicating the
+    /// temp file contents so the copy is fully independent.
+    pub(crate) fn try_clone(&self) -> Result<Self> {
+        let mut new_temp = tempfile::NamedTempFile::new()?;
+        let mut src = std::fs::File::open(self.temp_file.path())?;
+        std::io::copy(&mut src, new_temp.as_file_mut())?;
+        Ok(StreamedSheetData {
+            temp_file: new_temp,
+            data_len: self.data_len,
+            sheet_views_xml: self.sheet_views_xml.clone(),
+            cols_xml: self.cols_xml.clone(),
+            merge_cells_xml: self.merge_cells_xml.clone(),
+        })
+    }
+}
+
 /// A streaming worksheet writer that writes rows directly to a temp file.
 ///
 /// Rows must be written in ascending order. Each row is serialized to XML
@@ -613,6 +630,17 @@ fn build_row_xml(
                 xml.push_str("</v></c>");
             }
             CellValue::Formula { expr, result } => {
+                // Set the cell type attribute based on the cached result type.
+                // Without the correct t attribute, xml_cell_to_value cannot
+                // decode the result on reopen.
+                if let Some(res) = result {
+                    match res.as_ref() {
+                        CellValue::String(_) => xml.push_str(" t=\"str\""),
+                        CellValue::Bool(_) => xml.push_str(" t=\"b\""),
+                        CellValue::Error(_) => xml.push_str(" t=\"e\""),
+                        _ => {} // Number/Date: default (no t) is numeric
+                    }
+                }
                 xml.push_str("><f>");
                 xml_escape_into(&mut xml, expr);
                 xml.push_str("</f>");
@@ -1525,6 +1553,32 @@ mod tests {
     }
 
     #[test]
+    fn test_streamed_sheet_data_try_clone() {
+        let mut sw = StreamWriter::new("Sheet1");
+        sw.set_col_width(1, 20.0).unwrap();
+        sw.set_freeze_panes("A2").unwrap();
+        sw.write_row(1, &[CellValue::from("Hello")]).unwrap();
+        sw.write_row(2, &[CellValue::from("World")]).unwrap();
+        sw.add_merge_cell("A1:B1").unwrap();
+
+        let (_, original) = sw.into_streamed_data().unwrap();
+        let cloned = original.try_clone().unwrap();
+
+        // Verify metadata is cloned.
+        assert_eq!(cloned.data_len, original.data_len);
+        assert_eq!(cloned.cols_xml, original.cols_xml);
+        assert_eq!(cloned.sheet_views_xml, original.sheet_views_xml);
+        assert_eq!(cloned.merge_cells_xml, original.merge_cells_xml);
+
+        // Verify temp file contents are identical but independent.
+        assert_ne!(original.temp_file.path(), cloned.temp_file.path());
+        let orig_bytes = std::fs::read(original.temp_file.path()).unwrap();
+        let clone_bytes = std::fs::read(cloned.temp_file.path()).unwrap();
+        assert_eq!(orig_bytes, clone_bytes);
+        assert!(!orig_bytes.is_empty());
+    }
+
+    #[test]
     fn test_date_value() {
         let mut sw = StreamWriter::new("Sheet1");
         // Excel serial number for 2024-01-15 = 45306
@@ -1617,6 +1671,28 @@ mod tests {
 
         assert!(xml.contains("<f>SUM(A2:A10)</f>"));
         assert!(xml.contains("<v>55</v>"));
+        // Numeric results should not have a t attribute (default is numeric)
+        assert!(!xml.contains("t=\"str\""));
+        assert!(!xml.contains("t=\"b\""));
+        assert!(!xml.contains("t=\"e\""));
+    }
+
+    #[test]
+    fn test_formula_with_error_result() {
+        let mut sw = StreamWriter::new("Sheet1");
+        sw.write_row(
+            1,
+            &[CellValue::Formula {
+                expr: "1/0".to_string(),
+                result: Some(Box::new(CellValue::Error("#DIV/0!".to_string()))),
+            }],
+        )
+        .unwrap();
+        let xml = finish_and_get_xml(sw);
+
+        assert!(xml.contains("t=\"e\""));
+        assert!(xml.contains("<f>1/0</f>"));
+        assert!(xml.contains("<v>#DIV/0!</v>"));
     }
 
     #[test]
@@ -1632,6 +1708,7 @@ mod tests {
         .unwrap();
         let xml = finish_and_get_xml(sw);
 
+        assert!(xml.contains("t=\"str\""));
         assert!(xml.contains("<f>"));
         assert!(xml.contains("<v>yes</v>"));
     }
@@ -1649,6 +1726,7 @@ mod tests {
         .unwrap();
         let xml = finish_and_get_xml(sw);
 
+        assert!(xml.contains("t=\"b\""));
         assert!(xml.contains("<f>A1&gt;0</f>"));
         assert!(xml.contains("<v>1</v>"));
     }

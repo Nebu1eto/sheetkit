@@ -20,7 +20,8 @@ SheetKit is a Rust library for reading and writing Excel (.xlsx) files, with Nod
 - **nom**: Formula parsing
 - **napi / napi-derive**: Node.js native addon bindings
 - **chrono**: Date/time handling
-- **tempfile**, **pretty_assertions**: Testing utilities
+- **tempfile**: Temporary file handling for StreamWriter (runtime dependency in sheetkit-core)
+- **pretty_assertions**: Testing utility
 - **aes**, **cbc**, **ecb**, **sha1**, **sha2**, **hmac**, **rand**, **cfb**, **base64** (optional, behind `encryption` feature): File-level encryption/decryption
 
 ## Development Workflow

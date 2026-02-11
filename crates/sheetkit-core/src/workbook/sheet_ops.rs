@@ -120,6 +120,8 @@ impl Workbook {
 
     /// Copy a sheet, returning the 0-based index of the new copy.
     pub fn copy_sheet(&mut self, source: &str, target: &str) -> Result<usize> {
+        // Resolve the source index before copy_sheet changes the array.
+        let src_idx = self.sheet_index(source)?;
         let idx = crate::sheet::copy_sheet(
             &mut self.workbook_xml,
             &mut self.workbook_rels,
@@ -131,13 +133,11 @@ impl Workbook {
         if self.sheet_comments.len() < self.worksheets.len() {
             self.sheet_comments.push(None);
         }
-        let source_sparklines = {
-            let src_idx = self.sheet_index(source).unwrap_or(0);
-            self.sheet_sparklines
-                .get(src_idx)
-                .cloned()
-                .unwrap_or_default()
-        };
+        let source_sparklines = self
+            .sheet_sparklines
+            .get(src_idx)
+            .cloned()
+            .unwrap_or_default();
         if self.sheet_sparklines.len() < self.worksheets.len() {
             self.sheet_sparklines.push(source_sparklines);
         }
@@ -152,6 +152,11 @@ impl Workbook {
         }
         if self.sheet_form_controls.len() < self.worksheets.len() {
             self.sheet_form_controls.push(vec![]);
+        }
+        // Copy streamed data if the source sheet was streamed.
+        if let Some(src_streamed) = self.streamed_sheets.get(&src_idx) {
+            let cloned = src_streamed.try_clone()?;
+            self.streamed_sheets.insert(idx, cloned);
         }
         self.rebuild_sheet_index();
         Ok(idx)
@@ -1595,6 +1600,137 @@ mod tests {
         assert_eq!(
             wb2.get_cell_value("Combined", "C2").unwrap(),
             CellValue::Bool(true)
+        );
+    }
+
+    // --- Regression tests for P1 bugs ---
+
+    #[test]
+    fn test_stream_formula_result_types_roundtrip() {
+        // Regression: formula cached results must preserve their type via the
+        // cell t attribute (t="str", t="b", t="e"). Without it, string results
+        // are dropped and bool results are decoded as Number(1.0).
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("stream_formula_types.xlsx");
+
+        let mut wb = Workbook::new();
+        let mut sw = wb.new_stream_writer("Formulas").unwrap();
+        sw.write_row(
+            1,
+            &[
+                CellValue::Formula {
+                    expr: "A2&B2".to_string(),
+                    result: Some(Box::new(CellValue::String("hello".to_string()))),
+                },
+                CellValue::Formula {
+                    expr: "A2>0".to_string(),
+                    result: Some(Box::new(CellValue::Bool(true))),
+                },
+                CellValue::Formula {
+                    expr: "1/0".to_string(),
+                    result: Some(Box::new(CellValue::Error("#DIV/0!".to_string()))),
+                },
+                CellValue::Formula {
+                    expr: "SUM(A2:A10)".to_string(),
+                    result: Some(Box::new(CellValue::Number(55.0))),
+                },
+            ],
+        )
+        .unwrap();
+        wb.apply_stream_writer(sw).unwrap();
+        wb.save(&path).unwrap();
+
+        let wb2 = Workbook::open(&path).unwrap();
+        // String result
+        assert_eq!(
+            wb2.get_cell_value("Formulas", "A1").unwrap(),
+            CellValue::Formula {
+                expr: "A2&B2".to_string(),
+                result: Some(Box::new(CellValue::String("hello".to_string()))),
+            }
+        );
+        // Bool result
+        assert_eq!(
+            wb2.get_cell_value("Formulas", "B1").unwrap(),
+            CellValue::Formula {
+                expr: "A2>0".to_string(),
+                result: Some(Box::new(CellValue::Bool(true))),
+            }
+        );
+        // Error result
+        assert_eq!(
+            wb2.get_cell_value("Formulas", "C1").unwrap(),
+            CellValue::Formula {
+                expr: "1/0".to_string(),
+                result: Some(Box::new(CellValue::Error("#DIV/0!".to_string()))),
+            }
+        );
+        // Numeric result
+        assert_eq!(
+            wb2.get_cell_value("Formulas", "D1").unwrap(),
+            CellValue::Formula {
+                expr: "SUM(A2:A10)".to_string(),
+                result: Some(Box::new(CellValue::Number(55.0))),
+            }
+        );
+    }
+
+    #[test]
+    fn test_stream_edit_after_apply_takes_effect() {
+        // Regression: edits via set_cell_value after apply_stream_writer must
+        // not be silently ignored. The edit invalidates the streamed data so
+        // the normal WorksheetXml serialization path is used on save.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("stream_edit_after.xlsx");
+
+        let mut wb = Workbook::new();
+        let mut sw = wb.new_stream_writer("S").unwrap();
+        sw.write_row(1, &[CellValue::from("old")]).unwrap();
+        wb.apply_stream_writer(sw).unwrap();
+
+        // Edit the streamed sheet: this should invalidate streamed data.
+        wb.set_cell_value("S", "A1", "new").unwrap();
+        wb.save(&path).unwrap();
+
+        let wb2 = Workbook::open(&path).unwrap();
+        assert_eq!(
+            wb2.get_cell_value("S", "A1").unwrap(),
+            CellValue::String("new".to_string())
+        );
+    }
+
+    #[test]
+    fn test_stream_copy_sheet_preserves_data() {
+        // Regression: copy_sheet must clone the streamed payload so both
+        // source and target sheets have the streamed data on save.
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("stream_copy.xlsx");
+
+        let mut wb = Workbook::new();
+        let mut sw = wb.new_stream_writer("Src").unwrap();
+        sw.write_row(1, &[CellValue::from("x")]).unwrap();
+        sw.write_row(2, &[CellValue::from("y")]).unwrap();
+        wb.apply_stream_writer(sw).unwrap();
+
+        wb.copy_sheet("Src", "Dst").unwrap();
+        wb.save(&path).unwrap();
+
+        let wb2 = Workbook::open(&path).unwrap();
+        assert_eq!(
+            wb2.get_cell_value("Src", "A1").unwrap(),
+            CellValue::String("x".to_string())
+        );
+        assert_eq!(
+            wb2.get_cell_value("Src", "A2").unwrap(),
+            CellValue::String("y".to_string())
+        );
+        assert_eq!(
+            wb2.get_cell_value("Dst", "A1").unwrap(),
+            CellValue::String("x".to_string())
+        );
+        assert_eq!(
+            wb2.get_cell_value("Dst", "A2").unwrap(),
+            CellValue::String("y".to_string())
         );
     }
 }
