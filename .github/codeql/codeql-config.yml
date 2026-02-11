@@ -1,0 +1,31 @@
+name: "SheetKit CodeQL Config"
+
+paths-ignore:
+  # Rust tests
+  - "**/tests/**"
+  - "**/benches/**"
+
+  # Node.js tests
+  - "**/__test__/**"
+
+  # Example projects
+  - "examples/**"
+
+  # Benchmarks
+  - "benchmarks/**"
+
+  # Build outputs and dependencies
+  - "target/**"
+  - "node_modules/**"
+  - "dist/**"
+
+  # Generated binding files
+  - "packages/**/binding.js"
+  - "packages/**/binding.d.ts"
+
+  # TypeScript compiled outputs
+  - "packages/sheetkit/*.js"
+  - "packages/sheetkit/*.d.ts"
+
+  # Test fixtures
+  - "fixtures/**"
