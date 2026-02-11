@@ -10,22 +10,33 @@ In the existing Node.js benchmark suite (`benchmarks/node/RESULTS.md`), SheetKit
 
 | Scenario | SheetKit | ExcelJS | SheetJS |
 |----------|----------|---------|---------|
-| Read Large Data (50k rows × 20 cols) | 680ms | 3.88s | 2.06s |
-| Write 50k rows × 20 cols | 657ms | 3.49s | 1.59s |
-| Buffer round-trip (10k rows) | 167ms | 674ms | 211ms |
-| Random-access read (1k cells from 50k-row file) | 550ms | 3.97s | 1.74s |
+| Read Large Data (50k rows x 20 cols) | 454ms | 2.69s | 1.59s |
+| Write 50k rows x 20 cols | 461ms | 2.55s | 1.25s |
+| Buffer round-trip (10k rows) | 118ms | 479ms | 147ms |
+| Random-access read (1k cells from 50k-row file) | 387ms | 2.81s | 1.29s |
+
+### Compared with Rust Excel Libraries
+
+Among pure Rust libraries, SheetKit is the fastest writer. For reads, calamine (read-only) and edit-xlsx (lazy parsing) are faster, but SheetKit is the only library supporting full read+modify+write in a single crate.
+
+| Scenario | SheetKit | calamine | rust_xlsxwriter | edit-xlsx |
+|----------|----------|----------|-----------------|-----------|
+| Read Large Data (50k rows) | 390ms | 299ms | N/A | 35ms |
+| Write 50k rows x 20 cols | 459ms | N/A | 847ms | 886ms |
+| Streaming write (50k rows) | 184ms | N/A | 858ms | N/A |
+| Modify 1k cells in 50k file | 588ms | N/A | N/A | N/A |
 
 ### Rust vs Node.js Overhead
 
-SheetKit's Node.js bindings stay close to native Rust performance, and in several write-heavy paths they are faster:
+SheetKit's Node.js bindings stay close to native Rust performance:
 
 | Operation | Overhead |
 |-----------|----------|
-| **Read operations (sync)** | ~1.10x (~10% slower, typical) |
-| **Read operations (async)** | ~1.10x (~10% slower, typical) |
-| **Write operations (batch)** | ~0.90x (~10% faster, typical) |
-| **Streaming write** | 1.21x (21% slower) |
-| **Buffer round-trip** | 1.01x (near parity) |
+| **Read operations (sync)** | ~1.20x (~20% slower, typical) |
+| **Read operations (async)** | ~1.15x (~15% slower, typical) |
+| **Write operations (batch)** | ~1.0x (near parity) |
+| **Streaming write** | 1.66x (66% slower) |
+| **Buffer round-trip** | 1.11x (11% slower) |
 
 For most real-world workloads, Node.js performance remains close to native Rust.
 
@@ -33,22 +44,22 @@ For most real-world workloads, Node.js performance remains close to native Rust.
 
 | Scenario | Rust | Node.js | Overhead |
 |----------|------|---------|----------|
-| Large Data (50k rows × 20 cols) | 616ms | 680ms | +10% |
-| Heavy Styles (5k rows, formatted) | 33ms | 37ms | +12% |
-| Multi-Sheet (10 sheets × 5k rows) | 360ms | 781ms | +117% |
-| Formulas (10k rows) | 40ms | 52ms | +30% |
-| Strings (20k rows text-heavy) | 140ms | 126ms | -10% (faster) |
+| Large Data (50k rows x 20 cols) | 387ms | 454ms | +17% |
+| Heavy Styles (5k rows, formatted) | 20ms | 24ms | +20% |
+| Multi-Sheet (10 sheets x 5k rows) | 223ms | 530ms | +138% |
+| Formulas (10k rows) | 24ms | 33ms | +38% |
+| Strings (20k rows text-heavy) | 83ms | 95ms | +14% |
 
 ### Write Performance Comparison
 
 | Scenario | Rust | Node.js | Overhead |
 |----------|------|---------|----------|
-| 50k rows × 20 cols | 1.03s | 657ms | -36% (faster) |
-| 5k styled rows | 39ms | 48ms | +23% |
-| 10k rows with formulas | 35ms | 39ms | +11% |
-| 20k text-heavy rows | 145ms | 123ms | -15% (faster) |
+| 50k rows x 20 cols | 478ms | 461ms | -4% (faster) |
+| 5k styled rows | 25ms | 35ms | +40% |
+| 10k rows with formulas | 21ms | 28ms | +33% |
+| 20k text-heavy rows | 92ms | 87ms | -5% (faster) |
 
-Note: In some write scenarios, Node.js performs slightly better than Rust due to V8's efficient string handling during data construction.
+Note: In some write scenarios, Node.js performs slightly better than Rust due to V8's efficient string handling during data construction and the batch `setSheetData()` API.
 
 ### Scaling Performance
 
@@ -56,18 +67,18 @@ Read performance remains consistent across different file sizes:
 
 | Rows | Rust | Node.js | Overhead |
 |------|------|---------|----------|
-| 1k | 6ms | 7ms | +17% |
-| 10k | 62ms | 68ms | +10% |
-| 100k | 659ms | 714ms | +8% |
+| 1k | 4ms | 5ms | +25% |
+| 10k | 39ms | 45ms | +15% |
+| 100k | 410ms | 474ms | +16% |
 
 Write performance scales linearly:
 
 | Rows | Rust | Node.js | Overhead |
 |------|------|---------|----------|
-| 1k | 7ms | 7ms | 0% |
-| 10k | 68ms | 66ms | -3% (faster) |
-| 50k | 456ms | 332ms | -27% (faster) |
-| 100k | 735ms | 665ms | -10% (faster) |
+| 1k | 4ms | 5ms | +25% |
+| 10k | 48ms | 47ms | -2% (faster) |
+| 50k | 226ms | 235ms | +4% |
+| 100k | 454ms | 476ms | +5% |
 
 ## Raw Buffer Transfer and Memory Behavior
 
