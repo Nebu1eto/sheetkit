@@ -55,12 +55,119 @@ impl Workbook {
         crate::conditional::delete_conditional_format(ws, sqref)
     }
 
+    /// Hydrate deferred comment and VML data for a sheet.
+    ///
+    /// In ReadFast mode, comment XML and VML bytes are stored as raw data in
+    /// `deferred_parts` instead of being parsed. This method parses them into
+    /// `sheet_comments` and `sheet_vml`, then removes the consumed entries from
+    /// `deferred_parts` so they are not written as duplicates on save.
+    ///
+    /// This is called automatically before any comment mutation or query to
+    /// ensure pre-existing comments are preserved.
+    fn hydrate_comments(&mut self, sheet_idx: usize) {
+        if self.deferred_parts.is_empty() {
+            return;
+        }
+
+        // Determine the comment ZIP path from the worksheet relationship.
+        let comment_path = self
+            .worksheet_rels
+            .get(&sheet_idx)
+            .and_then(|rels| {
+                rels.relationships
+                    .iter()
+                    .find(|r| r.rel_type == rel_types::COMMENTS)
+            })
+            .map(|rel| {
+                let sheet_path = self.sheet_part_path(sheet_idx);
+                resolve_relationship_target(&sheet_path, &rel.target)
+            });
+
+        if let Some(ref path) = comment_path {
+            if let Some(raw_bytes) = self.deferred_parts.remove(path) {
+                let xml_str = String::from_utf8_lossy(&raw_bytes);
+                if let Ok(parsed) =
+                    quick_xml::de::from_str::<sheetkit_xml::comments::Comments>(&xml_str)
+                {
+                    match &mut self.sheet_comments[sheet_idx] {
+                        Some(existing) => {
+                            // Merge: add authors and comments from deferred data,
+                            // then append any already-present comments on top.
+                            let mut merged = parsed;
+                            for comment in std::mem::take(&mut existing.comment_list.comments) {
+                                // Re-map author_id to the merged author list.
+                                let author_name = existing
+                                    .authors
+                                    .authors
+                                    .get(comment.author_id as usize)
+                                    .cloned()
+                                    .unwrap_or_default();
+                                let new_author_id = match merged
+                                    .authors
+                                    .authors
+                                    .iter()
+                                    .position(|a| a == &author_name)
+                                {
+                                    Some(idx) => idx as u32,
+                                    None => {
+                                        merged.authors.authors.push(author_name);
+                                        (merged.authors.authors.len() - 1) as u32
+                                    }
+                                };
+                                // Remove any duplicate on the same cell from the
+                                // deferred data (in-memory version wins).
+                                merged
+                                    .comment_list
+                                    .comments
+                                    .retain(|c| c.r#ref != comment.r#ref);
+                                merged.comment_list.comments.push(
+                                    sheetkit_xml::comments::Comment {
+                                        r#ref: comment.r#ref,
+                                        author_id: new_author_id,
+                                        text: comment.text,
+                                    },
+                                );
+                            }
+                            self.sheet_comments[sheet_idx] = Some(merged);
+                        }
+                        None => {
+                            self.sheet_comments[sheet_idx] = Some(parsed);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Also hydrate the VML drawing for this sheet if deferred.
+        let vml_path = self
+            .worksheet_rels
+            .get(&sheet_idx)
+            .and_then(|rels| {
+                rels.relationships
+                    .iter()
+                    .find(|r| r.rel_type == rel_types::VML_DRAWING)
+            })
+            .map(|rel| {
+                let sheet_path = self.sheet_part_path(sheet_idx);
+                resolve_relationship_target(&sheet_path, &rel.target)
+            });
+
+        if let Some(ref path) = vml_path {
+            if let Some(vml_bytes) = self.deferred_parts.remove(path) {
+                if self.sheet_vml[sheet_idx].is_none() {
+                    self.sheet_vml[sheet_idx] = Some(vml_bytes);
+                }
+            }
+        }
+    }
+
     /// Add a comment to a cell on the given sheet.
     ///
     /// A VML drawing part is generated automatically when saving so that
     /// the comment renders correctly in Excel.
     pub fn add_comment(&mut self, sheet: &str, config: &CommentConfig) -> Result<()> {
         let idx = self.sheet_index(sheet)?;
+        self.hydrate_comments(idx);
         crate::comment::add_comment(&mut self.sheet_comments[idx], config);
         // Invalidate cached VML so save() regenerates it from current comments.
         if idx < self.sheet_vml.len() {
@@ -70,8 +177,12 @@ impl Workbook {
     }
 
     /// Get all comments for a sheet.
-    pub fn get_comments(&self, sheet: &str) -> Result<Vec<CommentConfig>> {
+    ///
+    /// If the workbook was opened in ReadFast mode, deferred comment data is
+    /// hydrated on demand before returning results.
+    pub fn get_comments(&mut self, sheet: &str) -> Result<Vec<CommentConfig>> {
         let idx = self.sheet_index(sheet)?;
+        self.hydrate_comments(idx);
         Ok(crate::comment::get_all_comments(&self.sheet_comments[idx]))
     }
 
@@ -81,6 +192,7 @@ impl Workbook {
     /// cleaned up automatically during save.
     pub fn remove_comment(&mut self, sheet: &str, cell: &str) -> Result<()> {
         let idx = self.sheet_index(sheet)?;
+        self.hydrate_comments(idx);
         crate::comment::remove_comment(&mut self.sheet_comments[idx], cell);
         // Invalidate cached VML so save() regenerates or omits it.
         if idx < self.sheet_vml.len() {
@@ -969,7 +1081,7 @@ mod tests {
         .unwrap();
         wb.save(&path).unwrap();
 
-        let wb2 = Workbook::open(&path).unwrap();
+        let mut wb2 = Workbook::open(&path).unwrap();
         let comments = wb2.get_comments("Sheet1").unwrap();
         assert_eq!(comments.len(), 1);
         assert_eq!(comments[0].cell, "A1");
@@ -1042,7 +1154,7 @@ mod tests {
         assert!(archive.by_name("xl/drawings/vmlDrawing1.vml").is_ok());
 
         // Comments should still be readable.
-        let wb3 = Workbook::open(&path2).unwrap();
+        let mut wb3 = Workbook::open(&path2).unwrap();
         let comments = wb3.get_comments("Sheet1").unwrap();
         assert_eq!(comments.len(), 1);
         assert_eq!(comments[0].text, "Roundtrip VML");

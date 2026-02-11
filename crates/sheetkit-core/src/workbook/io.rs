@@ -840,7 +840,10 @@ impl Workbook {
                 .and_then(|v| v.as_ref())
                 .is_some();
 
-            if has_deferred {
+            // When deferred_parts is non-empty (ReadFast open), skip comment/VML
+            // synchronization only for sheets whose comment data is still deferred
+            // (not yet hydrated). Hydrated sheets need normal relationship sync.
+            if has_deferred && !has_comments && !has_form_controls && !has_preserved_vml {
                 continue;
             }
 
@@ -3200,16 +3203,17 @@ mod tests {
         let buf = wb.save_to_buffer().unwrap();
 
         let opts = OpenOptions::new().parse_mode(ParseMode::ReadFast);
-        let wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
+        let mut wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
 
         // Cell data is readable.
         assert_eq!(
             wb2.get_cell_value("Sheet1", "A1").unwrap(),
             CellValue::String("data".to_string())
         );
-        // Comments are not loaded in ReadFast mode.
+        // Comments are hydrated on demand from deferred parts.
         let comments = wb2.get_comments("Sheet1").unwrap();
-        assert!(comments.is_empty());
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments[0].text, "A test comment");
     }
 
     #[test]
@@ -3262,7 +3266,7 @@ mod tests {
         let saved = wb2.save_to_buffer().unwrap();
 
         // Re-open in Full mode and verify all parts were preserved.
-        let wb3 = Workbook::open_from_buffer(&saved).unwrap();
+        let mut wb3 = Workbook::open_from_buffer(&saved).unwrap();
         assert_eq!(
             wb3.get_cell_value("Sheet1", "A1").unwrap(),
             CellValue::String("data".to_string())
@@ -3361,7 +3365,7 @@ mod tests {
 
         // Full mode: everything should be parsed.
         let opts = OpenOptions::new().parse_mode(ParseMode::Full);
-        let wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
+        let mut wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
         let comments = wb2.get_comments("Sheet1").unwrap();
         assert_eq!(comments.len(), 1);
     }
@@ -3546,13 +3550,227 @@ mod tests {
         // This must not fail with a duplicate ZIP entry error.
         let saved = wb2.save_to_buffer().unwrap();
 
-        // Re-open and verify the new comment is present.
-        let wb3 = Workbook::open_from_buffer(&saved).unwrap();
+        // Re-open and verify both old and new comments are present.
+        let mut wb3 = Workbook::open_from_buffer(&saved).unwrap();
         let comments = wb3.get_comments("Sheet1").unwrap();
         assert!(
             comments.iter().any(|c| c.text == "New comment"),
             "New comment should be present after ReadFast + add_comment round-trip"
         );
+        assert!(
+            comments.iter().any(|c| c.text == "Original comment"),
+            "Original comment must be preserved after ReadFast + add_comment round-trip"
+        );
+        assert_eq!(
+            comments.len(),
+            2,
+            "Both original and new comments must survive"
+        );
+    }
+
+    #[test]
+    fn test_readfast_add_comment_preserves_existing_comments() {
+        // Regression test: opening with ReadFast, adding a comment, and saving
+        // must not drop pre-existing comments.
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", CellValue::String("data".to_string()))
+            .unwrap();
+        wb.add_comment(
+            "Sheet1",
+            &crate::comment::CommentConfig {
+                cell: "A1".to_string(),
+                author: "Alice".to_string(),
+                text: "First comment".to_string(),
+            },
+        )
+        .unwrap();
+        wb.add_comment(
+            "Sheet1",
+            &crate::comment::CommentConfig {
+                cell: "B2".to_string(),
+                author: "Bob".to_string(),
+                text: "Second comment".to_string(),
+            },
+        )
+        .unwrap();
+        let buf = wb.save_to_buffer().unwrap();
+
+        let opts = OpenOptions::new().parse_mode(ParseMode::ReadFast);
+        let mut wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
+
+        // Add a third comment.
+        wb2.add_comment(
+            "Sheet1",
+            &crate::comment::CommentConfig {
+                cell: "C3".to_string(),
+                author: "Charlie".to_string(),
+                text: "Third comment".to_string(),
+            },
+        )
+        .unwrap();
+        let saved = wb2.save_to_buffer().unwrap();
+
+        let mut wb3 = Workbook::open_from_buffer(&saved).unwrap();
+        let comments = wb3.get_comments("Sheet1").unwrap();
+        assert_eq!(comments.len(), 3, "All three comments must be present");
+        assert!(comments
+            .iter()
+            .any(|c| c.cell == "A1" && c.text == "First comment"));
+        assert!(comments
+            .iter()
+            .any(|c| c.cell == "B2" && c.text == "Second comment"));
+        assert!(comments
+            .iter()
+            .any(|c| c.cell == "C3" && c.text == "Third comment"));
+    }
+
+    #[test]
+    fn test_readfast_get_comments_hydrates_deferred() {
+        // get_comments should return deferred comments even if no mutation occurred.
+        let mut wb = Workbook::new();
+        wb.add_comment(
+            "Sheet1",
+            &crate::comment::CommentConfig {
+                cell: "A1".to_string(),
+                author: "Author".to_string(),
+                text: "Deferred comment".to_string(),
+            },
+        )
+        .unwrap();
+        let buf = wb.save_to_buffer().unwrap();
+
+        let opts = OpenOptions::new().parse_mode(ParseMode::ReadFast);
+        let mut wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
+
+        // get_comments should hydrate and return the deferred comment.
+        let comments = wb2.get_comments("Sheet1").unwrap();
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments[0].cell, "A1");
+        assert_eq!(comments[0].text, "Deferred comment");
+    }
+
+    #[test]
+    fn test_readfast_remove_comment_hydrates_first() {
+        // remove_comment on a ReadFast workbook must hydrate deferred comments,
+        // then remove only the target comment, preserving others.
+        let mut wb = Workbook::new();
+        wb.add_comment(
+            "Sheet1",
+            &crate::comment::CommentConfig {
+                cell: "A1".to_string(),
+                author: "Alice".to_string(),
+                text: "Keep me".to_string(),
+            },
+        )
+        .unwrap();
+        wb.add_comment(
+            "Sheet1",
+            &crate::comment::CommentConfig {
+                cell: "B2".to_string(),
+                author: "Bob".to_string(),
+                text: "Remove me".to_string(),
+            },
+        )
+        .unwrap();
+        let buf = wb.save_to_buffer().unwrap();
+
+        let opts = OpenOptions::new().parse_mode(ParseMode::ReadFast);
+        let mut wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
+        wb2.remove_comment("Sheet1", "B2").unwrap();
+
+        let saved = wb2.save_to_buffer().unwrap();
+        let mut wb3 = Workbook::open_from_buffer(&saved).unwrap();
+        let comments = wb3.get_comments("Sheet1").unwrap();
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments[0].cell, "A1");
+        assert_eq!(comments[0].text, "Keep me");
+    }
+
+    #[test]
+    fn test_readfast_add_comment_no_preexisting_comments() {
+        // Adding a comment to a sheet that had no comments when opened in ReadFast
+        // must create proper relationships and content types on save, even when
+        // deferred_parts is non-empty due to other auxiliary parts (e.g. doc props).
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", CellValue::String("data".to_string()))
+            .unwrap();
+        // Add doc props so that ReadFast will have non-empty deferred_parts.
+        wb.set_doc_props(crate::doc_props::DocProperties {
+            title: Some("Trigger deferred".to_string()),
+            ..Default::default()
+        });
+        let buf = wb.save_to_buffer().unwrap();
+
+        let opts = OpenOptions::new().parse_mode(ParseMode::ReadFast);
+        let mut wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
+        wb2.add_comment(
+            "Sheet1",
+            &crate::comment::CommentConfig {
+                cell: "A1".to_string(),
+                author: "Newcomer".to_string(),
+                text: "Brand new comment".to_string(),
+            },
+        )
+        .unwrap();
+
+        let saved = wb2.save_to_buffer().unwrap();
+
+        // Verify the comment is readable after re-open.
+        let mut wb3 = Workbook::open_from_buffer(&saved).unwrap();
+        let comments = wb3.get_comments("Sheet1").unwrap();
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments[0].text, "Brand new comment");
+
+        // Verify the ZIP contains the comment XML and VML parts.
+        let reader = std::io::Cursor::new(&saved);
+        let mut archive = zip::ZipArchive::new(reader).unwrap();
+        assert!(
+            archive.by_name("xl/comments1.xml").is_ok(),
+            "comments1.xml must be present"
+        );
+        assert!(
+            archive.by_name("xl/drawings/vmlDrawing1.vml").is_ok(),
+            "vmlDrawing1.vml must be present for the comment"
+        );
+    }
+
+    #[test]
+    fn test_readfast_add_comment_vml_roundtrip() {
+        // Verify that VML parts are correct after ReadFast hydration + add comment.
+        let mut wb = Workbook::new();
+        wb.add_comment(
+            "Sheet1",
+            &crate::comment::CommentConfig {
+                cell: "A1".to_string(),
+                author: "Original".to_string(),
+                text: "Has VML".to_string(),
+            },
+        )
+        .unwrap();
+        let buf = wb.save_to_buffer().unwrap();
+
+        let opts = OpenOptions::new().parse_mode(ParseMode::ReadFast);
+        let mut wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
+        wb2.add_comment(
+            "Sheet1",
+            &crate::comment::CommentConfig {
+                cell: "B2".to_string(),
+                author: "New".to_string(),
+                text: "Also has VML".to_string(),
+            },
+        )
+        .unwrap();
+        let saved = wb2.save_to_buffer().unwrap();
+
+        // Verify VML part is present and references both cells.
+        let reader = std::io::Cursor::new(&saved);
+        let mut archive = zip::ZipArchive::new(reader).unwrap();
+        assert!(archive.by_name("xl/drawings/vmlDrawing1.vml").is_ok());
+
+        // Verify both comments survive a full open.
+        let mut wb3 = Workbook::open_from_buffer(&saved).unwrap();
+        let comments = wb3.get_comments("Sheet1").unwrap();
+        assert_eq!(comments.len(), 2);
     }
 
     #[test]
