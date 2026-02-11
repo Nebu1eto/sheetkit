@@ -1453,7 +1453,7 @@ pub(crate) fn read_xml_part<T: serde::de::DeserializeOwned, R: std::io::Read + s
         .by_name(name)
         .map_err(|e| Error::Zip(e.to_string()))?;
     let size = entry.size() as usize;
-    let buf_cap = size.min(LARGE_BUF_CAPACITY).max(8192);
+    let buf_cap = size.clamp(8192, LARGE_BUF_CAPACITY);
     let reader = std::io::BufReader::with_capacity(buf_cap, entry);
     quick_xml::de::from_reader(reader).map_err(|e| Error::XmlDeserialize(e.to_string()))
 }
