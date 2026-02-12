@@ -1,6 +1,6 @@
 # SheetKit Rust Native Benchmark
 
-Benchmark run: 2026-02-12T12:02:02Z
+Benchmark run: 2026-02-12T13:16:13Z
 
 ## Environment
 
@@ -17,24 +17,24 @@ Benchmark run: 2026-02-12T12:02:02Z
 
 | Scenario | Median | Min | Max | P95 | Peak Mem (MB) |
 |----------|--------|-----|-----|-----|---------------|
-| Read Large Data (50k rows x 20 cols) | 499ms | 497ms | 512ms | 512ms | 60.2 |
-| Read Large Data (50k rows x 20 cols) (lazy) | 491ms | 488ms | 495ms | 495ms | 17.3 |
-| Read Heavy Styles (5k rows, formatted) | 26ms | 26ms | 27ms | 27ms | 0.0 |
-| Read Heavy Styles (5k rows, formatted) (lazy) | 26ms | 26ms | 26ms | 26ms | 0.0 |
-| Read Multi-Sheet (10 sheets x 5k rows) | 299ms | 297ms | 300ms | 300ms | 19.0 |
-| Read Multi-Sheet (10 sheets x 5k rows) (lazy) | 292ms | 291ms | 293ms | 293ms | 17.2 |
-| Read Formulas (10k rows) | 33ms | 32ms | 34ms | 34ms | 2.7 |
-| Read Formulas (10k rows) (lazy) | 31ms | 31ms | 31ms | 31ms | 0.0 |
-| Read Strings (20k rows text-heavy) | 107ms | 106ms | 107ms | 107ms | 0.0 |
-| Read Strings (20k rows text-heavy) (lazy) | 106ms | 105ms | 107ms | 107ms | 0.0 |
-| Read Data Validation (5k rows, 8 rules) | 21ms | 20ms | 21ms | 21ms | 0.0 |
-| Read Data Validation (5k rows, 8 rules) (lazy) | 20ms | 20ms | 20ms | 20ms | 0.0 |
-| Read Comments (2k rows with comments) | 8ms | 8ms | 9ms | 9ms | 0.0 |
+| Read Large Data (50k rows x 20 cols) | 509ms | 508ms | 519ms | 519ms | 17.6 |
+| Read Large Data (50k rows x 20 cols) (lazy) | 518ms | 510ms | 520ms | 520ms | 17.2 |
+| Read Heavy Styles (5k rows, formatted) | 27ms | 26ms | 27ms | 27ms | 1.7 |
+| Read Heavy Styles (5k rows, formatted) (lazy) | 27ms | 26ms | 27ms | 27ms | 0.0 |
+| Read Multi-Sheet (10 sheets x 5k rows) | 298ms | 296ms | 300ms | 300ms | 22.8 |
+| Read Multi-Sheet (10 sheets x 5k rows) (lazy) | 301ms | 297ms | 303ms | 303ms | 17.6 |
+| Read Formulas (10k rows) | 33ms | 33ms | 33ms | 33ms | 0.0 |
+| Read Formulas (10k rows) (lazy) | 33ms | 33ms | 33ms | 33ms | 0.0 |
+| Read Strings (20k rows text-heavy) | 109ms | 109ms | 110ms | 110ms | 3.5 |
+| Read Strings (20k rows text-heavy) (lazy) | 109ms | 109ms | 110ms | 110ms | 0.0 |
+| Read Data Validation (5k rows, 8 rules) | 21ms | 21ms | 21ms | 21ms | 0.0 |
+| Read Data Validation (5k rows, 8 rules) (lazy) | 21ms | 20ms | 21ms | 21ms | 0.0 |
+| Read Comments (2k rows with comments) | 7ms | 7ms | 7ms | 7ms | 0.0 |
 | Read Comments (2k rows with comments) (lazy) | 7ms | 7ms | 7ms | 7ms | 0.0 |
 | Read Merged Cells (500 regions) | 1ms | 1ms | 1ms | 1ms | 0.0 |
 | Read Merged Cells (500 regions) (lazy) | 1ms | 1ms | 1ms | 1ms | 0.0 |
-| Read Mixed Workload (ERP document) | 26ms | 26ms | 27ms | 27ms | 0.0 |
-| Read Mixed Workload (ERP document) (lazy) | 26ms | 25ms | 26ms | 26ms | 0.0 |
+| Read Mixed Workload (ERP document) | 26ms | 26ms | 26ms | 26ms | 0.0 |
+| Read Mixed Workload (ERP document) (lazy) | 26ms | 26ms | 27ms | 27ms | 0.0 |
 
 ## Read (Scale)
 
@@ -42,20 +42,20 @@ Benchmark run: 2026-02-12T12:02:02Z
 |----------|--------|-----|-----|-----|---------------|
 | Read Scale 1k rows | 5ms | 5ms | 5ms | 5ms | 0.0 |
 | Read Scale 1k rows (lazy) | 5ms | 5ms | 5ms | 5ms | 0.0 |
-| Read Scale 10k rows | 52ms | 51ms | 54ms | 54ms | 0.0 |
-| Read Scale 10k rows (lazy) | 52ms | 51ms | 53ms | 53ms | 2.4 |
-| Read Scale 100k rows | 525ms | 524ms | 527ms | 527ms | 33.0 |
-| Read Scale 100k rows (lazy) | 511ms | 511ms | 513ms | 513ms | 20.6 |
+| Read Scale 10k rows | 51ms | 51ms | 52ms | 52ms | 0.0 |
+| Read Scale 10k rows (lazy) | 51ms | 51ms | 52ms | 52ms | 0.0 |
+| Read Scale 100k rows | 526ms | 521ms | 531ms | 531ms | 0.1 |
+| Read Scale 100k rows (lazy) | 539ms | 522ms | 543ms | 543ms | 0.0 |
 
 ## Write
 
 | Scenario | Median | Min | Max | P95 | Peak Mem (MB) |
 |----------|--------|-----|-----|-----|---------------|
-| Write 50000 rows x 20 cols | 510ms | 506ms | 511ms | 511ms | 31.5 |
-| Write 5000 styled rows | 28ms | 27ms | 28ms | 28ms | 0.0 |
-| Write 10 sheets x 5000 rows | 269ms | 266ms | 270ms | 270ms | 0.8 |
-| Write 10000 rows with formulas | 23ms | 23ms | 23ms | 23ms | 0.0 |
-| Write 20000 text-heavy rows | 105ms | 104ms | 105ms | 105ms | 0.0 |
+| Write 50000 rows x 20 cols | 544ms | 537ms | 555ms | 555ms | 12.8 |
+| Write 5000 styled rows | 28ms | 28ms | 29ms | 29ms | 0.1 |
+| Write 10 sheets x 5000 rows | 274ms | 271ms | 276ms | 276ms | 1.6 |
+| Write 10000 rows with formulas | 24ms | 24ms | 25ms | 25ms | 0.0 |
+| Write 20000 text-heavy rows | 108ms | 106ms | 108ms | 108ms | 1.6 |
 
 ## Write (DV)
 
@@ -67,42 +67,42 @@ Benchmark run: 2026-02-12T12:02:02Z
 
 | Scenario | Median | Min | Max | P95 | Peak Mem (MB) |
 |----------|--------|-----|-----|-----|---------------|
-| Write 2000 rows with comments | 6ms | 6ms | 7ms | 7ms | 0.0 |
+| Write 2000 rows with comments | 7ms | 7ms | 7ms | 7ms | 0.0 |
 
 ## Write (Merge)
 
 | Scenario | Median | Min | Max | P95 | Peak Mem (MB) |
 |----------|--------|-----|-----|-----|---------------|
-| Write 500 merged regions | 1ms | 1ms | 1ms | 1ms | 0.0 |
+| Write 500 merged regions | 1ms | 1ms | 2ms | 2ms | 0.0 |
 
 ## Write (Scale)
 
 | Scenario | Median | Min | Max | P95 | Peak Mem (MB) |
 |----------|--------|-----|-----|-----|---------------|
 | Write 1k rows x 10 cols | 5ms | 5ms | 5ms | 5ms | 0.0 |
-| Write 10k rows x 10 cols | 48ms | 48ms | 48ms | 48ms | 0.0 |
-| Write 50k rows x 10 cols | 251ms | 248ms | 251ms | 251ms | 0.0 |
-| Write 100k rows x 10 cols | 515ms | 512ms | 517ms | 517ms | 0.0 |
+| Write 10k rows x 10 cols | 48ms | 48ms | 49ms | 49ms | 0.0 |
+| Write 50k rows x 10 cols | 258ms | 256ms | 260ms | 260ms | 0.0 |
+| Write 100k rows x 10 cols | 531ms | 518ms | 543ms | 543ms | 33.3 |
 
 ## Round-Trip
 
 | Scenario | Median | Min | Max | P95 | Peak Mem (MB) |
 |----------|--------|-----|-----|-----|---------------|
-| Buffer round-trip (10000 rows) | 124ms | 123ms | 127ms | 127ms | 0.0 |
+| Buffer round-trip (10000 rows) | 128ms | 128ms | 128ms | 128ms | 0.0 |
 
 ## Streaming
 
 | Scenario | Median | Min | Max | P95 | Peak Mem (MB) |
 |----------|--------|-----|-----|-----|---------------|
-| Streaming write (50000 rows) | 204ms | 202ms | 206ms | 206ms | 0.0 |
+| Streaming write (50000 rows) | 207ms | 205ms | 210ms | 210ms | 0.0 |
 
 ## Random Access
 
 | Scenario | Median | Min | Max | P95 | Peak Mem (MB) |
 |----------|--------|-----|-----|-----|---------------|
-| Random-access (open+1000 lookups) | 485ms | 483ms | 486ms | 486ms | 0.0 |
-| Random-access (open+1000 lookups, lazy) | 479ms | 476ms | 481ms | 481ms | 21.4 |
-| Random-access (lookup-only, 1000 cells) | 13ms | 13ms | 13ms | 13ms | 21.4 |
+| Random-access (open+1000 lookups) | 489ms | 488ms | 491ms | 491ms | 0.0 |
+| Random-access (open+1000 lookups, lazy) | 488ms | 485ms | 491ms | 491ms | 6.5 |
+| Random-access (lookup-only, 1000 cells) | 366ms | 363ms | 374ms | 374ms | 4.2 |
 
 ## Mixed Write
 
