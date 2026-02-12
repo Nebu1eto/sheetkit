@@ -125,12 +125,49 @@ impl Workbook {
 
     /// Get information about all pivot tables in the workbook.
     pub fn get_pivot_tables(&self) -> Vec<PivotTableInfo> {
-        self.pivot_tables
+        use crate::workbook::aux::AuxCategory;
+
+        let mut pivot_tables = self.pivot_tables.clone();
+        if let Some(entries) = self.deferred_parts.entries(AuxCategory::PivotTables) {
+            for (path, bytes) in entries {
+                if pivot_tables.iter().any(|(existing, _)| existing == path) {
+                    continue;
+                }
+                let xml_str = String::from_utf8_lossy(bytes);
+                if let Ok(pt) = quick_xml::de::from_str::<
+                    sheetkit_xml::pivot_table::PivotTableDefinition,
+                >(&xml_str)
+                {
+                    pivot_tables.push((path.clone(), pt));
+                }
+            }
+        }
+
+        let mut pivot_cache_defs = self.pivot_cache_defs.clone();
+        if let Some(entries) = self.deferred_parts.entries(AuxCategory::PivotCaches) {
+            for (path, bytes) in entries {
+                if !path.contains("pivotCacheDefinition")
+                    || pivot_cache_defs
+                        .iter()
+                        .any(|(existing, _)| existing == path)
+                {
+                    continue;
+                }
+                let xml_str = String::from_utf8_lossy(bytes);
+                if let Ok(pcd) = quick_xml::de::from_str::<
+                    sheetkit_xml::pivot_cache::PivotCacheDefinition,
+                >(&xml_str)
+                {
+                    pivot_cache_defs.push((path.clone(), pcd));
+                }
+            }
+        }
+
+        pivot_tables
             .iter()
-            .map(|(_path, pt)| {
+            .map(|(path, pt)| {
                 // Find the matching cache definition by cache_id.
-                let (source_sheet, source_range) = self
-                    .pivot_cache_defs
+                let (source_sheet, source_range) = pivot_cache_defs
                     .iter()
                     .enumerate()
                     .find(|(i, _)| {
@@ -150,7 +187,9 @@ impl Workbook {
                     .unwrap_or_default();
 
                 // Determine target sheet from the pivot table path.
-                let target_sheet = self.find_pivot_table_target_sheet(pt).unwrap_or_default();
+                let target_sheet = self
+                    .find_pivot_table_target_sheet_by_path(path)
+                    .unwrap_or_default();
 
                 PivotTableInfo {
                     name: pt.name.clone(),
@@ -319,7 +358,6 @@ impl Workbook {
         let mut formula_cells: Vec<(CellCoord, String)> = Vec::new();
         for (idx, sn) in sheet_names.iter().enumerate() {
             self.ensure_hydrated(idx)?;
-            self.mark_sheet_dirty(idx);
             let ws = self.worksheets[idx].1.get().unwrap();
             for row in &ws.sheet_data.rows {
                 for cell in &row.cells {
@@ -374,38 +412,39 @@ impl Workbook {
 
         // Write results back directly to the XML cells, preserving the
         // formula element and storing the computed value in the v/t fields.
+        let sheet_name_to_idx: HashMap<String, usize> = sheet_names
+            .iter()
+            .enumerate()
+            .map(|(idx, name)| (name.clone(), idx))
+            .collect();
+
         for (coord, _formula_str, result) in results {
             let cell_ref = crate::utils::cell_ref::coordinates_to_cell_name(coord.col, coord.row)?;
-            if let Some((_, ws_lock)) = self.worksheets.iter_mut().find(|(n, _)| *n == coord.sheet)
-            {
-                let Some(ws) = ws_lock.get_mut() else {
-                    continue;
-                };
-                if let Some(row) = ws.sheet_data.rows.iter_mut().find(|r| r.r == coord.row) {
-                    if let Some(cell) = row.cells.iter_mut().find(|c| c.r == *cell_ref) {
-                        match &result {
-                            CellValue::Number(n) => {
-                                cell.v = Some(n.to_string());
-                                cell.t = CellTypeTag::None;
-                            }
-                            CellValue::String(s) => {
-                                cell.v = Some(s.clone());
-                                cell.t = CellTypeTag::FormulaString;
-                            }
-                            CellValue::Bool(b) => {
-                                cell.v = Some(if *b { "1".to_string() } else { "0".to_string() });
-                                cell.t = CellTypeTag::Boolean;
-                            }
-                            CellValue::Error(e) => {
-                                cell.v = Some(e.clone());
-                                cell.t = CellTypeTag::Error;
-                            }
-                            CellValue::Date(n) => {
-                                cell.v = Some(n.to_string());
-                                cell.t = CellTypeTag::None;
-                            }
-                            _ => {}
-                        }
+            let Some(&sheet_idx) = sheet_name_to_idx.get(&coord.sheet) else {
+                continue;
+            };
+            let Some(ws) = self.worksheets[sheet_idx].1.get_mut() else {
+                continue;
+            };
+            if let Some(row) = ws.sheet_data.rows.iter_mut().find(|r| r.r == coord.row) {
+                if let Some(cell) = row.cells.iter_mut().find(|c| c.r == *cell_ref) {
+                    let (new_v, new_t) = match &result {
+                        CellValue::Number(n) => (Some(n.to_string()), CellTypeTag::None),
+                        CellValue::String(s) => (Some(s.clone()), CellTypeTag::FormulaString),
+                        CellValue::Bool(b) => (
+                            Some(if *b { "1".to_string() } else { "0".to_string() }),
+                            CellTypeTag::Boolean,
+                        ),
+                        CellValue::Error(e) => (Some(e.clone()), CellTypeTag::Error),
+                        CellValue::Date(n) => (Some(n.to_string()), CellTypeTag::None),
+                        _ => continue,
+                    };
+
+                    let changed = cell.v != new_v || cell.t != new_t;
+                    if changed {
+                        cell.v = new_v;
+                        cell.t = new_t;
+                        self.mark_sheet_dirty(sheet_idx);
                     }
                 }
             }
@@ -477,19 +516,8 @@ impl Workbook {
         Ok(headers)
     }
 
-    /// Find the target sheet name for a pivot table by looking at worksheet
-    /// relationships that reference its path.
-    fn find_pivot_table_target_sheet(
-        &self,
-        pt: &sheetkit_xml::pivot_table::PivotTableDefinition,
-    ) -> Option<String> {
-        // Find the pivot table path.
-        let pt_path = self
-            .pivot_tables
-            .iter()
-            .find(|(_, p)| p.name == pt.name)
-            .map(|(path, _)| path.as_str())?;
-
+    /// Find the target sheet name for a pivot table by its part path.
+    fn find_pivot_table_target_sheet_by_path(&self, pt_path: &str) -> Option<String> {
         // Find which worksheet has a relationship pointing to this pivot table.
         for (sheet_idx, rels) in &self.worksheet_rels {
             for r in &rels.relationships {
@@ -519,7 +547,18 @@ impl Workbook {
 
     /// Get the core document properties.
     pub fn get_doc_props(&self) -> crate::doc_props::DocProperties {
-        self.core_properties
+        use crate::workbook::aux::AuxCategory;
+
+        if let Some(props) = self.core_properties.as_ref() {
+            return crate::doc_props::DocProperties::from(props);
+        }
+
+        self.deferred_parts
+            .get_path(AuxCategory::DocProperties, "docProps/core.xml")
+            .and_then(|bytes| {
+                let xml_str = String::from_utf8_lossy(bytes);
+                sheetkit_xml::doc_props::deserialize_core_properties(&xml_str).ok()
+            })
             .as_ref()
             .map(crate::doc_props::DocProperties::from)
             .unwrap_or_default()
@@ -534,7 +573,19 @@ impl Workbook {
 
     /// Get the application properties.
     pub fn get_app_props(&self) -> crate::doc_props::AppProperties {
-        self.app_properties
+        use crate::workbook::aux::AuxCategory;
+
+        if let Some(props) = self.app_properties.as_ref() {
+            return crate::doc_props::AppProperties::from(props);
+        }
+
+        self.deferred_parts
+            .get_path(AuxCategory::DocProperties, "docProps/app.xml")
+            .and_then(|bytes| {
+                let xml_str = String::from_utf8_lossy(bytes);
+                quick_xml::de::from_str::<sheetkit_xml::doc_props::ExtendedProperties>(&xml_str)
+                    .ok()
+            })
             .as_ref()
             .map(crate::doc_props::AppProperties::from)
             .unwrap_or_default()
@@ -557,9 +608,20 @@ impl Workbook {
 
     /// Get a custom property value by name, or `None` if it does not exist.
     pub fn get_custom_property(&self, name: &str) -> Option<crate::doc_props::CustomPropertyValue> {
-        self.custom_properties
+        use crate::workbook::aux::AuxCategory;
+
+        if let Some(props) = self.custom_properties.as_ref() {
+            return crate::doc_props::find_custom_property(props, name);
+        }
+
+        self.deferred_parts
+            .get_path(AuxCategory::DocProperties, "docProps/custom.xml")
+            .and_then(|bytes| {
+                let xml_str = String::from_utf8_lossy(bytes);
+                sheetkit_xml::doc_props::deserialize_custom_properties(&xml_str).ok()
+            })
             .as_ref()
-            .and_then(|p| crate::doc_props::find_custom_property(p, name))
+            .and_then(|props| crate::doc_props::find_custom_property(props, name))
     }
 
     /// Remove a custom property by name. Returns `true` if a property was
@@ -646,27 +708,6 @@ impl Workbook {
             .iter()
             .find(|(_, t, _)| t.name == name)
             .map(|(path, t, idx)| (path, t, *idx))
-    }
-
-    /// Look up the table name for a given table ID.
-    fn table_name_by_id(&self, table_id: u32) -> Option<&str> {
-        self.tables
-            .iter()
-            .find(|(_, t, _)| t.id == table_id)
-            .map(|(_, t, _)| t.name.as_str())
-    }
-
-    /// Look up the column name by 1-based column index and table ID.
-    fn table_column_name_by_index(&self, table_id: u32, column_index: u32) -> Option<&str> {
-        self.tables
-            .iter()
-            .find(|(_, t, _)| t.id == table_id)
-            .and_then(|(_, t, _)| {
-                t.table_columns
-                    .columns
-                    .get((column_index - 1) as usize)
-                    .map(|c| c.name.as_str())
-            })
     }
 
     /// Add a slicer to a sheet targeting a table column.
@@ -809,8 +850,72 @@ impl Workbook {
 
     /// Get information about all slicers on a sheet.
     pub fn get_slicers(&self, sheet: &str) -> Result<Vec<crate::slicer::SlicerInfo>> {
+        use crate::workbook::aux::AuxCategory;
+
         let sheet_idx = self.sheet_index(sheet)?;
         let mut result = Vec::new();
+        let mut slicer_defs = self.slicer_defs.clone();
+        let mut slicer_caches = self.slicer_caches.clone();
+        let mut tables = self.tables.clone();
+
+        if let Some(entries) = self.deferred_parts.entries(AuxCategory::Slicers) {
+            for (path, bytes) in entries {
+                if slicer_defs.iter().any(|(existing, _)| existing == path) {
+                    continue;
+                }
+                let xml_str = String::from_utf8_lossy(bytes);
+                if let Ok(sd) =
+                    quick_xml::de::from_str::<sheetkit_xml::slicer::SlicerDefinitions>(&xml_str)
+                {
+                    slicer_defs.push((path.clone(), sd));
+                }
+            }
+        }
+
+        if let Some(entries) = self.deferred_parts.entries(AuxCategory::SlicerCaches) {
+            for (path, bytes) in entries {
+                if slicer_caches.iter().any(|(existing, _)| existing == path) {
+                    continue;
+                }
+                let xml_str = String::from_utf8_lossy(bytes);
+                if let Some(cache) = sheetkit_xml::slicer::parse_slicer_cache(&xml_str) {
+                    slicer_caches.push((path.clone(), cache));
+                }
+            }
+        }
+
+        let resolve_table_sheet_idx = |table_path: &str| -> usize {
+            for (idx, rels) in &self.worksheet_rels {
+                for rel in &rels.relationships {
+                    if rel.rel_type != rel_types::TABLE {
+                        continue;
+                    }
+                    let resolved = crate::workbook_paths::resolve_relationship_target(
+                        &self.sheet_part_path(*idx),
+                        &rel.target,
+                    );
+                    if resolved == table_path {
+                        return *idx;
+                    }
+                }
+            }
+            0
+        };
+
+        if let Some(entries) = self.deferred_parts.entries(AuxCategory::Tables) {
+            for (path, bytes) in entries {
+                if tables.iter().any(|(existing, _, _)| existing == path) {
+                    continue;
+                }
+                let xml_str = String::from_utf8_lossy(bytes);
+                if let Ok(table_xml) =
+                    quick_xml::de::from_str::<sheetkit_xml::table::TableXml>(&xml_str)
+                {
+                    let table_sheet_idx = resolve_table_sheet_idx(path);
+                    tables.push((path.clone(), table_xml, table_sheet_idx));
+                }
+            }
+        }
 
         // Find slicer parts referenced by this sheet's relationships.
         let empty_rels = Relationships {
@@ -829,30 +934,40 @@ impl Workbook {
             })
             .collect();
 
-        for (path, sd) in &self.slicer_defs {
+        for (path, sd) in &slicer_defs {
             if !slicer_targets.contains(path) {
                 continue;
             }
             for slicer in &sd.slicers {
                 // Find the matching cache to get source info.
-                let cache = self
-                    .slicer_caches
-                    .iter()
-                    .find(|(_, sc)| sc.name == slicer.cache);
+                let cache = slicer_caches.iter().find(|(_, sc)| sc.name == slicer.cache);
 
                 let (table_name, column_name) = if let Some((_, sc)) = cache {
                     let tname = sc
                         .table_slicer_cache
                         .as_ref()
-                        .and_then(|tsc| self.table_name_by_id(tsc.table_id))
-                        .unwrap_or("")
-                        .to_string();
+                        .and_then(|tsc| {
+                            tables
+                                .iter()
+                                .find(|(_, t, _)| t.id == tsc.table_id)
+                                .map(|(_, t, _)| t.name.clone())
+                        })
+                        .unwrap_or_default();
                     let cname = sc
                         .table_slicer_cache
                         .as_ref()
-                        .and_then(|tsc| self.table_column_name_by_index(tsc.table_id, tsc.column))
-                        .unwrap_or(&sc.source_name)
-                        .to_string();
+                        .and_then(|tsc| {
+                            tables
+                                .iter()
+                                .find(|(_, t, _)| t.id == tsc.table_id)
+                                .and_then(|(_, t, _)| {
+                                    t.table_columns
+                                        .columns
+                                        .get(tsc.column.saturating_sub(1) as usize)
+                                })
+                                .map(|c| c.name.clone())
+                        })
+                        .unwrap_or_else(|| sc.source_name.clone());
                     (tname, cname)
                 } else {
                     (String::new(), String::new())
@@ -964,6 +1079,7 @@ impl Workbook {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::workbook::open_options::{OpenOptions, ReadMode};
     use tempfile::TempDir;
 
     fn make_pivot_workbook() -> Workbook {
@@ -1130,6 +1246,22 @@ mod tests {
         assert_eq!(pts[0].source_range, "A1:C4");
         assert_eq!(pts[0].target_sheet, "Sheet1");
         assert_eq!(pts[0].location, "E1");
+    }
+
+    #[test]
+    fn test_lazy_get_pivot_tables_without_mutation() {
+        let mut wb = make_pivot_workbook();
+        wb.add_pivot_table(&basic_pivot_config()).unwrap();
+        let buf = wb.save_to_buffer().unwrap();
+
+        let opts = OpenOptions::new().read_mode(ReadMode::Lazy);
+        let wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
+        let pts = wb2.get_pivot_tables();
+        assert_eq!(pts.len(), 1);
+        assert_eq!(pts[0].name, "PivotTable1");
+        assert_eq!(pts[0].source_sheet, "Sheet1");
+        assert_eq!(pts[0].source_range, "A1:C4");
+        assert_eq!(pts[0].target_sheet, "Sheet1");
     }
 
     #[test]
@@ -1546,6 +1678,23 @@ mod tests {
     }
 
     #[test]
+    fn test_calculate_all_no_formulas_keeps_lazy_sheet_clean() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", 10.0).unwrap();
+        let buf = wb.save_to_buffer().unwrap();
+
+        let opts = OpenOptions::new().read_mode(ReadMode::Lazy);
+        let mut wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
+        assert!(!wb2.is_sheet_dirty(0));
+
+        wb2.calculate_all().unwrap();
+        assert!(
+            !wb2.is_sheet_dirty(0),
+            "calculate_all without formulas must not dirty the sheet"
+        );
+    }
+
+    #[test]
     fn test_calculate_all_cycle_detection() {
         let mut wb = Workbook::new();
         // A1 = B1, B1 = A1
@@ -1795,6 +1944,42 @@ mod tests {
         assert!(app.app_version.is_none());
         assert!(app.manager.is_none());
         assert!(app.template.is_none());
+    }
+
+    #[test]
+    fn test_lazy_get_doc_properties_without_mutation() {
+        let mut wb = Workbook::new();
+        wb.set_doc_props(crate::doc_props::DocProperties {
+            title: Some("Deferred Title".to_string()),
+            creator: Some("Deferred Author".to_string()),
+            ..Default::default()
+        });
+        wb.set_app_props(crate::doc_props::AppProperties {
+            company: Some("Deferred Corp".to_string()),
+            application: Some("SheetKit".to_string()),
+            ..Default::default()
+        });
+        wb.set_custom_property(
+            "DeferredVersion",
+            crate::doc_props::CustomPropertyValue::Int(7),
+        );
+        let buf = wb.save_to_buffer().unwrap();
+
+        let opts = OpenOptions::new().read_mode(ReadMode::Lazy);
+        let wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
+
+        let doc = wb2.get_doc_props();
+        assert_eq!(doc.title.as_deref(), Some("Deferred Title"));
+        assert_eq!(doc.creator.as_deref(), Some("Deferred Author"));
+
+        let app = wb2.get_app_props();
+        assert_eq!(app.company.as_deref(), Some("Deferred Corp"));
+        assert_eq!(app.application.as_deref(), Some("SheetKit"));
+
+        assert_eq!(
+            wb2.get_custom_property("DeferredVersion"),
+            Some(crate::doc_props::CustomPropertyValue::Int(7))
+        );
     }
 
     #[test]
@@ -2167,6 +2352,22 @@ mod tests {
         assert_eq!(slicers.len(), 1);
         assert_eq!(slicers[0].name, "MySlicer");
         assert_eq!(slicers[0].column_name, "Category");
+        assert_eq!(slicers[0].table_name, "Table1");
+    }
+
+    #[test]
+    fn test_lazy_get_slicers_without_mutation() {
+        let mut wb = make_slicer_workbook();
+        wb.add_slicer("Sheet1", &make_slicer_config("LazySlicer", "Status"))
+            .unwrap();
+        let buf = wb.save_to_buffer().unwrap();
+
+        let opts = OpenOptions::new().read_mode(ReadMode::Lazy);
+        let wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
+        let slicers = wb2.get_slicers("Sheet1").unwrap();
+        assert_eq!(slicers.len(), 1);
+        assert_eq!(slicers[0].name, "LazySlicer");
+        assert_eq!(slicers[0].column_name, "Status");
         assert_eq!(slicers[0].table_name, "Table1");
     }
 

@@ -141,6 +141,21 @@ impl DeferredAuxParts {
         None
     }
 
+    /// Borrow all deferred entries for a category without consuming them.
+    pub(crate) fn entries(&self, cat: AuxCategory) -> Option<&[(String, Vec<u8>)]> {
+        self.entries.get(&cat).map(Vec::as_slice)
+    }
+
+    /// Borrow a deferred part by category and path.
+    pub(crate) fn get_path(&self, cat: AuxCategory, path: &str) -> Option<&[u8]> {
+        self.entries.get(&cat).and_then(|entries| {
+            entries
+                .iter()
+                .find(|(p, _)| p == path)
+                .map(|(_, bytes)| bytes.as_slice())
+        })
+    }
+
     /// Mark a category as dirty (modified after hydration).
     pub(crate) fn mark_dirty(&mut self, cat: AuxCategory) {
         self.dirty |= category_bit(cat);
