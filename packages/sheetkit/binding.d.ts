@@ -740,11 +740,18 @@ export interface JsOpenOptions {
   /** Maximum number of ZIP entries allowed. */
   maxZipEntries?: number
   /**
-   * Read mode: "eager" (default), "lazy", or "stream". Lazy skips auxiliary
-   * parts (comments, charts, images, etc.) for faster read-only workloads.
+   * Read mode: "eager", "lazy" (default for async-first surface), or "stream".
+   * Lazy skips auxiliary parts for faster read-only workloads.
    * Stream is reserved for future use and currently behaves like lazy.
    */
   readMode?: string
+  /**
+   * Auxiliary parts loading policy: "deferred" or "eager".
+   * When "deferred", auxiliary parts (comments, charts, images, etc.) are
+   * not parsed during open and are loaded on demand.
+   * Default: "eager" (backward compat with existing sync API).
+   */
+  auxParts?: string
   /**
    * Backward-compatible alias for read_mode. "readfast" maps to "lazy",
    * "full" maps to "eager". Ignored when read_mode is set.

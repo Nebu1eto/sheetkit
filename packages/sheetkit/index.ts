@@ -110,6 +110,32 @@ export type {
   JsWorkbookProtectionConfig,
 } from './binding.js';
 
+/** Read mode controls how much of the .xlsx file is parsed during open. */
+export type ReadMode = 'lazy' | 'stream' | 'eager';
+
+/**
+ * Auxiliary parts loading policy.
+ * - "deferred": auxiliary parts (comments, charts, images, etc.) are not parsed during open.
+ * - "eager": all parts are parsed during open (backward-compatible default).
+ */
+export type AuxParts = 'deferred' | 'eager';
+
+/** Options for controlling how a workbook is opened and parsed. */
+export interface OpenOptions {
+  /** Read mode: "lazy" (recommended for read-only), "eager", or "stream". Default: "lazy". */
+  readMode?: ReadMode;
+  /** Only parse sheets whose names are in this list. Omit to parse all sheets. */
+  sheets?: string[];
+  /** Maximum number of rows to read per sheet. Omit for unlimited. */
+  sheetRows?: number;
+  /** Maximum total decompressed size of all ZIP entries in bytes. */
+  maxUnzipSize?: number;
+  /** Maximum number of ZIP entries allowed. */
+  maxZipEntries?: number;
+  /** Auxiliary parts loading policy. Default: "deferred". */
+  auxParts?: AuxParts;
+}
+
 type CellValueInput = string | number | boolean | DateValue | null;
 
 export interface ToJsonOptions {
@@ -183,6 +209,27 @@ function columnNumberToLetter(n: number): string {
   return name;
 }
 
+/**
+ * Convert user-facing `OpenOptions` to the internal napi `JsOpenOptions`.
+ * Also accepts raw `JsOpenOptions` for backward compatibility.
+ */
+function toNativeOpenOptions(
+  options?: OpenOptions | JsOpenOptions | null,
+): JsOpenOptions | undefined {
+  if (options == null) return undefined;
+  if ('auxParts' in options && typeof options.auxParts === 'string') {
+    return {
+      readMode: (options as OpenOptions).readMode,
+      sheets: (options as OpenOptions).sheets,
+      sheetRows: (options as OpenOptions).sheetRows,
+      maxUnzipSize: (options as OpenOptions).maxUnzipSize,
+      maxZipEntries: (options as OpenOptions).maxZipEntries,
+      auxParts: (options as OpenOptions).auxParts,
+    };
+  }
+  return options as JsOpenOptions;
+}
+
 /** Excel workbook for reading and writing .xlsx files. */
 class Workbook {
   #native: NativeWorkbook;
@@ -198,26 +245,35 @@ class Workbook {
   }
 
   /** Open an existing .xlsx file from disk. */
-  static openSync(path: string, options?: JsOpenOptions | undefined | null): Workbook {
-    return Workbook.#wrap(NativeWorkbook.openSync(path, options));
+  static openSync(
+    path: string,
+    options?: OpenOptions | JsOpenOptions | undefined | null,
+  ): Workbook {
+    return Workbook.#wrap(NativeWorkbook.openSync(path, toNativeOpenOptions(options)));
   }
 
   /** Open an existing .xlsx file from disk asynchronously. */
-  static async open(path: string, options?: JsOpenOptions | undefined | null): Promise<Workbook> {
-    return Workbook.#wrap(await NativeWorkbook.open(path, options));
+  static async open(
+    path: string,
+    options?: OpenOptions | JsOpenOptions | undefined | null,
+  ): Promise<Workbook> {
+    return Workbook.#wrap(await NativeWorkbook.open(path, toNativeOpenOptions(options)));
   }
 
   /** Open a workbook from an in-memory Buffer. */
-  static openBufferSync(data: Buffer, options?: JsOpenOptions | undefined | null): Workbook {
-    return Workbook.#wrap(NativeWorkbook.openBufferSync(data, options));
+  static openBufferSync(
+    data: Buffer,
+    options?: OpenOptions | JsOpenOptions | undefined | null,
+  ): Workbook {
+    return Workbook.#wrap(NativeWorkbook.openBufferSync(data, toNativeOpenOptions(options)));
   }
 
   /** Open a workbook from an in-memory Buffer asynchronously. */
   static async openBuffer(
     data: Buffer,
-    options?: JsOpenOptions | undefined | null,
+    options?: OpenOptions | JsOpenOptions | undefined | null,
   ): Promise<Workbook> {
-    return Workbook.#wrap(await NativeWorkbook.openBuffer(data, options));
+    return Workbook.#wrap(await NativeWorkbook.openBuffer(data, toNativeOpenOptions(options)));
   }
 
   /** Open an encrypted .xlsx file using a password. */

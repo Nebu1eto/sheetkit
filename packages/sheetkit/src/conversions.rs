@@ -1172,13 +1172,17 @@ pub(crate) fn js_open_options_to_core(
             _ => sheetkit_core::workbook::ReadMode::Eager,
         }
     };
+    let aux_parts = match js.aux_parts.as_deref() {
+        Some("deferred") => sheetkit_core::workbook::AuxParts::Deferred,
+        _ => sheetkit_core::workbook::AuxParts::EagerLoad,
+    };
     sheetkit_core::workbook::OpenOptions {
         sheet_rows: js.sheet_rows,
         sheets: js.sheets.clone(),
         max_unzip_size: js.max_unzip_size.map(|v| v as u64),
         max_zip_entries: js.max_zip_entries.map(|v| v as usize),
         read_mode,
-        ..Default::default()
+        aux_parts,
     }
 }
 
