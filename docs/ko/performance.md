@@ -138,17 +138,81 @@ SheetKit의 내부 표현은 할당을 최소화합니다:
 
 ## 성능 팁
 
+### 읽기 모드 선택
+
+SheetKit은 `open()` 시 파싱 범위를 제어하는 세 가지 읽기 모드를 지원합니다:
+
+| 읽기 모드 | Open 비용 | Open 시 메모리 | 적합한 용도 |
+|-----------|-----------|--------------|-----------|
+| `lazy` (기본값) | 낮음 -- ZIP 인덱스 + 메타데이터만 | 최소 | 대부분의 워크로드. 시트는 첫 접근 시 파싱됩니다. |
+| `eager` | 높음 -- 모든 시트 파싱 | 전체 워크북 | open 직후 모든 시트가 필요한 경우. |
+| `stream` | 최소 | 거의 제로 | 대용량 시트의 순방향 반복. |
+
+```typescript
+// Lazy open (기본값): 가장 빠른 open, 시트를 필요시 파싱
+const wb = await Workbook.open("huge.xlsx");
+const rows = wb.getRows("Sheet1"); // Sheet1이 여기서 파싱됨
+
+// Eager open: open 시 모든 시트 파싱
+const wb2 = await Workbook.open("huge.xlsx", { readMode: "eager" });
+
+// Stream 모드: 메모리 제한 순방향 읽기
+const wb3 = await Workbook.open("huge.xlsx", { readMode: "stream" });
+const reader = await wb3.openSheetReader("Sheet1", { batchSize: 500 });
+for await (const batch of reader) {
+  for (const row of batch) {
+    process(row);
+  }
+}
+```
+
+### 보조 파트 지연 로드
+
+기본적으로 보조 파트(comments, charts, images, pivot table)는 open 시 파싱되지 않습니다. 해당 파트가 필요한 메서드를 처음 호출할 때 로드됩니다. 모든 파트를 즉시 사용해야 하는 경우 `auxParts: 'eager'`를 설정합니다:
+
+```typescript
+const wb = await Workbook.open("report.xlsx", { auxParts: "eager" });
+```
+
 ### 읽기 위주 워크로드
 
 `OpenOptions`를 사용하여 필요한 부분만 로드합니다:
 
 ```typescript
 const wb = await Workbook.open("huge.xlsx", {
+  readMode: "lazy",
   sheetRows: 1000,      // 시트당 첫 1000행만 읽기
   sheets: ["Sheet1"],   // Sheet1만 파싱
   maxUnzipSize: 100_000_000  // 압축 해제 크기 제한
 });
 ```
+
+### SheetStreamReader를 사용한 스트리밍 읽기
+
+랜덤 셀 접근이 필요 없는 대용량 파일의 경우, `openSheetReader()`를 사용하여 메모리 제한 순방향 반복을 수행합니다:
+
+```typescript
+const wb = await Workbook.open("huge.xlsx", { readMode: "stream" });
+const reader = await wb.openSheetReader("Sheet1", { batchSize: 1000 });
+
+for await (const batch of reader) {
+  for (const row of batch) {
+    // 각 행 처리 -- 한 번에 하나의 배치만 메모리에 존재
+  }
+}
+```
+
+### Raw Buffer V2 전송
+
+`getRowsBufferV2()`는 글로벌 문자열 테이블을 즉시 생성하지 않고 행별로 점진적으로 디코딩할 수 있는 inline 문자열 포함 v2 바이너리 buffer를 생성합니다:
+
+```typescript
+const bufV2 = wb.getRowsBufferV2("Sheet1");
+```
+
+### Copy-on-Write 저장
+
+`lazy` 모드로 열린 워크북을 저장할 때, 변경되지 않은 시트는 파싱-직렬화 왕복 없이 원본 ZIP 엔트리에서 직접 기록됩니다. 이는 대용량 워크북에서 일부 시트만 수정하는 워크로드의 저장 지연 시간을 크게 줄여줍니다.
 
 ### 쓰기 위주 워크로드
 
@@ -168,13 +232,11 @@ await wb.save("output.xlsx");
 
 ### 대용량 파일
 
-`OpenOptions`와 `StreamWriter`를 결합합니다:
+Lazy open과 `StreamWriter`를 결합합니다:
 
 ```typescript
-// 메타데이터만 읽기
-const wb = await Workbook.open("input.xlsx", {
-  sheetRows: 0  // 행을 파싱하지 않음
-});
+// Lazy open -- 메타데이터만 파싱됨
+const wb = await Workbook.open("input.xlsx");
 
 // 스트리밍으로 처리
 const sw = wb.newStreamWriter("ProcessedData");

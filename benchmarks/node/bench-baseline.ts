@@ -364,6 +364,155 @@ async function main(): Promise<void> {
   }
   console.log("");
 
+  // 10. Lazy open latency (path, async)
+  console.log("--- open lazy (path, async) ---");
+  for (const f of available) {
+    const path = fixturePath(f.name);
+    const result = await measure(`open-lazy(${f.label})`, async () => {
+      await Workbook.open(path, { readMode: "lazy" });
+    });
+    allResults.push({
+      ...result,
+      category: "open-lazy-path",
+      fixture: f.label,
+    });
+  }
+  console.log("");
+
+  // 11. Lazy open + getRows (measures on-demand hydration)
+  console.log("--- lazy open + getRows ---");
+  for (const f of available) {
+    const path = fixturePath(f.name);
+    const result = await measure(`lazy+getRows(${f.label})`, async () => {
+      const wb = await Workbook.open(path, { readMode: "lazy" });
+      wb.getRows("Sheet1");
+    });
+    allResults.push({
+      ...result,
+      category: "lazy-open-getRows",
+      fixture: f.label,
+    });
+  }
+  console.log("");
+
+  // 12. Lazy open vs eager open comparison
+  console.log("--- lazy vs eager open comparison ---");
+  for (const f of available) {
+    const eagerResult = allResults.find(
+      (r) => r.category === "open-path-async" && r.fixture === f.label,
+    );
+    const lazyResult = allResults.find(
+      (r) => r.category === "open-lazy-path" && r.fixture === f.label,
+    );
+    if (eagerResult && lazyResult) {
+      const ratio = lazyResult.median / eagerResult.median;
+      console.log(
+        `  ${f.label.padEnd(20)} ` +
+          `eager=${formatMs(eagerResult.median).padStart(10)} ` +
+          `lazy=${formatMs(lazyResult.median).padStart(10)} ` +
+          `ratio=${ratio.toFixed(2)}x`,
+      );
+    }
+  }
+  console.log("");
+
+  // 13. openSheetReader streaming
+  console.log("--- openSheetReader (stream mode) ---");
+  for (const f of available) {
+    const path = fixturePath(f.name);
+    const result = await measure(
+      `openSheetReader(${f.label})`,
+      async () => {
+        const wb = await Workbook.open(path, { readMode: "stream" });
+        const reader = await wb.openSheetReader("Sheet1", {
+          batchSize: 1000,
+        });
+        for await (const _batch of reader) {
+          // consume all batches
+        }
+      },
+    );
+    allResults.push({
+      ...result,
+      category: "openSheetReader",
+      fixture: f.label,
+    });
+  }
+  console.log("");
+
+  // 14. getRowsBufferV2 vs getRowsBuffer (v1)
+  console.log("--- getRowsBufferV2 vs getRowsBuffer ---");
+  for (const f of available) {
+    const path = fixturePath(f.name);
+    const wb = Workbook.openSync(path);
+
+    const v1Result = await measure(`getRowsBuffer-v1(${f.label})`, () => {
+      wb.getRowsBuffer("Sheet1");
+    });
+    allResults.push({
+      ...v1Result,
+      category: "getRowsBuffer-v1",
+      fixture: f.label,
+    });
+
+    const v2Result = await measure(`getRowsBufferV2(${f.label})`, () => {
+      wb.getRowsBufferV2("Sheet1");
+    });
+    allResults.push({
+      ...v2Result,
+      category: "getRowsBufferV2",
+      fixture: f.label,
+    });
+  }
+  console.log("");
+
+  // 15. Copy-on-write save (lazy open + save without modifications)
+  console.log("--- copy-on-write save (lazy, no modifications) ---");
+  for (const f of available) {
+    const path = fixturePath(f.name);
+    const tmpOut = join(__dirname, "output", `cow-save-${f.label}.xlsx`);
+    const result = await measure(`cow-save(${f.label})`, async () => {
+      const wb = await Workbook.open(path, { readMode: "lazy" });
+      wb.saveSync(tmpOut);
+    });
+    allResults.push({
+      ...result,
+      category: "cow-save-untouched",
+      fixture: f.label,
+    });
+    try {
+      const { unlinkSync } = await import("node:fs");
+      unlinkSync(tmpOut);
+    } catch {
+      /* ignore cleanup errors */
+    }
+  }
+  console.log("");
+
+  // 16. Copy-on-write save (lazy open + single cell edit + save)
+  console.log("--- copy-on-write save (lazy, single-cell edit) ---");
+  for (const f of available) {
+    const path = fixturePath(f.name);
+    const tmpOut = join(__dirname, "output", `cow-edit-${f.label}.xlsx`);
+    const result = await measure(`cow-edit-save(${f.label})`, async () => {
+      const wb = await Workbook.open(path, { readMode: "lazy" });
+      wb.setCellValue("Sheet1", "A1", "edited");
+      wb.saveSync(tmpOut);
+    });
+    allResults.push({
+      ...result,
+      category: "cow-save-edited",
+      fixture: f.label,
+    });
+    try {
+      const { unlinkSync } = await import("node:fs");
+      unlinkSync(tmpOut);
+    } catch {
+      /* ignore cleanup errors */
+    }
+  }
+  console.log("");
+
   // Summary table
   printSummaryTable(allResults);
 

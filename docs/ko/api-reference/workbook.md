@@ -219,16 +219,33 @@ wb.setCellValue("Sheet1", "A1", "Updated");
 await wb.save("with_macros.xlsm"); // VBA가 보존됩니다
 ```
 
-### `OpenOptions` / `JsOpenOptions`
+### `OpenOptions`
 
-워크북을 열 때 파싱 방식을 제어하는 옵션입니다. 모든 필드는 선택 사항이며, 기본값은 제한 없음 / 전체 파싱입니다.
+워크북을 열 때 파싱 방식을 제어하는 옵션입니다. 모든 필드는 선택 사항입니다.
 
-| 필드 | Rust 타입 | TypeScript 타입 | 설명 |
-|---|---|---|---|
-| `sheet_rows` / `sheetRows` | `Option<u32>` | `number?` | 시트당 읽을 최대 행 수입니다. 초과 행은 무시됩니다. |
-| `sheets` | `Option<Vec<String>>` | `string[]?` | 이 목록에 포함된 시트만 파싱합니다. 선택되지 않은 시트는 워크북에 존재하지만 데이터가 없습니다. |
-| `max_unzip_size` / `maxUnzipSize` | `Option<u64>` | `number?` | ZIP 아카이브의 전체 압축 해제 크기 제한(바이트)입니다. zip bomb을 방지합니다. |
-| `max_zip_entries` / `maxZipEntries` | `Option<usize>` | `number?` | ZIP 아카이브의 최대 엔트리 수입니다. zip bomb을 방지합니다. |
+| 필드 | Rust 타입 | TypeScript 타입 | 기본값 | 설명 |
+|---|---|---|---|---|
+| `read_mode` / `readMode` | `Option<ReadMode>` | `'lazy' \| 'eager' \| 'stream'?` | `'lazy'` | open 시 파싱 범위를 제어합니다. |
+| `aux_parts` / `auxParts` | `Option<AuxParts>` | `'deferred' \| 'eager'?` | `'deferred'` | 보조 파트(comments, charts, images)의 파싱 시점을 제어합니다. |
+| `sheet_rows` / `sheetRows` | `Option<u32>` | `number?` | 무제한 | 시트당 읽을 최대 행 수입니다. 초과 행은 무시됩니다. |
+| `sheets` | `Option<Vec<String>>` | `string[]?` | 전체 | 이 목록에 포함된 시트만 파싱합니다. 선택되지 않은 시트는 워크북에 존재하지만 데이터가 없습니다. |
+| `max_unzip_size` / `maxUnzipSize` | `Option<u64>` | `number?` | 무제한 | ZIP 아카이브의 전체 압축 해제 크기 제한(바이트)입니다. zip bomb을 방지합니다. |
+| `max_zip_entries` / `maxZipEntries` | `Option<usize>` | `number?` | 무제한 | ZIP 아카이브의 최대 엔트리 수입니다. zip bomb을 방지합니다. |
+
+#### ReadMode
+
+| 값 | 설명 |
+|------|------|
+| `'lazy'` | ZIP 인덱스와 메타데이터만 파싱합니다. 시트 XML은 첫 접근 시 파싱됩니다. Node.js 기본값입니다. |
+| `'eager'` | open 시 모든 시트와 보조 파트를 파싱합니다. 이전 버전과 동일한 동작입니다. |
+| `'stream'` | 최소한의 파싱만 수행합니다. `openSheetReader()`와 함께 사용하여 순방향 메모리 제한 반복에 사용합니다. |
+
+#### AuxParts
+
+| 값 | 설명 |
+|------|------|
+| `'deferred'` | 보조 파트는 첫 접근 시 로드됩니다. 기본값입니다. |
+| `'eager'` | open 시 모든 보조 파트를 파싱합니다. |
 
 ### `Workbook::open_with_options(path, options)` / `Workbook.open(path, options?)`
 
@@ -282,5 +299,51 @@ const wb = Workbook.openBufferSync(data, { sheetRows: 50 });
 ```
 
 > Node.js에서 옵션 매개변수는 모든 open 메서드에서 선택 사항입니다. 생략하면 기존 동작과 동일합니다.
+
+### `wb.openSheetReader(sheet, opts?)` (TypeScript 전용)
+
+지정한 시트에 대한 순방향 전용 streaming reader를 엽니다. 전체 시트를 메모리에 로드하지 않고 배치 단위로 행을 읽습니다. `readMode: 'stream'`과 함께 사용하는 것이 가장 좋습니다.
+
+```typescript
+const wb = await Workbook.open("large.xlsx", { readMode: "stream" });
+const reader = await wb.openSheetReader("Sheet1", { batchSize: 500 });
+
+// 비동기 반복자: JsRowData[] 배치를 yield합니다
+for await (const batch of reader) {
+  for (const row of batch) {
+    console.log(row);
+  }
+}
+```
+
+**옵션:**
+
+| 필드 | 타입 | 기본값 | 설명 |
+|---|---|---|---|
+| `batchSize` | `number?` | `1000` | 배치당 행 수입니다. |
+
+**반환값:** `Promise<SheetStreamReader>`
+
+### `SheetStreamReader`
+
+워크시트 데이터를 위한 순방향 전용 streaming reader입니다. `Workbook.openSheetReader()`를 통해 생성됩니다.
+
+**메서드:**
+
+| 메서드 | 반환 타입 | 설명 |
+|---|---|---|
+| `next(batchSize?)` | `Promise<JsRowData[] \| null>` | 다음 배치를 읽습니다. 완료되면 `null`을 반환합니다. |
+| `close()` | `Promise<void>` | 리소스를 해제합니다. `for await`에서 자동으로 호출됩니다. |
+| `[Symbol.asyncIterator]()` | `AsyncGenerator<JsRowData[]>` | 배치를 yield하는 비동기 반복자입니다. |
+
+### `wb.getRowsBufferV2(sheet)` (TypeScript 전용)
+
+시트의 셀 데이터를 인라인 문자열이 포함된 v2 바이너리 buffer로 직렬화합니다. v1 형식(`getRowsBuffer`)과 달리, v2 형식은 전역 문자열 테이블을 제거하여 점진적인 행 단위 디코딩을 가능하게 합니다.
+
+```typescript
+const bufV2 = wb.getRowsBufferV2("Sheet1");
+```
+
+**반환값:** `Buffer`
 
 ---
