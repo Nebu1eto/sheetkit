@@ -1158,16 +1158,27 @@ pub(crate) fn js_open_options_to_core(
     let Some(js) = js else {
         return sheetkit_core::workbook::OpenOptions::default();
     };
-    let parse_mode = match js.parse_mode.as_deref() {
-        Some("readfast") => sheetkit_core::workbook::ParseMode::ReadFast,
-        _ => sheetkit_core::workbook::ParseMode::Full,
+    // Prefer read_mode; fall back to parse_mode for backward compatibility.
+    let read_mode = if let Some(rm) = js.read_mode.as_deref() {
+        match rm {
+            "lazy" => sheetkit_core::workbook::ReadMode::Lazy,
+            "stream" => sheetkit_core::workbook::ReadMode::Stream,
+            _ => sheetkit_core::workbook::ReadMode::Eager,
+        }
+    } else {
+        match js.parse_mode.as_deref() {
+            Some("readfast") => sheetkit_core::workbook::ReadMode::Lazy,
+            Some("full") => sheetkit_core::workbook::ReadMode::Eager,
+            _ => sheetkit_core::workbook::ReadMode::Eager,
+        }
     };
     sheetkit_core::workbook::OpenOptions {
         sheet_rows: js.sheet_rows,
         sheets: js.sheets.clone(),
         max_unzip_size: js.max_unzip_size.map(|v| v as u64),
         max_zip_entries: js.max_zip_entries.map(|v| v as usize),
-        parse_mode,
+        read_mode,
+        ..Default::default()
     }
 }
 

@@ -245,9 +245,9 @@ async function benchReadFile(filename: string, label: string, category: string) 
     }
   });
 
-  // SheetKit with readfast parse mode
-  await benchMultiRun('SheetKit', `Read ${label} (readfast)`, category, async () => {
-    const wb = await SheetKitWorkbook.open(filepath, { parseMode: 'readfast' });
+  // SheetKit with lazy read mode
+  await benchMultiRun('SheetKit', `Read ${label} (lazy)`, category, async () => {
+    const wb = await SheetKitWorkbook.open(filepath, { readMode: 'lazy' });
     for (const name of wb.sheetNames) {
       wb.getRows(name);
     }
@@ -261,9 +261,9 @@ async function benchReadFile(filename: string, label: string, category: string) 
     }
   });
 
-  // SheetKit with readfast + getRowsRaw (best combo)
-  await benchMultiRun('SheetKit', `Read ${label} (readfast+raw)`, category, async () => {
-    const wb = await SheetKitWorkbook.open(filepath, { parseMode: 'readfast' });
+  // SheetKit with lazy + getRowsRaw (best combo)
+  await benchMultiRun('SheetKit', `Read ${label} (lazy+raw)`, category, async () => {
+    const wb = await SheetKitWorkbook.open(filepath, { readMode: 'lazy' });
     for (const name of wb.sheetNames) {
       wb.getRowsRaw(name);
     }
@@ -924,7 +924,7 @@ async function benchBufferRoundTrip() {
     wb2.getRows('Sheet1');
   });
 
-  await benchMultiRun('SheetKit', `${label} (readfast)`, 'Round-Trip', async () => {
+  await benchMultiRun('SheetKit', `${label} (lazy)`, 'Round-Trip', async () => {
     const wb = new SheetKitWorkbook();
     const sheet = 'Sheet1';
     const data: (string | number | boolean | null)[][] = [];
@@ -937,7 +937,7 @@ async function benchBufferRoundTrip() {
     }
     wb.setSheetData(sheet, data);
     const buf = wb.writeBufferSync();
-    const wb2 = await SheetKitWorkbook.openBuffer(buf, { parseMode: 'readfast' });
+    const wb2 = await SheetKitWorkbook.openBuffer(buf, { readMode: 'lazy' });
     wb2.getRows('Sheet1');
   });
 
@@ -1069,9 +1069,9 @@ async function benchRandomAccessRead() {
     }
   });
 
-  // SheetKit with readfast
-  await benchMultiRun('SheetKit', `${labelOpen} (readfast)`, 'Random Access', async () => {
-    const wb = await SheetKitWorkbook.open(filepath, { parseMode: 'readfast' });
+  // SheetKit with lazy read mode
+  await benchMultiRun('SheetKit', `${labelOpen} (lazy)`, 'Random Access', async () => {
+    const wb = await SheetKitWorkbook.open(filepath, { readMode: 'lazy' });
     for (const cell of cells) {
       wb.getCellValue('Sheet1', cell);
     }

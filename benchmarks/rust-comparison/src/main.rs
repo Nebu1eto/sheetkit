@@ -7,7 +7,7 @@
 ///
 /// Mirrors the scenario structure of the existing Node.js and Rust benchmarks.
 use sheetkit::utils::column_number_to_name;
-use sheetkit::{CellValue, OpenOptions, ParseMode, Style, Workbook};
+use sheetkit::{CellValue, OpenOptions, ReadMode, Style, Workbook};
 
 use std::fs;
 use std::io::Write as _;
@@ -392,18 +392,18 @@ fn bench_read_file(results: &mut Vec<BenchResult>, filename: &str, label: &str, 
         },
     ));
 
-    // SheetKit (ReadFast)
+    // SheetKit (Lazy)
     let fp = filepath.clone();
     results.push(bench_with_cell_count(
         &format!("Read {label}"),
-        "SheetKit (readfast)",
+        "SheetKit (lazy)",
         category,
         None,
         Some(sk_cells),
         move || {
             let fp = fp.clone();
             Box::new(move || {
-                let opts = OpenOptions::new().parse_mode(ParseMode::ReadFast);
+                let opts = OpenOptions::new().read_mode(ReadMode::Lazy);
                 let wb = Workbook::open_with_options(&fp, &opts).unwrap();
                 for name in wb.sheet_names() {
                     let _ = wb.get_rows(name).unwrap();
@@ -1427,12 +1427,12 @@ fn bench_random_access_read(results: &mut Vec<BenchResult>) {
         },
     ));
 
-    // SheetKit (ReadFast)
+    // SheetKit (Lazy)
     let fp = filepath.clone();
     let cells = cells_str.clone();
     results.push(bench_with_cell_count(
         &format!("{label}"),
-        "SheetKit (readfast)",
+        "SheetKit (lazy)",
         "Random Access",
         None,
         Some(cell_count),
@@ -1440,7 +1440,7 @@ fn bench_random_access_read(results: &mut Vec<BenchResult>) {
             let fp = fp.clone();
             let cells = cells.clone();
             Box::new(move || {
-                let opts = OpenOptions::new().parse_mode(ParseMode::ReadFast);
+                let opts = OpenOptions::new().read_mode(ReadMode::Lazy);
                 let wb = Workbook::open_with_options(&fp, &opts).unwrap();
                 for cell in &cells {
                     let _ = wb.get_cell_value("Sheet1", cell);
@@ -1505,19 +1505,19 @@ fn bench_modify_file(results: &mut Vec<BenchResult>) {
     }));
     cleanup(&out);
 
-    // SheetKit (ReadFast)
+    // SheetKit (Lazy)
     let fp = filepath.clone();
     let out = output_dir().join("cmp-modify-sheetkit-rf.xlsx");
     results.push(bench(
         &format!("{label}"),
-        "SheetKit (readfast)",
+        "SheetKit (lazy)",
         "Modify",
         Some(&out),
         move || {
             let fp = fp.clone();
             let out = output_dir().join("cmp-modify-sheetkit-rf.xlsx");
             Box::new(move || {
-                let opts = OpenOptions::new().parse_mode(ParseMode::ReadFast);
+                let opts = OpenOptions::new().read_mode(ReadMode::Lazy);
                 let mut wb = Workbook::open_with_options(&fp, &opts).unwrap();
                 for i in 0..1000u32 {
                     let r = i + 2;

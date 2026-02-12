@@ -8,7 +8,7 @@ use sheetkit::utils::column_number_to_name;
 /// Each scenario runs multiple iterations to collect statistical
 /// metrics: min, max, median, p95, and peak RSS delta.
 use sheetkit::{
-    CellValue, CommentConfig, DataValidationConfig, OpenOptions, ParseMode, Style,
+    CellValue, CommentConfig, DataValidationConfig, OpenOptions, ReadMode, Style,
     ValidationOperator, ValidationType, Workbook,
 };
 
@@ -309,7 +309,7 @@ fn bench_read_file(results: &mut Vec<BenchResult>, filename: &str, label: &str, 
     }));
 }
 
-fn bench_read_file_readfast(
+fn bench_read_file_lazy(
     results: &mut Vec<BenchResult>,
     filename: &str,
     label: &str,
@@ -320,12 +320,12 @@ fn bench_read_file_readfast(
         return;
     }
 
-    let scenario = format!("Read {label} (readfast)");
+    let scenario = format!("Read {label} (lazy)");
     let fp = filepath.clone();
     results.push(bench(&scenario, category, None, move || {
         let fp = fp.clone();
         Box::new(move || {
-            let opts = OpenOptions::new().parse_mode(ParseMode::ReadFast);
+            let opts = OpenOptions::new().read_mode(ReadMode::Lazy);
             let wb = Workbook::open_with_options(&fp, &opts).unwrap();
             for name in wb.sheet_names() {
                 let _ = wb.get_rows(name).unwrap();
@@ -902,8 +902,8 @@ fn bench_random_access_read(results: &mut Vec<BenchResult>) {
         })
     }));
 
-    // Open+lookup with ReadFast parse mode
-    let label_open_rf = format!("Random-access (open+{lookups} lookups, readfast)");
+    // Open+lookup with Lazy read mode
+    let label_open_rf = format!("Random-access (open+{lookups} lookups, lazy)");
     println!("\n--- {label_open_rf} ---");
 
     let fp = filepath.clone();
@@ -912,7 +912,7 @@ fn bench_random_access_read(results: &mut Vec<BenchResult>) {
         let fp = fp.clone();
         let cells_clone = cells_clone.clone();
         Box::new(move || {
-            let opts = OpenOptions::new().parse_mode(ParseMode::ReadFast);
+            let opts = OpenOptions::new().read_mode(ReadMode::Lazy);
             let wb = Workbook::open_with_options(&fp, &opts).unwrap();
             for cell in &cells_clone {
                 let _ = wb.get_cell_value("Sheet1", cell);
@@ -1207,7 +1207,7 @@ fn main() {
         "Large Data (50k rows x 20 cols)",
         "Read",
     );
-    bench_read_file_readfast(
+    bench_read_file_lazy(
         &mut results,
         "large-data.xlsx",
         "Large Data (50k rows x 20 cols)",
@@ -1219,7 +1219,7 @@ fn main() {
         "Heavy Styles (5k rows, formatted)",
         "Read",
     );
-    bench_read_file_readfast(
+    bench_read_file_lazy(
         &mut results,
         "heavy-styles.xlsx",
         "Heavy Styles (5k rows, formatted)",
@@ -1231,21 +1231,21 @@ fn main() {
         "Multi-Sheet (10 sheets x 5k rows)",
         "Read",
     );
-    bench_read_file_readfast(
+    bench_read_file_lazy(
         &mut results,
         "multi-sheet.xlsx",
         "Multi-Sheet (10 sheets x 5k rows)",
         "Read",
     );
     bench_read_file(&mut results, "formulas.xlsx", "Formulas (10k rows)", "Read");
-    bench_read_file_readfast(&mut results, "formulas.xlsx", "Formulas (10k rows)", "Read");
+    bench_read_file_lazy(&mut results, "formulas.xlsx", "Formulas (10k rows)", "Read");
     bench_read_file(
         &mut results,
         "strings.xlsx",
         "Strings (20k rows text-heavy)",
         "Read",
     );
-    bench_read_file_readfast(
+    bench_read_file_lazy(
         &mut results,
         "strings.xlsx",
         "Strings (20k rows text-heavy)",
@@ -1257,7 +1257,7 @@ fn main() {
         "Data Validation (5k rows, 8 rules)",
         "Read",
     );
-    bench_read_file_readfast(
+    bench_read_file_lazy(
         &mut results,
         "data-validation.xlsx",
         "Data Validation (5k rows, 8 rules)",
@@ -1269,7 +1269,7 @@ fn main() {
         "Comments (2k rows with comments)",
         "Read",
     );
-    bench_read_file_readfast(
+    bench_read_file_lazy(
         &mut results,
         "comments.xlsx",
         "Comments (2k rows with comments)",
@@ -1281,7 +1281,7 @@ fn main() {
         "Merged Cells (500 regions)",
         "Read",
     );
-    bench_read_file_readfast(
+    bench_read_file_lazy(
         &mut results,
         "merged-cells.xlsx",
         "Merged Cells (500 regions)",
@@ -1293,7 +1293,7 @@ fn main() {
         "Mixed Workload (ERP document)",
         "Read",
     );
-    bench_read_file_readfast(
+    bench_read_file_lazy(
         &mut results,
         "mixed-workload.xlsx",
         "Mixed Workload (ERP document)",
@@ -1308,7 +1308,7 @@ fn main() {
         "Scale 1k rows",
         "Read (Scale)",
     );
-    bench_read_file_readfast(
+    bench_read_file_lazy(
         &mut results,
         "scale-1k.xlsx",
         "Scale 1k rows",
@@ -1320,7 +1320,7 @@ fn main() {
         "Scale 10k rows",
         "Read (Scale)",
     );
-    bench_read_file_readfast(
+    bench_read_file_lazy(
         &mut results,
         "scale-10k.xlsx",
         "Scale 10k rows",
@@ -1332,7 +1332,7 @@ fn main() {
         "Scale 100k rows",
         "Read (Scale)",
     );
-    bench_read_file_readfast(
+    bench_read_file_lazy(
         &mut results,
         "scale-100k.xlsx",
         "Scale 100k rows",
