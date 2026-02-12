@@ -454,7 +454,7 @@ node --expose-gc --import tsx benchmarks/node/bench-baseline.ts
 BENCH_RUNS=3 node --expose-gc --import tsx benchmarks/node/bench-baseline.ts
 ```
 
-**Prerequisites**: Fixtures must be generated first. See [Benchmark Fixtures](../benchmarks/FIXTURES.md) for details.
+**Prerequisites**: Fixtures must be generated first. See [`benchmarks/FIXTURES.md`](https://github.com/Nebu1eto/sheetkit/blob/main/benchmarks/FIXTURES.md) for details.
 
 ## Next Steps
 
