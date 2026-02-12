@@ -57,7 +57,7 @@ impl Workbook {
 
     /// Hydrate deferred comment and VML data for a sheet.
     ///
-    /// In ReadFast mode, comment XML and VML bytes are stored as raw data in
+    /// In Lazy mode, comment XML and VML bytes are stored as raw data in
     /// `deferred_parts` instead of being parsed. This method parses them into
     /// `sheet_comments` and `sheet_vml`, then removes the consumed entries from
     /// `deferred_parts` so they are not written as duplicates on save.
@@ -178,7 +178,7 @@ impl Workbook {
 
     /// Get all comments for a sheet.
     ///
-    /// If the workbook was opened in ReadFast mode, deferred comment data is
+    /// If the workbook was opened in Lazy mode, deferred comment data is
     /// hydrated on demand before returning results.
     pub fn get_comments(&mut self, sheet: &str) -> Result<Vec<CommentConfig>> {
         let idx = self.sheet_index(sheet)?;

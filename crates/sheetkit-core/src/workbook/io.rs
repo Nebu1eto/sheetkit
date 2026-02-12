@@ -214,9 +214,9 @@ impl Workbook {
             }
         }
 
-        let read_fast = options.is_read_fast();
+        let skip_aux = options.skip_aux_parts();
 
-        // Auxiliary part parsing: skipped in ReadFast mode.
+        // Auxiliary part parsing: skipped in Lazy/Stream mode.
         let mut sheet_comments: Vec<Option<Comments>> = vec![None; worksheets.len()];
         let mut sheet_vml: Vec<Option<Vec<u8>>> = vec![None; worksheets.len()];
         let mut drawings: Vec<(String, WsDr)> = Vec::new();
@@ -242,7 +242,7 @@ impl Workbook {
         let mut vba_blob: Option<Vec<u8>> = None;
         let mut tables: Vec<(String, sheetkit_xml::table::TableXml, usize)> = Vec::new();
 
-        if !read_fast {
+        if !skip_aux {
             let mut drawing_path_to_idx: HashMap<String, usize> = HashMap::new();
 
             for (sheet_idx, sheet_path) in worksheet_paths.iter().enumerate() {
@@ -558,8 +558,8 @@ impl Workbook {
             sheet_name_index.insert(name.clone(), i);
         }
 
-        // Collect remaining ZIP entries. In ReadFast mode, unhandled entries
-        // go into deferred_parts; in Full mode, they go into unknown_parts.
+        // Collect remaining ZIP entries. In Lazy/Stream mode, unhandled entries
+        // go into deferred_parts; in Eager mode, they go into unknown_parts.
         let mut unknown_parts: Vec<(String, Vec<u8>)> = Vec::new();
         let mut deferred_parts: HashMap<String, Vec<u8>> = HashMap::new();
         for i in 0..archive.len() {
@@ -570,7 +570,7 @@ impl Workbook {
             drop(entry);
             if !known_paths.contains(&name) {
                 if let Ok(bytes) = read_bytes_part(archive, &name) {
-                    if read_fast {
+                    if skip_aux {
                         deferred_parts.insert(name, bytes);
                     } else {
                         unknown_parts.push((name, bytes));
@@ -820,7 +820,7 @@ impl Workbook {
         // Ensure the vml extension default content type is present if any VML exists.
         let mut has_any_vml = false;
 
-        // When deferred_parts is non-empty (ReadFast open), skip comment/VML
+        // When deferred_parts is non-empty (Lazy open), skip comment/VML
         // synchronization. The original relationships and content types are already
         // correct, and deferred_parts will supply the raw bytes on save.
         for sheet_idx in 0..self.worksheets.len() {
@@ -840,7 +840,7 @@ impl Workbook {
                 .and_then(|v| v.as_ref())
                 .is_some();
 
-            // When deferred_parts is non-empty (ReadFast open), skip comment/VML
+            // When deferred_parts is non-empty (Lazy open), skip comment/VML
             // synchronization only for sheets whose comment data is still deferred
             // (not yet hydrated). Hydrated sheets need normal relationship sync.
             if has_deferred && !has_comments && !has_form_controls && !has_preserved_vml {
@@ -1314,10 +1314,10 @@ impl Workbook {
             zip.write_all(data)?;
         }
 
-        // Write back deferred parts from ReadFast open (raw bytes, unparsed).
+        // Write back deferred parts from Lazy open (raw bytes, unparsed).
         // Skip any path that was already written by the normal code above. This
         // prevents duplicate ZIP entries when an auxiliary part (comments, doc
-        // properties, etc.) is mutated after a ReadFast open.
+        // properties, etc.) is mutated after a Lazy open.
         if !self.deferred_parts.is_empty() {
             let mut emitted_owned: HashSet<String> = HashSet::new();
             // Essential parts always written.
@@ -3141,7 +3141,7 @@ mod tests {
         );
     }
 
-    use crate::workbook::open_options::ParseMode;
+    use crate::workbook::open_options::ReadMode;
 
     #[test]
     fn test_readfast_open_reads_cell_data() {
@@ -3154,7 +3154,7 @@ mod tests {
             .unwrap();
         let buf = wb.save_to_buffer().unwrap();
 
-        let opts = OpenOptions::new().parse_mode(ParseMode::ReadFast);
+        let opts = OpenOptions::new().read_mode(ReadMode::Lazy);
         let wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
         assert_eq!(wb2.sheet_names(), vec!["Sheet1"]);
         assert_eq!(
@@ -3181,7 +3181,7 @@ mod tests {
             .unwrap();
         let buf = wb.save_to_buffer().unwrap();
 
-        let opts = OpenOptions::new().parse_mode(ParseMode::ReadFast);
+        let opts = OpenOptions::new().read_mode(ReadMode::Lazy);
         let wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
         assert_eq!(wb2.sheet_names(), vec!["Sheet1", "Sheet2"]);
         assert_eq!(
@@ -3210,7 +3210,7 @@ mod tests {
         .unwrap();
         let buf = wb.save_to_buffer().unwrap();
 
-        let opts = OpenOptions::new().parse_mode(ParseMode::ReadFast);
+        let opts = OpenOptions::new().read_mode(ReadMode::Lazy);
         let mut wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
 
         // Cell data is readable.
@@ -3235,7 +3235,7 @@ mod tests {
         });
         let buf = wb.save_to_buffer().unwrap();
 
-        let opts = OpenOptions::new().parse_mode(ParseMode::ReadFast);
+        let opts = OpenOptions::new().read_mode(ReadMode::Lazy);
         let wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
 
         // Cell data is readable.
@@ -3268,12 +3268,12 @@ mod tests {
         });
         let buf = wb.save_to_buffer().unwrap();
 
-        // Open in ReadFast mode.
-        let opts = OpenOptions::new().parse_mode(ParseMode::ReadFast);
+        // Open in Lazy mode.
+        let opts = OpenOptions::new().read_mode(ReadMode::Lazy);
         let wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
         let saved = wb2.save_to_buffer().unwrap();
 
-        // Re-open in Full mode and verify all parts were preserved.
+        // Re-open in Eager mode and verify all parts were preserved.
         let mut wb3 = Workbook::open_from_buffer(&saved).unwrap();
         assert_eq!(
             wb3.get_cell_value("Sheet1", "A1").unwrap(),
@@ -3295,9 +3295,7 @@ mod tests {
         }
         let buf = wb.save_to_buffer().unwrap();
 
-        let opts = OpenOptions::new()
-            .parse_mode(ParseMode::ReadFast)
-            .sheet_rows(10);
+        let opts = OpenOptions::new().read_mode(ReadMode::Lazy).sheet_rows(10);
         let wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
         let rows = wb2.get_rows("Sheet1").unwrap();
         assert_eq!(rows.len(), 10);
@@ -3314,7 +3312,7 @@ mod tests {
         let buf = wb.save_to_buffer().unwrap();
 
         let opts = OpenOptions::new()
-            .parse_mode(ParseMode::ReadFast)
+            .read_mode(ReadMode::Lazy)
             .sheets(vec!["Sheet2".to_string()]);
         let wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
         assert_eq!(wb2.sheet_names(), vec!["Sheet1", "Sheet2"]);
@@ -3346,7 +3344,7 @@ mod tests {
         wb.set_cell_style("Sheet1", "A1", style_id).unwrap();
         let buf = wb.save_to_buffer().unwrap();
 
-        let opts = OpenOptions::new().parse_mode(ParseMode::ReadFast);
+        let opts = OpenOptions::new().read_mode(ReadMode::Lazy);
         let wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
         let sid = wb2.get_cell_style("Sheet1", "A1").unwrap();
         assert!(sid.is_some());
@@ -3371,8 +3369,8 @@ mod tests {
         .unwrap();
         let buf = wb.save_to_buffer().unwrap();
 
-        // Full mode: everything should be parsed.
-        let opts = OpenOptions::new().parse_mode(ParseMode::Full);
+        // Eager mode: everything should be parsed.
+        let opts = OpenOptions::new().read_mode(ReadMode::Eager);
         let mut wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
         let comments = wb2.get_comments("Sheet1").unwrap();
         assert_eq!(comments.len(), 1);
@@ -3388,7 +3386,7 @@ mod tests {
             .unwrap();
         wb.save(&path).unwrap();
 
-        let opts = OpenOptions::new().parse_mode(ParseMode::ReadFast);
+        let opts = OpenOptions::new().read_mode(ReadMode::Lazy);
         let wb2 = Workbook::open_with_options(&path, &opts).unwrap();
         assert_eq!(
             wb2.get_cell_value("Sheet1", "A1").unwrap(),
@@ -3400,7 +3398,7 @@ mod tests {
     fn test_readfast_roundtrip_with_custom_zip_entries() {
         let buf = create_xlsx_with_custom_entries();
 
-        let opts = OpenOptions::new().parse_mode(ParseMode::ReadFast);
+        let opts = OpenOptions::new().read_mode(ReadMode::Lazy);
         let wb = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
         assert_eq!(
             wb.get_cell_value("Sheet1", "A1").unwrap(),
@@ -3411,7 +3409,7 @@ mod tests {
         let cursor = std::io::Cursor::new(&saved);
         let mut archive = zip::ZipArchive::new(cursor).unwrap();
 
-        // Custom entries should be preserved through ReadFast open/save.
+        // Custom entries should be preserved through Lazy open/save.
         let mut custom_xml = String::new();
         std::io::Read::read_to_string(
             &mut archive.by_name("customXml/item1.xml").unwrap(),
@@ -3447,7 +3445,7 @@ mod tests {
         .unwrap();
         let buf = wb.save_to_buffer().unwrap();
 
-        let opts = OpenOptions::new().parse_mode(ParseMode::ReadFast);
+        let opts = OpenOptions::new().read_mode(ReadMode::Lazy);
         let wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
         // When auxiliary parts exist, they should be captured in deferred_parts.
         assert!(
@@ -3472,11 +3470,11 @@ mod tests {
         .unwrap();
         let buf = wb.save_to_buffer().unwrap();
 
-        // Full mode: deferred_parts should be empty.
+        // Eager mode: deferred_parts should be empty.
         let wb2 = Workbook::open_from_buffer(&buf).unwrap();
         assert!(
             wb2.deferred_parts.is_empty(),
-            "Full mode should not have deferred parts"
+            "Eager mode should not have deferred parts"
         );
     }
 
@@ -3515,12 +3513,12 @@ mod tests {
         .unwrap();
         let buf = wb.save_to_buffer().unwrap();
 
-        // Open in ReadFast mode and save.
-        let opts = OpenOptions::new().parse_mode(ParseMode::ReadFast);
+        // Open in Lazy mode and save.
+        let opts = OpenOptions::new().read_mode(ReadMode::Lazy);
         let wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
         let saved = wb2.save_to_buffer().unwrap();
 
-        // Re-open in Full mode and verify the table survived the round-trip.
+        // Re-open in Eager mode and verify the table survived the round-trip.
         let wb3 = Workbook::open_from_buffer(&saved).unwrap();
         let tables = wb3.get_tables("Sheet1").unwrap();
         assert_eq!(tables.len(), 1);
@@ -3543,8 +3541,8 @@ mod tests {
         .unwrap();
         let buf = wb.save_to_buffer().unwrap();
 
-        // Open in ReadFast mode, add a new comment, and save.
-        let opts = OpenOptions::new().parse_mode(ParseMode::ReadFast);
+        // Open in Lazy mode, add a new comment, and save.
+        let opts = OpenOptions::new().read_mode(ReadMode::Lazy);
         let mut wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
         wb2.add_comment(
             "Sheet1",
@@ -3563,11 +3561,11 @@ mod tests {
         let comments = wb3.get_comments("Sheet1").unwrap();
         assert!(
             comments.iter().any(|c| c.text == "New comment"),
-            "New comment should be present after ReadFast + add_comment round-trip"
+            "New comment should be present after Lazy + add_comment round-trip"
         );
         assert!(
             comments.iter().any(|c| c.text == "Original comment"),
-            "Original comment must be preserved after ReadFast + add_comment round-trip"
+            "Original comment must be preserved after Lazy + add_comment round-trip"
         );
         assert_eq!(
             comments.len(),
@@ -3578,7 +3576,7 @@ mod tests {
 
     #[test]
     fn test_readfast_add_comment_preserves_existing_comments() {
-        // Regression test: opening with ReadFast, adding a comment, and saving
+        // Regression test: opening with Lazy mode, adding a comment, and saving
         // must not drop pre-existing comments.
         let mut wb = Workbook::new();
         wb.set_cell_value("Sheet1", "A1", CellValue::String("data".to_string()))
@@ -3603,7 +3601,7 @@ mod tests {
         .unwrap();
         let buf = wb.save_to_buffer().unwrap();
 
-        let opts = OpenOptions::new().parse_mode(ParseMode::ReadFast);
+        let opts = OpenOptions::new().read_mode(ReadMode::Lazy);
         let mut wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
 
         // Add a third comment.
@@ -3647,7 +3645,7 @@ mod tests {
         .unwrap();
         let buf = wb.save_to_buffer().unwrap();
 
-        let opts = OpenOptions::new().parse_mode(ParseMode::ReadFast);
+        let opts = OpenOptions::new().read_mode(ReadMode::Lazy);
         let mut wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
 
         // get_comments should hydrate and return the deferred comment.
@@ -3659,7 +3657,7 @@ mod tests {
 
     #[test]
     fn test_readfast_remove_comment_hydrates_first() {
-        // remove_comment on a ReadFast workbook must hydrate deferred comments,
+        // remove_comment on a Lazy workbook must hydrate deferred comments,
         // then remove only the target comment, preserving others.
         let mut wb = Workbook::new();
         wb.add_comment(
@@ -3682,7 +3680,7 @@ mod tests {
         .unwrap();
         let buf = wb.save_to_buffer().unwrap();
 
-        let opts = OpenOptions::new().parse_mode(ParseMode::ReadFast);
+        let opts = OpenOptions::new().read_mode(ReadMode::Lazy);
         let mut wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
         wb2.remove_comment("Sheet1", "B2").unwrap();
 
@@ -3696,20 +3694,20 @@ mod tests {
 
     #[test]
     fn test_readfast_add_comment_no_preexisting_comments() {
-        // Adding a comment to a sheet that had no comments when opened in ReadFast
+        // Adding a comment to a sheet that had no comments when opened in Lazy mode
         // must create proper relationships and content types on save, even when
         // deferred_parts is non-empty due to other auxiliary parts (e.g. doc props).
         let mut wb = Workbook::new();
         wb.set_cell_value("Sheet1", "A1", CellValue::String("data".to_string()))
             .unwrap();
-        // Add doc props so that ReadFast will have non-empty deferred_parts.
+        // Add doc props so that Lazy mode will have non-empty deferred_parts.
         wb.set_doc_props(crate::doc_props::DocProperties {
             title: Some("Trigger deferred".to_string()),
             ..Default::default()
         });
         let buf = wb.save_to_buffer().unwrap();
 
-        let opts = OpenOptions::new().parse_mode(ParseMode::ReadFast);
+        let opts = OpenOptions::new().read_mode(ReadMode::Lazy);
         let mut wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
         wb2.add_comment(
             "Sheet1",
@@ -3744,7 +3742,7 @@ mod tests {
 
     #[test]
     fn test_readfast_add_comment_vml_roundtrip() {
-        // Verify that VML parts are correct after ReadFast hydration + add comment.
+        // Verify that VML parts are correct after Lazy hydration + add comment.
         let mut wb = Workbook::new();
         wb.add_comment(
             "Sheet1",
@@ -3757,7 +3755,7 @@ mod tests {
         .unwrap();
         let buf = wb.save_to_buffer().unwrap();
 
-        let opts = OpenOptions::new().parse_mode(ParseMode::ReadFast);
+        let opts = OpenOptions::new().read_mode(ReadMode::Lazy);
         let mut wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
         wb2.add_comment(
             "Sheet1",
@@ -3792,8 +3790,8 @@ mod tests {
         });
         let buf = wb.save_to_buffer().unwrap();
 
-        // Open in ReadFast mode, update doc props, and save.
-        let opts = OpenOptions::new().parse_mode(ParseMode::ReadFast);
+        // Open in Lazy mode, update doc props, and save.
+        let opts = OpenOptions::new().read_mode(ReadMode::Lazy);
         let mut wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
         wb2.set_doc_props(crate::doc_props::DocProperties {
             title: Some("Updated Title".to_string()),

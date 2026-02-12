@@ -1,19 +1,28 @@
-/// Controls how much of the workbook is parsed during open.
-///
-/// `Full` parses all parts (comments, charts, images, pivot tables, etc.).
-/// `ReadFast` skips auxiliary parts and stores them as raw bytes for
-/// on-demand parsing or direct round-trip preservation. Use `ReadFast`
-/// when you only need to read cell data and styles.
+/// Controls how worksheets and auxiliary parts are parsed during open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ParseMode {
-    /// Parse all parts eagerly (default).
+pub enum ReadMode {
+    /// Parse all parts eagerly. Equivalent to the old `Full` mode.
     #[default]
-    Full,
-    /// Skip auxiliary parts (comments, drawings, charts, images, doc
-    /// properties, pivot tables, slicers, threaded comments, VBA, tables,
-    /// form controls). These are stored as raw bytes and written back
-    /// unchanged on save, or parsed on demand when accessed.
-    ReadFast,
+    Eager,
+    /// Skip auxiliary parts (comments, drawings, charts, images, doc props,
+    /// pivot tables, slicers, threaded comments, VBA, tables, form controls).
+    /// These are stored as raw bytes for on-demand parsing or direct
+    /// round-trip preservation. Equivalent to the old `ReadFast` mode.
+    /// Will evolve into true lazy on-demand hydration in later workstreams.
+    Lazy,
+    /// Forward-only streaming read mode (reserved for future use).
+    /// Currently behaves the same as `Lazy`.
+    Stream,
+}
+
+/// Controls when auxiliary parts (comments, charts, images, etc.) are parsed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AuxParts {
+    /// Parse auxiliary parts only when accessed.
+    Deferred,
+    /// Parse all auxiliary parts during open (default).
+    #[default]
+    EagerLoad,
 }
 
 /// Options for controlling how a workbook is opened and parsed.
@@ -41,9 +50,13 @@ pub struct OpenOptions {
     /// Default when `None`: no limit.
     pub max_zip_entries: Option<usize>,
 
-    /// Parse mode: `Full` (default) parses everything; `ReadFast` skips
-    /// auxiliary parts for faster read-only workloads.
-    pub parse_mode: ParseMode,
+    /// Read mode: `Eager` (default) parses everything; `Lazy` skips
+    /// auxiliary parts for faster read-only workloads; `Stream` is
+    /// reserved for future streaming reads.
+    pub read_mode: ReadMode,
+
+    /// Controls when auxiliary parts are parsed.
+    pub aux_parts: AuxParts,
 }
 
 impl OpenOptions {
@@ -76,16 +89,44 @@ impl OpenOptions {
         self
     }
 
-    /// Set the parse mode. `ReadFast` skips auxiliary parts for faster
-    /// read-only workloads.
-    pub fn parse_mode(mut self, mode: ParseMode) -> Self {
-        self.parse_mode = mode;
+    /// Set the read mode. `Lazy` skips auxiliary parts for faster
+    /// read-only workloads. `Stream` is reserved for future use.
+    pub fn read_mode(mut self, mode: ReadMode) -> Self {
+        self.read_mode = mode;
+        self
+    }
+
+    /// Set the auxiliary parts parsing policy.
+    pub fn aux_parts(mut self, policy: AuxParts) -> Self {
+        self.aux_parts = policy;
         self
     }
 
     /// Returns true when auxiliary parts should be skipped during open.
-    pub(crate) fn is_read_fast(&self) -> bool {
-        self.parse_mode == ParseMode::ReadFast
+    /// Lazy/Stream modes always skip. Eager mode respects `aux_parts`.
+    pub(crate) fn skip_aux_parts(&self) -> bool {
+        match self.read_mode {
+            ReadMode::Eager => self.aux_parts == AuxParts::Deferred,
+            ReadMode::Lazy | ReadMode::Stream => true,
+        }
+    }
+
+    /// Returns true when mode is `Eager`.
+    #[allow(dead_code)]
+    pub(crate) fn is_eager(&self) -> bool {
+        self.read_mode == ReadMode::Eager
+    }
+
+    /// Returns true when mode is `Lazy`.
+    #[allow(dead_code)]
+    pub(crate) fn is_lazy(&self) -> bool {
+        self.read_mode == ReadMode::Lazy
+    }
+
+    /// Returns true when mode is `Stream`.
+    #[allow(dead_code)]
+    pub(crate) fn is_stream(&self) -> bool {
+        self.read_mode == ReadMode::Stream
     }
 
     /// Check whether a given sheet name should be parsed based on the `sheets` filter.
@@ -108,8 +149,8 @@ mod tests {
         assert!(opts.sheets.is_none());
         assert!(opts.max_unzip_size.is_none());
         assert!(opts.max_zip_entries.is_none());
-        assert_eq!(opts.parse_mode, ParseMode::Full);
-        assert!(!opts.is_read_fast());
+        assert_eq!(opts.read_mode, ReadMode::Eager);
+        assert!(!opts.skip_aux_parts());
     }
 
     #[test]
@@ -126,25 +167,60 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_mode_builder() {
-        let opts = OpenOptions::new().parse_mode(ParseMode::ReadFast);
-        assert_eq!(opts.parse_mode, ParseMode::ReadFast);
-        assert!(opts.is_read_fast());
+    fn test_read_mode_builder() {
+        let opts = OpenOptions::new().read_mode(ReadMode::Lazy);
+        assert_eq!(opts.read_mode, ReadMode::Lazy);
+        assert!(opts.skip_aux_parts());
     }
 
     #[test]
-    fn test_parse_mode_default_is_full() {
-        let mode = ParseMode::default();
-        assert_eq!(mode, ParseMode::Full);
+    fn test_read_mode_default_is_eager() {
+        let mode = ReadMode::default();
+        assert_eq!(mode, ReadMode::Eager);
     }
 
     #[test]
-    fn test_parse_mode_combined_with_other_options() {
-        let opts = OpenOptions::new()
-            .sheet_rows(50)
-            .parse_mode(ParseMode::ReadFast);
+    fn test_read_mode_combined_with_other_options() {
+        let opts = OpenOptions::new().sheet_rows(50).read_mode(ReadMode::Lazy);
         assert_eq!(opts.sheet_rows, Some(50));
-        assert!(opts.is_read_fast());
+        assert!(opts.skip_aux_parts());
+    }
+
+    #[test]
+    fn test_stream_mode_skips_aux_parts() {
+        let opts = OpenOptions::new().read_mode(ReadMode::Stream);
+        assert!(opts.skip_aux_parts());
+        assert!(opts.is_stream());
+        assert!(!opts.is_eager());
+        assert!(!opts.is_lazy());
+    }
+
+    #[test]
+    fn test_aux_parts_default_is_eager_load() {
+        let opts = OpenOptions::default();
+        assert_eq!(opts.aux_parts, AuxParts::EagerLoad);
+    }
+
+    #[test]
+    fn test_aux_parts_deferred() {
+        let opts = OpenOptions::new().aux_parts(AuxParts::Deferred);
+        assert_eq!(opts.aux_parts, AuxParts::Deferred);
+    }
+
+    #[test]
+    fn test_eager_mode_with_deferred_aux_skips_aux() {
+        let opts = OpenOptions::new()
+            .read_mode(ReadMode::Eager)
+            .aux_parts(AuxParts::Deferred);
+        assert!(opts.skip_aux_parts());
+    }
+
+    #[test]
+    fn test_eager_mode_with_eager_aux_parses_all() {
+        let opts = OpenOptions::new()
+            .read_mode(ReadMode::Eager)
+            .aux_parts(AuxParts::EagerLoad);
+        assert!(!opts.skip_aux_parts());
     }
 
     #[test]
@@ -161,5 +237,23 @@ mod tests {
         assert!(opts.should_parse_sheet("Data"));
         assert!(!opts.should_parse_sheet("Sheet1"));
         assert!(!opts.should_parse_sheet("Other"));
+    }
+
+    #[test]
+    fn test_helper_methods() {
+        let eager = OpenOptions::new().read_mode(ReadMode::Eager);
+        assert!(eager.is_eager());
+        assert!(!eager.is_lazy());
+        assert!(!eager.is_stream());
+
+        let lazy = OpenOptions::new().read_mode(ReadMode::Lazy);
+        assert!(!lazy.is_eager());
+        assert!(lazy.is_lazy());
+        assert!(!lazy.is_stream());
+
+        let stream = OpenOptions::new().read_mode(ReadMode::Stream);
+        assert!(!stream.is_eager());
+        assert!(!stream.is_lazy());
+        assert!(stream.is_stream());
     }
 }

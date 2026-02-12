@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-use sheetkit_core::workbook::{OpenOptions, ParseMode, Workbook};
+use sheetkit_core::workbook::{OpenOptions, ReadMode, Workbook};
 
 fn fixtures_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -61,7 +61,7 @@ fn bench_open_latency(c: &mut Criterion) {
 
 fn bench_open_readfast_latency(c: &mut Criterion) {
     let mut group = c.benchmark_group("open_readfast_latency");
-    let opts = OpenOptions::new().parse_mode(ParseMode::ReadFast);
+    let opts = OpenOptions::new().read_mode(ReadMode::Lazy);
 
     for f in FIXTURES {
         let path = fixture_path(f.file);
