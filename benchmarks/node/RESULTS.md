@@ -1,6 +1,6 @@
 # Excel Library Benchmark: SheetKit vs ExcelJS vs SheetJS
 
-Benchmark run: 2026-02-11T04:21:31.870Z
+Benchmark run: 2026-02-12T11:16:53.575Z
 
 ## Environment
 
@@ -15,7 +15,10 @@ Benchmark run: 2026-02-11T04:21:31.870Z
 ## Methodology
 
 - **All libraries**: 1 warmup run(s) + 5 measured runs per scenario. Median time reported.
-- **Memory**: Measured as RSS (Resident Set Size) delta before/after each run. RSS includes both V8 heap and native (Rust) heap allocations, providing accurate measurements for napi-rs based libraries.
+- **RSS (Resident Set Size)**: Total process memory delta measured before/after each run via `process.memoryUsage().rss`. Includes V8 heap, native (Rust/napi) allocations, and OS overhead. This is a post-operation residual measurement, not peak usage during the operation.
+- **Heap Used**: V8 heap delta measured before/after each run via `process.memoryUsage().heapUsed`. Isolates JavaScript-side memory growth, excluding native allocations. Useful for comparing JS-only libraries against napi-rs libraries where native memory dominates.
+- **GC**: When `--expose-gc` is enabled, `global.gc()` is called before each measurement to reduce noise from deferred garbage collection.
+- **Limitations**: Both RSS and heapUsed measure post-operation residual, not peak. Actual peak memory during an operation may be higher due to intermediate allocations freed before measurement. For napi-rs libraries, most memory lives in native heap (visible in RSS but not heapUsed).
 
 ## Libraries
 
@@ -46,249 +49,462 @@ Benchmark run: 2026-02-11T04:21:31.870Z
 
 | Scenario | SheetKit | ExcelJS | SheetJS | Winner |
 |----------|----------|---------|---------|--------|
-| Read Large Data (50k rows x 20 cols) | 454ms | 2.69s | 1.59s | SheetKit |
-| Read Large Data (50k rows x 20 cols) (async) | 435ms | N/A | N/A | SheetKit |
-| Read Heavy Styles (5k rows, formatted) | 24ms | 175ms | 79ms | SheetKit |
-| Read Heavy Styles (5k rows, formatted) (async) | 23ms | N/A | N/A | SheetKit |
-| Read Multi-Sheet (10 sheets x 5k rows) | 530ms | 1.55s | 590ms | SheetKit |
-| Read Multi-Sheet (10 sheets x 5k rows) (async) | 525ms | N/A | N/A | SheetKit |
-| Read Formulas (10k rows) | 33ms | 196ms | 78ms | SheetKit |
-| Read Formulas (10k rows) (async) | 32ms | N/A | N/A | SheetKit |
-| Read Strings (20k rows text-heavy) | 95ms | 610ms | 260ms | SheetKit |
-| Read Strings (20k rows text-heavy) (async) | 95ms | N/A | N/A | SheetKit |
-| Read Data Validation (5k rows, 8 rules) | 19ms | 131ms | 56ms | SheetKit |
-| Read Data Validation (5k rows, 8 rules) (async) | 19ms | N/A | N/A | SheetKit |
-| Read Comments (2k rows with comments) | 8ms | 113ms | 27ms | SheetKit |
-| Read Comments (2k rows with comments) (async) | 8ms | N/A | N/A | SheetKit |
-| Read Merged Cells (500 regions) | 2ms | 21ms | 5ms | SheetKit |
-| Read Merged Cells (500 regions) (async) | 1ms | N/A | N/A | SheetKit |
-| Read Mixed Workload (ERP document) | 27ms | 191ms | 71ms | SheetKit |
-| Read Mixed Workload (ERP document) (async) | 27ms | N/A | N/A | SheetKit |
+| Read Large Data (50k rows x 20 cols) | 546ms | 2.91s | 1.65s | SheetKit |
+| Read Large Data (50k rows x 20 cols) (async) | 530ms | N/A | N/A | SheetKit |
+| Read Large Data (50k rows x 20 cols) (lazy) | 530ms | N/A | N/A | SheetKit |
+| Read Large Data (50k rows x 20 cols) (getRowsRaw) | 535ms | N/A | N/A | SheetKit |
+| Read Large Data (50k rows x 20 cols) (lazy+raw) | 529ms | N/A | N/A | SheetKit |
+| Read Large Data (50k rows x 20 cols) (bufferV2) | 506ms | N/A | N/A | SheetKit |
+| Read Large Data (50k rows x 20 cols) (stream) | 739ms | N/A | N/A | SheetKit |
+| Read Heavy Styles (5k rows, formatted) | 29ms | 183ms | 90ms | SheetKit |
+| Read Heavy Styles (5k rows, formatted) (async) | 28ms | N/A | N/A | SheetKit |
+| Read Heavy Styles (5k rows, formatted) (lazy) | 28ms | N/A | N/A | SheetKit |
+| Read Heavy Styles (5k rows, formatted) (getRowsRaw) | 28ms | N/A | N/A | SheetKit |
+| Read Heavy Styles (5k rows, formatted) (lazy+raw) | 28ms | N/A | N/A | SheetKit |
+| Read Heavy Styles (5k rows, formatted) (bufferV2) | 26ms | N/A | N/A | SheetKit |
+| Read Heavy Styles (5k rows, formatted) (stream) | 38ms | N/A | N/A | SheetKit |
+| Read Multi-Sheet (10 sheets x 5k rows) | 625ms | 1.64s | 698ms | SheetKit |
+| Read Multi-Sheet (10 sheets x 5k rows) (async) | 636ms | N/A | N/A | SheetKit |
+| Read Multi-Sheet (10 sheets x 5k rows) (lazy) | 607ms | N/A | N/A | SheetKit |
+| Read Multi-Sheet (10 sheets x 5k rows) (getRowsRaw) | 609ms | N/A | N/A | SheetKit |
+| Read Multi-Sheet (10 sheets x 5k rows) (lazy+raw) | 606ms | N/A | N/A | SheetKit |
+| Read Multi-Sheet (10 sheets x 5k rows) (bufferV2) | 280ms | N/A | N/A | SheetKit |
+| Read Multi-Sheet (10 sheets x 5k rows) (stream) | 408ms | N/A | N/A | SheetKit |
+| Read Formulas (10k rows) | 42ms | 200ms | 85ms | SheetKit |
+| Read Formulas (10k rows) (async) | 39ms | N/A | N/A | SheetKit |
+| Read Formulas (10k rows) (lazy) | 40ms | N/A | N/A | SheetKit |
+| Read Formulas (10k rows) (getRowsRaw) | 40ms | N/A | N/A | SheetKit |
+| Read Formulas (10k rows) (lazy+raw) | 40ms | N/A | N/A | SheetKit |
+| Read Formulas (10k rows) (bufferV2) | 32ms | N/A | N/A | SheetKit |
+| Read Formulas (10k rows) (stream) | 47ms | N/A | N/A | SheetKit |
+| Read Strings (20k rows text-heavy) | 112ms | 648ms | 295ms | SheetKit |
+| Read Strings (20k rows text-heavy) (async) | 110ms | N/A | N/A | SheetKit |
+| Read Strings (20k rows text-heavy) (lazy) | 114ms | N/A | N/A | SheetKit |
+| Read Strings (20k rows text-heavy) (getRowsRaw) | 110ms | N/A | N/A | SheetKit |
+| Read Strings (20k rows text-heavy) (lazy+raw) | 111ms | N/A | N/A | SheetKit |
+| Read Strings (20k rows text-heavy) (bufferV2) | 105ms | N/A | N/A | SheetKit |
+| Read Strings (20k rows text-heavy) (stream) | 154ms | N/A | N/A | SheetKit |
+| Read Data Validation (5k rows, 8 rules) | 22ms | 147ms | 64ms | SheetKit |
+| Read Data Validation (5k rows, 8 rules) (async) | 22ms | N/A | N/A | SheetKit |
+| Read Data Validation (5k rows, 8 rules) (lazy) | 23ms | N/A | N/A | SheetKit |
+| Read Data Validation (5k rows, 8 rules) (getRowsRaw) | 22ms | N/A | N/A | SheetKit |
+| Read Data Validation (5k rows, 8 rules) (lazy+raw) | 22ms | N/A | N/A | SheetKit |
+| Read Data Validation (5k rows, 8 rules) (bufferV2) | 21ms | N/A | N/A | SheetKit |
+| Read Data Validation (5k rows, 8 rules) (stream) | 30ms | N/A | N/A | SheetKit |
+| Read Comments (2k rows with comments) | 9ms | 117ms | 30ms | SheetKit |
+| Read Comments (2k rows with comments) (async) | 9ms | N/A | N/A | SheetKit |
+| Read Comments (2k rows with comments) (lazy) | 8ms | N/A | N/A | SheetKit |
+| Read Comments (2k rows with comments) (getRowsRaw) | 9ms | N/A | N/A | SheetKit |
+| Read Comments (2k rows with comments) (lazy+raw) | 8ms | N/A | N/A | SheetKit |
+| Read Comments (2k rows with comments) (bufferV2) | 8ms | N/A | N/A | SheetKit |
+| Read Comments (2k rows with comments) (stream) | 9ms | N/A | N/A | SheetKit |
+| Read Merged Cells (500 regions) | 2ms | 24ms | 6ms | SheetKit |
+| Read Merged Cells (500 regions) (async) | 2ms | N/A | N/A | SheetKit |
+| Read Merged Cells (500 regions) (lazy) | 2ms | N/A | N/A | SheetKit |
+| Read Merged Cells (500 regions) (getRowsRaw) | 2ms | N/A | N/A | SheetKit |
+| Read Merged Cells (500 regions) (lazy+raw) | 2ms | N/A | N/A | SheetKit |
+| Read Merged Cells (500 regions) (bufferV2) | 2ms | N/A | N/A | SheetKit |
+| Read Merged Cells (500 regions) (stream) | 3ms | N/A | N/A | SheetKit |
+| Read Mixed Workload (ERP document) | 32ms | 198ms | 77ms | SheetKit |
+| Read Mixed Workload (ERP document) (async) | 32ms | N/A | N/A | SheetKit |
+| Read Mixed Workload (ERP document) (lazy) | 31ms | N/A | N/A | SheetKit |
+| Read Mixed Workload (ERP document) (getRowsRaw) | 33ms | N/A | N/A | SheetKit |
+| Read Mixed Workload (ERP document) (lazy+raw) | 31ms | N/A | N/A | SheetKit |
+| Read Mixed Workload (ERP document) (bufferV2) | 26ms | N/A | N/A | SheetKit |
+| Read Mixed Workload (ERP document) (stream) | 38ms | N/A | N/A | SheetKit |
 
 ### Read (Scale)
 
 | Scenario | SheetKit | ExcelJS | SheetJS | Winner |
 |----------|----------|---------|---------|--------|
-| Read Scale 1k rows | 5ms | 39ms | 18ms | SheetKit |
-| Read Scale 1k rows (async) | 5ms | N/A | N/A | SheetKit |
-| Read Scale 10k rows | 45ms | 292ms | 132ms | SheetKit |
-| Read Scale 10k rows (async) | 44ms | N/A | N/A | SheetKit |
-| Read Scale 100k rows | 474ms | 2.84s | 1.51s | SheetKit |
-| Read Scale 100k rows (async) | 474ms | N/A | N/A | SheetKit |
+| Read Scale 1k rows | 6ms | 42ms | 20ms | SheetKit |
+| Read Scale 1k rows (async) | 6ms | N/A | N/A | SheetKit |
+| Read Scale 1k rows (lazy) | 6ms | N/A | N/A | SheetKit |
+| Read Scale 1k rows (getRowsRaw) | 6ms | N/A | N/A | SheetKit |
+| Read Scale 1k rows (lazy+raw) | 6ms | N/A | N/A | SheetKit |
+| Read Scale 1k rows (bufferV2) | 5ms | N/A | N/A | SheetKit |
+| Read Scale 1k rows (stream) | 8ms | N/A | N/A | SheetKit |
+| Read Scale 10k rows | 55ms | 308ms | 147ms | SheetKit |
+| Read Scale 10k rows (async) | 55ms | N/A | N/A | SheetKit |
+| Read Scale 10k rows (lazy) | 53ms | N/A | N/A | SheetKit |
+| Read Scale 10k rows (getRowsRaw) | 53ms | N/A | N/A | SheetKit |
+| Read Scale 10k rows (lazy+raw) | 54ms | N/A | N/A | SheetKit |
+| Read Scale 10k rows (bufferV2) | 49ms | N/A | N/A | SheetKit |
+| Read Scale 10k rows (stream) | 73ms | N/A | N/A | SheetKit |
+| Read Scale 100k rows | 565ms | 2.96s | 1.63s | SheetKit |
+| Read Scale 100k rows (async) | 569ms | N/A | N/A | SheetKit |
+| Read Scale 100k rows (lazy) | 573ms | N/A | N/A | SheetKit |
+| Read Scale 100k rows (getRowsRaw) | 565ms | N/A | N/A | SheetKit |
+| Read Scale 100k rows (lazy+raw) | 574ms | N/A | N/A | SheetKit |
+| Read Scale 100k rows (bufferV2) | 526ms | N/A | N/A | SheetKit |
+| Read Scale 100k rows (stream) | 773ms | N/A | N/A | SheetKit |
 
 ### Write
 
 | Scenario | SheetKit | ExcelJS | SheetJS | Winner |
 |----------|----------|---------|---------|--------|
-| Write 50000 rows x 20 cols | 461ms | 2.55s | 1.25s | SheetKit |
-| Write 5000 styled rows | 35ms | 171ms | 41ms | SheetKit |
-| Write 10 sheets x 5000 rows | 251ms | 1.25s | 415ms | SheetKit |
-| Write 10000 rows with formulas | 28ms | 152ms | 55ms | SheetKit |
-| Write 20000 text-heavy rows | 87ms | 458ms | 199ms | SheetKit |
+| Write 50000 rows x 20 cols | 489ms | 2.73s | 1.37s | SheetKit |
+| Write 5000 styled rows | 36ms | 168ms | 46ms | SheetKit |
+| Write 10 sheets x 5000 rows | 260ms | 1.31s | 462ms | SheetKit |
+| Write 10000 rows with formulas | 30ms | 167ms | 63ms | SheetKit |
+| Write 20000 text-heavy rows | 90ms | 511ms | 232ms | SheetKit |
 
 ### Write (DV)
 
 | Scenario | SheetKit | ExcelJS | SheetJS | Winner |
 |----------|----------|---------|---------|--------|
-| Write 5000 rows + 8 validation rules | 9ms | 84ms | N/A | SheetKit |
+| Write 5000 rows + 8 validation rules | 10ms | 94ms | N/A | SheetKit |
 
 ### Write (Comments)
 
 | Scenario | SheetKit | ExcelJS | SheetJS | Winner |
 |----------|----------|---------|---------|--------|
-| Write 2000 rows with comments | 8ms | 62ms | 61ms | SheetKit |
+| Write 2000 rows with comments | 8ms | 69ms | 71ms | SheetKit |
 
 ### Write (Merge)
 
 | Scenario | SheetKit | ExcelJS | SheetJS | Winner |
 |----------|----------|---------|---------|--------|
-| Write 500 merged regions | 10ms | 26ms | 3ms | SheetJS |
+| Write 500 merged regions | 2ms | 28ms | 3ms | SheetKit |
 
 ### Write (Scale)
 
 | Scenario | SheetKit | ExcelJS | SheetJS | Winner |
 |----------|----------|---------|---------|--------|
-| Write 1k rows x 10 cols | 5ms | 37ms | 9ms | SheetKit |
-| Write 10k rows x 10 cols | 47ms | 250ms | 79ms | SheetKit |
-| Write 50k rows x 10 cols | 235ms | 1.24s | 480ms | SheetKit |
-| Write 100k rows x 10 cols | 476ms | 2.64s | 1.22s | SheetKit |
+| Write 1k rows x 10 cols | 5ms | 38ms | 9ms | SheetKit |
+| Write 10k rows x 10 cols | 48ms | 264ms | 97ms | SheetKit |
+| Write 50k rows x 10 cols | 244ms | 1.33s | 532ms | SheetKit |
+| Write 100k rows x 10 cols | 508ms | 3.00s | 1.27s | SheetKit |
 
 ### Round-Trip
 
 | Scenario | SheetKit | ExcelJS | SheetJS | Winner |
 |----------|----------|---------|---------|--------|
-| Buffer round-trip (10000 rows) | 118ms | 479ms | 147ms | SheetKit |
+| Buffer round-trip (10000 rows) | 131ms | 498ms | 198ms | SheetKit |
+| Buffer round-trip (10000 rows) (lazy) | 125ms | N/A | N/A | SheetKit |
 
 ### Streaming
 
 | Scenario | SheetKit | ExcelJS | SheetJS | Winner |
 |----------|----------|---------|---------|--------|
-| Streaming write (50000 rows) | 309ms | 499ms | N/A | SheetKit |
+| Streaming write (50000 rows) | 332ms | 550ms | N/A | SheetKit |
 
 ### Random Access
 
 | Scenario | SheetKit | ExcelJS | SheetJS | Winner |
 |----------|----------|---------|---------|--------|
-| Random-access read (1000 cells from 50k-row file) | 387ms | 2.81s | 1.29s | SheetKit |
-| Random-access read (1000 cells from 50k-row file) (async) | 382ms | N/A | N/A | SheetKit |
+| Random-access (open+1000 lookups) | 489ms | 3.04s | 1.37s | SheetKit |
+| Random-access (open+1000 lookups) (async) | 473ms | N/A | N/A | SheetKit |
+| Random-access (open+1000 lookups) (lazy) | 465ms | N/A | N/A | SheetKit |
+| Random-access (lookup-only, 1000 cells) | 473ms | 2.98s | 1.35s | SheetKit |
+| Random-access (lookup-only, 1000 cells) (async open) | 464ms | N/A | N/A | SheetKit |
 
 ### Mixed Write
 
 | Scenario | SheetKit | ExcelJS | SheetJS | Winner |
 |----------|----------|---------|---------|--------|
-| Mixed workload write (ERP-style) | 19ms | 104ms | N/A | SheetKit |
+| Mixed workload write (ERP-style) | 20ms | 113ms | N/A | SheetKit |
+
+### COW Save
+
+| Scenario | SheetKit | ExcelJS | SheetJS | Winner |
+|----------|----------|---------|---------|--------|
+| Copy-on-write save (untouched) (lazy) | 217ms | N/A | N/A | SheetKit |
+| Copy-on-write save (untouched) (eager) | 682ms | N/A | N/A | SheetKit |
+| Copy-on-write save (single-cell edit) (lazy) | 692ms | N/A | N/A | SheetKit |
+| Copy-on-write save (single-cell edit) (eager) | 685ms | N/A | N/A | SheetKit |
 
 ### Detailed Statistics
 
-| Scenario | Library | Median | Min | Max | P95 | Memory (median) |
-|----------|---------|--------|-----|-----|-----|-----------------|
-| Read Large Data (50k rows x 20 cols) | SheetKit | 454ms | 443ms | 457ms | 457ms | 195.3MB |
-| Read Large Data (50k rows x 20 cols) | ExcelJS | 2.69s | 2.67s | 2.72s | 2.72s | 0.2MB |
-| Read Large Data (50k rows x 20 cols) | SheetJS | 1.59s | 1.51s | 1.62s | 1.62s | 0.1MB |
-| Read Large Data (50k rows x 20 cols) (async) | SheetKit | 435ms | 432ms | 452ms | 452ms | 17.2MB |
-| Read Heavy Styles (5k rows, formatted) | SheetKit | 24ms | 23ms | 25ms | 25ms | 6.0MB |
-| Read Heavy Styles (5k rows, formatted) | ExcelJS | 175ms | 169ms | 176ms | 176ms | 0.0MB |
-| Read Heavy Styles (5k rows, formatted) | SheetJS | 79ms | 77ms | 82ms | 82ms | 0.0MB |
-| Read Heavy Styles (5k rows, formatted) (async) | SheetKit | 23ms | 23ms | 24ms | 24ms | 0.0MB |
-| Read Multi-Sheet (10 sheets x 5k rows) | SheetKit | 530ms | 526ms | 532ms | 532ms | 112.7MB |
-| Read Multi-Sheet (10 sheets x 5k rows) | ExcelJS | 1.55s | 1.54s | 1.56s | 1.56s | 0.0MB |
-| Read Multi-Sheet (10 sheets x 5k rows) | SheetJS | 590ms | 582ms | 596ms | 596ms | 0.0MB |
-| Read Multi-Sheet (10 sheets x 5k rows) (async) | SheetKit | 525ms | 523ms | 530ms | 530ms | 0.4MB |
-| Read Formulas (10k rows) | SheetKit | 33ms | 33ms | 35ms | 35ms | 9.3MB |
-| Read Formulas (10k rows) | ExcelJS | 196ms | 190ms | 197ms | 197ms | 0.1MB |
-| Read Formulas (10k rows) | SheetJS | 78ms | 77ms | 78ms | 78ms | 0.0MB |
-| Read Formulas (10k rows) (async) | SheetKit | 32ms | 32ms | 35ms | 35ms | 0.0MB |
-| Read Strings (20k rows text-heavy) | SheetKit | 95ms | 93ms | 95ms | 95ms | 2.5MB |
-| Read Strings (20k rows text-heavy) | ExcelJS | 610ms | 602ms | 623ms | 623ms | 0.0MB |
-| Read Strings (20k rows text-heavy) | SheetJS | 260ms | 255ms | 271ms | 271ms | 0.0MB |
-| Read Strings (20k rows text-heavy) (async) | SheetKit | 95ms | 94ms | 96ms | 96ms | 0.0MB |
-| Read Data Validation (5k rows, 8 rules) | SheetKit | 19ms | 18ms | 20ms | 20ms | 0.0MB |
-| Read Data Validation (5k rows, 8 rules) | ExcelJS | 131ms | 127ms | 138ms | 138ms | 3.2MB |
-| Read Data Validation (5k rows, 8 rules) | SheetJS | 56ms | 55ms | 56ms | 56ms | 0.0MB |
-| Read Data Validation (5k rows, 8 rules) (async) | SheetKit | 19ms | 18ms | 19ms | 19ms | 0.0MB |
-| Read Comments (2k rows with comments) | SheetKit | 8ms | 8ms | 8ms | 8ms | 0.5MB |
-| Read Comments (2k rows with comments) | ExcelJS | 113ms | 110ms | 117ms | 117ms | 0.0MB |
-| Read Comments (2k rows with comments) | SheetJS | 27ms | 24ms | 29ms | 29ms | 0.0MB |
-| Read Comments (2k rows with comments) (async) | SheetKit | 8ms | 7ms | 8ms | 8ms | 0.0MB |
-| Read Merged Cells (500 regions) | SheetKit | 2ms | 1ms | 2ms | 2ms | 0.0MB |
-| Read Merged Cells (500 regions) | ExcelJS | 21ms | 20ms | 23ms | 23ms | 0.0MB |
-| Read Merged Cells (500 regions) | SheetJS | 5ms | 4ms | 5ms | 5ms | 0.0MB |
-| Read Merged Cells (500 regions) (async) | SheetKit | 1ms | 1ms | 1ms | 1ms | 0.0MB |
-| Read Mixed Workload (ERP document) | SheetKit | 27ms | 27ms | 28ms | 28ms | 0.0MB |
-| Read Mixed Workload (ERP document) | ExcelJS | 191ms | 183ms | 193ms | 193ms | 0.1MB |
-| Read Mixed Workload (ERP document) | SheetJS | 71ms | 69ms | 72ms | 72ms | 0.0MB |
-| Read Mixed Workload (ERP document) (async) | SheetKit | 27ms | 25ms | 27ms | 27ms | 0.0MB |
-| Read Scale 1k rows | SheetKit | 5ms | 5ms | 5ms | 5ms | 0.0MB |
-| Read Scale 1k rows | ExcelJS | 39ms | 37ms | 39ms | 39ms | 0.0MB |
-| Read Scale 1k rows | SheetJS | 18ms | 17ms | 19ms | 19ms | 0.0MB |
-| Read Scale 1k rows (async) | SheetKit | 5ms | 4ms | 5ms | 5ms | 0.0MB |
-| Read Scale 10k rows | SheetKit | 45ms | 44ms | 47ms | 47ms | 2.1MB |
-| Read Scale 10k rows | ExcelJS | 292ms | 286ms | 310ms | 310ms | 0.1MB |
-| Read Scale 10k rows | SheetJS | 132ms | 129ms | 136ms | 136ms | 0.0MB |
-| Read Scale 10k rows (async) | SheetKit | 44ms | 43ms | 47ms | 47ms | 0.0MB |
-| Read Scale 100k rows | SheetKit | 474ms | 473ms | 484ms | 484ms | 175.2MB |
-| Read Scale 100k rows | ExcelJS | 2.84s | 2.79s | 2.86s | 2.86s | 0.0MB |
-| Read Scale 100k rows | SheetJS | 1.51s | 1.47s | 1.53s | 1.53s | 0.0MB |
-| Read Scale 100k rows (async) | SheetKit | 474ms | 469ms | 500ms | 500ms | 15.9MB |
-| Write 50000 rows x 20 cols | SheetKit | 461ms | 459ms | 507ms | 507ms | 67.3MB |
-| Write 50000 rows x 20 cols | ExcelJS | 2.55s | 2.47s | 2.68s | 2.68s | 54.4MB |
-| Write 50000 rows x 20 cols | SheetJS | 1.25s | 1.18s | 1.54s | 1.54s | 0.0MB |
-| Write 5000 styled rows | SheetKit | 35ms | 34ms | 35ms | 35ms | 0.0MB |
-| Write 5000 styled rows | ExcelJS | 171ms | 154ms | 175ms | 175ms | 0.1MB |
-| Write 5000 styled rows | SheetJS | 41ms | 39ms | 42ms | 42ms | 0.0MB |
-| Write 10 sheets x 5000 rows | SheetKit | 251ms | 248ms | 253ms | 253ms | 38.2MB |
-| Write 10 sheets x 5000 rows | ExcelJS | 1.25s | 1.23s | 1.35s | 1.35s | 0.3MB |
-| Write 10 sheets x 5000 rows | SheetJS | 415ms | 388ms | 432ms | 432ms | 0.0MB |
-| Write 10000 rows with formulas | SheetKit | 28ms | 28ms | 29ms | 29ms | 0.0MB |
-| Write 10000 rows with formulas | ExcelJS | 152ms | 148ms | 156ms | 156ms | 0.2MB |
-| Write 10000 rows with formulas | SheetJS | 55ms | 53ms | 60ms | 60ms | 0.0MB |
-| Write 20000 text-heavy rows | SheetKit | 87ms | 86ms | 87ms | 87ms | 12.2MB |
-| Write 20000 text-heavy rows | ExcelJS | 458ms | 447ms | 460ms | 460ms | 0.3MB |
-| Write 20000 text-heavy rows | SheetJS | 199ms | 198ms | 212ms | 212ms | 0.0MB |
-| Write 5000 rows + 8 validation rules | SheetKit | 9ms | 9ms | 9ms | 9ms | 1.2MB |
-| Write 5000 rows + 8 validation rules | ExcelJS | 84ms | 81ms | 89ms | 89ms | 0.3MB |
-| Write 2000 rows with comments | SheetKit | 8ms | 7ms | 8ms | 8ms | 0.0MB |
-| Write 2000 rows with comments | ExcelJS | 62ms | 62ms | 64ms | 64ms | 0.1MB |
-| Write 2000 rows with comments | SheetJS | 61ms | 61ms | 62ms | 62ms | 0.0MB |
-| Write 500 merged regions | SheetKit | 10ms | 10ms | 11ms | 11ms | 0.0MB |
-| Write 500 merged regions | ExcelJS | 26ms | 18ms | 28ms | 28ms | 0.0MB |
-| Write 500 merged regions | SheetJS | 3ms | 3ms | 3ms | 3ms | 0.0MB |
-| Write 1k rows x 10 cols | SheetKit | 5ms | 5ms | 5ms | 5ms | 0.0MB |
-| Write 1k rows x 10 cols | ExcelJS | 37ms | 35ms | 39ms | 39ms | 0.2MB |
-| Write 1k rows x 10 cols | SheetJS | 9ms | 9ms | 9ms | 9ms | 0.0MB |
-| Write 10k rows x 10 cols | SheetKit | 47ms | 46ms | 48ms | 48ms | 0.1MB |
-| Write 10k rows x 10 cols | ExcelJS | 250ms | 250ms | 252ms | 252ms | 0.2MB |
-| Write 10k rows x 10 cols | SheetJS | 79ms | 77ms | 82ms | 82ms | 0.0MB |
-| Write 50k rows x 10 cols | SheetKit | 235ms | 229ms | 235ms | 235ms | 35.0MB |
-| Write 50k rows x 10 cols | ExcelJS | 1.24s | 1.22s | 1.26s | 1.26s | 0.2MB |
-| Write 50k rows x 10 cols | SheetJS | 480ms | 469ms | 523ms | 523ms | 0.0MB |
-| Write 100k rows x 10 cols | SheetKit | 476ms | 474ms | 478ms | 478ms | 65.1MB |
-| Write 100k rows x 10 cols | ExcelJS | 2.64s | 2.60s | 2.79s | 2.79s | 0.0MB |
-| Write 100k rows x 10 cols | SheetJS | 1.22s | 1.21s | 1.25s | 1.25s | 0.0MB |
-| Buffer round-trip (10000 rows) | SheetKit | 118ms | 115ms | 120ms | 120ms | 1.4MB |
-| Buffer round-trip (10000 rows) | ExcelJS | 479ms | 470ms | 482ms | 482ms | 0.1MB |
-| Buffer round-trip (10000 rows) | SheetJS | 147ms | 140ms | 167ms | 167ms | 0.0MB |
-| Streaming write (50000 rows) | SheetKit | 309ms | 308ms | 309ms | 309ms | 0.0MB |
-| Streaming write (50000 rows) | ExcelJS | 499ms | 497ms | 504ms | 504ms | 0.0MB |
-| Random-access read (1000 cells from 50k-row file) | SheetKit | 387ms | 385ms | 390ms | 390ms | 61.6MB |
-| Random-access read (1000 cells from 50k-row file) | ExcelJS | 2.81s | 2.72s | 2.90s | 2.90s | 0.0MB |
-| Random-access read (1000 cells from 50k-row file) | SheetJS | 1.29s | 1.25s | 1.32s | 1.32s | 0.0MB |
-| Random-access read (1000 cells from 50k-row file) (async) | SheetKit | 382ms | 381ms | 385ms | 385ms | 0.0MB |
-| Mixed workload write (ERP-style) | SheetKit | 19ms | 19ms | 20ms | 20ms | 0.0MB |
-| Mixed workload write (ERP-style) | ExcelJS | 104ms | 102ms | 106ms | 106ms | 0.3MB |
+| Scenario | Library | Median | Min | Max | P95 | RSS (median) | Heap (median) |
+|----------|---------|--------|-----|-----|-----|--------------|---------------|
+| Read Large Data (50k rows x 20 cols) | SheetKit | 546ms | 534ms | 557ms | 557ms | 192.4MB | 0.0MB |
+| Read Large Data (50k rows x 20 cols) | ExcelJS | 2.91s | 2.88s | 3.00s | 3.00s | 0.0MB | 0.1MB |
+| Read Large Data (50k rows x 20 cols) | SheetJS | 1.65s | 1.63s | 1.66s | 1.66s | 0.0MB | 0.0MB |
+| Read Large Data (50k rows x 20 cols) (async) | SheetKit | 530ms | 525ms | 535ms | 535ms | 4.3MB | 0.0MB |
+| Read Large Data (50k rows x 20 cols) (lazy) | SheetKit | 530ms | 526ms | 544ms | 544ms | 0.0MB | 0.0MB |
+| Read Large Data (50k rows x 20 cols) (getRowsRaw) | SheetKit | 535ms | 525ms | 553ms | 553ms | 4.2MB | 0.0MB |
+| Read Large Data (50k rows x 20 cols) (lazy+raw) | SheetKit | 529ms | 520ms | 549ms | 549ms | 0.0MB | 0.0MB |
+| Read Large Data (50k rows x 20 cols) (bufferV2) | SheetKit | 506ms | 489ms | 554ms | 554ms | 3.6MB | 0.0MB |
+| Read Large Data (50k rows x 20 cols) (stream) | SheetKit | 739ms | 735ms | 779ms | 779ms | 0.0MB | 0.0MB |
+| Read Heavy Styles (5k rows, formatted) | SheetKit | 29ms | 28ms | 29ms | 29ms | 5.4MB | 0.0MB |
+| Read Heavy Styles (5k rows, formatted) | ExcelJS | 183ms | 179ms | 184ms | 184ms | 0.2MB | 0.1MB |
+| Read Heavy Styles (5k rows, formatted) | SheetJS | 90ms | 84ms | 91ms | 91ms | 0.0MB | 0.0MB |
+| Read Heavy Styles (5k rows, formatted) (async) | SheetKit | 28ms | 28ms | 30ms | 30ms | 0.0MB | 0.0MB |
+| Read Heavy Styles (5k rows, formatted) (lazy) | SheetKit | 28ms | 28ms | 28ms | 28ms | 0.0MB | 0.0MB |
+| Read Heavy Styles (5k rows, formatted) (getRowsRaw) | SheetKit | 28ms | 28ms | 29ms | 29ms | 0.0MB | 0.0MB |
+| Read Heavy Styles (5k rows, formatted) (lazy+raw) | SheetKit | 28ms | 28ms | 29ms | 29ms | 0.0MB | 0.0MB |
+| Read Heavy Styles (5k rows, formatted) (bufferV2) | SheetKit | 26ms | 26ms | 26ms | 26ms | 0.0MB | 0.0MB |
+| Read Heavy Styles (5k rows, formatted) (stream) | SheetKit | 38ms | 37ms | 44ms | 44ms | 0.0MB | 0.0MB |
+| Read Multi-Sheet (10 sheets x 5k rows) | SheetKit | 625ms | 619ms | 655ms | 655ms | 121.7MB | 0.0MB |
+| Read Multi-Sheet (10 sheets x 5k rows) | ExcelJS | 1.64s | 1.62s | 1.67s | 1.67s | 0.0MB | 0.1MB |
+| Read Multi-Sheet (10 sheets x 5k rows) | SheetJS | 698ms | 674ms | 722ms | 722ms | 0.0MB | 0.0MB |
+| Read Multi-Sheet (10 sheets x 5k rows) (async) | SheetKit | 636ms | 630ms | 652ms | 652ms | 0.4MB | 0.0MB |
+| Read Multi-Sheet (10 sheets x 5k rows) (lazy) | SheetKit | 607ms | 598ms | 628ms | 628ms | 10.3MB | 0.0MB |
+| Read Multi-Sheet (10 sheets x 5k rows) (getRowsRaw) | SheetKit | 609ms | 599ms | 612ms | 612ms | 0.4MB | 0.0MB |
+| Read Multi-Sheet (10 sheets x 5k rows) (lazy+raw) | SheetKit | 606ms | 592ms | 635ms | 635ms | 0.4MB | 0.0MB |
+| Read Multi-Sheet (10 sheets x 5k rows) (bufferV2) | SheetKit | 280ms | 278ms | 290ms | 290ms | 0.4MB | 0.0MB |
+| Read Multi-Sheet (10 sheets x 5k rows) (stream) | SheetKit | 408ms | 404ms | 419ms | 419ms | 0.4MB | 0.0MB |
+| Read Formulas (10k rows) | SheetKit | 42ms | 41ms | 44ms | 44ms | 9.3MB | 0.0MB |
+| Read Formulas (10k rows) | ExcelJS | 200ms | 196ms | 205ms | 205ms | 0.0MB | 0.0MB |
+| Read Formulas (10k rows) | SheetJS | 85ms | 83ms | 86ms | 86ms | 0.0MB | 0.0MB |
+| Read Formulas (10k rows) (async) | SheetKit | 39ms | 39ms | 40ms | 40ms | 0.0MB | 0.0MB |
+| Read Formulas (10k rows) (lazy) | SheetKit | 40ms | 39ms | 41ms | 41ms | 0.0MB | 0.0MB |
+| Read Formulas (10k rows) (getRowsRaw) | SheetKit | 40ms | 39ms | 43ms | 43ms | 0.0MB | 0.0MB |
+| Read Formulas (10k rows) (lazy+raw) | SheetKit | 40ms | 39ms | 40ms | 40ms | 0.0MB | 0.0MB |
+| Read Formulas (10k rows) (bufferV2) | SheetKit | 32ms | 32ms | 32ms | 32ms | 0.0MB | 0.0MB |
+| Read Formulas (10k rows) (stream) | SheetKit | 47ms | 46ms | 48ms | 48ms | 0.0MB | 0.0MB |
+| Read Strings (20k rows text-heavy) | SheetKit | 112ms | 111ms | 117ms | 117ms | 10.0MB | 0.0MB |
+| Read Strings (20k rows text-heavy) | ExcelJS | 648ms | 645ms | 661ms | 661ms | 0.0MB | 0.1MB |
+| Read Strings (20k rows text-heavy) | SheetJS | 295ms | 292ms | 326ms | 326ms | 0.0MB | 0.0MB |
+| Read Strings (20k rows text-heavy) (async) | SheetKit | 110ms | 109ms | 112ms | 112ms | 0.0MB | 0.0MB |
+| Read Strings (20k rows text-heavy) (lazy) | SheetKit | 114ms | 112ms | 115ms | 115ms | 0.0MB | 0.0MB |
+| Read Strings (20k rows text-heavy) (getRowsRaw) | SheetKit | 110ms | 110ms | 111ms | 111ms | 0.0MB | 0.0MB |
+| Read Strings (20k rows text-heavy) (lazy+raw) | SheetKit | 111ms | 111ms | 115ms | 115ms | 0.0MB | 0.0MB |
+| Read Strings (20k rows text-heavy) (bufferV2) | SheetKit | 105ms | 104ms | 106ms | 106ms | 2.7MB | 0.0MB |
+| Read Strings (20k rows text-heavy) (stream) | SheetKit | 154ms | 153ms | 165ms | 165ms | 0.0MB | 0.0MB |
+| Read Data Validation (5k rows, 8 rules) | SheetKit | 22ms | 22ms | 23ms | 23ms | 0.0MB | 0.0MB |
+| Read Data Validation (5k rows, 8 rules) | ExcelJS | 147ms | 139ms | 150ms | 150ms | 3.1MB | 16.4MB |
+| Read Data Validation (5k rows, 8 rules) | SheetJS | 64ms | 61ms | 68ms | 68ms | 0.1MB | 0.0MB |
+| Read Data Validation (5k rows, 8 rules) (async) | SheetKit | 22ms | 22ms | 22ms | 22ms | 0.0MB | 0.0MB |
+| Read Data Validation (5k rows, 8 rules) (lazy) | SheetKit | 23ms | 22ms | 23ms | 23ms | 0.0MB | 0.0MB |
+| Read Data Validation (5k rows, 8 rules) (getRowsRaw) | SheetKit | 22ms | 22ms | 23ms | 23ms | 0.0MB | 0.0MB |
+| Read Data Validation (5k rows, 8 rules) (lazy+raw) | SheetKit | 22ms | 22ms | 22ms | 22ms | 0.0MB | 0.0MB |
+| Read Data Validation (5k rows, 8 rules) (bufferV2) | SheetKit | 21ms | 21ms | 21ms | 21ms | 0.0MB | 0.0MB |
+| Read Data Validation (5k rows, 8 rules) (stream) | SheetKit | 30ms | 30ms | 31ms | 31ms | 0.0MB | 0.0MB |
+| Read Comments (2k rows with comments) | SheetKit | 9ms | 9ms | 9ms | 9ms | 0.6MB | 0.0MB |
+| Read Comments (2k rows with comments) | ExcelJS | 117ms | 114ms | 121ms | 121ms | 0.0MB | 0.1MB |
+| Read Comments (2k rows with comments) | SheetJS | 30ms | 26ms | 32ms | 32ms | 0.0MB | 0.0MB |
+| Read Comments (2k rows with comments) (async) | SheetKit | 9ms | 9ms | 9ms | 9ms | 0.0MB | 0.0MB |
+| Read Comments (2k rows with comments) (lazy) | SheetKit | 8ms | 7ms | 8ms | 8ms | 0.0MB | 0.0MB |
+| Read Comments (2k rows with comments) (getRowsRaw) | SheetKit | 9ms | 9ms | 9ms | 9ms | 0.0MB | 0.0MB |
+| Read Comments (2k rows with comments) (lazy+raw) | SheetKit | 8ms | 8ms | 8ms | 8ms | 0.0MB | 0.0MB |
+| Read Comments (2k rows with comments) (bufferV2) | SheetKit | 8ms | 8ms | 8ms | 8ms | 0.0MB | 0.0MB |
+| Read Comments (2k rows with comments) (stream) | SheetKit | 9ms | 9ms | 9ms | 9ms | 0.0MB | 0.0MB |
+| Read Merged Cells (500 regions) | SheetKit | 2ms | 2ms | 2ms | 2ms | 0.0MB | 0.0MB |
+| Read Merged Cells (500 regions) | ExcelJS | 24ms | 22ms | 25ms | 25ms | 0.0MB | 0.0MB |
+| Read Merged Cells (500 regions) | SheetJS | 6ms | 6ms | 6ms | 6ms | 0.0MB | 0.0MB |
+| Read Merged Cells (500 regions) (async) | SheetKit | 2ms | 2ms | 2ms | 2ms | 0.0MB | 0.0MB |
+| Read Merged Cells (500 regions) (lazy) | SheetKit | 2ms | 2ms | 2ms | 2ms | 0.0MB | 0.0MB |
+| Read Merged Cells (500 regions) (getRowsRaw) | SheetKit | 2ms | 2ms | 2ms | 2ms | 0.0MB | 0.0MB |
+| Read Merged Cells (500 regions) (lazy+raw) | SheetKit | 2ms | 2ms | 2ms | 2ms | 0.0MB | 0.0MB |
+| Read Merged Cells (500 regions) (bufferV2) | SheetKit | 2ms | 2ms | 2ms | 2ms | 0.0MB | 0.0MB |
+| Read Merged Cells (500 regions) (stream) | SheetKit | 3ms | 2ms | 3ms | 3ms | 0.0MB | 0.0MB |
+| Read Mixed Workload (ERP document) | SheetKit | 32ms | 31ms | 34ms | 34ms | 0.0MB | 0.0MB |
+| Read Mixed Workload (ERP document) | ExcelJS | 198ms | 195ms | 227ms | 227ms | 0.1MB | 0.1MB |
+| Read Mixed Workload (ERP document) | SheetJS | 77ms | 75ms | 82ms | 82ms | 0.0MB | 0.0MB |
+| Read Mixed Workload (ERP document) (async) | SheetKit | 32ms | 31ms | 32ms | 32ms | 0.0MB | 0.0MB |
+| Read Mixed Workload (ERP document) (lazy) | SheetKit | 31ms | 30ms | 31ms | 31ms | 0.0MB | 0.0MB |
+| Read Mixed Workload (ERP document) (getRowsRaw) | SheetKit | 33ms | 32ms | 35ms | 35ms | 0.0MB | 0.0MB |
+| Read Mixed Workload (ERP document) (lazy+raw) | SheetKit | 31ms | 31ms | 32ms | 32ms | 0.0MB | 0.0MB |
+| Read Mixed Workload (ERP document) (bufferV2) | SheetKit | 26ms | 26ms | 27ms | 27ms | 0.0MB | 0.0MB |
+| Read Mixed Workload (ERP document) (stream) | SheetKit | 38ms | 38ms | 39ms | 39ms | 0.0MB | 0.0MB |
+| Read Scale 1k rows | SheetKit | 6ms | 6ms | 6ms | 6ms | 0.0MB | 0.0MB |
+| Read Scale 1k rows | ExcelJS | 42ms | 40ms | 43ms | 43ms | 0.0MB | 0.0MB |
+| Read Scale 1k rows | SheetJS | 20ms | 19ms | 22ms | 22ms | 0.0MB | 0.0MB |
+| Read Scale 1k rows (async) | SheetKit | 6ms | 6ms | 6ms | 6ms | 0.0MB | 0.0MB |
+| Read Scale 1k rows (lazy) | SheetKit | 6ms | 6ms | 6ms | 6ms | 0.0MB | 0.0MB |
+| Read Scale 1k rows (getRowsRaw) | SheetKit | 6ms | 6ms | 6ms | 6ms | 0.0MB | 0.0MB |
+| Read Scale 1k rows (lazy+raw) | SheetKit | 6ms | 5ms | 6ms | 6ms | 0.0MB | 0.0MB |
+| Read Scale 1k rows (bufferV2) | SheetKit | 5ms | 5ms | 5ms | 5ms | 0.0MB | 0.0MB |
+| Read Scale 1k rows (stream) | SheetKit | 8ms | 7ms | 8ms | 8ms | 0.0MB | 0.0MB |
+| Read Scale 10k rows | SheetKit | 55ms | 54ms | 56ms | 56ms | 0.4MB | 0.0MB |
+| Read Scale 10k rows | ExcelJS | 308ms | 298ms | 323ms | 323ms | 0.0MB | 0.1MB |
+| Read Scale 10k rows | SheetJS | 147ms | 144ms | 152ms | 152ms | 0.0MB | 0.0MB |
+| Read Scale 10k rows (async) | SheetKit | 55ms | 54ms | 55ms | 55ms | 0.0MB | 0.0MB |
+| Read Scale 10k rows (lazy) | SheetKit | 53ms | 53ms | 54ms | 54ms | 0.0MB | 0.0MB |
+| Read Scale 10k rows (getRowsRaw) | SheetKit | 53ms | 53ms | 55ms | 55ms | 0.0MB | 0.0MB |
+| Read Scale 10k rows (lazy+raw) | SheetKit | 54ms | 53ms | 55ms | 55ms | 0.0MB | 0.0MB |
+| Read Scale 10k rows (bufferV2) | SheetKit | 49ms | 49ms | 50ms | 50ms | 0.0MB | 0.0MB |
+| Read Scale 10k rows (stream) | SheetKit | 73ms | 72ms | 75ms | 75ms | 0.0MB | 0.0MB |
+| Read Scale 100k rows | SheetKit | 565ms | 562ms | 571ms | 571ms | 184.5MB | 0.0MB |
+| Read Scale 100k rows | ExcelJS | 2.96s | 2.95s | 3.06s | 3.06s | 0.7MB | 0.0MB |
+| Read Scale 100k rows | SheetJS | 1.63s | 1.58s | 1.67s | 1.67s | 0.1MB | 0.0MB |
+| Read Scale 100k rows (async) | SheetKit | 569ms | 560ms | 575ms | 575ms | 16.1MB | 0.0MB |
+| Read Scale 100k rows (lazy) | SheetKit | 573ms | 570ms | 581ms | 581ms | 8.4MB | 0.0MB |
+| Read Scale 100k rows (getRowsRaw) | SheetKit | 565ms | 553ms | 582ms | 582ms | 8.4MB | 0.0MB |
+| Read Scale 100k rows (lazy+raw) | SheetKit | 574ms | 562ms | 579ms | 579ms | 8.4MB | 0.0MB |
+| Read Scale 100k rows (bufferV2) | SheetKit | 526ms | 508ms | 557ms | 557ms | 8.4MB | 0.0MB |
+| Read Scale 100k rows (stream) | SheetKit | 773ms | 740ms | 791ms | 791ms | 0.0MB | 0.0MB |
+| Write 50000 rows x 20 cols | SheetKit | 489ms | 483ms | 497ms | 497ms | 157.0MB | 0.0MB |
+| Write 50000 rows x 20 cols | ExcelJS | 2.73s | 2.62s | 3.12s | 3.12s | 5.0MB | 0.0MB |
+| Write 50000 rows x 20 cols | SheetJS | 1.37s | 1.29s | 1.64s | 1.64s | 0.0MB | 0.0MB |
+| Write 5000 styled rows | SheetKit | 36ms | 35ms | 36ms | 36ms | 8.1MB | 0.0MB |
+| Write 5000 styled rows | ExcelJS | 168ms | 164ms | 185ms | 185ms | 0.3MB | 0.0MB |
+| Write 5000 styled rows | SheetJS | 46ms | 44ms | 49ms | 49ms | 0.0MB | 0.0MB |
+| Write 10 sheets x 5000 rows | SheetKit | 260ms | 256ms | 277ms | 277ms | 97.7MB | 0.0MB |
+| Write 10 sheets x 5000 rows | ExcelJS | 1.31s | 1.28s | 1.39s | 1.39s | 0.4MB | 0.0MB |
+| Write 10 sheets x 5000 rows | SheetJS | 462ms | 434ms | 501ms | 501ms | 0.0MB | 0.0MB |
+| Write 10000 rows with formulas | SheetKit | 30ms | 29ms | 30ms | 30ms | 7.5MB | 0.0MB |
+| Write 10000 rows with formulas | ExcelJS | 167ms | 166ms | 171ms | 171ms | 0.2MB | 0.0MB |
+| Write 10000 rows with formulas | SheetJS | 63ms | 62ms | 68ms | 68ms | 0.0MB | 0.1MB |
+| Write 20000 text-heavy rows | SheetKit | 90ms | 90ms | 94ms | 94ms | 7.0MB | 0.0MB |
+| Write 20000 text-heavy rows | ExcelJS | 511ms | 497ms | 730ms | 730ms | 0.0MB | 0.0MB |
+| Write 20000 text-heavy rows | SheetJS | 232ms | 225ms | 239ms | 239ms | 0.2MB | 0.0MB |
+| Write 5000 rows + 8 validation rules | SheetKit | 10ms | 9ms | 10ms | 10ms | 1.8MB | 0.0MB |
+| Write 5000 rows + 8 validation rules | ExcelJS | 94ms | 91ms | 97ms | 97ms | 0.3MB | 0.1MB |
+| Write 2000 rows with comments | SheetKit | 8ms | 8ms | 8ms | 8ms | 0.2MB | 0.0MB |
+| Write 2000 rows with comments | ExcelJS | 69ms | 68ms | 71ms | 71ms | 0.1MB | 0.1MB |
+| Write 2000 rows with comments | SheetJS | 71ms | 71ms | 73ms | 73ms | 0.0MB | 0.0MB |
+| Write 500 merged regions | SheetKit | 2ms | 2ms | 2ms | 2ms | 0.0MB | 0.0MB |
+| Write 500 merged regions | ExcelJS | 28ms | 19ms | 29ms | 29ms | 0.0MB | 0.1MB |
+| Write 500 merged regions | SheetJS | 3ms | 3ms | 3ms | 3ms | 0.0MB | 0.0MB |
+| Write 1k rows x 10 cols | SheetKit | 5ms | 5ms | 6ms | 6ms | 0.0MB | 0.0MB |
+| Write 1k rows x 10 cols | ExcelJS | 38ms | 35ms | 39ms | 39ms | 0.1MB | 0.0MB |
+| Write 1k rows x 10 cols | SheetJS | 9ms | 9ms | 10ms | 10ms | 0.0MB | 0.0MB |
+| Write 10k rows x 10 cols | SheetKit | 48ms | 46ms | 49ms | 49ms | 3.3MB | 0.0MB |
+| Write 10k rows x 10 cols | ExcelJS | 264ms | 263ms | 265ms | 265ms | 0.3MB | 0.0MB |
+| Write 10k rows x 10 cols | SheetJS | 97ms | 92ms | 100ms | 100ms | 0.0MB | 0.0MB |
+| Write 50k rows x 10 cols | SheetKit | 244ms | 243ms | 245ms | 245ms | 40.2MB | 0.0MB |
+| Write 50k rows x 10 cols | ExcelJS | 1.33s | 1.29s | 1.36s | 1.36s | 10.3MB | 0.0MB |
+| Write 50k rows x 10 cols | SheetJS | 532ms | 522ms | 538ms | 538ms | 0.0MB | 0.0MB |
+| Write 100k rows x 10 cols | SheetKit | 508ms | 493ms | 518ms | 518ms | 117.5MB | 0.0MB |
+| Write 100k rows x 10 cols | ExcelJS | 3.00s | 2.81s | 3.27s | 3.27s | 0.0MB | 0.0MB |
+| Write 100k rows x 10 cols | SheetJS | 1.27s | 1.24s | 1.40s | 1.40s | 0.0MB | 0.0MB |
+| Buffer round-trip (10000 rows) | SheetKit | 131ms | 129ms | 132ms | 132ms | 13.7MB | 0.0MB |
+| Buffer round-trip (10000 rows) | ExcelJS | 498ms | 493ms | 504ms | 504ms | 0.3MB | 0.0MB |
+| Buffer round-trip (10000 rows) | SheetJS | 198ms | 189ms | 222ms | 222ms | 0.0MB | 0.0MB |
+| Buffer round-trip (10000 rows) (lazy) | SheetKit | 125ms | 125ms | 126ms | 126ms | 0.7MB | 0.0MB |
+| Streaming write (50000 rows) | SheetKit | 332ms | 331ms | 357ms | 357ms | 0.0MB | 0.0MB |
+| Streaming write (50000 rows) | ExcelJS | 550ms | 546ms | 553ms | 553ms | 2.0MB | 0.0MB |
+| Random-access (open+1000 lookups) | SheetKit | 489ms | 488ms | 495ms | 495ms | 160.8MB | 0.0MB |
+| Random-access (open+1000 lookups) | ExcelJS | 3.04s | 2.94s | 3.07s | 3.07s | 0.0MB | 0.0MB |
+| Random-access (open+1000 lookups) | SheetJS | 1.37s | 1.35s | 1.38s | 1.38s | 0.0MB | 0.0MB |
+| Random-access (open+1000 lookups) (async) | SheetKit | 473ms | 456ms | 481ms | 481ms | 17.7MB | 0.0MB |
+| Random-access (open+1000 lookups) (lazy) | SheetKit | 465ms | 463ms | 466ms | 466ms | 21.4MB | 0.0MB |
+| Random-access (lookup-only, 1000 cells) | SheetKit | 473ms | 471ms | 482ms | 482ms | 55.0MB | 0.0MB |
+| Random-access (lookup-only, 1000 cells) | ExcelJS | 2.98s | 2.93s | 3.00s | 3.00s | 2.3MB | 0.0MB |
+| Random-access (lookup-only, 1000 cells) | SheetJS | 1.35s | 1.34s | 1.37s | 1.37s | 0.0MB | 0.0MB |
+| Random-access (lookup-only, 1000 cells) (async open) | SheetKit | 464ms | 462ms | 469ms | 469ms | 14.6MB | 0.0MB |
+| Mixed workload write (ERP-style) | SheetKit | 20ms | 20ms | 21ms | 21ms | 3.3MB | 0.0MB |
+| Mixed workload write (ERP-style) | ExcelJS | 113ms | 109ms | 148ms | 148ms | 0.3MB | 0.0MB |
+| Copy-on-write save (untouched) (lazy) | SheetKit | 217ms | 214ms | 221ms | 221ms | 24.2MB | 0.0MB |
+| Copy-on-write save (untouched) (eager) | SheetKit | 682ms | 682ms | 693ms | 693ms | 36.1MB | 0.0MB |
+| Copy-on-write save (single-cell edit) (lazy) | SheetKit | 692ms | 687ms | 701ms | 701ms | 36.1MB | 0.0MB |
+| Copy-on-write save (single-cell edit) (eager) | SheetKit | 685ms | 679ms | 691ms | 691ms | 46.3MB | 0.0MB |
 
-### Memory Usage
+### Memory Usage (RSS / Heap Used)
 
-| Scenario | SheetKit | ExcelJS | SheetJS |
-|----------|----------|---------|---------|
-| Read Large Data (50k rows x 20 cols) | 195.3MB | 0.2MB | 0.1MB |
-| Read Large Data (50k rows x 20 cols) (async) | 17.2MB | N/A | N/A |
-| Read Heavy Styles (5k rows, formatted) | 6.0MB | 0.0MB | 0.0MB |
-| Read Heavy Styles (5k rows, formatted) (async) | 0.0MB | N/A | N/A |
-| Read Multi-Sheet (10 sheets x 5k rows) | 112.7MB | 0.0MB | 0.0MB |
-| Read Multi-Sheet (10 sheets x 5k rows) (async) | 0.4MB | N/A | N/A |
-| Read Formulas (10k rows) | 9.3MB | 0.1MB | 0.0MB |
-| Read Formulas (10k rows) (async) | 0.0MB | N/A | N/A |
-| Read Strings (20k rows text-heavy) | 2.5MB | 0.0MB | 0.0MB |
-| Read Strings (20k rows text-heavy) (async) | 0.0MB | N/A | N/A |
-| Read Data Validation (5k rows, 8 rules) | 0.0MB | 3.2MB | 0.0MB |
-| Read Data Validation (5k rows, 8 rules) (async) | 0.0MB | N/A | N/A |
-| Read Comments (2k rows with comments) | 0.5MB | 0.0MB | 0.0MB |
-| Read Comments (2k rows with comments) (async) | 0.0MB | N/A | N/A |
-| Read Merged Cells (500 regions) | 0.0MB | 0.0MB | 0.0MB |
-| Read Merged Cells (500 regions) (async) | 0.0MB | N/A | N/A |
-| Read Mixed Workload (ERP document) | 0.0MB | 0.1MB | 0.0MB |
-| Read Mixed Workload (ERP document) (async) | 0.0MB | N/A | N/A |
-| Read Scale 1k rows | 0.0MB | 0.0MB | 0.0MB |
-| Read Scale 1k rows (async) | 0.0MB | N/A | N/A |
-| Read Scale 10k rows | 2.1MB | 0.1MB | 0.0MB |
-| Read Scale 10k rows (async) | 0.0MB | N/A | N/A |
-| Read Scale 100k rows | 175.2MB | 0.0MB | 0.0MB |
-| Read Scale 100k rows (async) | 15.9MB | N/A | N/A |
-| Write 50000 rows x 20 cols | 67.3MB | 54.4MB | 0.0MB |
-| Write 5000 styled rows | 0.0MB | 0.1MB | 0.0MB |
-| Write 10 sheets x 5000 rows | 38.2MB | 0.3MB | 0.0MB |
-| Write 10000 rows with formulas | 0.0MB | 0.2MB | 0.0MB |
-| Write 20000 text-heavy rows | 12.2MB | 0.3MB | 0.0MB |
-| Write 5000 rows + 8 validation rules | 1.2MB | 0.3MB | N/A |
-| Write 2000 rows with comments | 0.0MB | 0.1MB | 0.0MB |
-| Write 500 merged regions | 0.0MB | 0.0MB | 0.0MB |
-| Write 1k rows x 10 cols | 0.0MB | 0.2MB | 0.0MB |
-| Write 10k rows x 10 cols | 0.1MB | 0.2MB | 0.0MB |
-| Write 50k rows x 10 cols | 35.0MB | 0.2MB | 0.0MB |
-| Write 100k rows x 10 cols | 65.1MB | 0.0MB | 0.0MB |
-| Buffer round-trip (10000 rows) | 1.4MB | 0.1MB | 0.0MB |
-| Streaming write (50000 rows) | 0.0MB | 0.0MB | N/A |
-| Random-access read (1000 cells from 50k-row file) | 61.6MB | 0.0MB | 0.0MB |
-| Random-access read (1000 cells from 50k-row file) (async) | 0.0MB | N/A | N/A |
-| Mixed workload write (ERP-style) | 0.0MB | 0.3MB | N/A |
+RSS = Resident Set Size delta (total process memory). Heap = V8 heapUsed delta (JS-only memory).
+
+| Scenario | SheetKit (RSS/Heap) | ExcelJS (RSS/Heap) | SheetJS (RSS/Heap) |
+|----------|---------------------|--------------------|--------------------|
+| Read Large Data (50k rows x 20 cols) | 192.4MB / 0.0MB | 0.0MB / 0.1MB | 0.0MB / 0.0MB |
+| Read Large Data (50k rows x 20 cols) (async) | 4.3MB / 0.0MB | N/A | N/A |
+| Read Large Data (50k rows x 20 cols) (lazy) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Large Data (50k rows x 20 cols) (getRowsRaw) | 4.2MB / 0.0MB | N/A | N/A |
+| Read Large Data (50k rows x 20 cols) (lazy+raw) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Large Data (50k rows x 20 cols) (bufferV2) | 3.6MB / 0.0MB | N/A | N/A |
+| Read Large Data (50k rows x 20 cols) (stream) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Heavy Styles (5k rows, formatted) | 5.4MB / 0.0MB | 0.2MB / 0.1MB | 0.0MB / 0.0MB |
+| Read Heavy Styles (5k rows, formatted) (async) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Heavy Styles (5k rows, formatted) (lazy) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Heavy Styles (5k rows, formatted) (getRowsRaw) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Heavy Styles (5k rows, formatted) (lazy+raw) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Heavy Styles (5k rows, formatted) (bufferV2) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Heavy Styles (5k rows, formatted) (stream) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Multi-Sheet (10 sheets x 5k rows) | 121.7MB / 0.0MB | 0.0MB / 0.1MB | 0.0MB / 0.0MB |
+| Read Multi-Sheet (10 sheets x 5k rows) (async) | 0.4MB / 0.0MB | N/A | N/A |
+| Read Multi-Sheet (10 sheets x 5k rows) (lazy) | 10.3MB / 0.0MB | N/A | N/A |
+| Read Multi-Sheet (10 sheets x 5k rows) (getRowsRaw) | 0.4MB / 0.0MB | N/A | N/A |
+| Read Multi-Sheet (10 sheets x 5k rows) (lazy+raw) | 0.4MB / 0.0MB | N/A | N/A |
+| Read Multi-Sheet (10 sheets x 5k rows) (bufferV2) | 0.4MB / 0.0MB | N/A | N/A |
+| Read Multi-Sheet (10 sheets x 5k rows) (stream) | 0.4MB / 0.0MB | N/A | N/A |
+| Read Formulas (10k rows) | 9.3MB / 0.0MB | 0.0MB / 0.0MB | 0.0MB / 0.0MB |
+| Read Formulas (10k rows) (async) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Formulas (10k rows) (lazy) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Formulas (10k rows) (getRowsRaw) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Formulas (10k rows) (lazy+raw) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Formulas (10k rows) (bufferV2) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Formulas (10k rows) (stream) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Strings (20k rows text-heavy) | 10.0MB / 0.0MB | 0.0MB / 0.1MB | 0.0MB / 0.0MB |
+| Read Strings (20k rows text-heavy) (async) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Strings (20k rows text-heavy) (lazy) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Strings (20k rows text-heavy) (getRowsRaw) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Strings (20k rows text-heavy) (lazy+raw) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Strings (20k rows text-heavy) (bufferV2) | 2.7MB / 0.0MB | N/A | N/A |
+| Read Strings (20k rows text-heavy) (stream) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Data Validation (5k rows, 8 rules) | 0.0MB / 0.0MB | 3.1MB / 16.4MB | 0.1MB / 0.0MB |
+| Read Data Validation (5k rows, 8 rules) (async) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Data Validation (5k rows, 8 rules) (lazy) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Data Validation (5k rows, 8 rules) (getRowsRaw) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Data Validation (5k rows, 8 rules) (lazy+raw) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Data Validation (5k rows, 8 rules) (bufferV2) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Data Validation (5k rows, 8 rules) (stream) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Comments (2k rows with comments) | 0.6MB / 0.0MB | 0.0MB / 0.1MB | 0.0MB / 0.0MB |
+| Read Comments (2k rows with comments) (async) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Comments (2k rows with comments) (lazy) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Comments (2k rows with comments) (getRowsRaw) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Comments (2k rows with comments) (lazy+raw) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Comments (2k rows with comments) (bufferV2) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Comments (2k rows with comments) (stream) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Merged Cells (500 regions) | 0.0MB / 0.0MB | 0.0MB / 0.0MB | 0.0MB / 0.0MB |
+| Read Merged Cells (500 regions) (async) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Merged Cells (500 regions) (lazy) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Merged Cells (500 regions) (getRowsRaw) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Merged Cells (500 regions) (lazy+raw) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Merged Cells (500 regions) (bufferV2) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Merged Cells (500 regions) (stream) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Mixed Workload (ERP document) | 0.0MB / 0.0MB | 0.1MB / 0.1MB | 0.0MB / 0.0MB |
+| Read Mixed Workload (ERP document) (async) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Mixed Workload (ERP document) (lazy) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Mixed Workload (ERP document) (getRowsRaw) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Mixed Workload (ERP document) (lazy+raw) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Mixed Workload (ERP document) (bufferV2) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Mixed Workload (ERP document) (stream) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Scale 1k rows | 0.0MB / 0.0MB | 0.0MB / 0.0MB | 0.0MB / 0.0MB |
+| Read Scale 1k rows (async) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Scale 1k rows (lazy) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Scale 1k rows (getRowsRaw) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Scale 1k rows (lazy+raw) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Scale 1k rows (bufferV2) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Scale 1k rows (stream) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Scale 10k rows | 0.4MB / 0.0MB | 0.0MB / 0.1MB | 0.0MB / 0.0MB |
+| Read Scale 10k rows (async) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Scale 10k rows (lazy) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Scale 10k rows (getRowsRaw) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Scale 10k rows (lazy+raw) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Scale 10k rows (bufferV2) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Scale 10k rows (stream) | 0.0MB / 0.0MB | N/A | N/A |
+| Read Scale 100k rows | 184.5MB / 0.0MB | 0.7MB / 0.0MB | 0.1MB / 0.0MB |
+| Read Scale 100k rows (async) | 16.1MB / 0.0MB | N/A | N/A |
+| Read Scale 100k rows (lazy) | 8.4MB / 0.0MB | N/A | N/A |
+| Read Scale 100k rows (getRowsRaw) | 8.4MB / 0.0MB | N/A | N/A |
+| Read Scale 100k rows (lazy+raw) | 8.4MB / 0.0MB | N/A | N/A |
+| Read Scale 100k rows (bufferV2) | 8.4MB / 0.0MB | N/A | N/A |
+| Read Scale 100k rows (stream) | 0.0MB / 0.0MB | N/A | N/A |
+| Write 50000 rows x 20 cols | 157.0MB / 0.0MB | 5.0MB / 0.0MB | 0.0MB / 0.0MB |
+| Write 5000 styled rows | 8.1MB / 0.0MB | 0.3MB / 0.0MB | 0.0MB / 0.0MB |
+| Write 10 sheets x 5000 rows | 97.7MB / 0.0MB | 0.4MB / 0.0MB | 0.0MB / 0.0MB |
+| Write 10000 rows with formulas | 7.5MB / 0.0MB | 0.2MB / 0.0MB | 0.0MB / 0.1MB |
+| Write 20000 text-heavy rows | 7.0MB / 0.0MB | 0.0MB / 0.0MB | 0.2MB / 0.0MB |
+| Write 5000 rows + 8 validation rules | 1.8MB / 0.0MB | 0.3MB / 0.1MB | N/A |
+| Write 2000 rows with comments | 0.2MB / 0.0MB | 0.1MB / 0.1MB | 0.0MB / 0.0MB |
+| Write 500 merged regions | 0.0MB / 0.0MB | 0.0MB / 0.1MB | 0.0MB / 0.0MB |
+| Write 1k rows x 10 cols | 0.0MB / 0.0MB | 0.1MB / 0.0MB | 0.0MB / 0.0MB |
+| Write 10k rows x 10 cols | 3.3MB / 0.0MB | 0.3MB / 0.0MB | 0.0MB / 0.0MB |
+| Write 50k rows x 10 cols | 40.2MB / 0.0MB | 10.3MB / 0.0MB | 0.0MB / 0.0MB |
+| Write 100k rows x 10 cols | 117.5MB / 0.0MB | 0.0MB / 0.0MB | 0.0MB / 0.0MB |
+| Buffer round-trip (10000 rows) | 13.7MB / 0.0MB | 0.3MB / 0.0MB | 0.0MB / 0.0MB |
+| Buffer round-trip (10000 rows) (lazy) | 0.7MB / 0.0MB | N/A | N/A |
+| Streaming write (50000 rows) | 0.0MB / 0.0MB | 2.0MB / 0.0MB | N/A |
+| Random-access (open+1000 lookups) | 160.8MB / 0.0MB | 0.0MB / 0.0MB | 0.0MB / 0.0MB |
+| Random-access (open+1000 lookups) (async) | 17.7MB / 0.0MB | N/A | N/A |
+| Random-access (open+1000 lookups) (lazy) | 21.4MB / 0.0MB | N/A | N/A |
+| Random-access (lookup-only, 1000 cells) | 55.0MB / 0.0MB | 2.3MB / 0.0MB | 0.0MB / 0.0MB |
+| Random-access (lookup-only, 1000 cells) (async open) | 14.6MB / 0.0MB | N/A | N/A |
+| Mixed workload write (ERP-style) | 3.3MB / 0.0MB | 0.3MB / 0.0MB | N/A |
+| Copy-on-write save (untouched) (lazy) | 24.2MB / 0.0MB | N/A | N/A |
+| Copy-on-write save (untouched) (eager) | 36.1MB / 0.0MB | N/A | N/A |
+| Copy-on-write save (single-cell edit) (lazy) | 36.1MB / 0.0MB | N/A | N/A |
+| Copy-on-write save (single-cell edit) (eager) | 46.3MB / 0.0MB | N/A | N/A |
 
 ## Summary
 
-Total scenarios: 41
+Total scenarios: 109
 
 | Library | Wins |
 |---------|------|
-| SheetKit | 40/41 |
-| SheetJS | 1/41 |
-| ExcelJS | 0/41 |
+| SheetKit | 109/109 |
+| ExcelJS | 0/109 |
+| SheetJS | 0/109 |
