@@ -2,7 +2,7 @@ import { access, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { decodeRowsBuffer, decodeRowsIterator, decodeRowsRawBuffer } from '../buffer-codec.js';
-import { builtinFormatCode, formatNumber, Workbook } from '../index.js';
+import { builtinFormatCode, formatNumber, SheetStreamReader, Workbook } from '../index.js';
 import { SheetData } from '../sheet-data.js';
 
 const TEST_DIR = import.meta.dirname;
@@ -5582,5 +5582,195 @@ describe('Async worker thread offloading', () => {
 
   it('async openBuffer propagates errors for invalid data', async () => {
     await expect(Workbook.openBuffer(Buffer.from('not-a-zip'))).rejects.toThrow();
+  });
+});
+
+describe('SheetStreamReader', () => {
+  const out = tmpFile('test-stream-reader.xlsx');
+  afterEach(async () => cleanup(out));
+
+  it('should read rows in batches via openSheetReader', async () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'Name');
+    wb.setCellValue('Sheet1', 'B1', 'Score');
+    wb.setCellValue('Sheet1', 'A2', 'Alice');
+    wb.setCellValue('Sheet1', 'B2', 95.5);
+    wb.setCellValue('Sheet1', 'A3', 'Bob');
+    wb.setCellValue('Sheet1', 'B3', 87);
+    await wb.save(out);
+
+    const wb2 = await Workbook.open(out, { readMode: 'lazy' });
+    const reader = await wb2.openSheetReader('Sheet1');
+    expect(reader).toBeInstanceOf(SheetStreamReader);
+
+    const batch = await reader.next();
+    expect(batch).not.toBeNull();
+    expect(batch!.length).toBe(3);
+    expect(batch![0].row).toBe(1);
+    expect(batch![0].cells[0].column).toBe('A');
+    expect(batch![0].cells[0].value).toBe('Name');
+    expect(batch![1].cells[0].value).toBe('Alice');
+    expect(batch![1].cells[1].numberValue).toBe(95.5);
+    expect(batch![2].cells[0].value).toBe('Bob');
+
+    const batch2 = await reader.next();
+    expect(batch2).toBeNull();
+
+    await reader.close();
+  });
+
+  it('should read rows with custom batch size', async () => {
+    const wb = new Workbook();
+    for (let i = 1; i <= 10; i++) {
+      wb.setCellValue('Sheet1', `A${i}`, i);
+    }
+    await wb.save(out);
+
+    const wb2 = await Workbook.open(out, { readMode: 'lazy' });
+    const reader = await wb2.openSheetReader('Sheet1', { batchSize: 3 });
+
+    const batch1 = await reader.next();
+    expect(batch1).not.toBeNull();
+    expect(batch1!.length).toBe(3);
+    expect(batch1![0].cells[0].numberValue).toBe(1);
+
+    const batch2 = await reader.next();
+    expect(batch2).not.toBeNull();
+    expect(batch2!.length).toBe(3);
+    expect(batch2![0].cells[0].numberValue).toBe(4);
+
+    const batch3 = await reader.next();
+    expect(batch3).not.toBeNull();
+    expect(batch3!.length).toBe(3);
+    expect(batch3![0].cells[0].numberValue).toBe(7);
+
+    const batch4 = await reader.next();
+    expect(batch4).not.toBeNull();
+    expect(batch4!.length).toBe(1);
+    expect(batch4![0].cells[0].numberValue).toBe(10);
+
+    const batch5 = await reader.next();
+    expect(batch5).toBeNull();
+
+    await reader.close();
+  });
+
+  it('should support async iterator protocol', async () => {
+    const wb = new Workbook();
+    for (let i = 1; i <= 5; i++) {
+      wb.setCellValue('Sheet1', `A${i}`, `row-${i}`);
+    }
+    await wb.save(out);
+
+    const wb2 = await Workbook.open(out, { readMode: 'lazy' });
+    const reader = await wb2.openSheetReader('Sheet1', { batchSize: 2 });
+
+    const allBatches: typeof reader extends AsyncIterable<infer T> ? T[] : never[] = [];
+    for await (const batch of reader) {
+      allBatches.push(batch);
+    }
+
+    expect(allBatches.length).toBe(3);
+    expect(allBatches[0].length).toBe(2);
+    expect(allBatches[1].length).toBe(2);
+    expect(allBatches[2].length).toBe(1);
+    expect(allBatches[0][0].cells[0].value).toBe('row-1');
+    expect(allBatches[2][0].cells[0].value).toBe('row-5');
+  });
+
+  it('should respect sheetRows limit', async () => {
+    const wb = new Workbook();
+    for (let i = 1; i <= 20; i++) {
+      wb.setCellValue('Sheet1', `A${i}`, i);
+    }
+    await wb.save(out);
+
+    const wb2 = await Workbook.open(out, { readMode: 'lazy', sheetRows: 5 });
+    const reader = await wb2.openSheetReader('Sheet1');
+
+    const allRows: any[] = [];
+    let batch = await reader.next();
+    while (batch !== null) {
+      allRows.push(...batch);
+      batch = await reader.next();
+    }
+
+    expect(allRows.length).toBe(5);
+    expect(allRows[4].cells[0].numberValue).toBe(5);
+    await reader.close();
+  });
+
+  it('should handle close semantics correctly', async () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'test');
+    await wb.save(out);
+
+    const wb2 = await Workbook.open(out, { readMode: 'lazy' });
+    const reader = await wb2.openSheetReader('Sheet1');
+
+    await reader.close();
+
+    await expect(reader.next()).rejects.toThrow('already closed');
+  });
+
+  it('should throw for non-existent sheet', async () => {
+    const wb = new Workbook();
+    await wb.save(out);
+
+    const wb2 = await Workbook.open(out, { readMode: 'lazy' });
+    await expect(wb2.openSheetReader('NonExistent')).rejects.toThrow();
+  });
+
+  it('should handle empty sheet', async () => {
+    const wb = new Workbook();
+    await wb.save(out);
+
+    const wb2 = await Workbook.open(out, { readMode: 'lazy' });
+    const reader = await wb2.openSheetReader('Sheet1');
+
+    const batch = await reader.next();
+    expect(batch).toBeNull();
+
+    await reader.close();
+  });
+
+  it('should handle multiple cell types', async () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'text');
+    wb.setCellValue('Sheet1', 'B1', 42.5);
+    wb.setCellValue('Sheet1', 'C1', true);
+    await wb.save(out);
+
+    const wb2 = await Workbook.open(out, { readMode: 'lazy' });
+    const reader = await wb2.openSheetReader('Sheet1');
+
+    const batch = await reader.next();
+    expect(batch).not.toBeNull();
+    expect(batch!.length).toBe(1);
+    const cells = batch![0].cells;
+    expect(cells[0].valueType).toBe('string');
+    expect(cells[0].value).toBe('text');
+    expect(cells[1].valueType).toBe('number');
+    expect(cells[1].numberValue).toBe(42.5);
+    expect(cells[2].valueType).toBe('boolean');
+    expect(cells[2].boolValue).toBe(true);
+
+    await reader.close();
+  });
+
+  it('async iterator closes reader automatically on completion', async () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'data');
+    await wb.save(out);
+
+    const wb2 = await Workbook.open(out, { readMode: 'lazy' });
+    const reader = await wb2.openSheetReader('Sheet1');
+
+    for await (const _batch of reader) {
+      // consume all
+    }
+
+    // Reader should be closed after iterator completes
+    await expect(reader.next()).rejects.toThrow('already closed');
   });
 });

@@ -417,6 +417,26 @@ impl Workbook {
         ))
     }
 
+    /// Create an owned forward-only streaming reader for the named sheet.
+    ///
+    /// Unlike [`open_sheet_reader`], the returned reader owns its shared
+    /// string table snapshot and XML bytes, so it has no lifetime tied to
+    /// the workbook. This is suitable for FFI contexts (e.g., napi classes)
+    /// where lifetime parameters are not supported.
+    pub fn open_sheet_reader_owned(
+        &self,
+        sheet: &str,
+    ) -> Result<crate::stream_reader::OwnedSheetStreamReader> {
+        let idx = self.sheet_index(sheet)?;
+        let xml_bytes = self.sheet_xml_bytes(idx)?;
+        let sst_snapshot = self.sst_runtime.clone_for_read();
+        Ok(crate::stream_reader::OwnedSheetStreamReader::new(
+            xml_bytes,
+            sst_snapshot,
+            self.sheet_rows_limit,
+        ))
+    }
+
     /// Get the raw XML bytes for a sheet by index.
     ///
     /// When the OnceLock is uninitialised (Lazy/Stream deferred), raw bytes

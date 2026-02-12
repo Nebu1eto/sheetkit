@@ -272,6 +272,247 @@ impl<'a, R: BufRead> SheetStreamReader<'a, R> {
     }
 }
 
+/// Owning variant of [`SheetStreamReader`] for use in FFI contexts where
+/// lifetime parameters are not supported (e.g., napi classes).
+///
+/// Stores its own copy of the shared string table and the XML byte source,
+/// avoiding any borrowed references. The parsing logic delegates to the same
+/// free functions used by the borrowed reader.
+pub struct OwnedSheetStreamReader {
+    reader: quick_xml::Reader<std::io::BufReader<std::io::Cursor<Vec<u8>>>>,
+    sst: SharedStringTable,
+    done: bool,
+    row_limit: Option<u32>,
+    rows_emitted: u32,
+}
+
+impl OwnedSheetStreamReader {
+    /// Create a new owned streaming reader.
+    ///
+    /// `xml_bytes` is the raw worksheet XML. `sst` is a read-only clone of
+    /// the shared string table. `row_limit` optionally caps the total number
+    /// of rows returned.
+    pub fn new(xml_bytes: Vec<u8>, sst: SharedStringTable, row_limit: Option<u32>) -> Self {
+        let cursor = std::io::Cursor::new(xml_bytes);
+        let buf_reader = std::io::BufReader::new(cursor);
+        let mut reader = quick_xml::Reader::from_reader(buf_reader);
+        reader.config_mut().trim_text(false);
+        Self {
+            reader,
+            sst,
+            done: false,
+            row_limit,
+            rows_emitted: 0,
+        }
+    }
+
+    /// Read the next batch of rows. Returns an empty `Vec` when there are no
+    /// more rows to read.
+    pub fn next_batch(&mut self, batch_size: usize) -> Result<Vec<StreamRow>> {
+        if self.done {
+            return Ok(Vec::new());
+        }
+
+        let mut rows = Vec::with_capacity(batch_size);
+        let mut buf = Vec::with_capacity(4096);
+
+        loop {
+            if rows.len() >= batch_size {
+                break;
+            }
+            if let Some(limit) = self.row_limit {
+                if self.rows_emitted >= limit {
+                    self.done = true;
+                    break;
+                }
+            }
+
+            buf.clear();
+            match self
+                .reader
+                .read_event_into(&mut buf)
+                .map_err(|e| Error::XmlParse(e.to_string()))?
+            {
+                Event::Start(ref e) if e.name() == QName(b"row") => {
+                    let row_number = extract_row_number(e)?;
+                    let row = self.parse_row_body(row_number)?;
+                    self.rows_emitted += 1;
+                    if !row.cells.is_empty() {
+                        rows.push(row);
+                    }
+                }
+                Event::Eof => {
+                    self.done = true;
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        Ok(rows)
+    }
+
+    /// Returns `true` if there are potentially more rows to read.
+    pub fn has_more(&self) -> bool {
+        !self.done
+    }
+
+    /// Close the reader and release resources.
+    pub fn close(self) {
+        drop(self);
+    }
+
+    fn parse_row_body(&mut self, row_number: u32) -> Result<StreamRow> {
+        let mut cells = Vec::new();
+        let mut buf = Vec::with_capacity(1024);
+
+        loop {
+            buf.clear();
+            match self
+                .reader
+                .read_event_into(&mut buf)
+                .map_err(|e| Error::XmlParse(e.to_string()))?
+            {
+                Event::Start(ref e) if e.name() == QName(b"c") => {
+                    let (col, cell_type) = extract_cell_attrs(e)?;
+                    if let Some(col) = col {
+                        let cv = self.parse_cell_body(cell_type.as_deref())?;
+                        cells.push((col, cv));
+                    } else {
+                        self.skip_to_end_of(b"c")?;
+                    }
+                }
+                Event::Empty(ref e) if e.name() == QName(b"c") => {
+                    let (col, cell_type) = extract_cell_attrs(e)?;
+                    if let Some(col) = col {
+                        let cv =
+                            resolve_cell_value(&self.sst, cell_type.as_deref(), None, None, None)?;
+                        cells.push((col, cv));
+                    }
+                }
+                Event::End(ref e) if e.name() == QName(b"row") => break,
+                Event::Eof => {
+                    self.done = true;
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        Ok(StreamRow { row_number, cells })
+    }
+
+    fn parse_cell_body(&mut self, cell_type: Option<&str>) -> Result<CellValue> {
+        let mut value_text: Option<String> = None;
+        let mut formula_text: Option<String> = None;
+        let mut inline_string: Option<String> = None;
+        let mut buf = Vec::with_capacity(512);
+        let mut in_is = false;
+
+        loop {
+            buf.clear();
+            match self
+                .reader
+                .read_event_into(&mut buf)
+                .map_err(|e| Error::XmlParse(e.to_string()))?
+            {
+                Event::Start(ref e) => {
+                    let local = e.local_name();
+                    if local.as_ref() == b"v" {
+                        value_text = Some(self.read_text_content(b"v")?);
+                    } else if local.as_ref() == b"f" {
+                        formula_text = Some(self.read_text_content(b"f")?);
+                    } else if local.as_ref() == b"is" {
+                        in_is = true;
+                        inline_string = Some(String::new());
+                    } else if local.as_ref() == b"t" && in_is {
+                        let t = self.read_text_content(b"t")?;
+                        if let Some(ref mut is) = inline_string {
+                            is.push_str(&t);
+                        }
+                    }
+                }
+                Event::End(ref e) => {
+                    let local = e.local_name();
+                    if local.as_ref() == b"c" {
+                        break;
+                    }
+                    if local.as_ref() == b"is" {
+                        in_is = false;
+                    }
+                }
+                Event::Eof => {
+                    self.done = true;
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        resolve_cell_value(
+            &self.sst,
+            cell_type,
+            value_text.as_deref(),
+            formula_text,
+            inline_string,
+        )
+    }
+
+    fn read_text_content(&mut self, end_tag: &[u8]) -> Result<String> {
+        let mut text = String::new();
+        let mut buf = Vec::with_capacity(256);
+        loop {
+            buf.clear();
+            match self
+                .reader
+                .read_event_into(&mut buf)
+                .map_err(|e| Error::XmlParse(e.to_string()))?
+            {
+                Event::Text(ref e) => {
+                    let decoded = e.unescape().map_err(|e| Error::XmlParse(e.to_string()))?;
+                    text.push_str(&decoded);
+                }
+                Event::End(ref e) if e.local_name().as_ref() == end_tag => break,
+                Event::Eof => {
+                    self.done = true;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        Ok(text)
+    }
+
+    fn skip_to_end_of(&mut self, tag: &[u8]) -> Result<()> {
+        let mut buf = Vec::with_capacity(256);
+        let mut depth: u32 = 1;
+        loop {
+            buf.clear();
+            match self
+                .reader
+                .read_event_into(&mut buf)
+                .map_err(|e| Error::XmlParse(e.to_string()))?
+            {
+                Event::Start(ref e) if e.local_name().as_ref() == tag => {
+                    depth += 1;
+                }
+                Event::End(ref e) if e.local_name().as_ref() == tag => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                Event::Eof => {
+                    self.done = true;
+                    break;
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Extract the `r` (row number) attribute from a `<row>` element.
 fn extract_row_number(start: &quick_xml::events::BytesStart<'_>) -> Result<u32> {
     for attr in start.attributes().flatten() {
