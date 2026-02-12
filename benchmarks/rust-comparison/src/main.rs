@@ -1431,7 +1431,7 @@ fn bench_random_access_read(results: &mut Vec<BenchResult>) {
     let fp = filepath.clone();
     let cells = cells_str.clone();
     results.push(bench_with_cell_count(
-        label,
+        &label,
         "SheetKit (lazy)",
         "Random Access",
         None,
