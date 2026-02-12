@@ -23,27 +23,31 @@ fn fixture_path() -> PathBuf {
 }
 
 fn create_fixture() -> PathBuf {
-    let dir = fixture_path();
-    std::fs::create_dir_all(&dir).unwrap();
-    let path = dir.join("cli_test.xlsx");
-    if path.exists() {
-        return path;
-    }
-    let mut wb = sheetkit::Workbook::new();
-    wb.set_cell_value("Sheet1", "A1", "Name").unwrap();
-    wb.set_cell_value("Sheet1", "B1", "Value").unwrap();
-    wb.set_cell_value("Sheet1", "A2", "Alpha").unwrap();
-    wb.set_cell_value("Sheet1", "B2", 100.0).unwrap();
-    wb.set_cell_value("Sheet1", "A3", "Beta").unwrap();
-    wb.set_cell_value("Sheet1", "B3", 200.5).unwrap();
-    wb.set_cell_value("Sheet1", "C1", "Active").unwrap();
-    wb.set_cell_value("Sheet1", "C2", true).unwrap();
-    wb.set_cell_value("Sheet1", "C3", false).unwrap();
-    wb.new_sheet("Summary").unwrap();
-    wb.set_cell_value("Summary", "A1", "Total").unwrap();
-    wb.set_cell_value("Summary", "B1", 300.5).unwrap();
-    wb.save(&path).unwrap();
-    path
+    static INIT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    INIT.get_or_init(|| {
+        let dir = fixture_path();
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("cli_test.xlsx");
+        if path.exists() {
+            return path;
+        }
+        let mut wb = sheetkit::Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", "Name").unwrap();
+        wb.set_cell_value("Sheet1", "B1", "Value").unwrap();
+        wb.set_cell_value("Sheet1", "A2", "Alpha").unwrap();
+        wb.set_cell_value("Sheet1", "B2", 100.0).unwrap();
+        wb.set_cell_value("Sheet1", "A3", "Beta").unwrap();
+        wb.set_cell_value("Sheet1", "B3", 200.5).unwrap();
+        wb.set_cell_value("Sheet1", "C1", "Active").unwrap();
+        wb.set_cell_value("Sheet1", "C2", true).unwrap();
+        wb.set_cell_value("Sheet1", "C3", false).unwrap();
+        wb.new_sheet("Summary").unwrap();
+        wb.set_cell_value("Summary", "A1", "Total").unwrap();
+        wb.set_cell_value("Summary", "B1", 300.5).unwrap();
+        wb.save(&path).unwrap();
+        path
+    })
+    .clone()
 }
 
 fn run_cli(args: &[&str]) -> std::process::Output {
