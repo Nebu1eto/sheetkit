@@ -269,6 +269,25 @@ async function benchReadFile(filename: string, label: string, category: string) 
     }
   });
 
+  // SheetKit with getRowsBufferV2 (inline strings)
+  await benchMultiRun('SheetKit', `Read ${label} (bufferV2)`, category, async () => {
+    const wb = await SheetKitWorkbook.open(filepath);
+    for (const name of wb.sheetNames) {
+      wb.getRowsBufferV2(name);
+    }
+  });
+
+  // SheetKit with openSheetReader (streaming)
+  await benchMultiRun('SheetKit', `Read ${label} (stream)`, category, async () => {
+    const wb = await SheetKitWorkbook.open(filepath, { readMode: 'stream' });
+    for (const name of wb.sheetNames) {
+      const reader = await wb.openSheetReader(name, { batchSize: 1000 });
+      for await (const _batch of reader) {
+        // consume all batches
+      }
+    }
+  });
+
   await benchMultiRun('ExcelJS', `Read ${label}`, category, async () => {
     const wb = new ExcelJS.Workbook();
     await wb.xlsx.readFile(filepath);
@@ -1257,6 +1276,52 @@ async function benchMixedWorkloadWrite() {
 }
 
 // ---------------------------------------------------------------------------
+// Copy-on-write save
+// ---------------------------------------------------------------------------
+
+async function benchCowSave() {
+  const filepath = join(FIXTURES_DIR, 'large-data.xlsx');
+  if (!existsSync(filepath)) {
+    console.log('  SKIP: large-data.xlsx not found. Run pnpm generate first.');
+    return;
+  }
+
+  const outCow = join(OUTPUT_DIR, 'cow-save-untouched.xlsx');
+  const outCowEdit = join(OUTPUT_DIR, 'cow-save-edited.xlsx');
+
+  const label = 'Copy-on-write save (untouched)';
+  console.log(`\n--- ${label} ---`);
+
+  await benchMultiRun('SheetKit', `${label} (lazy)`, 'COW Save', async () => {
+    const wb = await SheetKitWorkbook.open(filepath, { readMode: 'lazy' });
+    wb.saveSync(outCow);
+  }, outCow);
+
+  await benchMultiRun('SheetKit', `${label} (eager)`, 'COW Save', async () => {
+    const wb = await SheetKitWorkbook.open(filepath, { readMode: 'eager' });
+    wb.saveSync(outCow);
+  }, outCow);
+
+  const labelEdit = 'Copy-on-write save (single-cell edit)';
+  console.log(`\n--- ${labelEdit} ---`);
+
+  await benchMultiRun('SheetKit', `${labelEdit} (lazy)`, 'COW Save', async () => {
+    const wb = await SheetKitWorkbook.open(filepath, { readMode: 'lazy' });
+    wb.setCellValue('Sheet1', 'A1', 'edited');
+    wb.saveSync(outCowEdit);
+  }, outCowEdit);
+
+  await benchMultiRun('SheetKit', `${labelEdit} (eager)`, 'COW Save', async () => {
+    const wb = await SheetKitWorkbook.open(filepath, { readMode: 'eager' });
+    wb.setCellValue('Sheet1', 'A1', 'edited');
+    wb.saveSync(outCowEdit);
+  }, outCowEdit);
+
+  cleanup(outCow);
+  cleanup(outCowEdit);
+}
+
+// ---------------------------------------------------------------------------
 // Results formatting
 // ---------------------------------------------------------------------------
 
@@ -1639,6 +1704,10 @@ async function main() {
   // Mixed workload write
   console.log('\n\n=== MIXED WORKLOAD ===');
   await benchMixedWorkloadWrite();
+
+  // Copy-on-write save
+  console.log('\n\n=== COPY-ON-WRITE SAVE ===');
+  await benchCowSave();
 
   // Summary
   printSummaryTable();

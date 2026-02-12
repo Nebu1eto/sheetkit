@@ -47,6 +47,12 @@ SheetKit is a high-performance SpreadsheetML library for Rust and TypeScript. Th
   - Theme Colors
   - Rich Text
   - File Encryption
+- [Migration: Async-First Lazy-Open](./migration-async-first.md)
+  - ReadMode mapping
+  - OpenOptions changes
+  - Streaming reader migration
+  - Raw buffer V2
+  - Copy-on-write save
 
 ---
 

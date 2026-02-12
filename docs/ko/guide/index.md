@@ -47,6 +47,12 @@ SheetKit은 Rust와 TypeScript를 위한 고성능 SpreadsheetML 라이브러리
   - 테마 색상
   - 서식 있는 텍스트
   - 파일 암호화
+- [마이그레이션: Async-First Lazy-Open](./migration-async-first.md)
+  - ReadMode 매핑
+  - OpenOptions 변경 사항
+  - 스트리밍 Reader 마이그레이션
+  - Raw Buffer V2
+  - Copy-on-Write 저장
 
 ---
 

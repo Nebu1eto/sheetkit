@@ -215,16 +215,33 @@ wb.setCellValue("Sheet1", "A1", "Updated");
 await wb.save("with_macros.xlsm"); // VBA preserved
 ```
 
-### `OpenOptions` / `JsOpenOptions`
+### `OpenOptions`
 
-Options for controlling how a workbook is opened and parsed. All fields are optional and default to no limit / parse everything.
+Options for controlling how a workbook is opened and parsed. All fields are optional.
 
-| Field | Rust type | TypeScript type | Description |
-|---|---|---|---|
-| `sheet_rows` / `sheetRows` | `Option<u32>` | `number?` | Maximum number of rows to read per sheet. Rows beyond this limit are discarded. |
-| `sheets` | `Option<Vec<String>>` | `string[]?` | Only parse sheets whose names are in this list. Unselected sheets exist in the workbook but contain no data. |
-| `max_unzip_size` / `maxUnzipSize` | `Option<u64>` | `number?` | Maximum total decompressed size of the ZIP archive in bytes. Prevents zip bombs. |
-| `max_zip_entries` / `maxZipEntries` | `Option<usize>` | `number?` | Maximum number of entries in the ZIP archive. Prevents zip bombs. |
+| Field | Rust type | TypeScript type | Default | Description |
+|---|---|---|---|---|
+| `read_mode` / `readMode` | `Option<ReadMode>` | `'lazy' \| 'eager' \| 'stream'?` | `'lazy'` | Controls how much of the file is parsed during open. |
+| `aux_parts` / `auxParts` | `Option<AuxParts>` | `'deferred' \| 'eager'?` | `'deferred'` | Controls when auxiliary parts (comments, charts, images) are parsed. |
+| `sheet_rows` / `sheetRows` | `Option<u32>` | `number?` | unlimited | Maximum number of rows to read per sheet. Rows beyond this limit are discarded. |
+| `sheets` | `Option<Vec<String>>` | `string[]?` | all | Only parse sheets whose names are in this list. Unselected sheets exist in the workbook but contain no data. |
+| `max_unzip_size` / `maxUnzipSize` | `Option<u64>` | `number?` | unlimited | Maximum total decompressed size of the ZIP archive in bytes. Prevents zip bombs. |
+| `max_zip_entries` / `maxZipEntries` | `Option<usize>` | `number?` | unlimited | Maximum number of entries in the ZIP archive. Prevents zip bombs. |
+
+#### ReadMode
+
+| Value | Description |
+|-------|-------------|
+| `'lazy'` | Parse ZIP index and metadata only. Sheet XML is parsed on first access. Default for Node.js. |
+| `'eager'` | Parse all sheets and auxiliary parts during open. Same behavior as previous versions. |
+| `'stream'` | Minimal parse. Use with `openSheetReader()` for forward-only bounded-memory iteration. |
+
+#### AuxParts
+
+| Value | Description |
+|-------|-------------|
+| `'deferred'` | Auxiliary parts are loaded on first access. Default. |
+| `'eager'` | All auxiliary parts are parsed during open. |
 
 ### `Workbook::open_with_options(path, options)` / `Workbook.open(path, options?)`
 
@@ -278,5 +295,51 @@ const wb = Workbook.openBufferSync(data, { sheetRows: 50 });
 ```
 
 > Note (Node.js): The options parameter is optional in all open methods. Omitting it preserves backward compatibility.
+
+### `wb.openSheetReader(sheet, opts?)` (TypeScript only)
+
+Open a forward-only streaming reader for the named sheet. Reads rows in batches without loading the entire sheet into memory. Best used with `readMode: 'stream'`.
+
+```typescript
+const wb = await Workbook.open("large.xlsx", { readMode: "stream" });
+const reader = await wb.openSheetReader("Sheet1", { batchSize: 500 });
+
+// Async iterator: yields batches of JsRowData[]
+for await (const batch of reader) {
+  for (const row of batch) {
+    console.log(row);
+  }
+}
+```
+
+**Options:**
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `batchSize` | `number?` | `1000` | Number of rows per batch. |
+
+**Returns:** `Promise<SheetStreamReader>`
+
+### `SheetStreamReader`
+
+Forward-only streaming reader for worksheet data. Created via `Workbook.openSheetReader()`.
+
+**Methods:**
+
+| Method | Return Type | Description |
+|---|---|---|
+| `next(batchSize?)` | `Promise<JsRowData[] \| null>` | Read the next batch. Returns `null` when done. |
+| `close()` | `Promise<void>` | Release resources. Called automatically by `for await`. |
+| `[Symbol.asyncIterator]()` | `AsyncGenerator<JsRowData[]>` | Async iterator yielding batches. |
+
+### `wb.getRowsBufferV2(sheet)` (TypeScript only)
+
+Serialize a sheet's cell data into a v2 binary buffer with inline strings. Unlike the v1 format (`getRowsBuffer`), the v2 format eliminates the global string table, enabling incremental row-by-row decoding.
+
+```typescript
+const bufV2 = wb.getRowsBufferV2("Sheet1");
+```
+
+**Returns:** `Buffer`
 
 ---

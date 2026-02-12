@@ -138,17 +138,81 @@ For benchmark methodology and raw data, see [`benchmarks/COMPARISON.md`](https:/
 
 ## Performance Tips
 
+### Choosing a Read Mode
+
+SheetKit supports three read modes that control how much parsing is done during `open()`:
+
+| Read Mode | Open Cost | Memory on Open | Best For |
+|-----------|-----------|----------------|----------|
+| `lazy` (default) | Low -- ZIP index + metadata only | Minimal | Most workloads. Sheets are parsed on first access. |
+| `eager` | High -- all sheets parsed | Full workbook in memory | When you need all sheets immediately after open. |
+| `stream` | Minimal | Near-zero | Forward-only iteration over very large sheets. |
+
+```typescript
+// Lazy open (default): fastest open, parses sheets on demand
+const wb = await Workbook.open("huge.xlsx");
+const rows = wb.getRows("Sheet1"); // Sheet1 parsed here
+
+// Eager open: all sheets parsed during open
+const wb2 = await Workbook.open("huge.xlsx", { readMode: "eager" });
+
+// Stream mode: bounded-memory forward-only reading
+const wb3 = await Workbook.open("huge.xlsx", { readMode: "stream" });
+const reader = await wb3.openSheetReader("Sheet1", { batchSize: 500 });
+for await (const batch of reader) {
+  for (const row of batch) {
+    process(row);
+  }
+}
+```
+
+### Deferred Auxiliary Parts
+
+By default, auxiliary parts (comments, charts, images, pivot tables) are not parsed during open. They load on-demand when you first call a method that needs them. Set `auxParts: 'eager'` if you need all parts available immediately:
+
+```typescript
+const wb = await Workbook.open("report.xlsx", { auxParts: "eager" });
+```
+
 ### For Read-Heavy Workloads
 
 Use `OpenOptions` to load only what you need:
 
 ```typescript
 const wb = await Workbook.open("huge.xlsx", {
+  readMode: "lazy",
   sheetRows: 1000,      // Only read first 1000 rows per sheet
   sheets: ["Sheet1"],   // Only parse Sheet1
   maxUnzipSize: 100_000_000  // Limit uncompressed size
 });
 ```
+
+### Streaming Reads with SheetStreamReader
+
+For very large files where you do not need random cell access, use `openSheetReader()` for forward-only bounded-memory iteration:
+
+```typescript
+const wb = await Workbook.open("huge.xlsx", { readMode: "stream" });
+const reader = await wb.openSheetReader("Sheet1", { batchSize: 1000 });
+
+for await (const batch of reader) {
+  for (const row of batch) {
+    // Process each row -- only one batch in memory at a time
+  }
+}
+```
+
+### Raw Buffer V2 Transfer
+
+`getRowsBufferV2()` produces a v2 binary buffer with inline strings, enabling incremental row-by-row decoding without eagerly materializing a global string table:
+
+```typescript
+const bufV2 = wb.getRowsBufferV2("Sheet1");
+```
+
+### Copy-on-Write Save
+
+When saving a workbook opened in `lazy` mode, unchanged sheets are written directly from the original ZIP entry without parse-serialize round-trips. This significantly reduces save latency for workloads that modify only a few sheets in a large workbook.
 
 ### For Write-Heavy Workloads
 
@@ -168,13 +232,11 @@ await wb.save("output.xlsx");
 
 ### For Large Files
 
-Combine `OpenOptions` with `StreamWriter`:
+Combine lazy open with `StreamWriter`:
 
 ```typescript
-// Read only metadata
-const wb = await Workbook.open("input.xlsx", {
-  sheetRows: 0  // Don't parse any rows
-});
+// Lazy open -- only metadata is parsed
+const wb = await Workbook.open("input.xlsx");
 
 // Process with streaming
 const sw = wb.newStreamWriter("ProcessedData");
