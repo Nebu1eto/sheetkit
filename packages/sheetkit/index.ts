@@ -878,9 +878,18 @@ class Workbook {
     return decodeRowsBuffer(buf);
   }
 
-  /** Serialize a sheet's cell data into a compact binary buffer. */
+  /** Serialize a sheet's cell data into a compact binary buffer (v1 format). */
   getRowsBuffer(sheet: string): Buffer {
     return this.#native.getRowsBuffer(sheet);
+  }
+
+  /**
+   * Serialize a sheet's cell data into a v2 binary buffer with inline strings.
+   * The v2 format eliminates the global string table, enabling incremental
+   * row-by-row decoding without eagerly materializing all strings.
+   */
+  getRowsBufferV2(sheet: string): Buffer {
+    return this.#native.getRowsBufferV2(sheet);
   }
 
   /**

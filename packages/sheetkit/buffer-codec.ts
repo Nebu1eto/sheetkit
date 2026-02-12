@@ -11,7 +11,8 @@ const TYPE_FORMULA = 0x06;
 const TYPE_RICH_STRING = 0x07;
 const FLAG_SPARSE = 0x01;
 const HEADER_SIZE = 16;
-const MAGIC = 0x534b5244;
+const MAGIC_V1 = 0x534b5244;
+const MAGIC_V2 = 0x534b5232;
 const SPARSE_ENTRY_SIZE = 11;
 const EMPTY_ROW_OFFSET = 0xffffffff;
 
@@ -76,11 +77,11 @@ function cachedColumnName(n: number): string {
   return colNameCache[idx];
 }
 
-function readHeader(view: DataView): BufferHeader {
-  const magic = view.getUint32(0, true);
-  if (magic !== MAGIC) {
-    throw new Error(`Invalid buffer: bad magic 0x${magic.toString(16)}`);
-  }
+function detectMagic(view: DataView): number {
+  return view.getUint32(0, true);
+}
+
+function readHeaderV1(view: DataView): BufferHeader {
   const version = view.getUint16(4, true);
   const rowCount = view.getUint32(6, true);
   const colCount = view.getUint16(10, true);
@@ -88,6 +89,16 @@ function readHeader(view: DataView): BufferHeader {
   const minCol = flags >>> 16;
   const isSparse = (flags & FLAG_SPARSE) !== 0;
   return { version, rowCount, colCount, flags, minCol, isSparse };
+}
+
+function readHeaderV2(view: DataView): BufferHeader {
+  const version = view.getUint16(4, true);
+  const rowCount = view.getUint32(6, true);
+  const colCount = view.getUint16(10, true);
+  const flags = view.getUint32(12, true);
+  const minCol = flags >>> 16;
+  // v2 is always sparse (variable-length cells)
+  return { version, rowCount, colCount, flags, minCol, isSparse: true };
 }
 
 function readRowIndex(
@@ -174,42 +185,198 @@ function decodeCellToRowCell(
   }
 }
 
-/**
- * Parse buffer header and shared data structures used by all decode functions.
- * Returns null if the buffer is empty or invalid.
- */
-function parseBuffer(buf: Buffer | null): {
+/** Read inline string at the given offset. Returns the string and bytes consumed. */
+function readInlineString(
+  buf: Buffer,
+  view: DataView,
+  offset: number,
+): { value: string; bytesConsumed: number } {
+  const len = view.getUint32(offset, true);
+  const slice = new Uint8Array(buf.buffer, buf.byteOffset + offset + 4, len);
+  return { value: decoder.decode(slice), bytesConsumed: 4 + len };
+}
+
+/** Compute the byte size of a v2 cell's payload (after the type tag). */
+function v2PayloadSize(
+  view: DataView,
+  payloadOffset: number,
+  type: number,
+): number {
+  switch (type) {
+    case TYPE_EMPTY:
+      return 0;
+    case TYPE_NUMBER:
+    case TYPE_DATE:
+      return 8;
+    case TYPE_BOOL:
+      return 1;
+    case TYPE_STRING:
+    case TYPE_ERROR:
+    case TYPE_FORMULA:
+    case TYPE_RICH_STRING: {
+      const len = view.getUint32(payloadOffset, true);
+      return 4 + len;
+    }
+    default:
+      return 0;
+  }
+}
+
+/** Decode a v2 cell into a JsRowCell with inline string data. */
+function decodeCellToRowCellV2(
+  buf: Buffer,
+  view: DataView,
+  payloadOffset: number,
+  type: number,
+  colName: string,
+): JsRowCell | null {
+  switch (type) {
+    case TYPE_NUMBER: {
+      const n = view.getFloat64(payloadOffset, true);
+      return { column: colName, valueType: 'number', numberValue: n };
+    }
+    case TYPE_STRING:
+    case TYPE_RICH_STRING: {
+      const { value } = readInlineString(buf, view, payloadOffset);
+      return { column: colName, valueType: 'string', value };
+    }
+    case TYPE_BOOL: {
+      const b = view.getUint8(payloadOffset) !== 0;
+      return { column: colName, valueType: 'boolean', boolValue: b };
+    }
+    case TYPE_DATE: {
+      const serial = view.getFloat64(payloadOffset, true);
+      return { column: colName, valueType: 'date', numberValue: serial };
+    }
+    case TYPE_ERROR: {
+      const { value } = readInlineString(buf, view, payloadOffset);
+      return { column: colName, valueType: 'error', value };
+    }
+    case TYPE_FORMULA: {
+      const { value } = readInlineString(buf, view, payloadOffset);
+      return { column: colName, valueType: 'formula', value };
+    }
+    default:
+      return null;
+  }
+}
+
+/** Fill raw typed arrays for a single v2 cell. */
+function fillCellValueV2(
+  buf: Buffer,
+  view: DataView,
+  payloadOffset: number,
+  type: number,
+  numericValues: Float64Array,
+  stringValues: string[],
+  boolValues: Uint8Array,
+  idx: number,
+): void {
+  switch (type) {
+    case TYPE_NUMBER:
+    case TYPE_DATE:
+      numericValues[idx] = view.getFloat64(payloadOffset, true);
+      stringValues[idx] = '';
+      break;
+    case TYPE_STRING:
+    case TYPE_RICH_STRING: {
+      const { value } = readInlineString(buf, view, payloadOffset);
+      numericValues[idx] = Number.NaN;
+      stringValues[idx] = value;
+      break;
+    }
+    case TYPE_BOOL:
+      boolValues[idx] = view.getUint8(payloadOffset);
+      numericValues[idx] = Number.NaN;
+      stringValues[idx] = '';
+      break;
+    case TYPE_ERROR:
+    case TYPE_FORMULA: {
+      const { value } = readInlineString(buf, view, payloadOffset);
+      numericValues[idx] = Number.NaN;
+      stringValues[idx] = value;
+      break;
+    }
+    default:
+      numericValues[idx] = Number.NaN;
+      stringValues[idx] = '';
+      break;
+  }
+}
+
+interface ParsedBufferV1 {
+  format: 'v1';
   view: DataView;
   header: BufferHeader;
   rowIndex: RowIndexEntry[];
   strings: string[];
   cellDataStart: number;
   minCol: number;
-} | null {
+}
+
+interface ParsedBufferV2 {
+  format: 'v2';
+  buf: Buffer;
+  view: DataView;
+  header: BufferHeader;
+  rowIndex: RowIndexEntry[];
+  cellDataStart: number;
+  minCol: number;
+}
+
+type ParsedBuffer = ParsedBufferV1 | ParsedBufferV2;
+
+/**
+ * Parse buffer header and shared data structures used by all decode functions.
+ * Returns null if the buffer is empty or invalid. Auto-detects v1 vs v2 format.
+ */
+function parseBuffer(buf: Buffer | null): ParsedBuffer | null {
   if (!buf || buf.length < HEADER_SIZE) {
     return null;
   }
   const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
-  const header = readHeader(view);
-  if (header.rowCount === 0 || header.colCount === 0) {
-    return null;
+  const magic = detectMagic(view);
+
+  if (magic === MAGIC_V2) {
+    const header = readHeaderV2(view);
+    if (header.rowCount === 0 || header.colCount === 0) {
+      return null;
+    }
+    const { entries: rowIndex, endOffset: riEnd } = readRowIndex(view, header.rowCount);
+    const cellDataStart = riEnd;
+    const minCol = header.minCol || 1;
+    return { format: 'v2', buf, view, header, rowIndex, cellDataStart, minCol };
   }
-  const { entries: rowIndex, endOffset: riEnd } = readRowIndex(view, header.rowCount);
-  const { strings, endOffset: stEnd } = readStringTable(buf, view, riEnd);
-  const cellDataStart = stEnd;
-  const minCol = header.minCol || 1;
-  return { view, header, rowIndex, strings, cellDataStart, minCol };
+
+  if (magic === MAGIC_V1) {
+    const header = readHeaderV1(view);
+    if (header.rowCount === 0 || header.colCount === 0) {
+      return null;
+    }
+    const { entries: rowIndex, endOffset: riEnd } = readRowIndex(view, header.rowCount);
+    const { strings, endOffset: stEnd } = readStringTable(buf, view, riEnd);
+    const cellDataStart = stEnd;
+    const minCol = header.minCol || 1;
+    return { format: 'v1', view, header, rowIndex, strings, cellDataStart, minCol };
+  }
+
+  throw new Error(`Invalid buffer: bad magic 0x${magic.toString(16)}`);
 }
 
-/** Decode a binary buffer into JsRowData objects. */
+/** Decode a binary buffer (v1 or v2) into JsRowData objects. */
 export function decodeRowsBuffer(buf: Buffer | null): JsRowData[] {
   const parsed = parseBuffer(buf);
   if (!parsed) return [];
+
+  if (parsed.format === 'v2') {
+    return decodeRowsBufferV2(parsed);
+  }
+  return decodeRowsBufferV1(parsed);
+}
+
+function decodeRowsBufferV1(parsed: ParsedBufferV1): JsRowData[] {
   const { view, header, rowIndex, strings, cellDataStart, minCol } = parsed;
 
-  // Pre-warm the column name cache only for dense layout where every column
-  // will be visited. For sparse layout, column names are resolved lazily per
-  // encountered cell to avoid O(colCount) work on wide sparse sheets.
   if (!header.isSparse) {
     const maxCol = minCol + header.colCount - 1;
     cachedColumnName(maxCol);
@@ -265,8 +432,44 @@ export function decodeRowsBuffer(buf: Buffer | null): JsRowData[] {
   return rows;
 }
 
+function decodeRowsBufferV2(parsed: ParsedBufferV2): JsRowData[] {
+  const { buf, view, rowIndex, cellDataStart, minCol } = parsed;
+
+  const rows: JsRowData[] = [];
+
+  for (let ri = 0; ri < rowIndex.length; ri++) {
+    const entry = rowIndex[ri];
+    if (entry.cellOffset === EMPTY_ROW_OFFSET) continue;
+
+    const cells: JsRowCell[] = [];
+    const absOffset = cellDataStart + entry.cellOffset;
+    const cellCount = view.getUint16(absOffset, true);
+    let pos = absOffset + 2;
+
+    for (let i = 0; i < cellCount; i++) {
+      const col = view.getUint16(pos, true);
+      const type = view.getUint8(pos + 2);
+      const payloadOffset = pos + 3;
+
+      if (type !== TYPE_EMPTY) {
+        const colName = cachedColumnName(minCol + col);
+        const cell = decodeCellToRowCellV2(buf, view, payloadOffset, type, colName);
+        if (cell) cells.push(cell);
+      }
+
+      pos = payloadOffset + v2PayloadSize(view, payloadOffset, type);
+    }
+
+    if (cells.length > 0) {
+      rows.push({ row: entry.rowNum, cells });
+    }
+  }
+
+  return rows;
+}
+
 /**
- * Decode a binary buffer into typed arrays with minimal object allocation.
+ * Decode a binary buffer (v1 or v2) into typed arrays with minimal object allocation.
  * This avoids creating JsRowCell/JsRowData objects entirely.
  */
 export function decodeRowsRawBuffer(buf: Buffer | null): RawRowsResult {
@@ -285,9 +488,16 @@ export function decodeRowsRawBuffer(buf: Buffer | null): RawRowsResult {
 
   const parsed = parseBuffer(buf);
   if (!parsed) return empty;
+
+  if (parsed.format === 'v2') {
+    return decodeRowsRawBufferV2(parsed);
+  }
+  return decodeRowsRawBufferV1(parsed);
+}
+
+function decodeRowsRawBufferV1(parsed: ParsedBufferV1): RawRowsResult {
   const { view, header, rowIndex, strings, cellDataStart, minCol } = parsed;
 
-  // First pass: count total non-empty rows and cells to pre-allocate
   let totalRows = 0;
   let totalCells = 0;
 
@@ -319,9 +529,21 @@ export function decodeRowsRawBuffer(buf: Buffer | null): RawRowsResult {
     }
   }
 
-  if (totalRows === 0) return empty;
+  if (totalRows === 0) {
+    return {
+      rowNumbers: new Uint32Array(0),
+      rowCellOffsets: new Uint32Array(0),
+      rowCellCounts: new Uint32Array(0),
+      cellColumns: new Uint32Array(0),
+      cellTypes: new Uint8Array(0),
+      cellNumericValues: new Float64Array(0),
+      cellStringValues: [],
+      cellBoolValues: new Uint8Array(0),
+      totalRows: 0,
+      totalCells: 0,
+    };
+  }
 
-  // Allocate typed arrays
   const rowNumbers = new Uint32Array(totalRows);
   const rowCellOffsets = new Uint32Array(totalRows);
   const rowCellCounts = new Uint32Array(totalRows);
@@ -331,7 +553,6 @@ export function decodeRowsRawBuffer(buf: Buffer | null): RawRowsResult {
   const cellStringValues = new Array<string>(totalCells);
   const cellBoolValues = new Uint8Array(totalCells);
 
-  // Second pass: fill arrays
   let rowIdx = 0;
   let cellIdx = 0;
 
@@ -351,7 +572,7 @@ export function decodeRowsRawBuffer(buf: Buffer | null): RawRowsResult {
         if (type !== TYPE_EMPTY) {
           cellColumns[cellIdx] = minCol + col;
           cellTypes[cellIdx] = type;
-          fillCellValue(
+          fillCellValueV1(
             view,
             pos + 3,
             type,
@@ -373,7 +594,7 @@ export function decodeRowsRawBuffer(buf: Buffer | null): RawRowsResult {
         if (type === TYPE_EMPTY) continue;
         cellColumns[cellIdx] = minCol + c;
         cellTypes[cellIdx] = type;
-        fillCellValue(
+        fillCellValueV1(
           view,
           cellPos + 1,
           type,
@@ -410,7 +631,121 @@ export function decodeRowsRawBuffer(buf: Buffer | null): RawRowsResult {
   };
 }
 
-function fillCellValue(
+function decodeRowsRawBufferV2(parsed: ParsedBufferV2): RawRowsResult {
+  const { buf, view, rowIndex, cellDataStart, minCol } = parsed;
+
+  // First pass: count total non-empty rows and cells
+  let totalRows = 0;
+  let totalCells = 0;
+
+  for (let ri = 0; ri < rowIndex.length; ri++) {
+    const entry = rowIndex[ri];
+    if (entry.cellOffset === EMPTY_ROW_OFFSET) continue;
+
+    const absOffset = cellDataStart + entry.cellOffset;
+    const cellCount = view.getUint16(absOffset, true);
+    let pos = absOffset + 2;
+    let rowCells = 0;
+
+    for (let i = 0; i < cellCount; i++) {
+      // skip col (2 bytes)
+      const type = view.getUint8(pos + 2);
+      if (type !== TYPE_EMPTY) rowCells++;
+      pos += 3 + v2PayloadSize(view, pos + 3, type);
+    }
+
+    if (rowCells > 0) {
+      totalRows++;
+      totalCells += rowCells;
+    }
+  }
+
+  if (totalRows === 0) {
+    return {
+      rowNumbers: new Uint32Array(0),
+      rowCellOffsets: new Uint32Array(0),
+      rowCellCounts: new Uint32Array(0),
+      cellColumns: new Uint32Array(0),
+      cellTypes: new Uint8Array(0),
+      cellNumericValues: new Float64Array(0),
+      cellStringValues: [],
+      cellBoolValues: new Uint8Array(0),
+      totalRows: 0,
+      totalCells: 0,
+    };
+  }
+
+  const rowNumbers = new Uint32Array(totalRows);
+  const rowCellOffsets = new Uint32Array(totalRows);
+  const rowCellCounts = new Uint32Array(totalRows);
+  const cellColumns = new Uint32Array(totalCells);
+  const cellTypes = new Uint8Array(totalCells);
+  const cellNumericValues = new Float64Array(totalCells);
+  const cellStringValues = new Array<string>(totalCells);
+  const cellBoolValues = new Uint8Array(totalCells);
+
+  // Second pass: fill arrays
+  let rowIdx = 0;
+  let cellIdx = 0;
+
+  for (let ri = 0; ri < rowIndex.length; ri++) {
+    const entry = rowIndex[ri];
+    if (entry.cellOffset === EMPTY_ROW_OFFSET) continue;
+
+    const cellStart = cellIdx;
+    const absOffset = cellDataStart + entry.cellOffset;
+    const cellCount = view.getUint16(absOffset, true);
+    let pos = absOffset + 2;
+
+    for (let i = 0; i < cellCount; i++) {
+      const col = view.getUint16(pos, true);
+      const type = view.getUint8(pos + 2);
+      const payloadOffset = pos + 3;
+      const payloadSize = v2PayloadSize(view, payloadOffset, type);
+
+      if (type !== TYPE_EMPTY) {
+        cellColumns[cellIdx] = minCol + col;
+        cellTypes[cellIdx] = type;
+        fillCellValueV2(
+          buf,
+          view,
+          payloadOffset,
+          type,
+          cellNumericValues,
+          cellStringValues,
+          cellBoolValues,
+          cellIdx,
+        );
+        cellIdx++;
+      }
+
+      pos = payloadOffset + payloadSize;
+    }
+
+    const count = cellIdx - cellStart;
+    if (count > 0) {
+      rowNumbers[rowIdx] = entry.rowNum;
+      rowCellOffsets[rowIdx] = cellStart;
+      rowCellCounts[rowIdx] = count;
+      rowIdx++;
+    }
+  }
+
+  return {
+    rowNumbers,
+    rowCellOffsets,
+    rowCellCounts,
+    cellColumns,
+    cellTypes,
+    cellNumericValues,
+    cellStringValues,
+    cellBoolValues,
+    totalRows,
+    totalCells,
+  };
+}
+
+function fillCellValueV1(
   view: DataView,
   payloadOffset: number,
   type: number,
@@ -453,17 +788,23 @@ function fillCellValue(
 }
 
 /**
- * Generator that yields one JsRowData at a time from the buffer, avoiding
- * materializing the entire result array at once.
+ * Generator that yields one JsRowData at a time from the buffer (v1 or v2),
+ * avoiding materializing the entire result array at once.
  */
 export function* decodeRowsIterator(buf: Buffer | null): Generator<JsRowData> {
   const parsed = parseBuffer(buf);
   if (!parsed) return;
+
+  if (parsed.format === 'v2') {
+    yield* decodeRowsIteratorV2(parsed);
+    return;
+  }
+  yield* decodeRowsIteratorV1(parsed);
+}
+
+function* decodeRowsIteratorV1(parsed: ParsedBufferV1): Generator<JsRowData> {
   const { view, header, rowIndex, strings, cellDataStart, minCol } = parsed;
 
-  // Pre-warm only for dense layout. For sparse layout, column names are
-  // resolved lazily per cell to preserve streaming semantics and avoid
-  // O(colCount) upfront work on wide sparse sheets.
   if (!header.isSparse) {
     const maxCol = minCol + header.colCount - 1;
     cachedColumnName(maxCol);
@@ -499,6 +840,38 @@ export function* decodeRowsIterator(buf: Buffer | null): Generator<JsRowData> {
         const cell = decodeCellToRowCell(view, cellPos, type, strings, colName);
         if (cell) cells.push(cell);
       }
+    }
+
+    if (cells.length > 0) {
+      yield { row: entry.rowNum, cells };
+    }
+  }
+}
+
+function* decodeRowsIteratorV2(parsed: ParsedBufferV2): Generator<JsRowData> {
+  const { buf, view, rowIndex, cellDataStart, minCol } = parsed;
+
+  for (let ri = 0; ri < rowIndex.length; ri++) {
+    const entry = rowIndex[ri];
+    if (entry.cellOffset === EMPTY_ROW_OFFSET) continue;
+
+    const cells: JsRowCell[] = [];
+    const absOffset = cellDataStart + entry.cellOffset;
+    const cellCount = view.getUint16(absOffset, true);
+    let pos = absOffset + 2;
+
+    for (let i = 0; i < cellCount; i++) {
+      const col = view.getUint16(pos, true);
+      const type = view.getUint8(pos + 2);
+      const payloadOffset = pos + 3;
+
+      if (type !== TYPE_EMPTY) {
+        const colName = cachedColumnName(minCol + col);
+        const cell = decodeCellToRowCellV2(buf, view, payloadOffset, type, colName);
+        if (cell) cells.push(cell);
+      }
+
+      pos = payloadOffset + v2PayloadSize(view, payloadOffset, type);
     }
 
     if (cells.length > 0) {

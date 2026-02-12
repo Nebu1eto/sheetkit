@@ -1340,7 +1340,7 @@ impl Workbook {
             .collect())
     }
 
-    /// Serialize a sheet's cell data into a compact binary buffer.
+    /// Serialize a sheet's cell data into a compact binary buffer (v1 format).
     /// Returns the raw bytes suitable for efficient JS-side decoding.
     #[napi]
     pub fn get_rows_buffer(&self, sheet: String) -> Result<Buffer> {
@@ -1350,6 +1350,21 @@ impl Workbook {
             .map_err(|e| Error::from_reason(e.to_string()))?;
         let sst = self.inner.sst_ref();
         let buf = sheetkit_core::raw_transfer::sheet_to_raw_buffer(ws, sst)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        Ok(Buffer::from(buf))
+    }
+
+    /// Serialize a sheet's cell data into a compact binary buffer (v2 format).
+    /// The v2 format inlines strings with each cell, eliminating the global
+    /// string table and enabling incremental row-by-row decoding.
+    #[napi]
+    pub fn get_rows_buffer_v2(&self, sheet: String) -> Result<Buffer> {
+        let ws = self
+            .inner
+            .worksheet_xml_ref(&sheet)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        let sst = self.inner.sst_ref();
+        let buf = sheetkit_core::raw_transfer_v2::sheet_to_raw_buffer_v2(ws, sst)
             .map_err(|e| Error::from_reason(e.to_string()))?;
         Ok(Buffer::from(buf))
     }
