@@ -1198,6 +1198,72 @@ describe('Phase 9 - StreamWriter', () => {
     expect(wb2.getCellValue('StreamB', 'A1')).toBe('B1');
   });
 
+  it('writeRows basic batch', async () => {
+    const wb = new Workbook();
+    const sw = wb.newStreamWriter('Batch');
+    sw.writeRows(1, [
+      ['Name', 'Age'],
+      ['Alice', 30],
+      ['Bob', 25],
+    ]);
+    wb.applyStreamWriter(sw);
+    await wb.save(out);
+
+    const wb2 = await Workbook.open(out);
+    expect(wb2.getCellValue('Batch', 'A1')).toBe('Name');
+    expect(wb2.getCellValue('Batch', 'B1')).toBe('Age');
+    expect(wb2.getCellValue('Batch', 'A2')).toBe('Alice');
+    expect(wb2.getCellValue('Batch', 'B2')).toBe(30);
+    expect(wb2.getCellValue('Batch', 'A3')).toBe('Bob');
+    expect(wb2.getCellValue('Batch', 'B3')).toBe(25);
+  });
+
+  it('writeRows mixed with writeRow', async () => {
+    const wb = new Workbook();
+    const sw = wb.newStreamWriter('Mixed');
+    sw.writeRow(1, ['Header1', 'Header2']);
+    sw.writeRows(2, [
+      ['Row2A', 'Row2B'],
+      ['Row3A', 'Row3B'],
+    ]);
+    wb.applyStreamWriter(sw);
+    await wb.save(out);
+
+    const wb2 = await Workbook.open(out);
+    expect(wb2.getCellValue('Mixed', 'A1')).toBe('Header1');
+    expect(wb2.getCellValue('Mixed', 'A2')).toBe('Row2A');
+    expect(wb2.getCellValue('Mixed', 'B3')).toBe('Row3B');
+  });
+
+  it('writeRows empty batch', () => {
+    const wb = new Workbook();
+    const sw = wb.newStreamWriter('Empty');
+    sw.writeRows(1, []);
+    sw.writeRow(1, ['after empty batch']);
+    wb.applyStreamWriter(sw);
+    expect(wb.sheetNames).toContain('Empty');
+  });
+
+  it('writeRows round-trip', async () => {
+    const wb = new Workbook();
+    const sw = wb.newStreamWriter('RoundTrip');
+    sw.writeRows(1, [
+      ['text', 42, true, null],
+      ['more', 99.5, false, null],
+    ]);
+    wb.applyStreamWriter(sw);
+    await wb.save(out);
+
+    const wb2 = await Workbook.open(out);
+    expect(wb2.getCellValue('RoundTrip', 'A1')).toBe('text');
+    expect(wb2.getCellValue('RoundTrip', 'B1')).toBe(42);
+    expect(wb2.getCellValue('RoundTrip', 'C1')).toBe(true);
+    expect(wb2.getCellValue('RoundTrip', 'D1')).toBeNull();
+    expect(wb2.getCellValue('RoundTrip', 'A2')).toBe('more');
+    expect(wb2.getCellValue('RoundTrip', 'B2')).toBe(99.5);
+    expect(wb2.getCellValue('RoundTrip', 'C2')).toBe(false);
+  });
+
   it('should support combined features', async () => {
     const wb = new Workbook();
     const sw = wb.newStreamWriter('Combined');
