@@ -1031,9 +1031,15 @@ impl Workbook {
 
         // Synchronize table parts with worksheet relationships and content types.
         // Also build tableParts references for each worksheet.
-        // Skip when deferred_parts is non-empty: relationships are already correct.
+        // In Lazy mode, untouched deferred tables should remain pass-through.
+        // Once table data is mutated (or new live tables exist), we fully
+        // resynchronize worksheet rels/content types/tableParts.
+        use crate::workbook::aux::AuxCategory;
         let mut table_parts_by_sheet: HashMap<usize, Vec<String>> = HashMap::new();
-        if !has_deferred {
+        let should_sync_tables = !has_deferred
+            || self.deferred_parts.is_dirty(AuxCategory::Tables)
+            || !self.tables.is_empty();
+        if should_sync_tables {
             for (sheet_idx, _) in self.worksheets.iter().enumerate() {
                 if let Some(rels) = worksheet_rels.get_mut(&sheet_idx) {
                     rels.relationships
@@ -1202,7 +1208,7 @@ impl Workbook {
             let legacy_rid = legacy_drawing_rids.get(&i).map(|s| s.as_str());
             let sheet_table_rids = table_parts_by_sheet.get(&i);
             let stale_table_parts =
-                !has_deferred && sheet_table_rids.is_none() && ws.table_parts.is_some();
+                should_sync_tables && sheet_table_rids.is_none() && ws.table_parts.is_some();
             let has_extras = legacy_rid.is_some()
                 || !sparklines.is_empty()
                 || sheet_table_rids.is_some()
@@ -3332,7 +3338,7 @@ mod tests {
     }
 
     #[test]
-    fn test_readfast_skips_doc_properties() {
+    fn test_readfast_get_doc_properties_without_mutation() {
         let mut wb = Workbook::new();
         wb.set_cell_value("Sheet1", "A1", CellValue::Number(1.0))
             .unwrap();
@@ -3350,9 +3356,9 @@ mod tests {
             wb2.get_cell_value("Sheet1", "A1").unwrap(),
             CellValue::Number(1.0)
         );
-        // Doc properties are not loaded.
+        // Doc properties should be readable directly from deferred parts.
         let props = wb2.get_doc_props();
-        assert!(props.title.is_none());
+        assert_eq!(props.title.as_deref(), Some("Test Title"));
     }
 
     #[test]
@@ -3630,6 +3636,97 @@ mod tests {
         let tables = wb3.get_tables("Sheet1").unwrap();
         assert_eq!(tables.len(), 1);
         assert_eq!(tables[0].name, "Table1");
+    }
+
+    #[test]
+    fn test_readfast_delete_table_with_other_deferred_cleans_references() {
+        use std::io::Read as _;
+
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", CellValue::String("Name".to_string()))
+            .unwrap();
+        wb.set_cell_value("Sheet1", "B1", CellValue::String("Value".to_string()))
+            .unwrap();
+        wb.set_cell_value("Sheet1", "A2", CellValue::String("Alice".to_string()))
+            .unwrap();
+        wb.set_cell_value("Sheet1", "B2", CellValue::Number(10.0))
+            .unwrap();
+        wb.add_table(
+            "Sheet1",
+            &crate::table::TableConfig {
+                name: "Table1".to_string(),
+                display_name: "Table1".to_string(),
+                range: "A1:B2".to_string(),
+                columns: vec![
+                    crate::table::TableColumn {
+                        name: "Name".to_string(),
+                        totals_row_function: None,
+                        totals_row_label: None,
+                    },
+                    crate::table::TableColumn {
+                        name: "Value".to_string(),
+                        totals_row_function: None,
+                        totals_row_label: None,
+                    },
+                ],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // Keep another deferred category so has_deferred remains true in Lazy mode.
+        wb.set_doc_props(crate::doc_props::DocProperties {
+            title: Some("Keep deferred".to_string()),
+            ..Default::default()
+        });
+        let buf = wb.save_to_buffer().unwrap();
+
+        let opts = OpenOptions::new().read_mode(ReadMode::Lazy);
+        let mut wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
+        wb2.delete_table("Sheet1", "Table1").unwrap();
+        let saved = wb2.save_to_buffer().unwrap();
+
+        let wb3 = Workbook::open_from_buffer(&saved).unwrap();
+        assert!(wb3.get_tables("Sheet1").unwrap().is_empty());
+
+        let cursor = std::io::Cursor::new(saved);
+        let mut archive = zip::ZipArchive::new(cursor).unwrap();
+
+        let mut ct_xml = String::new();
+        archive
+            .by_name("[Content_Types].xml")
+            .unwrap()
+            .read_to_string(&mut ct_xml)
+            .unwrap();
+        assert!(
+            !ct_xml.contains("/xl/tables/table1.xml"),
+            "content types must not reference the deleted table part"
+        );
+        assert!(
+            !ct_xml.contains(mime_types::TABLE),
+            "content types must not keep table override after deletion"
+        );
+
+        let mut rels_xml = String::new();
+        archive
+            .by_name("xl/worksheets/_rels/sheet1.xml.rels")
+            .unwrap()
+            .read_to_string(&mut rels_xml)
+            .unwrap();
+        assert!(
+            !rels_xml.contains(rel_types::TABLE),
+            "worksheet rels must not contain table relationship after deletion"
+        );
+
+        let mut sheet_xml = String::new();
+        archive
+            .by_name("xl/worksheets/sheet1.xml")
+            .unwrap()
+            .read_to_string(&mut sheet_xml)
+            .unwrap();
+        assert!(
+            !sheet_xml.contains("tableParts"),
+            "worksheet XML must not contain tableParts after deletion"
+        );
     }
 
     #[test]

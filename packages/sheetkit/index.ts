@@ -43,11 +43,7 @@ import type {
   JsVbaProject,
   JsWorkbookProtectionConfig,
 } from './binding.js';
-import {
-  JsStreamWriter,
-  NativeSheetStreamReader,
-  Workbook as NativeWorkbook,
-} from './binding.js';
+import { JsStreamWriter, NativeSheetStreamReader, Workbook as NativeWorkbook } from './binding.js';
 import type { RawRowsResult } from './buffer-codec.js';
 import { decodeRowsBuffer, decodeRowsIterator, decodeRowsRawBuffer } from './buffer-codec.js';
 import type { CellTypeName, CellValue } from './sheet-data.js';
@@ -220,18 +216,20 @@ function columnNumberToLetter(n: number): string {
 function toNativeOpenOptions(
   options?: OpenOptions | JsOpenOptions | null,
 ): JsOpenOptions | undefined {
-  if (options == null) return undefined;
-  if ('auxParts' in options && typeof options.auxParts === 'string') {
-    return {
-      readMode: (options as OpenOptions).readMode,
-      sheets: (options as OpenOptions).sheets,
-      sheetRows: (options as OpenOptions).sheetRows,
-      maxUnzipSize: (options as OpenOptions).maxUnzipSize,
-      maxZipEntries: (options as OpenOptions).maxZipEntries,
-      auxParts: (options as OpenOptions).auxParts,
-    };
+  // Preserve raw napi parseMode behavior when callers pass legacy JsOpenOptions.
+  if (
+    options &&
+    'parseMode' in options &&
+    typeof (options as JsOpenOptions).parseMode === 'string' &&
+    (options as JsOpenOptions).readMode == null
+  ) {
+    return options as JsOpenOptions;
   }
-  return options as JsOpenOptions;
+  return {
+    ...(options ?? {}),
+    readMode: (options as OpenOptions | JsOpenOptions | undefined)?.readMode ?? 'lazy',
+    auxParts: (options as OpenOptions | JsOpenOptions | undefined)?.auxParts ?? 'deferred',
+  } satisfies JsOpenOptions;
 }
 
 /** Row data from streaming reader, matching JsRowData shape. */
@@ -725,10 +723,7 @@ class Workbook {
    * Open a forward-only streaming reader for the named sheet.
    * Reads rows in batches without loading the entire sheet into memory.
    */
-  async openSheetReader(
-    sheet: string,
-    opts?: { batchSize?: number },
-  ): Promise<SheetStreamReader> {
+  async openSheetReader(sheet: string, opts?: { batchSize?: number }): Promise<SheetStreamReader> {
     const native = this.#native.openSheetReader(sheet);
     return new SheetStreamReader(native, opts?.batchSize ?? 1000);
   }
