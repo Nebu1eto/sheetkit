@@ -71,6 +71,7 @@ Always verify builds, lints, and formatting pass before declaring work complete.
 - Rust: Follow standard Rust conventions. Use `cargo fmt` for formatting.
 - TypeScript: Use Biome for formatting and linting.
 - ESM only for all JavaScript/TypeScript. napi v3 with `--esm` produces ESM output directly.
+- No hand-written JavaScript (`.js`/`.mjs`/`.cjs`) files. All JS-side code must be TypeScript. Library code is transpiled by tsdown; scripts are executed via `tsx`.
 
 ## Architecture
 
@@ -131,7 +132,9 @@ Before completing any task, confirm all of the following pass:
 - [ ] `cargo test --workspace` passes
 - [ ] `cargo clippy --workspace` passes (no warnings)
 - [ ] `cargo fmt --check` passes
-- [ ] `cd packages/sheetkit && pnpm test` passes (if Node.js code changed)
+- [ ] `pnpm check` passes at project root (Biome lint/format across all pnpm workspaces)
+- [ ] `pnpm -r build` passes at project root (build all pnpm workspaces)
+- [ ] `pnpm test` passes at project root (if Node.js code changed)
 - [ ] Update docs if API changed
 
 ## Common Gotchas

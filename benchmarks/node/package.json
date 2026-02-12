@@ -6,7 +6,8 @@
   "scripts": {
     "generate": "tsx generate-fixtures.ts",
     "bench": "node --expose-gc --import tsx benchmark.ts",
-    "bench:all": "node --expose-gc --import tsx benchmark.ts && node --expose-gc --import tsx benchmark.ts --format=markdown"
+    "bench:all": "node --expose-gc --import tsx benchmark.ts && node --expose-gc --import tsx benchmark.ts --format=markdown",
+    "bench:baseline": "node --expose-gc --import tsx bench-baseline.ts"
   },
   "dependencies": {
     "@sheetkit/node": "workspace:*",
