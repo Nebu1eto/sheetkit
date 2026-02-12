@@ -1186,19 +1186,36 @@ impl Workbook {
                 }
             }
 
-            // If the lock is not yet initialized (lazy/deferred sheet), parse
-            // the raw bytes directly. We intentionally avoid worksheet_ref_by_index
+            // For non-dirty sheets that need aux injection (comments/tables),
+            // or lazy/deferred sheets whose OnceLock is uninitialized, hydrate
+            // from raw bytes. We intentionally avoid worksheet_ref_by_index
             // here because it applies sheet_rows truncation, which would cause
             // data loss on save for sheets that were never read by the user.
+            //
+            // Filtered-out sheets (via OpenOptions::sheets) have their OnceLock
+            // initialized with an empty placeholder while raw_sheet_xml holds
+            // the real data. We must prefer raw bytes over the placeholder.
             let hydrated_for_save: WorksheetXml;
-            let ws = match ws_lock.get() {
-                Some(ws) => ws,
-                None => {
-                    if let Some(Some(raw_bytes)) = self.raw_sheet_xml.get(i) {
-                        hydrated_for_save = deserialize_worksheet_xml(raw_bytes)?;
-                        &hydrated_for_save
-                    } else {
-                        continue;
+            let ws = if !dirty {
+                if let Some(Some(raw_bytes)) = self.raw_sheet_xml.get(i) {
+                    hydrated_for_save = deserialize_worksheet_xml(raw_bytes)?;
+                    &hydrated_for_save
+                } else {
+                    match ws_lock.get() {
+                        Some(ws) => ws,
+                        None => continue,
+                    }
+                }
+            } else {
+                match ws_lock.get() {
+                    Some(ws) => ws,
+                    None => {
+                        if let Some(Some(raw_bytes)) = self.raw_sheet_xml.get(i) {
+                            hydrated_for_save = deserialize_worksheet_xml(raw_bytes)?;
+                            &hydrated_for_save
+                        } else {
+                            continue;
+                        }
                     }
                 }
             };
@@ -4432,6 +4449,47 @@ mod tests {
         assert_eq!(
             wb3.get_cell_value("Sheet3", "B1").unwrap(),
             CellValue::String("modified".to_string())
+        );
+    }
+
+    #[test]
+    fn test_sheets_filter_preserves_filtered_sheet_with_comments_on_save() {
+        let mut wb = Workbook::new();
+        wb.new_sheet("Sheet2").unwrap();
+        wb.set_cell_value("Sheet1", "A1", CellValue::String("keep_me".to_string()))
+            .unwrap();
+        wb.set_cell_value("Sheet2", "A1", CellValue::String("s2".to_string()))
+            .unwrap();
+        wb.add_comment(
+            "Sheet1",
+            &crate::comment::CommentConfig {
+                cell: "A1".to_string(),
+                author: "Test".to_string(),
+                text: "a comment".to_string(),
+            },
+        )
+        .unwrap();
+        let buf = wb.save_to_buffer().unwrap();
+
+        let opts = OpenOptions::new().sheets(vec!["Sheet2".to_string()]);
+        let wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
+        assert_eq!(
+            wb2.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::Empty
+        );
+
+        let buf2 = wb2.save_to_buffer().unwrap();
+        let opts_all = OpenOptions::new()
+            .read_mode(ReadMode::Eager)
+            .aux_parts(AuxParts::EagerLoad);
+        let wb3 = Workbook::open_from_buffer_with_options(&buf2, &opts_all).unwrap();
+        assert_eq!(
+            wb3.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("keep_me".to_string()),
+        );
+        assert_eq!(
+            wb3.get_cell_value("Sheet2", "A1").unwrap(),
+            CellValue::String("s2".to_string()),
         );
     }
 }
