@@ -27,6 +27,21 @@ export declare class JsStreamWriter {
   setFreezePanes(topLeftCell: string): void
 }
 
+/**
+ * Forward-only streaming reader for worksheet data.
+ *
+ * Reads rows in batches without loading the entire sheet into memory.
+ * Created via `Workbook.openSheetReader()`.
+ */
+export declare class NativeSheetStreamReader {
+  /** Read the next batch of rows. Returns null when there are no more rows. */
+  nextBatch(batchSize?: number | undefined | null): Array<JsRowData> | null
+  /** Returns true if there are potentially more rows to read. */
+  hasMore(): boolean
+  /** Close the reader and release resources. */
+  close(): void
+}
+
 /** Excel workbook for reading and writing .xlsx files. */
 export declare class Workbook {
   /** Create a new empty workbook with a single sheet named "Sheet1". */
@@ -392,6 +407,12 @@ export declare class Workbook {
   renderToSvg(options: JsRenderOptions): string
   /** Get the raw VBA project binary (xl/vbaProject.bin), or null if not present. */
   getVbaProject(): Buffer | null
+  /**
+   * Create an owned forward-only streaming reader for the named sheet.
+   * The reader owns its SST snapshot and XML bytes, enabling independent
+   * lifetime from the workbook.
+   */
+  openSheetReader(sheet: string): NativeSheetStreamReader
   /**
    * Extract VBA module source code from the workbook's VBA project.
    * Returns null if no VBA project is present.

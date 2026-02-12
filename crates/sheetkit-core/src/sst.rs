@@ -192,6 +192,19 @@ impl SharedStringTable {
     pub fn is_empty(&self) -> bool {
         self.strings.is_empty()
     }
+
+    /// Create a read-only clone suitable for use by an owned stream reader.
+    ///
+    /// Clones the string list (`Arc<str>` refcount bumps only) and the Si
+    /// items, but omits the reverse `index_map` since the clone is read-only.
+    /// This is cheaper than a full clone and sufficient for SST index lookups.
+    pub fn clone_for_read(&self) -> Self {
+        Self {
+            strings: self.strings.clone(),
+            index_map: HashMap::new(),
+            si_items: self.si_items.clone(),
+        }
+    }
 }
 
 impl Default for SharedStringTable {

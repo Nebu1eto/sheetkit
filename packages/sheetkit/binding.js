@@ -579,6 +579,7 @@ if (!nativeBinding) {
   throw new Error(`Failed to load native binding`)
 }
 
-const { JsStreamWriter, Workbook } = nativeBinding
+const { JsStreamWriter, NativeSheetStreamReader, Workbook } = nativeBinding
 export { JsStreamWriter }
+export { NativeSheetStreamReader }
 export { Workbook }

@@ -1894,6 +1894,20 @@ impl Workbook {
             .map(|b| Buffer::from(b.to_vec()))
     }
 
+    /// Create an owned forward-only streaming reader for the named sheet.
+    /// The reader owns its SST snapshot and XML bytes, enabling independent
+    /// lifetime from the workbook.
+    #[napi]
+    pub fn open_sheet_reader(&self, sheet: String) -> Result<NativeSheetStreamReader> {
+        let reader = self
+            .inner
+            .open_sheet_reader_owned(&sheet)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        Ok(NativeSheetStreamReader {
+            inner: Some(reader),
+        })
+    }
+
     /// Extract VBA module source code from the workbook's VBA project.
     /// Returns null if no VBA project is present.
     #[napi]
@@ -1950,5 +1964,67 @@ impl Workbook {
             scope,
             comment: info.comment.clone(),
         }
+    }
+}
+
+/// Forward-only streaming reader for worksheet data.
+///
+/// Reads rows in batches without loading the entire sheet into memory.
+/// Created via `Workbook.openSheetReader()`.
+#[napi]
+pub struct NativeSheetStreamReader {
+    inner: Option<sheetkit_core::stream_reader::OwnedSheetStreamReader>,
+}
+
+#[napi]
+impl NativeSheetStreamReader {
+    /// Read the next batch of rows. Returns null when there are no more rows.
+    #[napi]
+    pub fn next_batch(&mut self, batch_size: Option<u32>) -> Result<Option<Vec<JsRowData>>> {
+        let reader = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| Error::from_reason("SheetStreamReader already closed"))?;
+        let size = (batch_size.unwrap_or(1000) as usize).clamp(1, 100_000);
+        let rows = reader
+            .next_batch(size)
+            .map_err(|e| Error::from_reason(e.to_string()))?;
+        if rows.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(
+            rows.into_iter()
+                .map(|sr| JsRowData {
+                    row: sr.row_number,
+                    cells: sr
+                        .cells
+                        .into_iter()
+                        .map(|(col_num, val)| {
+                            let col_name =
+                                sheetkit_core::utils::cell_ref::column_number_to_name(col_num)
+                                    .unwrap_or_default();
+                            cell_value_to_row_cell(col_name, val)
+                        })
+                        .collect(),
+                })
+                .collect(),
+        ))
+    }
+
+    /// Returns true if there are potentially more rows to read.
+    #[napi]
+    pub fn has_more(&self) -> Result<bool> {
+        let reader = self
+            .inner
+            .as_ref()
+            .ok_or_else(|| Error::from_reason("SheetStreamReader already closed"))?;
+        Ok(reader.has_more())
+    }
+
+    /// Close the reader and release resources.
+    #[napi]
+    pub fn close(&mut self) -> Result<()> {
+        self.inner.take();
+        Ok(())
     }
 }

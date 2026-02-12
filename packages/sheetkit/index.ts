@@ -43,7 +43,11 @@ import type {
   JsVbaProject,
   JsWorkbookProtectionConfig,
 } from './binding.js';
-import { JsStreamWriter, Workbook as NativeWorkbook } from './binding.js';
+import {
+  JsStreamWriter,
+  NativeSheetStreamReader,
+  Workbook as NativeWorkbook,
+} from './binding.js';
 import type { RawRowsResult } from './buffer-codec.js';
 import { decodeRowsBuffer, decodeRowsIterator, decodeRowsRawBuffer } from './buffer-codec.js';
 import type { CellTypeName, CellValue } from './sheet-data.js';
@@ -228,6 +232,48 @@ function toNativeOpenOptions(
     };
   }
   return options as JsOpenOptions;
+}
+
+/** Row data from streaming reader, matching JsRowData shape. */
+type RowData = JsRowData;
+
+/** Forward-only streaming reader for worksheet data. Reads rows in batches. */
+class SheetStreamReader {
+  #native: NativeSheetStreamReader;
+  #defaultBatchSize: number;
+
+  /** @internal Use Workbook.openSheetReader() instead. */
+  constructor(native: NativeSheetStreamReader, defaultBatchSize: number) {
+    this.#native = native;
+    this.#defaultBatchSize = defaultBatchSize;
+  }
+
+  /**
+   * Read the next batch of rows. Returns an array of row data objects, or
+   * null when there are no more rows.
+   */
+  async next(batchSize?: number): Promise<RowData[] | null> {
+    const size = batchSize ?? this.#defaultBatchSize;
+    return this.#native.nextBatch(size);
+  }
+
+  /** Close the reader and release resources. */
+  async close(): Promise<void> {
+    this.#native.close();
+  }
+
+  /** Async iterator that yields batches of rows. */
+  async *[Symbol.asyncIterator](): AsyncGenerator<RowData[], void, undefined> {
+    try {
+      while (true) {
+        const batch = await this.next();
+        if (batch === null) break;
+        yield batch;
+      }
+    } finally {
+      await this.close();
+    }
+  }
 }
 
 /** Excel workbook for reading and writing .xlsx files. */
@@ -673,6 +719,18 @@ class Workbook {
   /** Apply a stream writer's output to the workbook. Returns the sheet index. */
   applyStreamWriter(writer: JsStreamWriter): number {
     return this.#native.applyStreamWriter(writer);
+  }
+
+  /**
+   * Open a forward-only streaming reader for the named sheet.
+   * Reads rows in batches without loading the entire sheet into memory.
+   */
+  async openSheetReader(
+    sheet: string,
+    opts?: { batchSize?: number },
+  ): Promise<SheetStreamReader> {
+    const native = this.#native.openSheetReader(sheet);
+    return new SheetStreamReader(native, opts?.batchSize ?? 1000);
   }
 
   /** Set core document properties (title, creator, etc.). */
@@ -1179,5 +1237,5 @@ function builtinFormatCode(id: number): string | null {
   return NativeWorkbook.builtinFormatCode(id);
 }
 
-export { builtinFormatCode, formatNumber, JsStreamWriter, SheetData, Workbook };
-export type { CellTypeName, CellValue, RawRowsResult };
+export { builtinFormatCode, formatNumber, JsStreamWriter, SheetData, SheetStreamReader, Workbook };
+export type { CellTypeName, CellValue, RawRowsResult, RowData };
