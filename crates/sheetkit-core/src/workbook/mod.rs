@@ -368,4 +368,59 @@ impl Workbook {
         }
         format!("xl/worksheets/sheet{}.xml", sheet_idx + 1)
     }
+
+    /// Create a forward-only streaming reader for the named sheet.
+    ///
+    /// The reader processes worksheet XML row-by-row without materializing the
+    /// full DOM, enabling bounded-memory processing of large worksheets. The
+    /// workbook's shared string table and optional `sheet_rows` limit are
+    /// passed through to the reader.
+    ///
+    /// The XML bytes come from `raw_sheet_xml` (deferred sheets in Lazy/Stream
+    /// mode) or from a freshly hydrated worksheet serialized back to bytes.
+    pub fn open_sheet_reader(
+        &self,
+        sheet: &str,
+    ) -> Result<
+        crate::stream_reader::SheetStreamReader<'_, std::io::BufReader<std::io::Cursor<Vec<u8>>>>,
+    > {
+        let idx = self.sheet_index(sheet)?;
+        let xml_bytes = self.sheet_xml_bytes(idx)?;
+        let cursor = std::io::Cursor::new(xml_bytes);
+        let buf_reader = std::io::BufReader::new(cursor);
+        Ok(crate::stream_reader::SheetStreamReader::new(
+            buf_reader,
+            &self.sst_runtime,
+            self.sheet_rows_limit,
+        ))
+    }
+
+    /// Get the raw XML bytes for a sheet by index.
+    ///
+    /// When the OnceLock is uninitialised (Lazy/Stream deferred), raw bytes
+    /// from `raw_sheet_xml` are used so the DOM is never materialised. When
+    /// the OnceLock IS initialised (Eager parse or filtered-out sheet), the
+    /// parsed worksheet is serialised back so that `sheets(...)` filtering is
+    /// respected (filtered sheets have an empty worksheet placeholder).
+    ///
+    /// The returned bytes are cloned because the `SheetStreamReader` takes
+    /// ownership of its `BufRead` source.
+    fn sheet_xml_bytes(&self, idx: usize) -> Result<Vec<u8>> {
+        // If the OnceLock is already initialised (eager parse OR filtered-out
+        // placeholder), serialise whatever is stored there. This ensures
+        // filtered-out sheets yield an empty worksheet.
+        if let Some(ws) = self.worksheets[idx].1.get() {
+            let xml = quick_xml::se::to_string(ws)
+                .map_err(|e| Error::Internal(format!("failed to serialize worksheet: {e}")))?;
+            return Ok(xml.into_bytes());
+        }
+        // Lazy/Stream deferred: OnceLock not yet initialised, use raw bytes.
+        if let Some(Some(bytes)) = self.raw_sheet_xml.get(idx) {
+            return Ok(bytes.clone());
+        }
+        Err(Error::Internal(format!(
+            "sheet at index {} has no materialized or deferred data",
+            idx
+        )))
+    }
 }

@@ -31,6 +31,7 @@ pub mod slicer;
 pub mod sparkline;
 pub mod sst;
 pub mod stream;
+pub mod stream_reader;
 pub mod style;
 pub mod table;
 pub mod theme;
