@@ -184,6 +184,214 @@ wb.applyStreamWriter(sw);
 
 > **Note:** Cell values in streamed sheets cannot be read directly after `applyStreamWriter`. Save the workbook and reopen it to read the data.
 
+## Performance KPIs and Regression Criteria
+
+This section defines measurable KPI thresholds for the three read modes (`lazy`, `stream`, `eager`) introduced in the async-first lazy-open refactor. All targets are expressed relative to the current `Full` mode baseline. A regression is any measured value that exceeds the tolerance defined here.
+
+### Reference Fixtures
+
+The primary fixtures used for KPI measurement are:
+
+| Fixture | Rows | Columns | Size | Purpose |
+|---------|------|---------|------|---------|
+| `large-data.xlsx` | 50,001 | 20 | 7.2 MB | Peak RSS and throughput (primary) |
+| `scale-100k.xlsx` | 100,001 | 10 | 7.2 MB | Scaling upper bound |
+| `scale-10k.xlsx` | 10,001 | 10 | 727 KB | Mid-range baseline |
+| `scale-1k.xlsx` | 1,001 | 10 | 75 KB | Overhead measurement |
+| `multi-sheet.xlsx` | 50,010 | 10 | 3.7 MB | Multi-sheet lazy hydration |
+
+### 1. Open Latency
+
+Measured as time from `open()` / `Workbook::open()` call to returned handle, excluding any subsequent data access.
+
+| Read Mode | Target (relative to Full baseline) | Tolerance | Notes |
+|-----------|-------------------------------------|-----------|-------|
+| `lazy` | < 30% of Full | +5% | Metadata + ZIP index only; no sheet XML parse |
+| `stream` | < 20% of Full | +5% | Minimal parse; no materialization |
+| `eager` | No regression | +5% | Same behavior as current Full mode |
+
+**Measurement**: Compare median open latency across all reference fixtures. Lazy and stream targets apply to every fixture individually (not just the aggregate).
+
+### 2. Peak RSS (Memory)
+
+Measured as peak resident set size during the operation. Use `--expose-gc` in Node.js benchmarks and external RSS sampling for Rust benchmarks.
+
+| Read Mode | Scenario | Target (relative to Full baseline) | Tolerance |
+|-----------|----------|------------------------------------|-----------|
+| `lazy` | Open only (no data access) | < 20% of Full peak RSS | +5% |
+| `lazy` | Open + single sheet read | < 40% of Full peak RSS | +5% |
+| `lazy` | Open + all sheets read | No regression | +10% |
+| `stream` | Any file size | < 50 MB absolute | +10 MB |
+| `eager` | Full workbook | No regression | +5% |
+
+**Primary fixture for RSS**: `large-data.xlsx` (50k x 20, 1M cells). The `stream` mode 50 MB bound must hold for `scale-100k.xlsx` as well.
+
+### 3. getRows Throughput
+
+Measured as total time for `getRows("Sheet1")` on a pre-opened workbook, or equivalent Rust `get_rows()`.
+
+| Read Mode | Scenario | Target (relative to Full baseline) | Tolerance |
+|-----------|----------|------------------------------------|-----------|
+| `lazy` | Lazy open then getRows | No regression | +10% |
+| `stream` | Batch iteration (all rows) | >= 80% of eager throughput | -20% floor |
+| `eager` | getRows on pre-opened | No regression | +5% |
+
+**Measurement**: Use `getRows-only` (pre-opened) category from `bench-baseline.ts` and `get_rows` group from `open_modes.rs`. The lazy-then-read scenario includes the on-demand hydration cost.
+
+### 4. Save Latency
+
+Measured as time from `save()` call to file written, using a temporary file target.
+
+| Read Mode | Scenario | Target (relative to Full baseline) | Tolerance |
+|-----------|----------|------------------------------------|-----------|
+| `lazy` | Untouched workbook save | < 50% of Full save | +10% |
+| `lazy` | Single-cell edit then save | No regression | +10% |
+| `eager` | Full save | No regression | +5% |
+
+**Rationale**: Untouched lazy workbooks should benefit from passthrough (no parse-serialize round-trip for unchanged parts). The single-cell edit scenario verifies that selective materialization does not introduce unexpected overhead.
+
+### 5. Node.js Async Overhead
+
+Measured as the ratio of async API latency to sync API latency for equivalent operations.
+
+| Operation | Max Async/Sync Ratio | Notes |
+|-----------|---------------------|-------|
+| `open` (path) | 1.3x | Worker thread dispatch overhead |
+| `openBuffer` | 1.3x | Buffer transfer + dispatch |
+| `getRows` | 1.2x | Data marshalling overhead |
+| `save` | 1.3x | File I/O + dispatch |
+
+These ratios apply to the `eager` mode baseline. In `lazy` mode, async open should be faster in absolute terms since it does less work.
+
+### Regression Fail Criteria
+
+A benchmark result is a **regression** if any of the following hold:
+
+1. **Open latency** for any read mode exceeds the target + tolerance on any reference fixture.
+2. **Peak RSS** for any read mode exceeds the target + tolerance on `large-data.xlsx` or `scale-100k.xlsx`.
+3. **getRows throughput** for any read mode is slower than the target - tolerance on any reference fixture.
+4. **Save latency** for any scenario exceeds the target + tolerance on any reference fixture.
+5. **Stream mode RSS** exceeds 60 MB (50 MB target + 10 MB tolerance) on any fixture regardless of file size.
+
+**Blocking policy**: Any regression blocks PR merge. The PR author must either fix the regression or update the baseline with justification reviewed by at least one maintainer.
+
+### Baseline Capture Process
+
+#### Capturing a baseline
+
+1. Ensure fixtures exist: `cd benchmarks/node && pnpm generate`
+2. Run Rust benchmarks: `cargo bench --bench open_modes`
+3. Run Node.js benchmarks: `node --expose-gc --import tsx benchmarks/node/bench-baseline.ts`
+4. Criterion results are stored in `target/criterion/` (Rust). Node.js results are written to `benchmarks/node/baseline-results.json`.
+
+#### Baseline file format
+
+The Node.js baseline is a JSON file with this structure:
+
+```json
+{
+  "timestamp": "ISO-8601",
+  "platform": "darwin arm64",
+  "nodeVersion": "v25.x.x",
+  "cpu": "Apple M4 Pro",
+  "ramGb": 24,
+  "config": { "warmupRuns": 1, "benchRuns": 5 },
+  "results": [
+    {
+      "category": "openSync-path",
+      "fixture": "large-data",
+      "median": 387.0,
+      "p95": 395.0,
+      "rssMedianMb": 120.0
+    }
+  ]
+}
+```
+
+The Rust baseline uses Criterion's built-in JSON output under `target/criterion/<group>/<benchmark>/new/estimates.json`.
+
+#### Updating baselines
+
+1. Run benchmarks on consistent hardware (same machine, minimal background load).
+2. Compare new results against stored baseline using percentage delta.
+3. If all KPIs pass, overwrite the baseline JSON with the new results.
+4. Commit the updated baseline with a message explaining the reason (optimization landed, fixture changed, etc.).
+
+#### Comparison logic
+
+For each KPI entry, compute:
+
+```
+delta_pct = ((new_value - baseline_value) / baseline_value) * 100
+```
+
+- Latency KPIs: positive delta = regression (slower).
+- Throughput KPIs: negative delta = regression (slower).
+- RSS KPIs: positive delta = regression (more memory).
+
+A KPI **passes** if `delta_pct` is within the tolerance column. A KPI **fails** if it exceeds tolerance.
+
+### CI Integration
+
+#### Trigger policy
+
+Benchmarks do not run on every PR due to execution cost and environment variability. They run under these conditions:
+
+- **Manual dispatch**: Maintainer triggers the benchmark workflow via `workflow_dispatch`.
+- **Label trigger**: Adding the `bench` label to a PR triggers the benchmark job.
+- **Release branches**: Benchmarks run automatically on PRs targeting `main` that modify files in `crates/sheetkit-core/src/` or `packages/sheetkit/src/`.
+
+#### CI workflow steps
+
+1. Generate fixtures if not cached.
+2. Run Rust benchmarks (`cargo bench --bench open_modes -- --output-format bencher`).
+3. Run Node.js benchmarks (`node --expose-gc --import tsx benchmarks/node/bench-baseline.ts`).
+4. Compare results against stored baseline.
+5. Post a summary comment on the PR with pass/fail per KPI.
+
+#### Summary output format
+
+The comparison script produces a markdown table:
+
+```
+| KPI | Fixture | Baseline | Current | Delta | Status |
+|-----|---------|----------|---------|-------|--------|
+| open_latency/lazy | large-data | - | 45ms | - | PASS (new) |
+| open_latency/eager | large-data | 387ms | 392ms | +1.3% | PASS |
+| peak_rss/lazy_open | large-data | - | 18MB | - | PASS (new) |
+| getRows/lazy | large-data | 387ms | 410ms | +5.9% | PASS |
+| save/untouched | large-data | 520ms | 245ms | -52.9% | PASS |
+```
+
+Status values: `PASS`, `FAIL`, `PASS (new)` (no baseline to compare against).
+
+### Running Benchmarks Locally
+
+**Rust**:
+
+```bash
+# Full benchmark suite
+cargo bench --bench open_modes
+
+# Single benchmark group
+cargo bench --bench open_modes -- open_latency
+
+# With verbose output
+cargo bench --bench open_modes -- --verbose
+```
+
+**Node.js**:
+
+```bash
+# With GC exposure for accurate RSS measurement
+node --expose-gc --import tsx benchmarks/node/bench-baseline.ts
+
+# Quick spot-check (fewer runs, less accurate)
+BENCH_RUNS=3 node --expose-gc --import tsx benchmarks/node/bench-baseline.ts
+```
+
+**Prerequisites**: Fixtures must be generated first. See [Benchmark Fixtures](../benchmarks/FIXTURES.md) for details.
+
 ## Next Steps
 
 - [Getting Started](./getting-started.md) - Learn the basics
