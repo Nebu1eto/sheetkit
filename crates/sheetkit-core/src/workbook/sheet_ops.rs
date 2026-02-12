@@ -122,6 +122,9 @@ impl Workbook {
     pub fn copy_sheet(&mut self, source: &str, target: &str) -> Result<usize> {
         // Resolve the source index before copy_sheet changes the array.
         let src_idx = self.sheet_index(source)?;
+        // Hydrate the source sheet so copy_sheet clones the real data,
+        // not an empty default.
+        self.ensure_hydrated(src_idx)?;
         let idx = crate::sheet::copy_sheet(
             &mut self.workbook_xml,
             &mut self.workbook_rels,
@@ -257,7 +260,7 @@ impl Workbook {
     pub fn insert_rows(&mut self, sheet: &str, start_row: u32, count: u32) -> Result<()> {
         let sheet_idx = self.sheet_index(sheet)?;
         {
-            let ws = &mut self.worksheets[sheet_idx].1;
+            let ws = self.worksheet_mut_by_index(sheet_idx)?;
             crate::row::insert_rows(ws, start_row, count)?;
         }
         self.apply_reference_shift_for_sheet(sheet_idx, |col, row| {
@@ -273,7 +276,7 @@ impl Workbook {
     pub fn remove_row(&mut self, sheet: &str, row: u32) -> Result<()> {
         let sheet_idx = self.sheet_index(sheet)?;
         {
-            let ws = &mut self.worksheets[sheet_idx].1;
+            let ws = self.worksheet_mut_by_index(sheet_idx)?;
             crate::row::remove_row(ws, row)?;
         }
         self.apply_reference_shift_for_sheet(sheet_idx, |col, r| {
@@ -423,7 +426,7 @@ impl Workbook {
         let sheet_idx = self.sheet_index(sheet)?;
         let start_col = column_name_to_number(col)?;
         {
-            let ws = &mut self.worksheets[sheet_idx].1;
+            let ws = self.worksheet_mut_by_index(sheet_idx)?;
             crate::col::insert_cols(ws, col, count)?;
         }
         self.apply_reference_shift_for_sheet(sheet_idx, |c, row| {
@@ -440,7 +443,7 @@ impl Workbook {
         let sheet_idx = self.sheet_index(sheet)?;
         let col_num = column_name_to_number(col)?;
         {
-            let ws = &mut self.worksheets[sheet_idx].1;
+            let ws = self.worksheet_mut_by_index(sheet_idx)?;
             crate::col::remove_col(ws, col)?;
         }
         self.apply_reference_shift_for_sheet(sheet_idx, |c, row| {
@@ -493,7 +496,7 @@ impl Workbook {
         F: Fn(u32, u32) -> (u32, u32) + Copy,
     {
         {
-            let ws = &mut self.worksheets[sheet_idx].1;
+            let ws = self.worksheet_mut_by_index(sheet_idx)?;
 
             // Cell formulas.
             for row in &mut ws.sheet_data.rows {
@@ -609,7 +612,12 @@ impl Workbook {
 
         // Add drawing reference to the worksheet.
         let ws_rid = self.next_worksheet_rid(sheet_idx);
-        self.worksheets[sheet_idx].1.drawing = Some(DrawingRef {
+        // ensure_hydrated can only fail if the sheet was never loaded, which
+        // should not happen for a sheet we're actively attaching a drawing to.
+        // Use expect instead of `?` because this method returns `usize`.
+        self.ensure_hydrated(sheet_idx)
+            .expect("sheet must be hydrated before attaching a drawing");
+        self.worksheets[sheet_idx].1.get_mut().unwrap().drawing = Some(DrawingRef {
             r_id: ws_rid.clone(),
         });
 

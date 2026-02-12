@@ -3,6 +3,8 @@
 //! Contains validation helpers and internal functions used by [`crate::workbook::Workbook`]
 //! for creating, deleting, renaming, and copying worksheets.
 
+use std::sync::OnceLock;
+
 use sheetkit_xml::content_types::{mime_types, ContentTypeOverride, ContentTypes};
 use sheetkit_xml::relationships::{rel_types, Relationship, Relationships};
 use sheetkit_xml::workbook::{SheetEntry, WorkbookXml};
@@ -18,6 +20,7 @@ use crate::utils::constants::{
     DEFAULT_ROW_HEIGHT, MAX_COLUMN_WIDTH, MAX_ROW_HEIGHT, MAX_SHEET_NAME_LENGTH,
     SHEET_NAME_INVALID_CHARS,
 };
+use crate::workbook::initialized_lock;
 
 /// Validate a sheet name according to Excel rules.
 ///
@@ -79,7 +82,10 @@ pub fn next_sheet_id(existing_sheets: &[SheetEntry]) -> u32 {
 }
 
 /// Find the index (0-based) of a sheet by name.
-pub fn find_sheet_index(worksheets: &[(String, WorksheetXml)], name: &str) -> Option<usize> {
+pub fn find_sheet_index(
+    worksheets: &[(String, OnceLock<WorksheetXml>)],
+    name: &str,
+) -> Option<usize> {
     worksheets.iter().position(|(n, _)| n == name)
 }
 
@@ -91,7 +97,7 @@ pub fn add_sheet(
     workbook_xml: &mut WorkbookXml,
     workbook_rels: &mut Relationships,
     content_types: &mut ContentTypes,
-    worksheets: &mut Vec<(String, WorksheetXml)>,
+    worksheets: &mut Vec<(String, OnceLock<WorksheetXml>)>,
     name: &str,
     worksheet_data: WorksheetXml,
 ) -> Result<usize> {
@@ -127,7 +133,7 @@ pub fn add_sheet(
         content_type: mime_types::WORKSHEET.to_string(),
     });
 
-    worksheets.push((name.to_string(), worksheet_data));
+    worksheets.push((name.to_string(), initialized_lock(worksheet_data)));
 
     Ok(worksheets.len() - 1)
 }
@@ -139,7 +145,7 @@ pub fn delete_sheet(
     workbook_xml: &mut WorkbookXml,
     workbook_rels: &mut Relationships,
     content_types: &mut ContentTypes,
-    worksheets: &mut Vec<(String, WorksheetXml)>,
+    worksheets: &mut Vec<(String, OnceLock<WorksheetXml>)>,
     name: &str,
 ) -> Result<()> {
     let idx = find_sheet_index(worksheets, name).ok_or_else(|| Error::SheetNotFound {
@@ -167,7 +173,7 @@ pub fn delete_sheet(
 /// Rename a sheet.
 pub fn rename_sheet(
     workbook_xml: &mut WorkbookXml,
-    worksheets: &mut [(String, WorksheetXml)],
+    worksheets: &mut [(String, OnceLock<WorksheetXml>)],
     old_name: &str,
     new_name: &str,
 ) -> Result<()> {
@@ -194,7 +200,7 @@ pub fn copy_sheet(
     workbook_xml: &mut WorkbookXml,
     workbook_rels: &mut Relationships,
     content_types: &mut ContentTypes,
-    worksheets: &mut Vec<(String, WorksheetXml)>,
+    worksheets: &mut Vec<(String, OnceLock<WorksheetXml>)>,
     source_name: &str,
     target_name: &str,
 ) -> Result<usize> {
@@ -203,7 +209,7 @@ pub fn copy_sheet(
             name: source_name.to_string(),
         })?;
 
-    let cloned_data = worksheets[source_idx].1.clone();
+    let cloned_data = worksheets[source_idx].1.get().cloned().unwrap_or_default();
 
     add_sheet(
         workbook_xml,
@@ -1013,12 +1019,15 @@ mod tests {
         WorkbookXml,
         Relationships,
         ContentTypes,
-        Vec<(String, WorksheetXml)>,
+        Vec<(String, OnceLock<WorksheetXml>)>,
     ) {
         let workbook_xml = WorkbookXml::default();
         let workbook_rels = relationships::workbook_rels();
         let content_types = ContentTypes::default();
-        let worksheets = vec![("Sheet1".to_string(), WorksheetXml::default())];
+        let worksheets = vec![(
+            "Sheet1".to_string(),
+            initialized_lock(WorksheetXml::default()),
+        )];
         (workbook_xml, workbook_rels, content_types, worksheets)
     }
 
@@ -1208,7 +1217,7 @@ mod tests {
         assert_eq!(ws.len(), 2);
         assert_eq!(ws[1].0, "Sheet1 Copy");
         // The copied worksheet data should be a clone of the source
-        assert_eq!(ws[1].1, ws[0].1);
+        assert_eq!(ws[1].1.get().unwrap(), ws[0].1.get().unwrap());
     }
 
     #[test]
@@ -1243,9 +1252,15 @@ mod tests {
 
     #[test]
     fn test_find_sheet_index() {
-        let ws: Vec<(String, WorksheetXml)> = vec![
-            ("Sheet1".to_string(), WorksheetXml::default()),
-            ("Sheet2".to_string(), WorksheetXml::default()),
+        let ws: Vec<(String, OnceLock<WorksheetXml>)> = vec![
+            (
+                "Sheet1".to_string(),
+                initialized_lock(WorksheetXml::default()),
+            ),
+            (
+                "Sheet2".to_string(),
+                initialized_lock(WorksheetXml::default()),
+            ),
         ];
 
         assert_eq!(find_sheet_index(&ws, "Sheet1"), Some(0));

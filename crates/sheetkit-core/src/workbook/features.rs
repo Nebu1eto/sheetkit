@@ -31,7 +31,9 @@ impl Workbook {
         rules: &[ConditionalFormatRule],
     ) -> Result<()> {
         let idx = self.sheet_index(sheet)?;
-        let ws = &mut self.worksheets[idx].1;
+        self.invalidate_streamed(idx);
+        self.ensure_hydrated(idx)?;
+        let ws = self.worksheets[idx].1.get_mut().unwrap();
         crate::conditional::set_conditional_format(ws, &mut self.stylesheet, sqref, rules)
     }
 
@@ -534,7 +536,9 @@ impl Workbook {
         tooltip: Option<&str>,
     ) -> Result<()> {
         let sheet_idx = self.sheet_index(sheet)?;
-        let ws = &mut self.worksheets[sheet_idx].1;
+        self.invalidate_streamed(sheet_idx);
+        self.ensure_hydrated(sheet_idx)?;
+        let ws = self.worksheets[sheet_idx].1.get_mut().unwrap();
         let rels = self
             .worksheet_rels
             .entry(sheet_idx)
@@ -554,7 +558,7 @@ impl Workbook {
         cell: &str,
     ) -> Result<Option<crate::hyperlink::HyperlinkInfo>> {
         let sheet_idx = self.sheet_index(sheet)?;
-        let ws = &self.worksheets[sheet_idx].1;
+        let ws = self.worksheet_ref_by_index(sheet_idx)?;
         let empty_rels = Relationships {
             xmlns: sheetkit_xml::namespaces::PACKAGE_RELATIONSHIPS.to_string(),
             relationships: vec![],
@@ -569,7 +573,9 @@ impl Workbook {
     /// associated relationship entry.
     pub fn delete_cell_hyperlink(&mut self, sheet: &str, cell: &str) -> Result<()> {
         let sheet_idx = self.sheet_index(sheet)?;
-        let ws = &mut self.worksheets[sheet_idx].1;
+        self.invalidate_streamed(sheet_idx);
+        self.ensure_hydrated(sheet_idx)?;
+        let ws = self.worksheets[sheet_idx].1.get_mut().unwrap();
         let rels = self
             .worksheet_rels
             .entry(sheet_idx)

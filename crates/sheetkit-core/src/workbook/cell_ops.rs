@@ -51,10 +51,12 @@ impl Workbook {
 
         let sheet_idx = self.sheet_index(sheet)?;
         self.invalidate_streamed(sheet_idx);
-        let ws = &mut self.worksheets[sheet_idx].1;
+        self.ensure_hydrated(sheet_idx)?;
 
         let (col, row_num) = cell_name_to_coordinates(cell)?;
         let cell_ref = crate::utils::cell_ref::coordinates_to_cell_name(col, row_num)?;
+
+        let ws = self.worksheets[sheet_idx].1.get_mut().unwrap();
 
         // Find or create the row via binary search (rows are sorted by row number).
         let row_idx = match ws.sheet_data.rows.binary_search_by_key(&row_num, |r| r.r) {
@@ -313,7 +315,7 @@ impl Workbook {
         }
 
         let sheet_idx = self.sheet_index(sheet)?;
-        let ws = &mut self.worksheets[sheet_idx].1;
+        let ws = self.worksheet_mut_by_index(sheet_idx)?;
 
         let (col, row_num) = cell_name_to_coordinates(cell)?;
         let cell_ref = crate::utils::cell_ref::coordinates_to_cell_name(col, row_num)?;
@@ -493,6 +495,7 @@ impl Workbook {
     ) -> Result<()> {
         let sheet_idx = self.sheet_index(sheet)?;
         self.invalidate_streamed(sheet_idx);
+        self.ensure_hydrated(sheet_idx)?;
 
         for (cell, value) in entries {
             if let CellValue::String(ref s) = value {
@@ -508,7 +511,7 @@ impl Workbook {
             let cell_ref = crate::utils::cell_ref::coordinates_to_cell_name(col, row_num)?;
 
             let row_idx = {
-                let ws = &mut self.worksheets[sheet_idx].1;
+                let ws = self.worksheets[sheet_idx].1.get_mut().unwrap();
                 match ws.sheet_data.rows.binary_search_by_key(&row_num, |r| r.r) {
                     Ok(idx) => idx,
                     Err(idx) => {
@@ -519,7 +522,12 @@ impl Workbook {
             };
 
             if value == CellValue::Empty {
-                let row = &mut self.worksheets[sheet_idx].1.sheet_data.rows[row_idx];
+                let row = &mut self.worksheets[sheet_idx]
+                    .1
+                    .get_mut()
+                    .unwrap()
+                    .sheet_data
+                    .rows[row_idx];
                 if let Ok(idx) = row.cells.binary_search_by_key(&col, |c| c.col) {
                     row.cells.remove(idx);
                 }
@@ -527,7 +535,12 @@ impl Workbook {
             }
 
             let cell_idx = {
-                let row = &mut self.worksheets[sheet_idx].1.sheet_data.rows[row_idx];
+                let row = &mut self.worksheets[sheet_idx]
+                    .1
+                    .get_mut()
+                    .unwrap()
+                    .sheet_data
+                    .rows[row_idx];
                 match row.cells.binary_search_by_key(&col, |c| c.col) {
                     Ok(idx) => idx,
                     Err(pos) => {
@@ -548,8 +561,13 @@ impl Workbook {
                 }
             };
 
-            let xml_cell =
-                &mut self.worksheets[sheet_idx].1.sheet_data.rows[row_idx].cells[cell_idx];
+            let xml_cell = &mut self.worksheets[sheet_idx]
+                .1
+                .get_mut()
+                .unwrap()
+                .sheet_data
+                .rows[row_idx]
+                .cells[cell_idx];
             value_to_xml_cell(&mut self.sst_runtime, xml_cell, value);
         }
 
@@ -572,6 +590,7 @@ impl Workbook {
         start_col: u32,
     ) -> Result<()> {
         let sheet_idx = self.sheet_index(sheet)?;
+        self.ensure_hydrated(sheet_idx)?;
 
         // Pre-compute column names for the widest row.
         let max_cols = data.iter().map(|r| r.len()).max().unwrap_or(0) as u32;
@@ -583,7 +602,7 @@ impl Workbook {
             let row_num = start_row + row_offset as u32;
 
             let row_idx = {
-                let ws = &mut self.worksheets[sheet_idx].1;
+                let ws = self.worksheets[sheet_idx].1.get_mut().unwrap();
                 match ws.sheet_data.rows.binary_search_by_key(&row_num, |r| r.r) {
                     Ok(idx) => idx,
                     Err(idx) => {
@@ -606,7 +625,12 @@ impl Workbook {
                 }
 
                 if value == CellValue::Empty {
-                    let row = &mut self.worksheets[sheet_idx].1.sheet_data.rows[row_idx];
+                    let row = &mut self.worksheets[sheet_idx]
+                        .1
+                        .get_mut()
+                        .unwrap()
+                        .sheet_data
+                        .rows[row_idx];
                     if let Ok(idx) = row.cells.binary_search_by_key(&col, |c| c.col) {
                         row.cells.remove(idx);
                     }
@@ -616,7 +640,12 @@ impl Workbook {
                 let cell_ref = format!("{}{}", col_names[col_offset], row_num);
 
                 let cell_idx = {
-                    let row = &mut self.worksheets[sheet_idx].1.sheet_data.rows[row_idx];
+                    let row = &mut self.worksheets[sheet_idx]
+                        .1
+                        .get_mut()
+                        .unwrap()
+                        .sheet_data
+                        .rows[row_idx];
                     match row.cells.binary_search_by_key(&col, |c| c.col) {
                         Ok(idx) => idx,
                         Err(pos) => {
@@ -637,8 +666,13 @@ impl Workbook {
                     }
                 };
 
-                let xml_cell =
-                    &mut self.worksheets[sheet_idx].1.sheet_data.rows[row_idx].cells[cell_idx];
+                let xml_cell = &mut self.worksheets[sheet_idx]
+                    .1
+                    .get_mut()
+                    .unwrap()
+                    .sheet_data
+                    .rows[row_idx]
+                    .cells[cell_idx];
                 value_to_xml_cell(&mut self.sst_runtime, xml_cell, value);
             }
         }
