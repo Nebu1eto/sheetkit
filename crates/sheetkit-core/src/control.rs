@@ -1327,7 +1327,10 @@ mod tests {
         assert!(has_vml, "should have a vmlDrawing file in the ZIP");
 
         // Re-open and verify controls are preserved.
-        let mut wb2 = Workbook::open(&path).unwrap();
+        let opts = crate::workbook::OpenOptions::new()
+            .read_mode(crate::workbook::ReadMode::Eager)
+            .aux_parts(crate::workbook::AuxParts::EagerLoad);
+        let mut wb2 = Workbook::open_with_options(&path, &opts).unwrap();
         let controls = wb2.get_form_controls("Sheet1").unwrap();
         assert_eq!(controls.len(), 3);
         assert_eq!(controls[0].control_type, FormControlType::Button);
@@ -1477,6 +1480,7 @@ mod tests {
     #[test]
     fn test_open_file_get_form_controls_returns_existing() {
         use crate::workbook::Workbook;
+        use crate::workbook::{AuxParts, OpenOptions, ReadMode};
         use tempfile::TempDir;
 
         let dir = TempDir::new().unwrap();
@@ -1489,7 +1493,10 @@ mod tests {
             .unwrap();
         wb.save(&path).unwrap();
 
-        let mut wb2 = Workbook::open(&path).unwrap();
+        let opts = OpenOptions::new()
+            .read_mode(ReadMode::Eager)
+            .aux_parts(AuxParts::EagerLoad);
+        let mut wb2 = Workbook::open_with_options(&path, &opts).unwrap();
         let controls = wb2.get_form_controls("Sheet1").unwrap();
         assert_eq!(controls.len(), 2);
         assert_eq!(controls[0].control_type, FormControlType::Button);
@@ -1501,6 +1508,7 @@ mod tests {
     #[test]
     fn test_open_file_add_form_control_preserves_existing() {
         use crate::workbook::Workbook;
+        use crate::workbook::{AuxParts, OpenOptions, ReadMode};
         use tempfile::TempDir;
 
         let dir = TempDir::new().unwrap();
@@ -1513,7 +1521,10 @@ mod tests {
             .unwrap();
         wb.save(&path).unwrap();
 
-        let mut wb2 = Workbook::open(&path).unwrap();
+        let opts = OpenOptions::new()
+            .read_mode(ReadMode::Eager)
+            .aux_parts(AuxParts::EagerLoad);
+        let mut wb2 = Workbook::open_with_options(&path, &opts).unwrap();
         wb2.add_form_control("Sheet1", FormControlConfig::spin_button("C1", 0, 50))
             .unwrap();
 
@@ -1535,6 +1546,7 @@ mod tests {
     #[test]
     fn test_open_file_delete_form_control_works() {
         use crate::workbook::Workbook;
+        use crate::workbook::{AuxParts, OpenOptions, ReadMode};
         use tempfile::TempDir;
 
         let dir = TempDir::new().unwrap();
@@ -1549,7 +1561,10 @@ mod tests {
             .unwrap();
         wb.save(&path).unwrap();
 
-        let mut wb2 = Workbook::open(&path).unwrap();
+        let opts = OpenOptions::new()
+            .read_mode(ReadMode::Eager)
+            .aux_parts(AuxParts::EagerLoad);
+        let mut wb2 = Workbook::open_with_options(&path, &opts).unwrap();
         wb2.delete_form_control("Sheet1", 1).unwrap();
 
         let controls = wb2.get_form_controls("Sheet1").unwrap();
@@ -1561,11 +1576,16 @@ mod tests {
     #[test]
     fn test_open_file_modify_save_reopen_persistence() {
         use crate::workbook::Workbook;
+        use crate::workbook::{AuxParts, OpenOptions, ReadMode};
         use tempfile::TempDir;
 
         let dir = TempDir::new().unwrap();
         let path1 = dir.path().join("persistence_step1.xlsx");
         let path2 = dir.path().join("persistence_step2.xlsx");
+
+        let opts = OpenOptions::new()
+            .read_mode(ReadMode::Eager)
+            .aux_parts(AuxParts::EagerLoad);
 
         // Step 1: Create with 2 controls.
         let mut wb = Workbook::new();
@@ -1576,14 +1596,14 @@ mod tests {
         wb.save(&path1).unwrap();
 
         // Step 2: Open, add one, delete one, save.
-        let mut wb2 = Workbook::open(&path1).unwrap();
+        let mut wb2 = Workbook::open_with_options(&path1, &opts).unwrap();
         wb2.add_form_control("Sheet1", FormControlConfig::scroll_bar("E1", 0, 100))
             .unwrap();
         wb2.delete_form_control("Sheet1", 0).unwrap();
         wb2.save(&path2).unwrap();
 
         // Step 3: Re-open and verify.
-        let mut wb3 = Workbook::open(&path2).unwrap();
+        let mut wb3 = Workbook::open_with_options(&path2, &opts).unwrap();
         let controls = wb3.get_form_controls("Sheet1").unwrap();
         assert_eq!(controls.len(), 2);
         assert_eq!(controls[0].control_type, FormControlType::CheckBox);
@@ -1665,11 +1685,16 @@ mod tests {
     #[test]
     fn test_hydration_does_not_duplicate_on_save() {
         use crate::workbook::Workbook;
+        use crate::workbook::{AuxParts, OpenOptions, ReadMode};
         use tempfile::TempDir;
 
         let dir = TempDir::new().unwrap();
         let path1 = dir.path().join("no_dup_step1.xlsx");
         let path2 = dir.path().join("no_dup_step2.xlsx");
+
+        let opts = OpenOptions::new()
+            .read_mode(ReadMode::Eager)
+            .aux_parts(AuxParts::EagerLoad);
 
         let mut wb = Workbook::new();
         wb.add_form_control("Sheet1", FormControlConfig::button("A1", "Btn"))
@@ -1679,7 +1704,7 @@ mod tests {
         wb.save(&path1).unwrap();
 
         // Open and trigger hydration via get_form_controls (read-only).
-        let mut wb2 = Workbook::open(&path1).unwrap();
+        let mut wb2 = Workbook::open_with_options(&path1, &opts).unwrap();
         let controls = wb2.get_form_controls("Sheet1").unwrap();
         assert_eq!(controls.len(), 2);
 
@@ -1687,7 +1712,7 @@ mod tests {
         wb2.save(&path2).unwrap();
 
         // Re-open and verify no duplication.
-        let mut wb3 = Workbook::open(&path2).unwrap();
+        let mut wb3 = Workbook::open_with_options(&path2, &opts).unwrap();
         let controls3 = wb3.get_form_controls("Sheet1").unwrap();
         assert_eq!(
             controls3.len(),
@@ -1701,11 +1726,16 @@ mod tests {
     #[test]
     fn test_hydration_then_add_no_duplication() {
         use crate::workbook::Workbook;
+        use crate::workbook::{AuxParts, OpenOptions, ReadMode};
         use tempfile::TempDir;
 
         let dir = TempDir::new().unwrap();
         let path1 = dir.path().join("add_no_dup_step1.xlsx");
         let path2 = dir.path().join("add_no_dup_step2.xlsx");
+
+        let opts = OpenOptions::new()
+            .read_mode(ReadMode::Eager)
+            .aux_parts(AuxParts::EagerLoad);
 
         let mut wb = Workbook::new();
         wb.add_form_control("Sheet1", FormControlConfig::button("A1", "Existing"))
@@ -1713,13 +1743,13 @@ mod tests {
         wb.save(&path1).unwrap();
 
         // Open, add a new control, save.
-        let mut wb2 = Workbook::open(&path1).unwrap();
+        let mut wb2 = Workbook::open_with_options(&path1, &opts).unwrap();
         wb2.add_form_control("Sheet1", FormControlConfig::checkbox("A3", "New"))
             .unwrap();
         wb2.save(&path2).unwrap();
 
         // Re-open and verify exact expected count.
-        let mut wb3 = Workbook::open(&path2).unwrap();
+        let mut wb3 = Workbook::open_with_options(&path2, &opts).unwrap();
         let controls = wb3.get_form_controls("Sheet1").unwrap();
         assert_eq!(controls.len(), 2, "should have exactly 1 existing + 1 new");
         assert_eq!(controls[0].control_type, FormControlType::Button);
@@ -1731,11 +1761,16 @@ mod tests {
     #[test]
     fn test_hydration_with_comments_no_duplication() {
         use crate::workbook::Workbook;
+        use crate::workbook::{AuxParts, OpenOptions, ReadMode};
         use tempfile::TempDir;
 
         let dir = TempDir::new().unwrap();
         let path1 = dir.path().join("comments_no_dup_step1.xlsx");
         let path2 = dir.path().join("comments_no_dup_step2.xlsx");
+
+        let opts = OpenOptions::new()
+            .read_mode(ReadMode::Eager)
+            .aux_parts(AuxParts::EagerLoad);
 
         let mut wb = Workbook::new();
         wb.add_comment(
@@ -1752,7 +1787,7 @@ mod tests {
         wb.save(&path1).unwrap();
 
         // Open, hydrate via get_form_controls, save.
-        let mut wb2 = Workbook::open(&path1).unwrap();
+        let mut wb2 = Workbook::open_with_options(&path1, &opts).unwrap();
         let controls = wb2.get_form_controls("Sheet1").unwrap();
         assert_eq!(controls.len(), 1);
         let comments = wb2.get_comments("Sheet1").unwrap();
@@ -1760,7 +1795,7 @@ mod tests {
         wb2.save(&path2).unwrap();
 
         // Re-open and verify no duplication of either comments or controls.
-        let mut wb3 = Workbook::open(&path2).unwrap();
+        let mut wb3 = Workbook::open_with_options(&path2, &opts).unwrap();
         let controls3 = wb3.get_form_controls("Sheet1").unwrap();
         assert_eq!(
             controls3.len(),
@@ -1776,10 +1811,15 @@ mod tests {
     #[test]
     fn test_multiple_hydrate_save_cycles_stable_count() {
         use crate::workbook::Workbook;
+        use crate::workbook::{AuxParts, OpenOptions, ReadMode};
         use tempfile::TempDir;
 
         let dir = TempDir::new().unwrap();
         let mut prev_path = dir.path().join("cycle_0.xlsx");
+
+        let opts = OpenOptions::new()
+            .read_mode(ReadMode::Eager)
+            .aux_parts(AuxParts::EagerLoad);
 
         let mut wb = Workbook::new();
         wb.add_form_control("Sheet1", FormControlConfig::button("A1", "Btn"))
@@ -1791,7 +1831,7 @@ mod tests {
         // Run 3 open-hydrate-save cycles.
         for i in 1..=3 {
             let next_path = dir.path().join(format!("cycle_{i}.xlsx"));
-            let mut wb_n = Workbook::open(&prev_path).unwrap();
+            let mut wb_n = Workbook::open_with_options(&prev_path, &opts).unwrap();
             let controls = wb_n.get_form_controls("Sheet1").unwrap();
             assert_eq!(
                 controls.len(),
@@ -1806,11 +1846,16 @@ mod tests {
     #[test]
     fn test_save_without_get_preserves_controls() {
         use crate::workbook::Workbook;
+        use crate::workbook::{AuxParts, OpenOptions, ReadMode};
         use tempfile::TempDir;
 
         let dir = TempDir::new().unwrap();
         let path1 = dir.path().join("no_get_step1.xlsx");
         let path2 = dir.path().join("no_get_step2.xlsx");
+
+        let opts = OpenOptions::new()
+            .read_mode(ReadMode::Eager)
+            .aux_parts(AuxParts::EagerLoad);
 
         let mut wb = Workbook::new();
         wb.add_form_control("Sheet1", FormControlConfig::button("A1", "Btn"))
@@ -1820,11 +1865,11 @@ mod tests {
         wb.save(&path1).unwrap();
 
         // Open and save immediately without calling get_form_controls.
-        let wb2 = Workbook::open(&path1).unwrap();
+        let wb2 = Workbook::open_with_options(&path1, &opts).unwrap();
         wb2.save(&path2).unwrap();
 
         // Re-open and verify controls are preserved without duplication.
-        let mut wb3 = Workbook::open(&path2).unwrap();
+        let mut wb3 = Workbook::open_with_options(&path2, &opts).unwrap();
         let controls = wb3.get_form_controls("Sheet1").unwrap();
         assert_eq!(
             controls.len(),

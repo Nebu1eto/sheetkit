@@ -2589,9 +2589,14 @@ mod tests {
 
     #[test]
     fn test_vba_blob_loaded_when_present() {
+        use crate::workbook::open_options::{AuxParts, OpenOptions, ReadMode};
+
         let vba_data = b"FAKE_VBA_PROJECT_BINARY_DATA_1234567890";
         let xlsm = build_xlsm_with_vba(vba_data);
-        let wb = Workbook::open_from_buffer(&xlsm).unwrap();
+        let opts = OpenOptions::new()
+            .read_mode(ReadMode::Eager)
+            .aux_parts(AuxParts::EagerLoad);
+        let wb = Workbook::open_from_buffer_with_options(&xlsm, &opts).unwrap();
         assert!(wb.vba_blob.is_some());
         assert_eq!(wb.vba_blob.as_deref().unwrap(), vba_data);
     }
@@ -2608,10 +2613,15 @@ mod tests {
 
     #[test]
     fn test_vba_blob_survives_roundtrip_with_identical_bytes() {
+        use crate::workbook::open_options::{AuxParts, OpenOptions, ReadMode};
+
         let vba_data: Vec<u8> = (0..=255).cycle().take(1024).collect();
         let xlsm = build_xlsm_with_vba(&vba_data);
 
-        let wb = Workbook::open_from_buffer(&xlsm).unwrap();
+        let opts = OpenOptions::new()
+            .read_mode(ReadMode::Eager)
+            .aux_parts(AuxParts::EagerLoad);
+        let wb = Workbook::open_from_buffer_with_options(&xlsm, &opts).unwrap();
         assert_eq!(wb.vba_blob.as_deref().unwrap(), &vba_data[..]);
 
         let saved = wb.save_to_buffer().unwrap();
@@ -3568,7 +3578,9 @@ mod tests {
     }
 
     #[test]
-    fn test_readfast_default_mode_has_no_deferred_parts() {
+    fn test_readfast_eager_mode_has_no_deferred_parts() {
+        use crate::workbook::open_options::{AuxParts, OpenOptions, ReadMode};
+
         let mut wb = Workbook::new();
         wb.set_cell_value("Sheet1", "A1", CellValue::String("data".to_string()))
             .unwrap();
@@ -3584,7 +3596,10 @@ mod tests {
         let buf = wb.save_to_buffer().unwrap();
 
         // Eager mode: deferred_parts should be empty.
-        let wb2 = Workbook::open_from_buffer(&buf).unwrap();
+        let opts = OpenOptions::new()
+            .read_mode(ReadMode::Eager)
+            .aux_parts(AuxParts::EagerLoad);
+        let wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
         assert!(
             !wb2.deferred_parts.has_any(),
             "Eager mode should not have deferred parts"
@@ -4321,11 +4336,16 @@ mod tests {
 
     #[test]
     fn test_eager_open_sheets_are_dirty() {
+        use crate::workbook::open_options::{AuxParts, OpenOptions, ReadMode};
+
         let mut wb = Workbook::new();
         wb.set_cell_value("Sheet1", "A1", "test").unwrap();
         let buf = wb.save_to_buffer().unwrap();
 
-        let wb2 = Workbook::open_from_buffer(&buf).unwrap();
+        let opts = OpenOptions::new()
+            .read_mode(ReadMode::Eager)
+            .aux_parts(AuxParts::EagerLoad);
+        let wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
         assert!(
             wb2.is_sheet_dirty(0),
             "eagerly parsed sheet should be dirty"

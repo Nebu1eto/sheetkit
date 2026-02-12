@@ -1173,7 +1173,10 @@ mod tests {
         .unwrap();
         wb.save(&path1).unwrap();
 
-        let wb2 = Workbook::open(&path1).unwrap();
+        let opts = crate::workbook::open_options::OpenOptions::new()
+            .read_mode(crate::workbook::open_options::ReadMode::Eager)
+            .aux_parts(crate::workbook::open_options::AuxParts::EagerLoad);
+        let wb2 = Workbook::open_with_options(&path1, &opts).unwrap();
         assert_eq!(wb2.charts.len() + wb2.raw_charts.len(), 1);
         assert_eq!(wb2.drawings.len(), 1);
         assert_eq!(wb2.images.len(), 1);

@@ -96,6 +96,7 @@ Build pipeline: `build:napi` (Rust compile + napi codegen) -> `typecheck` (tsc -
 
 ### Key Patterns
 
+- **API behavior parity**: Rust and Node.js APIs must have identical default behavior. Default options, return value semantics, and error behavior must match across both layers. When changing defaults or behavior in one layer, always update the other to stay in sync.
 - XML declaration is prepended manually: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`
 - SharedStrings (SST) is optional on open -- use `Sst::default()` if the file has no sharedStrings.xml.
 - DC namespace (`dc:`, `dcterms:`, `cp:`) and `vt:` prefix require manual quick-xml Writer/Reader because serde does not handle namespace prefixes correctly.

@@ -2,13 +2,14 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ReadMode {
     /// Parse all parts eagerly. Equivalent to the old `Full` mode.
-    #[default]
     Eager,
     /// Skip auxiliary parts (comments, drawings, charts, images, doc props,
     /// pivot tables, slicers, threaded comments, VBA, tables, form controls).
     /// These are stored as raw bytes for on-demand parsing or direct
     /// round-trip preservation. Equivalent to the old `ReadFast` mode.
     /// Will evolve into true lazy on-demand hydration in later workstreams.
+    /// This is the default mode.
+    #[default]
     Lazy,
     /// Forward-only streaming read mode (reserved for future use).
     /// Currently behaves the same as `Lazy`.
@@ -18,16 +19,17 @@ pub enum ReadMode {
 /// Controls when auxiliary parts (comments, charts, images, etc.) are parsed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AuxParts {
-    /// Parse auxiliary parts only when accessed.
-    Deferred,
-    /// Parse all auxiliary parts during open (default).
+    /// Parse auxiliary parts only when accessed. This is the default.
     #[default]
+    Deferred,
+    /// Parse all auxiliary parts during open.
     EagerLoad,
 }
 
 /// Options for controlling how a workbook is opened and parsed.
 ///
-/// All fields default to `None` (no limit / parse everything).
+/// All fields default to `None` (no limit). Read mode defaults to `Lazy`
+/// and auxiliary parts default to `Deferred`.
 /// Use the builder-style setter methods for convenience.
 #[derive(Debug, Clone, Default)]
 pub struct OpenOptions {
@@ -50,8 +52,8 @@ pub struct OpenOptions {
     /// Default when `None`: no limit.
     pub max_zip_entries: Option<usize>,
 
-    /// Read mode: `Eager` (default) parses everything; `Lazy` skips
-    /// auxiliary parts for faster read-only workloads; `Stream` is
+    /// Read mode: `Lazy` (default) skips auxiliary parts for faster
+    /// read-only workloads; `Eager` parses everything; `Stream` is
     /// reserved for future streaming reads.
     pub read_mode: ReadMode,
 
@@ -149,8 +151,8 @@ mod tests {
         assert!(opts.sheets.is_none());
         assert!(opts.max_unzip_size.is_none());
         assert!(opts.max_zip_entries.is_none());
-        assert_eq!(opts.read_mode, ReadMode::Eager);
-        assert!(!opts.skip_aux_parts());
+        assert_eq!(opts.read_mode, ReadMode::Lazy);
+        assert!(opts.skip_aux_parts());
     }
 
     #[test]
@@ -174,9 +176,9 @@ mod tests {
     }
 
     #[test]
-    fn test_read_mode_default_is_eager() {
+    fn test_read_mode_default_is_lazy() {
         let mode = ReadMode::default();
-        assert_eq!(mode, ReadMode::Eager);
+        assert_eq!(mode, ReadMode::Lazy);
     }
 
     #[test]
@@ -196,9 +198,9 @@ mod tests {
     }
 
     #[test]
-    fn test_aux_parts_default_is_eager_load() {
+    fn test_aux_parts_default_is_deferred() {
         let opts = OpenOptions::default();
-        assert_eq!(opts.aux_parts, AuxParts::EagerLoad);
+        assert_eq!(opts.aux_parts, AuxParts::Deferred);
     }
 
     #[test]
