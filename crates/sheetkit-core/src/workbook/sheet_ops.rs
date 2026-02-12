@@ -31,6 +31,9 @@ impl Workbook {
         if self.raw_sheet_xml.len() < self.worksheets.len() {
             self.raw_sheet_xml.push(None);
         }
+        if self.sheet_dirty.len() < self.worksheets.len() {
+            self.sheet_dirty.push(true);
+        }
         if self.sheet_threaded_comments.len() < self.worksheets.len() {
             self.sheet_threaded_comments.push(None);
         }
@@ -61,6 +64,7 @@ impl Workbook {
         self.sheet_sparklines.remove(idx);
         self.sheet_vml.remove(idx);
         self.raw_sheet_xml.remove(idx);
+        self.sheet_dirty.remove(idx);
         self.sheet_threaded_comments.remove(idx);
         self.sheet_form_controls.remove(idx);
 
@@ -94,6 +98,7 @@ impl Workbook {
         debug_assert_eq!(self.sheet_sparklines.len(), n, "sheet_sparklines desync");
         debug_assert_eq!(self.sheet_vml.len(), n, "sheet_vml desync");
         debug_assert_eq!(self.raw_sheet_xml.len(), n, "raw_sheet_xml desync");
+        debug_assert_eq!(self.sheet_dirty.len(), n, "sheet_dirty desync");
         debug_assert_eq!(
             self.sheet_threaded_comments.len(),
             n,
@@ -149,6 +154,9 @@ impl Workbook {
         }
         if self.raw_sheet_xml.len() < self.worksheets.len() {
             self.raw_sheet_xml.push(None);
+        }
+        if self.sheet_dirty.len() < self.worksheets.len() {
+            self.sheet_dirty.push(true);
         }
         if self.sheet_threaded_comments.len() < self.worksheets.len() {
             self.sheet_threaded_comments.push(None);
@@ -241,6 +249,9 @@ impl Workbook {
         }
         if self.raw_sheet_xml.len() < self.worksheets.len() {
             self.raw_sheet_xml.push(None);
+        }
+        if self.sheet_dirty.len() < self.worksheets.len() {
+            self.sheet_dirty.push(true);
         }
         if self.sheet_threaded_comments.len() < self.worksheets.len() {
             self.sheet_threaded_comments.push(None);
@@ -617,6 +628,7 @@ impl Workbook {
         // Use expect instead of `?` because this method returns `usize`.
         self.ensure_hydrated(sheet_idx)
             .expect("sheet must be hydrated before attaching a drawing");
+        self.mark_sheet_dirty(sheet_idx);
         self.worksheets[sheet_idx].1.get_mut().unwrap().drawing = Some(DrawingRef {
             r_id: ws_rid.clone(),
         });

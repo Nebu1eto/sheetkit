@@ -266,6 +266,7 @@ impl Workbook {
             self.sheet_sparklines.push(vec![]);
         }
         self.sheet_sparklines[idx].push(config.clone());
+        self.mark_sheet_dirty(idx);
         Ok(())
     }
 
@@ -318,6 +319,7 @@ impl Workbook {
         let mut formula_cells: Vec<(CellCoord, String)> = Vec::new();
         for (idx, sn) in sheet_names.iter().enumerate() {
             self.ensure_hydrated(idx)?;
+            self.mark_sheet_dirty(idx);
             let ws = self.worksheets[idx].1.get().unwrap();
             for row in &ws.sheet_data.rows {
                 for cell in &row.cells {

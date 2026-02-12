@@ -196,6 +196,11 @@ pub struct Workbook {
     /// deferred in Lazy/Stream mode. The bytes are written directly on save
     /// if the corresponding `OnceLock` in `worksheets` was never initialized.
     raw_sheet_xml: Vec<Option<Vec<u8>>>,
+    /// Per-sheet dirty flag, parallel to `worksheets`. A sheet is marked
+    /// dirty when it is mutated (via `worksheet_mut`, `set_cell_value`, etc.).
+    /// Clean sheets with available raw bytes are written via passthrough on
+    /// save, avoiding serialization overhead.
+    sheet_dirty: Vec<bool>,
     /// Slicer definition parts: (zip path, SlicerDefinitions data).
     slicer_defs: Vec<(String, sheetkit_xml::slicer::SlicerDefinitions)>,
     /// Slicer cache definition parts: (zip path, raw XML string).
@@ -252,6 +257,21 @@ impl Workbook {
         self.streamed_sheets.remove(&idx);
     }
 
+    /// Mark a sheet as dirty (modified). Dirty sheets are always serialized
+    /// on save, even if raw bytes exist. Clean sheets can use raw-byte
+    /// passthrough for zero-cost round-trip.
+    pub(crate) fn mark_sheet_dirty(&mut self, idx: usize) {
+        if idx < self.sheet_dirty.len() {
+            self.sheet_dirty[idx] = true;
+        }
+    }
+
+    /// Check whether a sheet has been marked dirty since opening.
+    #[cfg(test)]
+    pub(crate) fn is_sheet_dirty(&self, idx: usize) -> bool {
+        self.sheet_dirty.get(idx).copied().unwrap_or(false)
+    }
+
     /// Get a mutable reference to the worksheet XML for the named sheet.
     ///
     /// If the sheet has streamed data (from [`apply_stream_writer`]), the
@@ -261,6 +281,7 @@ impl Workbook {
         let idx = self.sheet_index(sheet)?;
         self.invalidate_streamed(idx);
         self.ensure_hydrated(idx)?;
+        self.mark_sheet_dirty(idx);
         Ok(self.worksheets[idx].1.get_mut().unwrap())
     }
 
@@ -350,6 +371,7 @@ impl Workbook {
     /// at the given index. Callers must hold `&mut self`.
     pub(crate) fn worksheet_mut_by_index(&mut self, idx: usize) -> Result<&mut WorksheetXml> {
         self.ensure_hydrated(idx)?;
+        self.mark_sheet_dirty(idx);
         Ok(self.worksheets[idx].1.get_mut().unwrap())
     }
 

@@ -52,6 +52,7 @@ impl Workbook {
         let sheet_idx = self.sheet_index(sheet)?;
         self.invalidate_streamed(sheet_idx);
         self.ensure_hydrated(sheet_idx)?;
+        self.mark_sheet_dirty(sheet_idx);
 
         let (col, row_num) = cell_name_to_coordinates(cell)?;
         let cell_ref = crate::utils::cell_ref::coordinates_to_cell_name(col, row_num)?;
@@ -496,6 +497,7 @@ impl Workbook {
         let sheet_idx = self.sheet_index(sheet)?;
         self.invalidate_streamed(sheet_idx);
         self.ensure_hydrated(sheet_idx)?;
+        self.mark_sheet_dirty(sheet_idx);
 
         for (cell, value) in entries {
             if let CellValue::String(ref s) = value {
@@ -591,6 +593,7 @@ impl Workbook {
     ) -> Result<()> {
         let sheet_idx = self.sheet_index(sheet)?;
         self.ensure_hydrated(sheet_idx)?;
+        self.mark_sheet_dirty(sheet_idx);
 
         // Pre-compute column names for the widest row.
         let max_cols = data.iter().map(|r| r.len()).max().unwrap_or(0) as u32;
