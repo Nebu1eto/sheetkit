@@ -314,10 +314,16 @@ export declare class Workbook {
    */
   getRows(sheet: string): Array<JsRowData>
   /**
-   * Serialize a sheet's cell data into a compact binary buffer.
+   * Serialize a sheet's cell data into a compact binary buffer (v1 format).
    * Returns the raw bytes suitable for efficient JS-side decoding.
    */
   getRowsBuffer(sheet: string): Buffer
+  /**
+   * Serialize a sheet's cell data into a compact binary buffer (v2 format).
+   * The v2 format inlines strings with each cell, eliminating the global
+   * string table and enabling incremental row-by-row decoding.
+   */
+  getRowsBufferV2(sheet: string): Buffer
   /**
    * Apply cell data from a binary buffer to a sheet.
    * The buffer must follow the raw transfer binary format.
