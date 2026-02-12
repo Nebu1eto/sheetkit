@@ -38,3 +38,8 @@ encryption = ["aes", "cbc", "ecb", "sha1", "sha2", "hmac", "rand", "base64"]
 
 [dev-dependencies]
 pretty_assertions = { workspace = true }
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "open_modes"
+harness = false

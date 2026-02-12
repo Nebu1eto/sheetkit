@@ -2,3 +2,4 @@ fixtures/
 output/
 node_modules/
 dist/
+baseline-results.json
