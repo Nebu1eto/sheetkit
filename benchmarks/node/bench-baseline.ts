@@ -13,7 +13,7 @@ import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { cpus, totalmem } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Workbook } from "sheetkit";
+import { Workbook } from "@sheetkit/node";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURES_DIR = join(__dirname, "fixtures");
