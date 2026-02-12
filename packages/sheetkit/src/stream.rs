@@ -72,6 +72,37 @@ impl JsStreamWriter {
             .map_err(|e| Error::from_reason(e.to_string()))
     }
 
+    /// Write multiple rows at once starting at the given row number.
+    /// More efficient than calling writeRow in a loop because it crosses
+    /// the FFI boundary only once.
+    #[napi]
+    pub fn write_rows(
+        &mut self,
+        start_row: u32,
+        rows: Vec<Vec<Either4<String, f64, bool, Null>>>,
+    ) -> Result<()> {
+        let writer = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| Error::from_reason("StreamWriter already consumed"))?;
+        let cell_rows: Vec<Vec<CellValue>> = rows
+            .into_iter()
+            .map(|row| {
+                row.into_iter()
+                    .map(|v| match v {
+                        Either4::A(s) => CellValue::String(s),
+                        Either4::B(n) => CellValue::Number(n),
+                        Either4::C(b) => CellValue::Bool(b),
+                        Either4::D(_) => CellValue::Empty,
+                    })
+                    .collect()
+            })
+            .collect();
+        writer
+            .write_rows(start_row, &cell_rows)
+            .map_err(|e| Error::from_reason(e.to_string()))
+    }
+
     /// Write a row with a specific style ID applied to all cells.
     #[napi]
     pub fn write_row_with_style(

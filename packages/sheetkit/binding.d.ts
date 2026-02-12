@@ -10,6 +10,12 @@ export declare class JsStreamWriter {
   setColWidthRange(minCol: number, maxCol: number, width: number): void
   /** Write a row of values. Rows must be written in ascending order. */
   writeRow(row: number, values: Array<string | number | boolean | null>): void
+  /**
+   * Write multiple rows at once starting at the given row number.
+   * More efficient than calling writeRow in a loop because it crosses
+   * the FFI boundary only once.
+   */
+  writeRows(startRow: number, rows: Array<Array<string | number | boolean | null>>): void
   /** Write a row with a specific style ID applied to all cells. */
   writeRowWithStyle(row: number, values: Array<string | number | boolean | null>, styleId: number): void
   /** Add a merge cell reference (e.g., "A1:C3"). */

@@ -874,7 +874,7 @@ class Workbook {
 
   /** Get all rows with their data from a sheet using buffer-based transfer. */
   getRows(sheet: string): JsRowData[] {
-    const buf = this.#native.getRowsBuffer(sheet);
+    const buf = this.#native.getRowsBufferV2(sheet);
     return decodeRowsBuffer(buf);
   }
 
@@ -899,7 +899,7 @@ class Workbook {
    * overhead matters.
    */
   getRowsRaw(sheet: string): RawRowsResult {
-    const buf = this.#native.getRowsBuffer(sheet);
+    const buf = this.#native.getRowsBufferV2(sheet);
     return decodeRowsRawBuffer(buf);
   }
 
@@ -908,7 +908,7 @@ class Workbook {
    * materializing the entire result array in memory at once.
    */
   *getRowsIterator(sheet: string): Generator<JsRowData> {
-    const buf = this.#native.getRowsBuffer(sheet);
+    const buf = this.#native.getRowsBufferV2(sheet);
     yield* decodeRowsIterator(buf);
   }
 
@@ -1054,7 +1054,7 @@ class Workbook {
 
   /** Convert sheet data to an array of JSON objects. */
   toJSON(sheet: string, options?: ToJsonOptions): Record<string, CellValue>[] {
-    const buf = this.#native.getRowsBuffer(sheet);
+    const buf = this.#native.getRowsBufferV2(sheet);
     const sd = new SheetData(buf);
     const rows = sd.toArray();
     if (rows.length === 0) return [];
@@ -1094,7 +1094,7 @@ class Workbook {
     const lineEnding = options?.lineEnding ?? '\n';
     const escapeFormulas = options?.escapeFormulas ?? false;
 
-    const buf = this.#native.getRowsBuffer(sheet);
+    const buf = this.#native.getRowsBufferV2(sheet);
     const sd = new SheetData(buf);
     const rows = sd.toArray();
     if (rows.length === 0) return '';
@@ -1130,7 +1130,7 @@ class Workbook {
   /** Convert sheet data to an HTML table string. */
   toHTML(sheet: string, options?: ToHtmlOptions): string {
     const className = options?.className;
-    const buf = this.#native.getRowsBuffer(sheet);
+    const buf = this.#native.getRowsBufferV2(sheet);
     const sd = new SheetData(buf);
     const rows = sd.toArray();
 

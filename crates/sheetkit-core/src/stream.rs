@@ -245,6 +245,20 @@ impl StreamWriter {
         self.write_row_impl(row, values, None, None)
     }
 
+    /// Write multiple rows of values starting at the given row number.
+    /// Each element in the slice becomes a row. Rows are numbered consecutively
+    /// from `start_row`. All rows must be in ascending order relative to any
+    /// previously written row.
+    pub fn write_rows(&mut self, start_row: u32, rows: &[Vec<CellValue>]) -> Result<()> {
+        for (i, values) in rows.iter().enumerate() {
+            let row_num = start_row
+                .checked_add(i as u32)
+                .ok_or(Error::InvalidRowNumber(u32::MAX))?;
+            self.write_row_impl(row_num, values, None, None)?;
+        }
+        Ok(())
+    }
+
     /// Write a row with a specific style ID applied to all cells.
     pub fn write_row_with_style(
         &mut self,
@@ -1796,5 +1810,86 @@ mod tests {
 
         let (_, streamed) = sw.into_streamed_data().unwrap();
         assert!(streamed.data_len > 1_000_000);
+    }
+
+    #[test]
+    fn test_write_rows_basic() {
+        let mut sw = StreamWriter::new("Sheet1");
+        sw.write_rows(
+            1,
+            &[
+                vec![CellValue::from("A"), CellValue::from(1)],
+                vec![CellValue::from("B"), CellValue::from(2)],
+                vec![CellValue::from("C"), CellValue::from(3)],
+            ],
+        )
+        .unwrap();
+        let ws = finish_and_parse(sw);
+
+        assert_eq!(ws.sheet_data.rows.len(), 3);
+        assert_eq!(ws.sheet_data.rows[0].r, 1);
+        assert_eq!(ws.sheet_data.rows[1].r, 2);
+        assert_eq!(ws.sheet_data.rows[2].r, 3);
+        assert_eq!(ws.sheet_data.rows[0].cells.len(), 2);
+        assert_eq!(ws.sheet_data.rows[0].cells[0].r, "A1");
+        assert_eq!(ws.sheet_data.rows[2].cells[0].r, "A3");
+    }
+
+    #[test]
+    fn test_write_rows_empty() {
+        let mut sw = StreamWriter::new("Sheet1");
+        sw.write_rows(1, &[]).unwrap();
+        let ws = finish_and_parse(sw);
+
+        assert!(ws.sheet_data.rows.is_empty());
+    }
+
+    #[test]
+    fn test_write_rows_mixed_with_single() {
+        let mut sw = StreamWriter::new("Sheet1");
+        sw.write_row(1, &[CellValue::from("first")]).unwrap();
+        sw.write_rows(
+            2,
+            &[
+                vec![CellValue::from("second")],
+                vec![CellValue::from("third")],
+                vec![CellValue::from("fourth")],
+            ],
+        )
+        .unwrap();
+        let ws = finish_and_parse(sw);
+
+        assert_eq!(ws.sheet_data.rows.len(), 4);
+        assert_eq!(ws.sheet_data.rows[0].r, 1);
+        assert_eq!(ws.sheet_data.rows[1].r, 2);
+        assert_eq!(ws.sheet_data.rows[2].r, 3);
+        assert_eq!(ws.sheet_data.rows[3].r, 4);
+    }
+
+    #[test]
+    fn test_write_rows_overflow() {
+        let mut sw = StreamWriter::new("Sheet1");
+        sw.write_row(1, &[CellValue::from("ok")]).unwrap();
+        let result = sw.write_rows(
+            u32::MAX - 1,
+            &[
+                vec![CellValue::from("a")],
+                vec![CellValue::from("b")],
+                vec![CellValue::from("c")],
+            ],
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_write_rows_backward_error() {
+        let mut sw = StreamWriter::new("Sheet1");
+        sw.write_row(5, &[CellValue::from("row5")]).unwrap();
+        let result = sw.write_rows(3, &[vec![CellValue::from("a")], vec![CellValue::from("b")]]);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            Error::StreamRowAlreadyWritten { row: 3 }
+        ));
     }
 }
