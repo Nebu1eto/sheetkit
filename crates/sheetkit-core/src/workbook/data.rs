@@ -314,15 +314,9 @@ impl Workbook {
 
         // Collect all formula cells with their coordinates and formula strings.
         let mut formula_cells: Vec<(CellCoord, String)> = Vec::new();
-        for sn in &sheet_names {
-            let ws = self
-                .worksheets
-                .iter()
-                .find(|(name, _)| name == sn)
-                .map(|(_, ws)| ws)
-                .ok_or_else(|| Error::SheetNotFound {
-                    name: sn.to_string(),
-                })?;
+        for (idx, sn) in sheet_names.iter().enumerate() {
+            self.ensure_hydrated(idx)?;
+            let ws = self.worksheets[idx].1.get().unwrap();
             for row in &ws.sheet_data.rows {
                 for cell in &row.cells {
                     if let Some(ref f) = cell.f {
@@ -378,7 +372,11 @@ impl Workbook {
         // formula element and storing the computed value in the v/t fields.
         for (coord, _formula_str, result) in results {
             let cell_ref = crate::utils::cell_ref::coordinates_to_cell_name(coord.col, coord.row)?;
-            if let Some((_, ws)) = self.worksheets.iter_mut().find(|(n, _)| *n == coord.sheet) {
+            if let Some((_, ws_lock)) = self.worksheets.iter_mut().find(|(n, _)| *n == coord.sheet)
+            {
+                let Some(ws) = ws_lock.get_mut() else {
+                    continue;
+                };
                 if let Some(row) = ws.sheet_data.rows.iter_mut().find(|r| r.r == coord.row) {
                     if let Some(cell) = row.cells.iter_mut().find(|c| c.r == *cell_ref) {
                         match &result {
@@ -419,7 +417,8 @@ impl Workbook {
         current_sheet: &str,
     ) -> Result<crate::formula::eval::CellSnapshot> {
         let mut snapshot = crate::formula::eval::CellSnapshot::new(current_sheet.to_string());
-        for (sn, ws) in &self.worksheets {
+        for (idx, (sn, _)) in self.worksheets.iter().enumerate() {
+            let ws = self.worksheet_ref_by_index(idx)?;
             for row in &ws.sheet_data.rows {
                 for cell in &row.cells {
                     if let Ok((c, r)) = cell_name_to_coordinates(cell.r.as_str()) {
@@ -434,14 +433,7 @@ impl Workbook {
 
     /// Return `(col, row)` pairs for all occupied cells on the named sheet.
     pub fn get_occupied_cells(&self, sheet: &str) -> Result<Vec<(u32, u32)>> {
-        let ws = self
-            .worksheets
-            .iter()
-            .find(|(name, _)| name == sheet)
-            .map(|(_, ws)| ws)
-            .ok_or_else(|| Error::SheetNotFound {
-                name: sheet.to_string(),
-            })?;
+        let ws = self.worksheet_ref(sheet)?;
         let mut cells = Vec::new();
         for row in &ws.sheet_data.rows {
             for cell in &row.cells {

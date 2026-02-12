@@ -740,8 +740,14 @@ export interface JsOpenOptions {
   /** Maximum number of ZIP entries allowed. */
   maxZipEntries?: number
   /**
-   * Parse mode: "full" (default) or "readfast". ReadFast skips auxiliary
+   * Read mode: "eager" (default), "lazy", or "stream". Lazy skips auxiliary
    * parts (comments, charts, images, etc.) for faster read-only workloads.
+   * Stream is reserved for future use and currently behaves like lazy.
+   */
+  readMode?: string
+  /**
+   * Backward-compatible alias for read_mode. "readfast" maps to "lazy",
+   * "full" maps to "eager". Ignored when read_mode is set.
    */
   parseMode?: string
 }

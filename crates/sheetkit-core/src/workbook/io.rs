@@ -20,7 +20,10 @@ impl Workbook {
             package_rels: relationships::package_rels(),
             workbook_xml: WorkbookXml::default(),
             workbook_rels: relationships::workbook_rels(),
-            worksheets: vec![("Sheet1".to_string(), WorksheetXml::default())],
+            worksheets: vec![(
+                "Sheet1".to_string(),
+                initialized_lock(WorksheetXml::default()),
+            )],
             stylesheet: StyleSheet::default(),
             sst_runtime,
             sheet_comments: vec![None],
@@ -53,6 +56,9 @@ impl Workbook {
             person_list: sheetkit_xml::threaded_comment::PersonList::default(),
             sheet_form_controls: vec![vec![]],
             streamed_sheets: HashMap::new(),
+            package_source: None,
+            read_mode: ReadMode::default(),
+            sheet_rows_limit: None,
         }
     }
 
@@ -68,22 +74,34 @@ impl Workbook {
     ///
     /// See [`OpenOptions`] for available options including row limits,
     /// sheet filtering, and ZIP safety limits.
+    ///
+    /// The file is opened directly via `std::fs::File` and the ZIP archive
+    /// is read from the file handle, avoiding a full `std::fs::read` copy.
     pub fn open_with_options<P: AsRef<Path>>(path: P, options: &OpenOptions) -> Result<Self> {
-        let data = std::fs::read(path.as_ref())?;
+        let file_path = path.as_ref();
 
-        // Detect encrypted files (CFB container)
+        // Detect encrypted files (CFB container) by reading the magic bytes.
         #[cfg(feature = "encryption")]
-        if data.len() >= 8 {
-            if let Ok(crate::crypt::ContainerFormat::Cfb) =
-                crate::crypt::detect_container_format(&data)
-            {
-                return Err(Error::FileEncrypted);
+        {
+            let mut header = [0u8; 8];
+            if let Ok(mut f) = std::fs::File::open(file_path) {
+                use std::io::Read as _;
+                if f.read_exact(&mut header).is_ok() {
+                    if let Ok(crate::crypt::ContainerFormat::Cfb) =
+                        crate::crypt::detect_container_format(&header)
+                    {
+                        return Err(Error::FileEncrypted);
+                    }
+                }
             }
         }
 
-        let cursor = std::io::Cursor::new(data);
-        let mut archive = zip::ZipArchive::new(cursor).map_err(|e| Error::Zip(e.to_string()))?;
-        Self::from_archive(&mut archive, options)
+        let file = std::fs::File::open(file_path)?;
+        let mut archive = zip::ZipArchive::new(file).map_err(|e| Error::Zip(e.to_string()))?;
+        let mut wb = Self::from_archive(&mut archive, options)?;
+        wb.package_source = Some(PackageSource::Path(file_path.to_path_buf()));
+        wb.read_mode = options.read_mode;
+        Ok(wb)
     }
 
     /// Build a Workbook from an already-opened ZIP archive.
@@ -145,9 +163,12 @@ impl Workbook {
 
         // Parse each worksheet referenced in the workbook.
         let sheet_count = workbook_xml.sheets.sheets.len();
-        let mut worksheets = Vec::with_capacity(sheet_count);
+        let mut worksheets: Vec<(String, OnceLock<WorksheetXml>)> = Vec::with_capacity(sheet_count);
         let mut worksheet_paths = Vec::with_capacity(sheet_count);
         let mut raw_sheet_xml: Vec<Option<Vec<u8>>> = Vec::with_capacity(sheet_count);
+
+        let defer_sheets = matches!(options.read_mode, ReadMode::Lazy | ReadMode::Stream);
+
         for sheet_entry in &workbook_xml.sheets.sheets {
             // Find the relationship target for this sheet's rId.
             let rel = workbook_rels
@@ -164,20 +185,35 @@ impl Workbook {
 
             let sheet_path = resolve_relationship_target("xl/workbook.xml", &rel.target);
 
-            if options.should_parse_sheet(&sheet_entry.name) {
+            let should_parse = options.should_parse_sheet(&sheet_entry.name);
+
+            if should_parse && !defer_sheets {
+                // Eager mode + selected: parse immediately.
                 let mut ws: WorksheetXml = read_xml_part(archive, &sheet_path)?;
                 for row in &mut ws.sheet_data.rows {
                     row.cells.shrink_to_fit();
                 }
                 ws.sheet_data.rows.shrink_to_fit();
-                worksheets.push((sheet_entry.name.clone(), ws));
+                worksheets.push((sheet_entry.name.clone(), initialized_lock(ws)));
                 raw_sheet_xml.push(None);
-            } else {
-                // Store the raw XML bytes so the sheet round-trips unchanged on save.
+            } else if !should_parse {
+                // Filtered out (any mode): store raw bytes for round-trip save
+                // but initialize the OnceLock with an empty worksheet so that
+                // cell queries return Empty instead of hydrating real data.
                 let raw_bytes = read_bytes_part(archive, &sheet_path)?;
-                worksheets.push((sheet_entry.name.clone(), WorksheetXml::default()));
+                worksheets.push((
+                    sheet_entry.name.clone(),
+                    initialized_lock(WorksheetXml::default()),
+                ));
                 raw_sheet_xml.push(Some(raw_bytes));
-            };
+            } else {
+                // Lazy/Stream mode + selected: store raw bytes for on-demand
+                // hydration. OnceLock is left empty; `worksheet_ref` will
+                // parse from `raw_sheet_xml` on first access.
+                let raw_bytes = read_bytes_part(archive, &sheet_path)?;
+                worksheets.push((sheet_entry.name.clone(), OnceLock::new()));
+                raw_sheet_xml.push(Some(raw_bytes));
+            }
             known_paths.insert(sheet_path.clone());
             worksheet_paths.push(sheet_path);
         }
@@ -579,9 +615,14 @@ impl Workbook {
             }
         }
 
-        // Populate cached column numbers on all cells, apply row limit, and
-        // ensure sorted order for binary search correctness.
-        for (_name, ws) in &mut worksheets {
+        // Populate cached column numbers on all eagerly-parsed cells, apply
+        // row limit, and ensure sorted order for binary search correctness.
+        // Deferred sheets (empty OnceLock) are skipped here; they are
+        // post-processed on demand in `deserialize_worksheet_xml`.
+        for (_name, ws_lock) in &mut worksheets {
+            let Some(ws) = ws_lock.get_mut() else {
+                continue;
+            };
             // Ensure rows are sorted by row number (some writers output unsorted data).
             ws.sheet_data.rows.sort_unstable_by_key(|r| r.r);
 
@@ -638,6 +679,9 @@ impl Workbook {
             person_list,
             sheet_form_controls,
             streamed_sheets: HashMap::new(),
+            package_source: None,
+            read_mode: options.read_mode,
+            sheet_rows_limit: options.sheet_rows,
         })
     }
 
@@ -703,7 +747,10 @@ impl Workbook {
 
         let cursor = std::io::Cursor::new(data);
         let mut archive = zip::ZipArchive::new(cursor).map_err(|e| Error::Zip(e.to_string()))?;
-        Self::from_archive(&mut archive, options)
+        let mut wb = Self::from_archive(&mut archive, options)?;
+        wb.package_source = Some(PackageSource::Buffer(data.into()));
+        wb.read_mode = options.read_mode;
+        Ok(wb)
     }
 
     /// Open an encrypted `.xlsx` file using a password.
@@ -1097,7 +1144,7 @@ impl Workbook {
         write_xml_part(zip, "xl/_rels/workbook.xml.rels", &workbook_rels, options)?;
 
         // xl/worksheets/sheet{N}.xml
-        for (i, (_name, ws)) in self.worksheets.iter().enumerate() {
+        for (i, (_name, ws_lock)) in self.worksheets.iter().enumerate() {
             let entry_name = self.sheet_part_path(i);
 
             // If the sheet has streamed data, write it directly from the temp file.
@@ -1106,13 +1153,25 @@ impl Workbook {
                 continue;
             }
 
-            // If the sheet was not parsed (selective open), write raw bytes directly.
+            // If raw bytes are available, write them directly for round-trip
+            // fidelity. This covers filtered-out sheets (Eager mode) and
+            // deferred sheets (Lazy/Stream mode) that were never accessed.
+            // Once a sheet is hydrated via `ensure_hydrated`, its raw bytes
+            // are cleared, so mutated sheets always take the serialize path.
             if let Some(Some(raw_bytes)) = self.raw_sheet_xml.get(i) {
                 zip.start_file(&entry_name, options)
                     .map_err(|e| Error::Zip(e.to_string()))?;
                 zip.write_all(raw_bytes)?;
                 continue;
             }
+
+            let ws = match ws_lock.get() {
+                Some(ws) => ws,
+                None => {
+                    // Should not happen: either raw bytes or parsed data must exist.
+                    continue;
+                }
+            };
 
             let empty_sparklines: Vec<crate::sparkline::SparklineConfig> = vec![];
             let sparklines = self.sheet_sparklines.get(i).unwrap_or(&empty_sparklines);
@@ -1432,6 +1491,30 @@ pub(crate) fn serialize_xml<T: Serialize>(value: &T) -> Result<String> {
     result.push('\n');
     result.push_str(&body);
     Ok(result)
+}
+
+/// Deserialize a `WorksheetXml` from raw XML bytes.
+///
+/// This is the on-demand counterpart of `read_xml_part` for worksheet data
+/// that was stored as raw bytes during open (lazy mode or filtered-out sheets).
+/// After deserialization, cell column numbers are populated and rows/cells
+/// are sorted for binary-search correctness.
+pub(super) fn deserialize_worksheet_xml(bytes: &[u8]) -> Result<WorksheetXml> {
+    let buf_cap = bytes.len().clamp(8192, LARGE_BUF_CAPACITY);
+    let reader = std::io::BufReader::with_capacity(buf_cap, bytes);
+    let mut ws: WorksheetXml =
+        quick_xml::de::from_reader(reader).map_err(|e| Error::XmlDeserialize(e.to_string()))?;
+    // Post-process: populate cached column numbers, sort rows and cells.
+    ws.sheet_data.rows.sort_unstable_by_key(|r| r.r);
+    for row in &mut ws.sheet_data.rows {
+        for cell in &mut row.cells {
+            cell.col = fast_col_number(cell.r.as_str());
+        }
+        row.cells.sort_unstable_by_key(|c| c.col);
+        row.cells.shrink_to_fit();
+    }
+    ws.sheet_data.rows.shrink_to_fit();
+    Ok(ws)
 }
 
 /// BufReader capacity for large XML parts (worksheets, sharedStrings).

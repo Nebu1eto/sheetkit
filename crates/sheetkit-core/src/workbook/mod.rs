@@ -7,6 +7,7 @@
 use std::collections::{HashMap, HashSet};
 use std::io::{Read as _, Write as _};
 use std::path::Path;
+use std::sync::OnceLock;
 
 use serde::Serialize;
 use sheetkit_xml::chart::ChartSpace;
@@ -107,8 +108,18 @@ mod features;
 mod io;
 mod open_options;
 mod sheet_ops;
+mod source;
 
 pub use open_options::{AuxParts, OpenOptions, ReadMode};
+pub(crate) use source::PackageSource;
+
+/// Helper to initialize an `OnceLock<WorksheetXml>` with a value at
+/// construction time. Avoids repeating the `set`+`unwrap` pattern.
+pub(crate) fn initialized_lock(ws: WorksheetXml) -> OnceLock<WorksheetXml> {
+    let lock = OnceLock::new();
+    let _ = lock.set(ws);
+    lock
+}
 
 /// XML declaration prepended to every XML part in the package.
 const XML_DECLARATION: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#;
@@ -120,7 +131,12 @@ pub struct Workbook {
     package_rels: Relationships,
     workbook_xml: WorkbookXml,
     workbook_rels: Relationships,
-    worksheets: Vec<(String, WorksheetXml)>,
+    /// Per-sheet worksheet XML, stored as `(name, OnceLock<WorksheetXml>)`.
+    /// When a sheet is eagerly parsed, the `OnceLock` is initialized at open
+    /// time. When a sheet is deferred (lazy mode or filtered out), the lock
+    /// is empty and `raw_sheet_xml[i]` holds the raw bytes; the first call
+    /// to [`worksheet_ref`] or [`worksheet_mut`] hydrates the lock on demand.
+    worksheets: Vec<(String, OnceLock<WorksheetXml>)>,
     stylesheet: StyleSheet,
     sst_runtime: SharedStringTable,
     /// Per-sheet comments, parallel to the `worksheets` vector.
@@ -173,9 +189,11 @@ pub struct Workbook {
     vba_blob: Option<Vec<u8>>,
     /// Table parts: (zip path like "xl/tables/table1.xml", TableXml data, sheet_index).
     tables: Vec<(String, sheetkit_xml::table::TableXml, usize)>,
-    /// Raw XML bytes for sheets that were not parsed during selective open.
-    /// Parallel to `worksheets`. `Some(bytes)` means the sheet was skipped
-    /// and the raw bytes should be written directly on save.
+    /// Raw XML bytes for sheets that were not parsed during open.
+    /// Parallel to `worksheets`. `Some(bytes)` means the sheet XML has not
+    /// been deserialized: either filtered out by the `sheets` option, or
+    /// deferred in Lazy/Stream mode. The bytes are written directly on save
+    /// if the corresponding `OnceLock` in `worksheets` was never initialized.
     raw_sheet_xml: Vec<Option<Vec<u8>>>,
     /// Slicer definition parts: (zip path, SlicerDefinitions data).
     slicer_defs: Vec<(String, sheetkit_xml::slicer::SlicerDefinitions)>,
@@ -194,6 +212,14 @@ pub struct Workbook {
     /// are written by streaming from their temp files instead of serializing
     /// the (empty placeholder) WorksheetXml.
     streamed_sheets: HashMap<usize, crate::stream::StreamedSheetData>,
+    /// Backing storage for the xlsx package, retained for lazy part access.
+    #[allow(dead_code)]
+    package_source: Option<PackageSource>,
+    /// Read mode used when this workbook was opened.
+    read_mode: ReadMode,
+    /// Optional row limit from `OpenOptions::sheet_rows`, applied during
+    /// on-demand hydration of deferred sheets.
+    sheet_rows_limit: Option<u32>,
 }
 
 impl Workbook {
@@ -229,20 +255,44 @@ impl Workbook {
     ///
     /// If the sheet has streamed data (from [`apply_stream_writer`]), the
     /// streamed entry is removed so that subsequent edits are not silently
-    /// ignored on save.
+    /// ignored on save. Deferred sheets are hydrated on demand.
     pub(crate) fn worksheet_mut(&mut self, sheet: &str) -> Result<&mut WorksheetXml> {
         let idx = self.sheet_index(sheet)?;
         self.invalidate_streamed(idx);
-        Ok(&mut self.worksheets[idx].1)
+        self.ensure_hydrated(idx)?;
+        Ok(self.worksheets[idx].1.get_mut().unwrap())
     }
 
     /// Get an immutable reference to the worksheet XML for the named sheet.
+    /// Deferred sheets are hydrated lazily via `OnceLock`.
     pub(crate) fn worksheet_ref(&self, sheet: &str) -> Result<&WorksheetXml> {
         let idx = self.sheet_index(sheet)?;
-        Ok(&self.worksheets[idx].1)
+        self.worksheet_ref_by_index(idx)
+    }
+
+    /// Get an immutable reference to the worksheet XML by index.
+    /// Deferred sheets are hydrated lazily via `OnceLock`.
+    pub(crate) fn worksheet_ref_by_index(&self, idx: usize) -> Result<&WorksheetXml> {
+        if let Some(ws) = self.worksheets[idx].1.get() {
+            return Ok(ws);
+        }
+        // Hydrate from raw_sheet_xml on first access.
+        if let Some(Some(bytes)) = self.raw_sheet_xml.get(idx) {
+            let mut ws = io::deserialize_worksheet_xml(bytes)?;
+            if let Some(max_rows) = self.sheet_rows_limit {
+                ws.sheet_data.rows.truncate(max_rows as usize);
+            }
+            Ok(self.worksheets[idx].1.get_or_init(|| ws))
+        } else {
+            Err(Error::Internal(format!(
+                "sheet at index {} has no materialized or deferred data",
+                idx
+            )))
+        }
     }
 
     /// Public immutable reference to a worksheet's XML by sheet name.
+    /// Deferred sheets are hydrated lazily on first access.
     pub fn worksheet_xml_ref(&self, sheet: &str) -> Result<&WorksheetXml> {
         self.worksheet_ref(sheet)
     }
@@ -256,9 +306,50 @@ impl Workbook {
     /// to the worksheets vector.
     pub(crate) fn rebuild_sheet_index(&mut self) {
         self.sheet_name_index.clear();
-        for (i, (name, _)) in self.worksheets.iter().enumerate() {
+        for (i, (name, _ws_lock)) in self.worksheets.iter().enumerate() {
             self.sheet_name_index.insert(name.clone(), i);
         }
+    }
+
+    /// Ensure the sheet at the given index is hydrated (parsed from raw XML).
+    /// This is used by `&mut self` methods that need a mutable `OnceLock`
+    /// reference via `get_mut()`, which requires the lock to be initialized.
+    fn ensure_hydrated(&mut self, idx: usize) -> Result<()> {
+        if self.worksheets[idx].1.get().is_some() {
+            // OnceLock is set. If raw bytes are still present, this is a
+            // placeholder (filtered-out sheet with WorksheetXml::default()).
+            // Replace the placeholder with properly parsed data.
+            if let Some(Some(bytes)) = self.raw_sheet_xml.get(idx) {
+                let mut ws = io::deserialize_worksheet_xml(bytes)?;
+                if let Some(max_rows) = self.sheet_rows_limit {
+                    ws.sheet_data.rows.truncate(max_rows as usize);
+                }
+                *self.worksheets[idx].1.get_mut().unwrap() = ws;
+                self.raw_sheet_xml[idx] = None;
+            }
+            return Ok(());
+        }
+        if let Some(Some(bytes)) = self.raw_sheet_xml.get(idx) {
+            let mut ws = io::deserialize_worksheet_xml(bytes)?;
+            if let Some(max_rows) = self.sheet_rows_limit {
+                ws.sheet_data.rows.truncate(max_rows as usize);
+            }
+            let _ = self.worksheets[idx].1.set(ws);
+            self.raw_sheet_xml[idx] = None;
+            Ok(())
+        } else {
+            Err(Error::Internal(format!(
+                "sheet at index {} has no materialized or deferred data",
+                idx
+            )))
+        }
+    }
+
+    /// Hydrate if needed and return a mutable reference to the worksheet
+    /// at the given index. Callers must hold `&mut self`.
+    pub(crate) fn worksheet_mut_by_index(&mut self, idx: usize) -> Result<&mut WorksheetXml> {
+        self.ensure_hydrated(idx)?;
+        Ok(self.worksheets[idx].1.get_mut().unwrap())
     }
 
     /// Resolve the part path for a sheet index from workbook relationships.

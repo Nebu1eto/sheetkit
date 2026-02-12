@@ -561,7 +561,7 @@ mod tests {
         assert_eq!(wb.drawings.len(), 1);
         assert!(wb.worksheet_drawings.contains_key(&0));
         assert!(wb.drawing_rels.contains_key(&0));
-        assert!(wb.worksheets[0].1.drawing.is_some());
+        assert!(wb.worksheets[0].1.get().unwrap().drawing.is_some());
     }
 
     #[test]
