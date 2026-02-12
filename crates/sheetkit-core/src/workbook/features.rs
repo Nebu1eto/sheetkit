@@ -226,9 +226,10 @@ impl Workbook {
     /// Get all threaded comments for a sheet.
     pub fn get_threaded_comments(&self, sheet: &str) -> Result<Vec<ThreadedCommentData>> {
         let idx = self.sheet_index(sheet)?;
+        let (threaded_comments, person_list) = self.threaded_comment_view(idx);
         Ok(crate::threaded_comment::get_threaded_comments(
-            &self.sheet_threaded_comments[idx],
-            &self.person_list,
+            &threaded_comments,
+            &person_list,
         ))
     }
 
@@ -239,9 +240,10 @@ impl Workbook {
         cell: &str,
     ) -> Result<Vec<ThreadedCommentData>> {
         let idx = self.sheet_index(sheet)?;
+        let (threaded_comments, person_list) = self.threaded_comment_view(idx);
         Ok(crate::threaded_comment::get_threaded_comments_by_cell(
-            &self.sheet_threaded_comments[idx],
-            &self.person_list,
+            &threaded_comments,
+            &person_list,
             cell,
         ))
     }
@@ -284,7 +286,78 @@ impl Workbook {
 
     /// Get all persons in the person list.
     pub fn get_persons(&self) -> Vec<PersonData> {
-        crate::threaded_comment::get_persons(&self.person_list)
+        use crate::workbook::aux::AuxCategory;
+
+        if !self.person_list.persons.is_empty() {
+            return crate::threaded_comment::get_persons(&self.person_list);
+        }
+
+        let persons = self
+            .deferred_parts
+            .get_path(AuxCategory::PersonList, "xl/persons/person.xml")
+            .and_then(|bytes| {
+                let xml_str = String::from_utf8_lossy(bytes);
+                quick_xml::de::from_str::<sheetkit_xml::threaded_comment::PersonList>(&xml_str).ok()
+            })
+            .unwrap_or_else(|| self.person_list.clone());
+        crate::threaded_comment::get_persons(&persons)
+    }
+
+    /// Build a read-only threaded-comment view for a sheet, including deferred
+    /// threaded comments and person list when present.
+    fn threaded_comment_view(
+        &self,
+        sheet_idx: usize,
+    ) -> (
+        Option<sheetkit_xml::threaded_comment::ThreadedComments>,
+        sheetkit_xml::threaded_comment::PersonList,
+    ) {
+        use crate::workbook::aux::AuxCategory;
+
+        let threaded = self
+            .sheet_threaded_comments
+            .get(sheet_idx)
+            .cloned()
+            .flatten()
+            .or_else(|| {
+                let tc_path = self
+                    .worksheet_rels
+                    .get(&sheet_idx)
+                    .and_then(|rels| {
+                        rels.relationships.iter().find(|r| {
+                            r.rel_type == sheetkit_xml::threaded_comment::REL_TYPE_THREADED_COMMENT
+                        })
+                    })
+                    .map(|rel| {
+                        let sheet_path = self.sheet_part_path(sheet_idx);
+                        resolve_relationship_target(&sheet_path, &rel.target)
+                    })?;
+
+                self.deferred_parts
+                    .get_path(AuxCategory::ThreadedComments, &tc_path)
+                    .and_then(|bytes| {
+                        let xml_str = String::from_utf8_lossy(bytes);
+                        quick_xml::de::from_str::<sheetkit_xml::threaded_comment::ThreadedComments>(
+                            &xml_str,
+                        )
+                        .ok()
+                    })
+            });
+
+        let persons = if self.person_list.persons.is_empty() {
+            self.deferred_parts
+                .get_path(AuxCategory::PersonList, "xl/persons/person.xml")
+                .and_then(|bytes| {
+                    let xml_str = String::from_utf8_lossy(bytes);
+                    quick_xml::de::from_str::<sheetkit_xml::threaded_comment::PersonList>(&xml_str)
+                        .ok()
+                })
+                .unwrap_or_else(|| self.person_list.clone())
+        } else {
+            self.person_list.clone()
+        };
+
+        (threaded, persons)
     }
 
     /// Set an auto-filter on a sheet for the given cell range.
@@ -305,6 +378,8 @@ impl Workbook {
     /// Creates the table XML part, adds the appropriate relationship and
     /// content type entries. The table name must be unique within the workbook.
     pub fn add_table(&mut self, sheet: &str, config: &crate::table::TableConfig) -> Result<()> {
+        use crate::workbook::aux::AuxCategory;
+
         self.hydrate_tables();
         crate::table::validate_table_config(config)?;
         let sheet_idx = self.sheet_index(sheet)?;
@@ -335,6 +410,7 @@ impl Workbook {
         let table_xml = crate::table::build_table_xml(config, table_id);
 
         self.tables.push((table_path, table_xml, sheet_idx));
+        self.deferred_parts.mark_dirty(AuxCategory::Tables);
         Ok(())
     }
 
@@ -342,9 +418,43 @@ impl Workbook {
     ///
     /// Returns metadata for each table associated with the given sheet.
     pub fn get_tables(&self, sheet: &str) -> Result<Vec<crate::table::TableInfo>> {
+        use crate::workbook::aux::AuxCategory;
+
         let sheet_idx = self.sheet_index(sheet)?;
-        let infos = self
-            .tables
+        let mut tables = self.tables.clone();
+
+        let resolve_table_sheet_idx = |table_path: &str| -> usize {
+            for (idx, rels) in &self.worksheet_rels {
+                for rel in &rels.relationships {
+                    if rel.rel_type != rel_types::TABLE {
+                        continue;
+                    }
+                    let resolved =
+                        resolve_relationship_target(&self.sheet_part_path(*idx), &rel.target);
+                    if resolved == table_path {
+                        return *idx;
+                    }
+                }
+            }
+            0
+        };
+
+        if let Some(entries) = self.deferred_parts.entries(AuxCategory::Tables) {
+            for (path, bytes) in entries {
+                if tables.iter().any(|(existing, _, _)| existing == path) {
+                    continue;
+                }
+                let xml_str = String::from_utf8_lossy(bytes);
+                if let Ok(table_xml) =
+                    quick_xml::de::from_str::<sheetkit_xml::table::TableXml>(&xml_str)
+                {
+                    let idx = resolve_table_sheet_idx(path);
+                    tables.push((path.clone(), table_xml, idx));
+                }
+            }
+        }
+
+        let infos = tables
             .iter()
             .filter(|(_, _, idx)| *idx == sheet_idx)
             .map(|(_, table_xml, _)| crate::table::table_xml_to_info(table_xml))
@@ -356,6 +466,8 @@ impl Workbook {
     ///
     /// Removes the table part, relationship, and content type entries.
     pub fn delete_table(&mut self, sheet: &str, table_name: &str) -> Result<()> {
+        use crate::workbook::aux::AuxCategory;
+
         self.hydrate_tables();
         let sheet_idx = self.sheet_index(sheet)?;
 
@@ -366,6 +478,8 @@ impl Workbook {
         match pos {
             Some(i) => {
                 self.tables.remove(i);
+                self.deferred_parts.mark_dirty(AuxCategory::Tables);
+                self.mark_sheet_dirty(sheet_idx);
                 Ok(())
             }
             None => Err(Error::TableNotFound {
@@ -923,6 +1037,7 @@ impl Workbook {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::workbook::open_options::{OpenOptions, ReadMode};
     use tempfile::TempDir;
 
     #[test]
@@ -1875,6 +1990,42 @@ mod tests {
         let wb = Workbook::new();
         let result = wb.get_tables("NoSheet");
         assert!(matches!(result.unwrap_err(), Error::SheetNotFound { .. }));
+    }
+
+    #[test]
+    fn test_lazy_get_tables_without_mutation() {
+        use crate::table::{TableColumn, TableConfig};
+
+        let mut wb = Workbook::new();
+        wb.add_table(
+            "Sheet1",
+            &TableConfig {
+                name: "LazyTable".to_string(),
+                display_name: "LazyTable".to_string(),
+                range: "A1:B5".to_string(),
+                columns: vec![
+                    TableColumn {
+                        name: "A".to_string(),
+                        totals_row_function: None,
+                        totals_row_label: None,
+                    },
+                    TableColumn {
+                        name: "B".to_string(),
+                        totals_row_function: None,
+                        totals_row_label: None,
+                    },
+                ],
+                ..TableConfig::default()
+            },
+        )
+        .unwrap();
+        let buf = wb.save_to_buffer().unwrap();
+
+        let opts = OpenOptions::new().read_mode(ReadMode::Lazy);
+        let wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
+        let tables = wb2.get_tables("Sheet1").unwrap();
+        assert_eq!(tables.len(), 1);
+        assert_eq!(tables[0].name, "LazyTable");
     }
 
     #[test]
@@ -3059,6 +3210,56 @@ mod tests {
 
         let persons = wb2.get_persons();
         assert_eq!(persons.len(), 2);
+    }
+
+    #[test]
+    fn test_lazy_get_threaded_comments_without_mutation() {
+        let mut wb = Workbook::new();
+        wb.add_threaded_comment(
+            "Sheet1",
+            "A1",
+            &crate::threaded_comment::ThreadedCommentInput {
+                author: "Alice".to_string(),
+                text: "Deferred threaded".to_string(),
+                parent_id: None,
+            },
+        )
+        .unwrap();
+        let buf = wb.save_to_buffer().unwrap();
+
+        let opts = OpenOptions::new().read_mode(ReadMode::Lazy);
+        let wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
+        let comments = wb2.get_threaded_comments("Sheet1").unwrap();
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments[0].cell_ref, "A1");
+        assert_eq!(comments[0].text, "Deferred threaded");
+        assert_eq!(comments[0].author, "Alice");
+
+        let by_cell = wb2.get_threaded_comments_by_cell("Sheet1", "A1").unwrap();
+        assert_eq!(by_cell.len(), 1);
+        assert_eq!(by_cell[0].text, "Deferred threaded");
+    }
+
+    #[test]
+    fn test_lazy_get_persons_without_mutation() {
+        let mut wb = Workbook::new();
+        wb.add_threaded_comment(
+            "Sheet1",
+            "A1",
+            &crate::threaded_comment::ThreadedCommentInput {
+                author: "Alice".to_string(),
+                text: "Deferred threaded".to_string(),
+                parent_id: None,
+            },
+        )
+        .unwrap();
+        let buf = wb.save_to_buffer().unwrap();
+
+        let opts = OpenOptions::new().read_mode(ReadMode::Lazy);
+        let wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
+        let persons = wb2.get_persons();
+        assert_eq!(persons.len(), 1);
+        assert_eq!(persons[0].display_name, "Alice");
     }
 
     #[test]
