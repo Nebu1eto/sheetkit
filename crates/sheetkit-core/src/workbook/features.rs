@@ -67,11 +67,14 @@ impl Workbook {
     /// This is called automatically before any comment mutation or query to
     /// ensure pre-existing comments are preserved.
     fn hydrate_comments(&mut self, sheet_idx: usize) {
-        if self.deferred_parts.is_empty() {
+        use crate::workbook::aux::AuxCategory;
+
+        if !self.deferred_parts.has_category(AuxCategory::Comments)
+            && !self.deferred_parts.has_category(AuxCategory::Vml)
+        {
             return;
         }
 
-        // Determine the comment ZIP path from the worksheet relationship.
         let comment_path = self
             .worksheet_rels
             .get(&sheet_idx)
@@ -86,18 +89,15 @@ impl Workbook {
             });
 
         if let Some(ref path) = comment_path {
-            if let Some(raw_bytes) = self.deferred_parts.remove(path) {
+            if let Some(raw_bytes) = self.deferred_parts.remove_path(AuxCategory::Comments, path) {
                 let xml_str = String::from_utf8_lossy(&raw_bytes);
                 if let Ok(parsed) =
                     quick_xml::de::from_str::<sheetkit_xml::comments::Comments>(&xml_str)
                 {
                     match &mut self.sheet_comments[sheet_idx] {
                         Some(existing) => {
-                            // Merge: add authors and comments from deferred data,
-                            // then append any already-present comments on top.
                             let mut merged = parsed;
                             for comment in std::mem::take(&mut existing.comment_list.comments) {
-                                // Re-map author_id to the merged author list.
                                 let author_name = existing
                                     .authors
                                     .authors
@@ -116,8 +116,6 @@ impl Workbook {
                                         (merged.authors.authors.len() - 1) as u32
                                     }
                                 };
-                                // Remove any duplicate on the same cell from the
-                                // deferred data (in-memory version wins).
                                 merged
                                     .comment_list
                                     .comments
@@ -137,10 +135,10 @@ impl Workbook {
                         }
                     }
                 }
+                self.deferred_parts.mark_dirty(AuxCategory::Comments);
             }
         }
 
-        // Also hydrate the VML drawing for this sheet if deferred.
         let vml_path = self
             .worksheet_rels
             .get(&sheet_idx)
@@ -155,10 +153,11 @@ impl Workbook {
             });
 
         if let Some(ref path) = vml_path {
-            if let Some(vml_bytes) = self.deferred_parts.remove(path) {
+            if let Some(vml_bytes) = self.deferred_parts.remove_path(AuxCategory::Vml, path) {
                 if self.sheet_vml[sheet_idx].is_none() {
                     self.sheet_vml[sheet_idx] = Some(vml_bytes);
                 }
+                self.deferred_parts.mark_dirty(AuxCategory::Vml);
             }
         }
     }
@@ -213,6 +212,7 @@ impl Workbook {
         cell: &str,
         input: &ThreadedCommentInput,
     ) -> Result<String> {
+        self.hydrate_threaded_comments();
         let idx = self.sheet_index(sheet)?;
         crate::threaded_comment::add_threaded_comment(
             &mut self.sheet_threaded_comments[idx],
@@ -249,6 +249,7 @@ impl Workbook {
     ///
     /// Returns an error if the comment was not found.
     pub fn delete_threaded_comment(&mut self, sheet: &str, comment_id: &str) -> Result<()> {
+        self.hydrate_threaded_comments();
         let idx = self.sheet_index(sheet)?;
         crate::threaded_comment::delete_threaded_comment(
             &mut self.sheet_threaded_comments[idx],
@@ -265,6 +266,7 @@ impl Workbook {
         comment_id: &str,
         done: bool,
     ) -> Result<()> {
+        self.hydrate_threaded_comments();
         let idx = self.sheet_index(sheet)?;
         crate::threaded_comment::resolve_threaded_comment(
             &mut self.sheet_threaded_comments[idx],
@@ -302,6 +304,7 @@ impl Workbook {
     /// Creates the table XML part, adds the appropriate relationship and
     /// content type entries. The table name must be unique within the workbook.
     pub fn add_table(&mut self, sheet: &str, config: &crate::table::TableConfig) -> Result<()> {
+        self.hydrate_tables();
         crate::table::validate_table_config(config)?;
         let sheet_idx = self.sheet_index(sheet)?;
 
@@ -352,6 +355,7 @@ impl Workbook {
     ///
     /// Removes the table part, relationship, and content type entries.
     pub fn delete_table(&mut self, sheet: &str, table_name: &str) -> Result<()> {
+        self.hydrate_tables();
         let sheet_idx = self.sheet_index(sheet)?;
 
         let pos = self

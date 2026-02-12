@@ -46,7 +46,7 @@ impl Workbook {
             sheet_sparklines: vec![vec![]],
             sheet_vml: vec![None],
             unknown_parts: vec![],
-            deferred_parts: HashMap::new(),
+            deferred_parts: crate::workbook::aux::DeferredAuxParts::new(),
             vba_blob: None,
             tables: vec![],
             raw_sheet_xml: vec![None],
@@ -595,9 +595,10 @@ impl Workbook {
         }
 
         // Collect remaining ZIP entries. In Lazy/Stream mode, unhandled entries
-        // go into deferred_parts; in Eager mode, they go into unknown_parts.
+        // go into deferred_parts (typed index); in Eager mode, they go into
+        // unknown_parts for round-trip preservation.
         let mut unknown_parts: Vec<(String, Vec<u8>)> = Vec::new();
-        let mut deferred_parts: HashMap<String, Vec<u8>> = HashMap::new();
+        let mut deferred_parts = crate::workbook::aux::DeferredAuxParts::new();
         for i in 0..archive.len() {
             let Ok(entry) = archive.by_index(i) else {
                 continue;
@@ -606,7 +607,7 @@ impl Workbook {
             drop(entry);
             if !known_paths.contains(&name) {
                 if let Ok(bytes) = read_bytes_part(archive, &name) {
-                    if skip_aux {
+                    if skip_aux && crate::workbook::aux::classify_deferred_path(&name).is_some() {
                         deferred_parts.insert(name, bytes);
                     } else {
                         unknown_parts.push((name, bytes));
@@ -814,7 +815,7 @@ impl Workbook {
         // Ensure VBA project content type override and workbook relationship are
         // present when a VBA blob exists, and absent when it does not.
         // Skip when deferred_parts is non-empty: relationships are already correct.
-        let has_deferred = !self.deferred_parts.is_empty();
+        let has_deferred = self.deferred_parts.has_any();
         let mut workbook_rels = self.workbook_rels.clone();
         if self.vba_blob.is_some() {
             let vba_part_name = "/xl/vbaProject.bin";
@@ -1377,7 +1378,7 @@ impl Workbook {
         // Skip any path that was already written by the normal code above. This
         // prevents duplicate ZIP entries when an auxiliary part (comments, doc
         // properties, etc.) is mutated after a Lazy open.
-        if !self.deferred_parts.is_empty() {
+        if self.deferred_parts.has_any() {
             let mut emitted_owned: HashSet<String> = HashSet::new();
             // Essential parts always written.
             emitted_owned.insert("[Content_Types].xml".to_string());
@@ -1463,7 +1464,7 @@ impl Workbook {
                 emitted_owned.insert(path.clone());
             }
 
-            for (path, data) in &self.deferred_parts {
+            for (path, data) in self.deferred_parts.remaining_parts() {
                 if emitted_owned.contains(path) {
                     continue;
                 }
@@ -3532,7 +3533,7 @@ mod tests {
         let wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
         // When auxiliary parts exist, they should be captured in deferred_parts.
         assert!(
-            !wb2.deferred_parts.is_empty(),
+            wb2.deferred_parts.has_any(),
             "deferred_parts should contain skipped auxiliary parts"
         );
     }
@@ -3556,7 +3557,7 @@ mod tests {
         // Eager mode: deferred_parts should be empty.
         let wb2 = Workbook::open_from_buffer(&buf).unwrap();
         assert!(
-            wb2.deferred_parts.is_empty(),
+            !wb2.deferred_parts.has_any(),
             "Eager mode should not have deferred parts"
         );
     }

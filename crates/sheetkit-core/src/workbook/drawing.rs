@@ -13,6 +13,7 @@ impl Workbook {
         to_cell: &str,
         config: &ChartConfig,
     ) -> Result<()> {
+        self.hydrate_drawings();
         let sheet_idx =
             crate::sheet::find_sheet_index(&self.worksheets, sheet).ok_or_else(|| {
                 Error::SheetNotFound {
@@ -84,6 +85,7 @@ impl Workbook {
     /// charts and images, shapes do not reference external parts and therefore
     /// do not need a relationship entry.
     pub fn add_shape(&mut self, sheet: &str, config: &crate::shape::ShapeConfig) -> Result<()> {
+        self.hydrate_drawings();
         let sheet_idx =
             crate::sheet::find_sheet_index(&self.worksheets, sheet).ok_or_else(|| {
                 Error::SheetNotFound {
@@ -108,6 +110,7 @@ impl Workbook {
     /// Dimensions are specified in pixels via `config.width_px` and
     /// `config.height_px`.
     pub fn add_image(&mut self, sheet: &str, config: &ImageConfig) -> Result<()> {
+        self.hydrate_drawings();
         crate::image::validate_image_config(config)?;
 
         let sheet_idx =
@@ -172,6 +175,7 @@ impl Workbook {
     /// Removes the drawing anchor, chart data, relationship entry, and content
     /// type override for the chart at `cell` on `sheet`.
     pub fn delete_chart(&mut self, sheet: &str, cell: &str) -> Result<()> {
+        self.hydrate_drawings();
         let sheet_idx = self.sheet_index(sheet)?;
         let (col, row) = cell_name_to_coordinates(cell)?;
         let target_col = col - 1;
@@ -265,6 +269,7 @@ impl Workbook {
     /// type for the picture at `cell` on `sheet`. Searches both one-cell and
     /// two-cell anchors.
     pub fn delete_picture(&mut self, sheet: &str, cell: &str) -> Result<()> {
+        self.hydrate_drawings();
         let sheet_idx = self.sheet_index(sheet)?;
         let (col, row) = cell_name_to_coordinates(cell)?;
         let target_col = col - 1;

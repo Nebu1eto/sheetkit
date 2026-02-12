@@ -7,6 +7,7 @@ impl Workbook {
     /// `config.source_range` and places its output on `config.target_sheet`
     /// starting at `config.target_cell`.
     pub fn add_pivot_table(&mut self, config: &PivotTableConfig) -> Result<()> {
+        self.hydrate_pivot_tables();
         // Validate source sheet exists.
         let _src_idx = self.sheet_index(&config.source_sheet)?;
 
@@ -164,6 +165,7 @@ impl Workbook {
 
     /// Delete a pivot table by name.
     pub fn delete_pivot_table(&mut self, name: &str) -> Result<()> {
+        self.hydrate_pivot_tables();
         // Find the pivot table.
         let pt_idx = self
             .pivot_tables
@@ -508,6 +510,7 @@ impl Workbook {
 
     /// Set the core document properties (title, author, etc.).
     pub fn set_doc_props(&mut self, props: crate::doc_props::DocProperties) {
+        self.hydrate_doc_props();
         self.core_properties = Some(props.to_core_properties());
         self.ensure_doc_props_content_types();
     }
@@ -522,6 +525,7 @@ impl Workbook {
 
     /// Set the application properties (company, app version, etc.).
     pub fn set_app_props(&mut self, props: crate::doc_props::AppProperties) {
+        self.hydrate_doc_props();
         self.app_properties = Some(props.to_extended_properties());
         self.ensure_doc_props_content_types();
     }
@@ -541,6 +545,7 @@ impl Workbook {
         name: &str,
         value: crate::doc_props::CustomPropertyValue,
     ) {
+        self.hydrate_doc_props();
         let props = self
             .custom_properties
             .get_or_insert_with(sheetkit_xml::doc_props::CustomProperties::default);
@@ -558,6 +563,7 @@ impl Workbook {
     /// Remove a custom property by name. Returns `true` if a property was
     /// found and removed.
     pub fn delete_custom_property(&mut self, name: &str) -> bool {
+        self.hydrate_doc_props();
         if let Some(ref mut props) = self.custom_properties {
             crate::doc_props::delete_custom_property(props, name)
         } else {
@@ -671,6 +677,8 @@ impl Workbook {
             SlicerCacheDefinition, SlicerDefinition, SlicerDefinitions, TableSlicerCache,
         };
 
+        self.hydrate_slicers();
+        self.hydrate_tables();
         crate::slicer::validate_slicer_config(config)?;
 
         let sheet_idx = self.sheet_index(sheet)?;
@@ -868,6 +876,7 @@ impl Workbook {
     ///
     /// Removes the slicer definition, cache, content types, and relationships.
     pub fn delete_slicer(&mut self, sheet: &str, name: &str) -> Result<()> {
+        self.hydrate_slicers();
         let sheet_idx = self.sheet_index(sheet)?;
 
         // Find the slicer definition containing this slicer name.
