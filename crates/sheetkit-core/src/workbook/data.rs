@@ -1079,7 +1079,7 @@ impl Workbook {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workbook::open_options::{OpenOptions, ReadMode};
+    use crate::workbook::open_options::{AuxParts, OpenOptions, ReadMode};
     use tempfile::TempDir;
 
     fn make_pivot_workbook() -> Workbook {
@@ -1324,7 +1324,10 @@ mod tests {
             .is_ok());
 
         // Re-open and verify pivot table is parsed.
-        let wb2 = Workbook::open(&path).unwrap();
+        let opts = OpenOptions::new()
+            .read_mode(ReadMode::Eager)
+            .aux_parts(AuxParts::EagerLoad);
+        let wb2 = Workbook::open_with_options(&path, &opts).unwrap();
         assert_eq!(wb2.pivot_tables.len(), 1);
         assert_eq!(wb2.pivot_tables[0].1.name, "PivotTable1");
         assert_eq!(wb2.pivot_cache_defs.len(), 1);
@@ -1610,7 +1613,10 @@ mod tests {
         wb.add_pivot_table(&config2).unwrap();
         wb.save(&path).unwrap();
 
-        let wb2 = Workbook::open(&path).unwrap();
+        let opts = OpenOptions::new()
+            .read_mode(ReadMode::Eager)
+            .aux_parts(AuxParts::EagerLoad);
+        let wb2 = Workbook::open_with_options(&path, &opts).unwrap();
         assert_eq!(wb2.pivot_tables.len(), 2);
         let names: Vec<&str> = wb2
             .pivot_tables
@@ -2076,7 +2082,10 @@ mod tests {
 
         wb.save(&path).unwrap();
 
-        let wb2 = Workbook::open(&path).unwrap();
+        let opts = OpenOptions::new()
+            .read_mode(ReadMode::Eager)
+            .aux_parts(AuxParts::EagerLoad);
+        let wb2 = Workbook::open_with_options(&path, &opts).unwrap();
         let sparklines = wb2.get_sparklines("Sheet1").unwrap();
         assert_eq!(sparklines.len(), 2);
         assert_eq!(sparklines[0].data_range, "Sheet1!A1:A10");

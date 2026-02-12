@@ -783,7 +783,10 @@ mod tests {
         }
 
         // Open and extract
-        let wb = crate::workbook::Workbook::open_from_buffer(&buf).unwrap();
+        let opts = crate::workbook::OpenOptions::new()
+            .read_mode(crate::workbook::ReadMode::Eager)
+            .aux_parts(crate::workbook::AuxParts::EagerLoad);
+        let wb = crate::workbook::Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
 
         // Raw VBA project should be available
         let raw = wb.get_vba_project();
@@ -840,7 +843,10 @@ mod tests {
             zip.finish().unwrap();
         }
 
-        let wb = crate::workbook::Workbook::open_from_buffer(&buf).unwrap();
+        let opts = crate::workbook::OpenOptions::new()
+            .read_mode(crate::workbook::ReadMode::Eager)
+            .aux_parts(crate::workbook::AuxParts::EagerLoad);
+        let wb = crate::workbook::Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
         let project = wb.get_vba_modules().unwrap();
         assert!(project.is_some(), "should have VBA modules");
         let project = project.unwrap();
@@ -888,11 +894,15 @@ mod tests {
         }
 
         // Open, then save again
-        let wb = crate::workbook::Workbook::open_from_buffer(&buf).unwrap();
+        let opts = crate::workbook::OpenOptions::new()
+            .read_mode(crate::workbook::ReadMode::Eager)
+            .aux_parts(crate::workbook::AuxParts::EagerLoad);
+        let wb = crate::workbook::Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
         let saved_buf = wb.save_to_buffer().unwrap();
 
         // Re-open and verify VBA is preserved
-        let wb2 = crate::workbook::Workbook::open_from_buffer(&saved_buf).unwrap();
+        let wb2 =
+            crate::workbook::Workbook::open_from_buffer_with_options(&saved_buf, &opts).unwrap();
         let raw = wb2.get_vba_project();
         assert!(raw.is_some(), "VBA project should survive save roundtrip");
         assert_eq!(raw.unwrap(), vba_bin);
