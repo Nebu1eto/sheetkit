@@ -101,6 +101,7 @@ use crate::workbook_paths::{
     resolve_relationship_target,
 };
 
+pub(crate) mod aux;
 mod cell_ops;
 mod data;
 mod drawing;
@@ -180,10 +181,10 @@ pub struct Workbook {
     /// ZIP entries not recognized by the parser, preserved for round-trip fidelity.
     /// Each entry is (zip_path, raw_bytes).
     unknown_parts: Vec<(String, Vec<u8>)>,
-    /// Auxiliary parts deferred during Lazy/Stream open. Stored as raw bytes
-    /// and written back unchanged on save unless parsed on demand. Keyed by
-    /// ZIP path (e.g. "xl/charts/chart1.xml").
-    deferred_parts: HashMap<String, Vec<u8>>,
+    /// Typed index of auxiliary parts deferred during Lazy/Stream open.
+    /// Stores raw bytes grouped by category (comments, charts, doc props, etc.)
+    /// and supports on-demand hydration with dirty tracking.
+    deferred_parts: aux::DeferredAuxParts,
     /// Raw VBA project binary blob (`xl/vbaProject.bin`), preserved for round-trip
     /// and used for VBA module extraction. `None` for non-macro workbooks.
     vba_blob: Option<Vec<u8>>,
