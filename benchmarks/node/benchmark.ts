@@ -231,29 +231,23 @@ async function benchReadFile(filename: string, label: string, category: string) 
 
   console.log(`\n--- ${label} ---`);
 
-  await benchMultiRun('SheetKit', `Read ${label}`, category, () => {
-    const wb = SheetKitWorkbook.openSync(filepath);
-    for (const name of wb.sheetNames) {
-      wb.getRows(name);
-    }
-  });
-
-  await benchMultiRun('SheetKit', `Read ${label} (async)`, category, async () => {
+  // Primary mode: async open (lazy by default) + getRows
+  await benchMultiRun('SheetKit', `Read ${label}`, category, async () => {
     const wb = await SheetKitWorkbook.open(filepath);
     for (const name of wb.sheetNames) {
       wb.getRows(name);
     }
   });
 
-  // SheetKit with lazy read mode
-  await benchMultiRun('SheetKit', `Read ${label} (lazy)`, category, async () => {
-    const wb = await SheetKitWorkbook.open(filepath, { readMode: 'lazy' });
+  // Sync open + getRows
+  await benchMultiRun('SheetKit', `Read ${label} (sync)`, category, () => {
+    const wb = SheetKitWorkbook.openSync(filepath);
     for (const name of wb.sheetNames) {
       wb.getRows(name);
     }
   });
 
-  // SheetKit with getRowsRaw (typed arrays)
+  // Async open + getRowsRaw (typed arrays)
   await benchMultiRun('SheetKit', `Read ${label} (getRowsRaw)`, category, async () => {
     const wb = await SheetKitWorkbook.open(filepath);
     for (const name of wb.sheetNames) {
@@ -261,15 +255,7 @@ async function benchReadFile(filename: string, label: string, category: string) 
     }
   });
 
-  // SheetKit with lazy + getRowsRaw (best combo)
-  await benchMultiRun('SheetKit', `Read ${label} (lazy+raw)`, category, async () => {
-    const wb = await SheetKitWorkbook.open(filepath, { readMode: 'lazy' });
-    for (const name of wb.sheetNames) {
-      wb.getRowsRaw(name);
-    }
-  });
-
-  // SheetKit with getRowsBufferV2 (inline strings)
+  // Async open + getRowsBufferV2 (inline strings)
   await benchMultiRun('SheetKit', `Read ${label} (bufferV2)`, category, async () => {
     const wb = await SheetKitWorkbook.open(filepath);
     for (const name of wb.sheetNames) {
@@ -277,7 +263,7 @@ async function benchReadFile(filename: string, label: string, category: string) 
     }
   });
 
-  // SheetKit with openSheetReader (streaming)
+  // Async open (stream mode) + openSheetReader
   await benchMultiRun('SheetKit', `Read ${label} (stream)`, category, async () => {
     const wb = await SheetKitWorkbook.open(filepath, { readMode: 'stream' });
     for (const name of wb.sheetNames) {
@@ -943,23 +929,6 @@ async function benchBufferRoundTrip() {
     wb2.getRows('Sheet1');
   });
 
-  await benchMultiRun('SheetKit', `${label} (lazy)`, 'Round-Trip', async () => {
-    const wb = new SheetKitWorkbook();
-    const sheet = 'Sheet1';
-    const data: (string | number | boolean | null)[][] = [];
-    for (let r = 1; r <= ROWS; r++) {
-      const row: (string | number | boolean | null)[] = [];
-      for (let c = 0; c < COLS; c++) {
-        row.push(r * (c + 1));
-      }
-      data.push(row);
-    }
-    wb.setSheetData(sheet, data);
-    const buf = wb.writeBufferSync();
-    const wb2 = await SheetKitWorkbook.openBuffer(buf, { readMode: 'lazy' });
-    wb2.getRows('Sheet1');
-  });
-
   await benchMultiRun('ExcelJS', label, 'Round-Trip', async () => {
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet('Sheet1');
@@ -1023,6 +992,29 @@ async function benchStreamingWrite() {
     wb.saveSync(outSk);
   }, outSk);
 
+  // SheetKit with writeRows batch (BATCH_SIZE=1000, so 50 FFI calls instead of 50,000)
+  const BATCH_SIZE = 1000;
+  await benchMultiRun('SheetKit', `${label} (writeRows)`, 'Streaming', () => {
+    const wb = new SheetKitWorkbook();
+    const sw = wb.newStreamWriter('StreamSheet');
+    for (let startRow = 1; startRow <= ROWS; startRow += BATCH_SIZE) {
+      const endRow = Math.min(startRow + BATCH_SIZE - 1, ROWS);
+      const batch: (string | number | boolean | null)[][] = [];
+      for (let r = startRow; r <= endRow; r++) {
+        const vals: (string | number | boolean | null)[] = [];
+        for (let c = 0; c < COLS; c++) {
+          if (c % 3 === 0) vals.push(r * (c + 1));
+          else if (c % 3 === 1) vals.push(`R${r}C${c}`);
+          else vals.push((r * c) / 100);
+        }
+        batch.push(vals);
+      }
+      sw.writeRows(startRow, batch);
+    }
+    wb.applyStreamWriter(sw);
+    wb.saveSync(outSk);
+  }, outSk);
+
   await benchMultiRun('ExcelJS', label, 'Streaming', async () => {
     const options = {
       filename: outEj,
@@ -1074,23 +1066,17 @@ async function benchRandomAccessRead() {
   const labelOpen = `Random-access (open+${LOOKUPS} lookups)`;
   console.log(`\n--- ${labelOpen} ---`);
 
-  await benchMultiRun('SheetKit', labelOpen, 'Random Access', () => {
-    const wb = SheetKitWorkbook.openSync(filepath);
-    for (const cell of cells) {
-      wb.getCellValue('Sheet1', cell);
-    }
-  });
-
-  await benchMultiRun('SheetKit', `${labelOpen} (async)`, 'Random Access', async () => {
+  // Primary: async open (lazy by default) + getCellValue
+  await benchMultiRun('SheetKit', labelOpen, 'Random Access', async () => {
     const wb = await SheetKitWorkbook.open(filepath);
     for (const cell of cells) {
       wb.getCellValue('Sheet1', cell);
     }
   });
 
-  // SheetKit with lazy read mode
-  await benchMultiRun('SheetKit', `${labelOpen} (lazy)`, 'Random Access', async () => {
-    const wb = await SheetKitWorkbook.open(filepath, { readMode: 'lazy' });
+  // Sync open + getCellValue
+  await benchMultiRun('SheetKit', `${labelOpen} (sync)`, 'Random Access', () => {
+    const wb = SheetKitWorkbook.openSync(filepath);
     for (const cell of cells) {
       wb.getCellValue('Sheet1', cell);
     }
@@ -1121,15 +1107,17 @@ async function benchRandomAccessRead() {
   const labelLookup = `Random-access (lookup-only, ${LOOKUPS} cells)`;
   console.log(`\n--- ${labelLookup} ---`);
 
-  await benchMultiRun('SheetKit', labelLookup, 'Random Access', () => {
-    const wb = SheetKitWorkbook.openSync(filepath);
+  // Primary: async open (lazy by default) + getCellValue
+  await benchMultiRun('SheetKit', labelLookup, 'Random Access', async () => {
+    const wb = await SheetKitWorkbook.open(filepath);
     for (const cell of cells) {
       wb.getCellValue('Sheet1', cell);
     }
   });
 
-  await benchMultiRun('SheetKit', `${labelLookup} (async open)`, 'Random Access', async () => {
-    const wb = await SheetKitWorkbook.open(filepath);
+  // Sync open + getCellValue
+  await benchMultiRun('SheetKit', `${labelLookup} (sync)`, 'Random Access', () => {
+    const wb = SheetKitWorkbook.openSync(filepath);
     for (const cell of cells) {
       wb.getCellValue('Sheet1', cell);
     }
@@ -1383,9 +1371,10 @@ function printSummaryTable() {
       { lib: 'SheetJS', ms: sj?.timeMs ?? Infinity },
     ].filter((t) => t.ms < Infinity);
 
-    const winner = times.length > 0
+    // Only show winner when >= 2 libraries have data
+    const winner = times.length >= 2
       ? times.reduce((a, b) => (a.ms < b.ms ? a : b)).lib
-      : 'N/A';
+      : '-';
 
     console.log(
       `| ${scenario.padEnd(49)}` +
@@ -1447,20 +1436,22 @@ function printSummaryTable() {
     }
   }
 
-  // Wins summary
+  // Wins summary: only count scenarios where >= 2 libraries have data
   const wins: Record<string, number> = { SheetKit: 0, ExcelJS: 0, SheetJS: 0 };
+  let contestedCount = 0;
   for (const scenario of scenarios) {
     const times = results
       .filter((r) => r.scenario === scenario)
       .map((r) => ({ lib: r.library, ms: r.timeMs }));
-    if (times.length > 0) {
+    if (times.length >= 2) {
+      contestedCount++;
       const winner = times.reduce((a, b) => (a.ms < b.ms ? a : b)).lib;
       wins[winner] = (wins[winner] || 0) + 1;
     }
   }
-  console.log('\nWins by library (by median time):');
+  console.log('\nWins by library (by median time, contested scenarios only):');
   for (const [lib, count] of Object.entries(wins)) {
-    console.log(`  ${lib}: ${count}/${scenarios.length}`);
+    console.log(`  ${lib}: ${count}/${contestedCount}`);
   }
 }
 
@@ -1543,9 +1534,10 @@ function generateMarkdownReport(): string {
         { lib: 'SheetJS', ms: sj?.timeMs },
       ].filter((e) => e.ms != null) as { lib: string; ms: number }[];
 
-      const winner = entries.length > 0
+      // Only show winner when >= 2 libraries have data
+      const winner = entries.length >= 2
         ? entries.reduce((a, b) => (a.ms < b.ms ? a : b)).lib
-        : 'N/A';
+        : '-';
 
       const skStr = sk ? formatMs(sk.timeMs) : 'N/A';
       const ejStr = ej ? formatMs(ej.timeMs) : 'N/A';
@@ -1607,14 +1599,16 @@ function generateMarkdownReport(): string {
   }
   lines.push('');
 
-  // Summary
+  // Summary: only count scenarios where >= 2 libraries have data
   const allScenarios = [...new Set(results.map((r) => r.scenario))];
   const wins: Record<string, number> = { SheetKit: 0, ExcelJS: 0, SheetJS: 0 };
+  let contestedCount = 0;
   for (const scenario of allScenarios) {
     const times = results
       .filter((r) => r.scenario === scenario)
       .map((r) => ({ lib: r.library, ms: r.timeMs }));
-    if (times.length > 0) {
+    if (times.length >= 2) {
+      contestedCount++;
       const winner = times.reduce((a, b) => (a.ms < b.ms ? a : b)).lib;
       wins[winner] = (wins[winner] || 0) + 1;
     }
@@ -1622,12 +1616,12 @@ function generateMarkdownReport(): string {
 
   lines.push('## Summary');
   lines.push('');
-  lines.push(`Total scenarios: ${allScenarios.length}`);
+  lines.push(`Contested scenarios (>= 2 libraries): ${contestedCount}`);
   lines.push('');
   lines.push('| Library | Wins |');
   lines.push('|---------|------|');
   for (const [lib, count] of Object.entries(wins).sort((a, b) => b[1] - a[1])) {
-    lines.push(`| ${lib} | ${count}/${allScenarios.length} |`);
+    lines.push(`| ${lib} | ${count}/${contestedCount} |`);
   }
   lines.push('');
 
