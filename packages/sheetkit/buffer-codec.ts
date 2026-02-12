@@ -197,11 +197,7 @@ function readInlineString(
 }
 
 /** Compute the byte size of a v2 cell's payload (after the type tag). */
-function v2PayloadSize(
-  view: DataView,
-  payloadOffset: number,
-  type: number,
-): number {
+function v2PayloadSize(view: DataView, payloadOffset: number, type: number): number {
   switch (type) {
     case TYPE_EMPTY:
       return 0;
