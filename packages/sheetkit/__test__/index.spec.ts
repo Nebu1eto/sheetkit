@@ -1,3 +1,4 @@
+import assert from 'node:assert';
 import { access, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -5049,7 +5050,7 @@ describe('Form Controls', () => {
     });
     await wb.save(out);
 
-    const wb2 = Workbook.openSync(out);
+    const wb2 = Workbook.openSync(out, { readMode: 'eager', auxParts: 'eager' });
     const controls = wb2.getFormControls('Sheet1');
     expect(controls).toHaveLength(3);
     expect(controls[0].controlType).toBe('button');
@@ -5069,7 +5070,7 @@ describe('Form Controls', () => {
     wb.addFormControl('Sheet1', { controlType: 'button', cell: 'C1', text: 'Button' });
     await wb.save(out);
 
-    const wb2 = Workbook.openSync(out);
+    const wb2 = Workbook.openSync(out, { readMode: 'eager', auxParts: 'eager' });
     const comments = wb2.getComments('Sheet1');
     expect(comments).toHaveLength(1);
     expect(comments[0].text).toBe('A comment');
@@ -5084,7 +5085,7 @@ describe('Form Controls', () => {
     wb.addFormControl('Sheet1', { controlType: 'checkbox', cell: 'A3', text: 'Second' });
     await wb.save(out);
 
-    const wb2 = Workbook.openSync(out);
+    const wb2 = Workbook.openSync(out, { readMode: 'eager', auxParts: 'eager' });
     wb2.addFormControl('Sheet1', {
       controlType: 'spinButton',
       cell: 'C1',
@@ -5114,7 +5115,7 @@ describe('Form Controls', () => {
     });
     await wb.save(out);
 
-    const wb2 = Workbook.openSync(out);
+    const wb2 = Workbook.openSync(out, { readMode: 'eager', auxParts: 'eager' });
     wb2.deleteFormControl('Sheet1', 1);
     const controls = wb2.getFormControls('Sheet1');
     expect(controls).toHaveLength(2);
@@ -5130,7 +5131,7 @@ describe('Form Controls', () => {
     wb.addFormControl('Sheet1', { controlType: 'checkbox', cell: 'A3', text: 'Check' });
     await wb.save(out);
 
-    const wb2 = Workbook.openSync(out);
+    const wb2 = Workbook.openSync(out, { readMode: 'eager', auxParts: 'eager' });
     wb2.addFormControl('Sheet1', {
       controlType: 'scrollBar',
       cell: 'E1',
@@ -5140,7 +5141,7 @@ describe('Form Controls', () => {
     wb2.deleteFormControl('Sheet1', 0);
     await wb2.save(out2);
 
-    const wb3 = Workbook.openSync(out2);
+    const wb3 = Workbook.openSync(out2, { readMode: 'eager', auxParts: 'eager' });
     const controls = wb3.getFormControls('Sheet1');
     expect(controls).toHaveLength(2);
     expect(controls[0].controlType).toBe('checkbox');
@@ -5161,13 +5162,13 @@ describe('Form Controls', () => {
     await wb.save(out);
 
     // Open, trigger hydration via getFormControls, then save.
-    const wb2 = Workbook.openSync(out);
+    const wb2 = Workbook.openSync(out, { readMode: 'eager', auxParts: 'eager' });
     const controls2 = wb2.getFormControls('Sheet1');
     expect(controls2).toHaveLength(2);
     await wb2.save(out2);
 
     // Re-open and verify no duplication.
-    const wb3 = Workbook.openSync(out2);
+    const wb3 = Workbook.openSync(out2, { readMode: 'eager', auxParts: 'eager' });
     const controls3 = wb3.getFormControls('Sheet1');
     expect(controls3).toHaveLength(2);
     expect(controls3[0].controlType).toBe('button');
@@ -5185,11 +5186,11 @@ describe('Form Controls', () => {
     await wb.save(out);
 
     // Open and save immediately without calling getFormControls.
-    const wb2 = Workbook.openSync(out);
+    const wb2 = Workbook.openSync(out, { readMode: 'eager', auxParts: 'eager' });
     await wb2.save(out2);
 
     // Re-open and verify controls survived.
-    const wb3 = Workbook.openSync(out2);
+    const wb3 = Workbook.openSync(out2, { readMode: 'eager', auxParts: 'eager' });
     const controls3 = wb3.getFormControls('Sheet1');
     expect(controls3).toHaveLength(2);
     expect(controls3[0].controlType).toBe('button');
@@ -5207,7 +5208,7 @@ describe('Form Controls', () => {
     await wb.save(out);
 
     // Open, hydrate controls, then save.
-    const wb2 = Workbook.openSync(out);
+    const wb2 = Workbook.openSync(out, { readMode: 'eager', auxParts: 'eager' });
     const controls2 = wb2.getFormControls('Sheet1');
     expect(controls2).toHaveLength(1);
     const comments2 = wb2.getComments('Sheet1');
@@ -5215,7 +5216,7 @@ describe('Form Controls', () => {
     await wb2.save(out2);
 
     // Re-open and verify no duplication of either.
-    const wb3 = Workbook.openSync(out2);
+    const wb3 = Workbook.openSync(out2, { readMode: 'eager', auxParts: 'eager' });
     const controls3 = wb3.getFormControls('Sheet1');
     expect(controls3).toHaveLength(1);
     expect(controls3[0].controlType).toBe('button');
@@ -6072,14 +6073,14 @@ describe('SheetStreamReader', () => {
     expect(reader).toBeInstanceOf(SheetStreamReader);
 
     const batch = await reader.next();
-    expect(batch).not.toBeNull();
-    expect(batch!.length).toBe(3);
-    expect(batch![0].row).toBe(1);
-    expect(batch![0].cells[0].column).toBe('A');
-    expect(batch![0].cells[0].value).toBe('Name');
-    expect(batch![1].cells[0].value).toBe('Alice');
-    expect(batch![1].cells[1].numberValue).toBe(95.5);
-    expect(batch![2].cells[0].value).toBe('Bob');
+    assert(batch != null);
+    expect(batch.length).toBe(3);
+    expect(batch[0].row).toBe(1);
+    expect(batch[0].cells[0].column).toBe('A');
+    expect(batch[0].cells[0].value).toBe('Name');
+    expect(batch[1].cells[0].value).toBe('Alice');
+    expect(batch[1].cells[1].numberValue).toBe(95.5);
+    expect(batch[2].cells[0].value).toBe('Bob');
 
     const batch2 = await reader.next();
     expect(batch2).toBeNull();
@@ -6098,24 +6099,24 @@ describe('SheetStreamReader', () => {
     const reader = await wb2.openSheetReader('Sheet1', { batchSize: 3 });
 
     const batch1 = await reader.next();
-    expect(batch1).not.toBeNull();
-    expect(batch1!.length).toBe(3);
-    expect(batch1![0].cells[0].numberValue).toBe(1);
+    assert(batch1 != null);
+    expect(batch1.length).toBe(3);
+    expect(batch1[0].cells[0].numberValue).toBe(1);
 
     const batch2 = await reader.next();
-    expect(batch2).not.toBeNull();
-    expect(batch2!.length).toBe(3);
-    expect(batch2![0].cells[0].numberValue).toBe(4);
+    assert(batch2 != null);
+    expect(batch2.length).toBe(3);
+    expect(batch2[0].cells[0].numberValue).toBe(4);
 
     const batch3 = await reader.next();
-    expect(batch3).not.toBeNull();
-    expect(batch3!.length).toBe(3);
-    expect(batch3![0].cells[0].numberValue).toBe(7);
+    assert(batch3 != null);
+    expect(batch3.length).toBe(3);
+    expect(batch3[0].cells[0].numberValue).toBe(7);
 
     const batch4 = await reader.next();
-    expect(batch4).not.toBeNull();
-    expect(batch4!.length).toBe(1);
-    expect(batch4![0].cells[0].numberValue).toBe(10);
+    assert(batch4 != null);
+    expect(batch4.length).toBe(1);
+    expect(batch4[0].cells[0].numberValue).toBe(10);
 
     const batch5 = await reader.next();
     expect(batch5).toBeNull();

@@ -1431,7 +1431,7 @@ fn bench_random_access_read(results: &mut Vec<BenchResult>) {
     let fp = filepath.clone();
     let cells = cells_str.clone();
     results.push(bench_with_cell_count(
-        &format!("{label}"),
+        label,
         "SheetKit (lazy)",
         "Random Access",
         None,
@@ -1509,7 +1509,7 @@ fn bench_modify_file(results: &mut Vec<BenchResult>) {
     let fp = filepath.clone();
     let out = output_dir().join("cmp-modify-sheetkit-rf.xlsx");
     results.push(bench(
-        &format!("{label}"),
+        label,
         "SheetKit (lazy)",
         "Modify",
         Some(&out),

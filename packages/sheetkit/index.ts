@@ -43,7 +43,11 @@ import type {
   JsVbaProject,
   JsWorkbookProtectionConfig,
 } from './binding.js';
-import { JsStreamWriter, NativeSheetStreamReader, Workbook as NativeWorkbook } from './binding.js';
+import {
+  JsStreamWriter,
+  type NativeSheetStreamReader,
+  Workbook as NativeWorkbook,
+} from './binding.js';
 import type { RawRowsResult } from './buffer-codec.js';
 import { decodeRowsBuffer, decodeRowsIterator, decodeRowsRawBuffer } from './buffer-codec.js';
 import type { CellTypeName, CellValue } from './sheet-data.js';

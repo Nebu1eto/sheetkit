@@ -1,3 +1,5 @@
+import assert from 'node:assert';
+
 export type CellValue = string | number | boolean | null;
 export type CellTypeName = 'empty' | 'number' | 'string' | 'boolean' | 'date' | 'error' | 'formula';
 
@@ -169,7 +171,8 @@ export class SheetData {
 
   #readInlineString(offset: number): { value: string; bytesConsumed: number } {
     const len = this.#view.getUint32(offset, true);
-    const slice = new Uint8Array(this.#buf!.buffer, this.#buf!.byteOffset + offset + 4, len);
+    assert(this.#buf != null, 'Buffer must not be null when reading inline strings');
+    const slice = new Uint8Array(this.#buf.buffer, this.#buf.byteOffset + offset + 4, len);
     return { value: decoder.decode(slice), bytesConsumed: 4 + len };
   }
 

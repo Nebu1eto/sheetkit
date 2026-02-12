@@ -107,7 +107,7 @@ describe('Sparklines', () => {
 
     await wb.save(out);
 
-    const wb2 = await Workbook.open(out);
+    const wb2 = await Workbook.open(out, { readMode: 'eager', auxParts: 'eager' });
     const sparklines = wb2.getSparklines('Sheet1');
     expect(sparklines).toHaveLength(2);
     expect(sparklines[0].dataRange).toBe('Sheet1!A1:A10');
