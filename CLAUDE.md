@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-SheetKit is a Rust library for reading and writing Excel (.xlsx) files, with Node.js bindings via napi-rs. It is a Rust rewrite of the Go excelize library.
+SheetKit is a Rust library for reading and writing Excel (.xlsx) files, with Node.js bindings via napi-rs.
 
 ### Crate Structure
 
