@@ -50,6 +50,7 @@ impl Workbook {
             vba_blob: None,
             tables: vec![],
             raw_sheet_xml: vec![None],
+            sheet_dirty: vec![true],
             slicer_defs: vec![],
             slicer_caches: vec![],
             sheet_threaded_comments: vec![None],
@@ -673,6 +674,10 @@ impl Workbook {
             deferred_parts,
             vba_blob,
             tables,
+            // Sheets with raw bytes (deferred or filtered) start clean;
+            // eagerly-parsed sheets (no raw bytes) start dirty so they
+            // always take the serialize path on save.
+            sheet_dirty: raw_sheet_xml.iter().map(|raw| raw.is_none()).collect(),
             raw_sheet_xml,
             slicer_defs,
             slicer_caches,
@@ -1147,6 +1152,7 @@ impl Workbook {
         // xl/worksheets/sheet{N}.xml
         for (i, (_name, ws_lock)) in self.worksheets.iter().enumerate() {
             let entry_name = self.sheet_part_path(i);
+            let dirty = self.sheet_dirty.get(i).copied().unwrap_or(true);
 
             // If the sheet has streamed data, write it directly from the temp file.
             if let Some(streamed) = self.streamed_sheets.get(&i) {
@@ -1154,23 +1160,40 @@ impl Workbook {
                 continue;
             }
 
-            // If raw bytes are available, write them directly for round-trip
-            // fidelity. This covers filtered-out sheets (Eager mode) and
-            // deferred sheets (Lazy/Stream mode) that were never accessed.
-            // Once a sheet is hydrated via `ensure_hydrated`, its raw bytes
-            // are cleared, so mutated sheets always take the serialize path.
-            if let Some(Some(raw_bytes)) = self.raw_sheet_xml.get(i) {
-                zip.start_file(&entry_name, options)
-                    .map_err(|e| Error::Zip(e.to_string()))?;
-                zip.write_all(raw_bytes)?;
-                continue;
+            // Copy-on-write passthrough: if the sheet has not been modified
+            // (not dirty) and raw XML bytes are available, write them directly.
+            // This avoids deserialize-then-serialize overhead for untouched
+            // sheets. Dirty sheets always take the serialization path even if
+            // raw bytes happen to still be present.
+            //
+            // The passthrough is also disabled when auxiliary parts (comments,
+            // tables, sparklines) require XML injection into the worksheet,
+            // since the raw bytes would lack those references.
+            let needs_aux_injection =
+                legacy_drawing_rids.contains_key(&i) || table_parts_by_sheet.contains_key(&i);
+            if !dirty && !needs_aux_injection {
+                if let Some(Some(raw_bytes)) = self.raw_sheet_xml.get(i) {
+                    zip.start_file(&entry_name, options)
+                        .map_err(|e| Error::Zip(e.to_string()))?;
+                    zip.write_all(raw_bytes)?;
+                    continue;
+                }
             }
 
+            // If the lock is not yet initialized (lazy/deferred sheet), parse
+            // the raw bytes directly. We intentionally avoid worksheet_ref_by_index
+            // here because it applies sheet_rows truncation, which would cause
+            // data loss on save for sheets that were never read by the user.
+            let hydrated_for_save: WorksheetXml;
             let ws = match ws_lock.get() {
                 Some(ws) => ws,
                 None => {
-                    // Should not happen: either raw bytes or parsed data must exist.
-                    continue;
+                    if let Some(Some(raw_bytes)) = self.raw_sheet_xml.get(i) {
+                        hydrated_for_save = deserialize_worksheet_xml(raw_bytes)?;
+                        &hydrated_for_save
+                    } else {
+                        continue;
+                    }
                 }
             };
 
@@ -3985,6 +4008,313 @@ mod tests {
         assert_eq!(
             ws.sheet_data.rows[499].cells[1].v,
             Some("10000".to_string())
+        );
+    }
+
+    // -- Copy-on-write passthrough tests --
+
+    #[test]
+    fn test_lazy_open_save_without_modification_roundtrips() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", "Hello").unwrap();
+        wb.set_cell_value("Sheet1", "B1", 42.0f64).unwrap();
+        let buf = wb.save_to_buffer().unwrap();
+
+        let opts = crate::workbook::open_options::OpenOptions::new()
+            .read_mode(crate::workbook::open_options::ReadMode::Lazy);
+        let wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
+
+        // No modifications: save should use passthrough for the worksheet.
+        let saved = wb2.save_to_buffer().unwrap();
+
+        // Re-open in Eager mode and verify data integrity.
+        let wb3 = Workbook::open_from_buffer(&saved).unwrap();
+        assert_eq!(
+            wb3.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("Hello".to_string())
+        );
+        assert_eq!(
+            wb3.get_cell_value("Sheet1", "B1").unwrap(),
+            CellValue::Number(42.0)
+        );
+    }
+
+    #[test]
+    fn test_lazy_open_modify_one_sheet_passthroughs_others() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", "First sheet").unwrap();
+        wb.new_sheet("Sheet2").unwrap();
+        wb.set_cell_value("Sheet2", "A1", "Second sheet").unwrap();
+        wb.new_sheet("Sheet3").unwrap();
+        wb.set_cell_value("Sheet3", "A1", "Third sheet").unwrap();
+        let buf = wb.save_to_buffer().unwrap();
+
+        let opts = crate::workbook::open_options::OpenOptions::new()
+            .read_mode(crate::workbook::open_options::ReadMode::Lazy);
+        let mut wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
+
+        // Only modify Sheet2; Sheet1 and Sheet3 should use passthrough.
+        wb2.set_cell_value("Sheet2", "B1", "Modified").unwrap();
+
+        // Verify dirty tracking.
+        assert!(!wb2.is_sheet_dirty(0), "Sheet1 should not be dirty");
+        assert!(wb2.is_sheet_dirty(1), "Sheet2 should be dirty");
+        assert!(!wb2.is_sheet_dirty(2), "Sheet3 should not be dirty");
+
+        let saved = wb2.save_to_buffer().unwrap();
+
+        let wb3 = Workbook::open_from_buffer(&saved).unwrap();
+        assert_eq!(
+            wb3.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("First sheet".to_string())
+        );
+        assert_eq!(
+            wb3.get_cell_value("Sheet2", "A1").unwrap(),
+            CellValue::String("Second sheet".to_string())
+        );
+        assert_eq!(
+            wb3.get_cell_value("Sheet2", "B1").unwrap(),
+            CellValue::String("Modified".to_string())
+        );
+        assert_eq!(
+            wb3.get_cell_value("Sheet3", "A1").unwrap(),
+            CellValue::String("Third sheet".to_string())
+        );
+    }
+
+    #[test]
+    fn test_lazy_open_deferred_aux_parts_preserved() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", "data").unwrap();
+        wb.set_doc_props(crate::doc_props::DocProperties {
+            title: Some("Test Title".to_string()),
+            creator: Some("Test Author".to_string()),
+            ..Default::default()
+        });
+        wb.add_comment(
+            "Sheet1",
+            &crate::comment::CommentConfig {
+                cell: "A1".to_string(),
+                author: "Tester".to_string(),
+                text: "A comment".to_string(),
+            },
+        )
+        .unwrap();
+        let buf = wb.save_to_buffer().unwrap();
+
+        let opts = crate::workbook::open_options::OpenOptions::new()
+            .read_mode(crate::workbook::open_options::ReadMode::Lazy);
+        let wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
+
+        // Save without touching anything; deferred aux parts should be preserved.
+        let saved = wb2.save_to_buffer().unwrap();
+
+        let mut wb3 = Workbook::open_from_buffer(&saved).unwrap();
+        assert_eq!(
+            wb3.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("data".to_string())
+        );
+        let props = wb3.get_doc_props();
+        assert_eq!(props.title.as_deref(), Some("Test Title"));
+        assert_eq!(props.creator.as_deref(), Some("Test Author"));
+        let comments = wb3.get_comments("Sheet1").unwrap();
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments[0].text, "A comment");
+    }
+
+    #[test]
+    fn test_eager_open_save_preserves_all_data() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", "data").unwrap();
+        wb.set_cell_value("Sheet1", "B1", 42.0f64).unwrap();
+        wb.new_sheet("Sheet2").unwrap();
+        wb.set_cell_value("Sheet2", "A1", "sheet2").unwrap();
+        let buf = wb.save_to_buffer().unwrap();
+
+        // Eager mode (default): all sheets parsed at open time.
+        let wb2 = Workbook::open_from_buffer(&buf).unwrap();
+        let saved = wb2.save_to_buffer().unwrap();
+
+        let wb3 = Workbook::open_from_buffer(&saved).unwrap();
+        assert_eq!(
+            wb3.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("data".to_string())
+        );
+        assert_eq!(
+            wb3.get_cell_value("Sheet1", "B1").unwrap(),
+            CellValue::Number(42.0)
+        );
+        assert_eq!(
+            wb3.get_cell_value("Sheet2", "A1").unwrap(),
+            CellValue::String("sheet2".to_string())
+        );
+    }
+
+    #[test]
+    fn test_lazy_read_then_save_passthrough() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", "value").unwrap();
+        let buf = wb.save_to_buffer().unwrap();
+
+        let opts = crate::workbook::open_options::OpenOptions::new()
+            .read_mode(crate::workbook::open_options::ReadMode::Lazy);
+        let wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
+
+        // Read the value (triggers hydration via worksheet_ref, not mutation).
+        let val = wb2.get_cell_value("Sheet1", "A1").unwrap();
+        assert_eq!(val, CellValue::String("value".to_string()));
+
+        // Sheet was read but not modified, so it should NOT be dirty.
+        assert!(!wb2.is_sheet_dirty(0));
+
+        // Save should still use passthrough for the untouched sheet.
+        let saved = wb2.save_to_buffer().unwrap();
+        let wb3 = Workbook::open_from_buffer(&saved).unwrap();
+        assert_eq!(
+            wb3.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("value".to_string())
+        );
+    }
+
+    #[test]
+    fn test_cow_passthrough_with_styles_and_formulas() {
+        let mut wb = Workbook::new();
+        let style_id = wb
+            .add_style(&crate::style::Style {
+                font: Some(crate::style::FontStyle {
+                    bold: true,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })
+            .unwrap();
+        wb.set_cell_value("Sheet1", "A1", "styled").unwrap();
+        wb.set_cell_style("Sheet1", "A1", style_id).unwrap();
+        wb.set_cell_formula("Sheet1", "B1", "LEN(A1)").unwrap();
+        wb.new_sheet("Sheet2").unwrap();
+        wb.set_cell_value("Sheet2", "A1", "other").unwrap();
+        let buf = wb.save_to_buffer().unwrap();
+
+        let opts = crate::workbook::open_options::OpenOptions::new()
+            .read_mode(crate::workbook::open_options::ReadMode::Lazy);
+        let wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
+        let saved = wb2.save_to_buffer().unwrap();
+
+        let wb3 = Workbook::open_from_buffer(&saved).unwrap();
+        assert_eq!(
+            wb3.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("styled".to_string())
+        );
+        assert_eq!(wb3.get_cell_style("Sheet1", "A1").unwrap(), Some(style_id));
+        match wb3.get_cell_value("Sheet1", "B1").unwrap() {
+            CellValue::Formula { expr, .. } => assert_eq!(expr, "LEN(A1)"),
+            other => panic!("expected formula, got {:?}", other),
+        }
+        assert_eq!(
+            wb3.get_cell_value("Sheet2", "A1").unwrap(),
+            CellValue::String("other".to_string())
+        );
+    }
+
+    #[test]
+    fn test_new_workbook_sheets_are_dirty() {
+        let wb = Workbook::new();
+        assert!(wb.is_sheet_dirty(0), "new workbook sheet should be dirty");
+    }
+
+    #[test]
+    fn test_eager_open_sheets_are_dirty() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", "test").unwrap();
+        let buf = wb.save_to_buffer().unwrap();
+
+        let wb2 = Workbook::open_from_buffer(&buf).unwrap();
+        assert!(
+            wb2.is_sheet_dirty(0),
+            "eagerly parsed sheet should be dirty"
+        );
+    }
+
+    #[test]
+    fn test_lazy_open_sheets_start_clean() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", "test").unwrap();
+        let buf = wb.save_to_buffer().unwrap();
+
+        let opts = crate::workbook::open_options::OpenOptions::new()
+            .read_mode(crate::workbook::open_options::ReadMode::Lazy);
+        let wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
+        assert!(
+            !wb2.is_sheet_dirty(0),
+            "lazily deferred sheet should start clean"
+        );
+    }
+
+    #[test]
+    fn test_lazy_mutation_marks_dirty() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", "test").unwrap();
+        let buf = wb.save_to_buffer().unwrap();
+
+        let opts = crate::workbook::open_options::OpenOptions::new()
+            .read_mode(crate::workbook::open_options::ReadMode::Lazy);
+        let mut wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
+        assert!(!wb2.is_sheet_dirty(0));
+
+        wb2.set_cell_value("Sheet1", "B1", "new").unwrap();
+        assert!(
+            wb2.is_sheet_dirty(0),
+            "sheet should be dirty after mutation"
+        );
+    }
+
+    #[test]
+    fn test_lazy_open_multi_sheet_selective_dirty() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", "s1").unwrap();
+        wb.new_sheet("Sheet2").unwrap();
+        wb.set_cell_value("Sheet2", "A1", "s2").unwrap();
+        wb.new_sheet("Sheet3").unwrap();
+        wb.set_cell_value("Sheet3", "A1", "s3").unwrap();
+        let buf = wb.save_to_buffer().unwrap();
+
+        let opts = crate::workbook::open_options::OpenOptions::new()
+            .read_mode(crate::workbook::open_options::ReadMode::Lazy);
+        let mut wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
+
+        // All sheets start clean.
+        assert!(!wb2.is_sheet_dirty(0));
+        assert!(!wb2.is_sheet_dirty(1));
+        assert!(!wb2.is_sheet_dirty(2));
+
+        // Read Sheet1 (no mutation).
+        let _ = wb2.get_cell_value("Sheet1", "A1").unwrap();
+        assert!(!wb2.is_sheet_dirty(0), "reading should not dirty a sheet");
+
+        // Mutate Sheet3.
+        wb2.set_cell_value("Sheet3", "B1", "modified").unwrap();
+        assert!(!wb2.is_sheet_dirty(0));
+        assert!(!wb2.is_sheet_dirty(1));
+        assert!(wb2.is_sheet_dirty(2));
+
+        // Save and verify all data.
+        let saved = wb2.save_to_buffer().unwrap();
+        let wb3 = Workbook::open_from_buffer(&saved).unwrap();
+        assert_eq!(
+            wb3.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("s1".to_string())
+        );
+        assert_eq!(
+            wb3.get_cell_value("Sheet2", "A1").unwrap(),
+            CellValue::String("s2".to_string())
+        );
+        assert_eq!(
+            wb3.get_cell_value("Sheet3", "A1").unwrap(),
+            CellValue::String("s3".to_string())
+        );
+        assert_eq!(
+            wb3.get_cell_value("Sheet3", "B1").unwrap(),
+            CellValue::String("modified".to_string())
         );
     }
 }

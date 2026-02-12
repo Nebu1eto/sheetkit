@@ -33,6 +33,7 @@ impl Workbook {
         let idx = self.sheet_index(sheet)?;
         self.invalidate_streamed(idx);
         self.ensure_hydrated(idx)?;
+        self.mark_sheet_dirty(idx);
         let ws = self.worksheets[idx].1.get_mut().unwrap();
         crate::conditional::set_conditional_format(ws, &mut self.stylesheet, sqref, rules)
     }
@@ -542,6 +543,7 @@ impl Workbook {
         let sheet_idx = self.sheet_index(sheet)?;
         self.invalidate_streamed(sheet_idx);
         self.ensure_hydrated(sheet_idx)?;
+        self.mark_sheet_dirty(sheet_idx);
         let ws = self.worksheets[sheet_idx].1.get_mut().unwrap();
         let rels = self
             .worksheet_rels
@@ -579,6 +581,7 @@ impl Workbook {
         let sheet_idx = self.sheet_index(sheet)?;
         self.invalidate_streamed(sheet_idx);
         self.ensure_hydrated(sheet_idx)?;
+        self.mark_sheet_dirty(sheet_idx);
         let ws = self.worksheets[sheet_idx].1.get_mut().unwrap();
         let rels = self
             .worksheet_rels
