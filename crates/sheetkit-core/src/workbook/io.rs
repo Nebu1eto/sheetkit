@@ -1876,6 +1876,7 @@ fn fast_col_number(cell_ref: &str) -> u32 {
 }
 
 #[cfg(test)]
+#[allow(clippy::unnecessary_map_or)]
 mod tests {
     use super::*;
     use tempfile::TempDir;

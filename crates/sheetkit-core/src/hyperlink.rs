@@ -181,6 +181,7 @@ fn next_rel_id(rels: &Relationships) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
     use sheetkit_xml::namespaces;

@@ -15,7 +15,7 @@ sheetkit = "0.4"
 npm install @sheetkit/node
 ```
 
-> The Node.js package is a native addon built with napi-rs. A Rust build toolchain (rustc, cargo) is required to compile the native module during installation.
+> The Node.js package is a native addon built with napi-rs. On supported OS/architecture pairs, prebuilt binaries are used and a Rust toolchain is not required. A Rust toolchain is needed only when building from source or when no prebuilt binary is available.
 
 ---
 

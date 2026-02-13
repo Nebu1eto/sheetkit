@@ -148,7 +148,7 @@ SheetKit supports three read modes that control how much parsing is done during 
 |-----------|-----------|----------------|----------|
 | `lazy` (default) | Low -- ZIP index + metadata only | Minimal | Most workloads. Sheets are parsed on first access. |
 | `eager` | High -- all sheets parsed | Full workbook in memory | When you need all sheets immediately after open. |
-| `stream` | Minimal | Near-zero | Forward-only iteration over very large sheets. |
+| `stream` | Same as lazy today | Same as lazy today | Forward-compatibility mode; currently behaves like lazy in Rust core. |
 
 ```typescript
 // Lazy open (default): fastest open, parses sheets on demand
@@ -271,7 +271,7 @@ Measured as time from `open()` / `Workbook::open()` call to returned handle, exc
 | Read Mode | Target (relative to Full baseline) | Tolerance | Notes |
 |-----------|-------------------------------------|-----------|-------|
 | `lazy` | < 30% of Full | +5% | Metadata + ZIP index only; no sheet XML parse |
-| `stream` | < 20% of Full | +5% | Minimal parse; no materialization |
+| `stream` | Same target as lazy (current implementation) | +5% | Currently same implementation as lazy; keep separate KPI for future divergence |
 | `eager` | No regression | +5% | Same behavior as current Full mode |
 
 **Measurement**: Compare median open latency across all reference fixtures. Lazy and stream targets apply to every fixture individually (not just the aggregate).

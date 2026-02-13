@@ -1258,6 +1258,7 @@ fn best_fraction(value: f64, max_denom: u64) -> (u64, u64) {
 use chrono::Datelike;
 
 #[cfg(test)]
+#[allow(clippy::approx_constant)]
 mod tests {
     use super::*;
 

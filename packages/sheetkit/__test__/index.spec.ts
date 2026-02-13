@@ -6157,7 +6157,7 @@ describe('SheetStreamReader', () => {
     const wb2 = await Workbook.open(out, { readMode: 'lazy', sheetRows: 5 });
     const reader = await wb2.openSheetReader('Sheet1');
 
-    const allRows: any[] = [];
+    const allRows: Array<{ cells: Array<{ numberValue?: number }> }> = [];
     let batch = await reader.next();
     while (batch !== null) {
       allRows.push(...batch);
@@ -6215,8 +6215,9 @@ describe('SheetStreamReader', () => {
 
     const batch = await reader.next();
     expect(batch).not.toBeNull();
-    expect(batch!.length).toBe(1);
-    const cells = batch![0].cells;
+    assert(batch != null);
+    expect(batch.length).toBe(1);
+    const cells = batch[0].cells;
     expect(cells[0].valueType).toBe('string');
     expect(cells[0].value).toBe('text');
     expect(cells[1].valueType).toBe('number');

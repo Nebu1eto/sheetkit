@@ -62,7 +62,7 @@ pub struct OpenOptions {
 }
 
 impl OpenOptions {
-    /// Create a new `OpenOptions` with all defaults (no limits, parse everything).
+    /// Create a new `OpenOptions` with defaults (no limits, lazy read, deferred aux parts).
     pub fn new() -> Self {
         Self::default()
     }

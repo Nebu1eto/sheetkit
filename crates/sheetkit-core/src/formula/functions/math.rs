@@ -255,6 +255,7 @@ pub fn fn_fact(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
 }
 
 #[cfg(test)]
+#[allow(clippy::manual_range_contains)]
 mod tests {
     use crate::cell::CellValue;
     use crate::formula::eval::{evaluate, CellSnapshot};
