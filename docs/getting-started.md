@@ -54,6 +54,42 @@ Note: Prebuilt binaries are provided for common platforms. A Rust toolchain is n
 
 [View on npm](https://www.npmjs.com/package/@sheetkit/node)
 
+### Deno / Bun
+
+SheetKit's Node.js bindings use [napi-rs](https://napi.rs/), which is compatible with other JavaScript runtimes that support Node-API. You can use the same `@sheetkit/node` package in Deno and Bun.
+
+**Deno**
+
+Deno supports napi-rs native addons via the [`--allow-ffi`](https://docs.deno.com/runtime/fundamentals/security/#ffi-(foreign-function-interface)) permission flag. Install the package with `npm:` specifier or add it to your import map, then run with the FFI permission enabled:
+
+```bash
+deno run --allow-ffi main.ts
+```
+
+```typescript
+import { Workbook } from "npm:@sheetkit/node";
+
+const wb = new Workbook();
+wb.setCellValue("Sheet1", "A1", "Hello from Deno");
+await wb.save("output.xlsx");
+```
+
+**Bun**
+
+Bun supports [Node-API natively](https://bun.com/docs/runtime/node-api). Install and use the package just like in Node.js:
+
+```bash
+bun add @sheetkit/node
+```
+
+```typescript
+import { Workbook } from "@sheetkit/node";
+
+const wb = new Workbook();
+wb.setCellValue("Sheet1", "A1", "Hello from Bun");
+await wb.save("output.xlsx");
+```
+
 ### CLI Tool
 
 For command-line operations (sheet inspection, data conversion, etc.):
