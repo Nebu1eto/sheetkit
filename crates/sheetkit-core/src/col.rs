@@ -301,6 +301,7 @@ fn find_or_create_col(ws: &mut WorksheetXml, col_num: u32) -> &mut Col {
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
     use sheetkit_xml::worksheet::{Cell, CellTypeTag, Row, SheetData};

@@ -225,8 +225,8 @@ await wb.save("with_macros.xlsm"); // VBA가 보존됩니다
 
 | 필드 | Rust 타입 | TypeScript 타입 | 기본값 | 설명 |
 |---|---|---|---|---|
-| `read_mode` / `readMode` | `Option<ReadMode>` | `'lazy' \| 'eager' \| 'stream'?` | `'lazy'` | open 시 파싱 범위를 제어합니다. |
-| `aux_parts` / `auxParts` | `Option<AuxParts>` | `'deferred' \| 'eager'?` | `'deferred'` | 보조 파트(comments, charts, images)의 파싱 시점을 제어합니다. |
+| `read_mode` / `readMode` | `ReadMode` | `'lazy' \| 'eager' \| 'stream'?` | `'lazy'` | open 시 파싱 범위를 제어합니다. |
+| `aux_parts` / `auxParts` | `AuxParts` | `'deferred' \| 'eager'?` | `'deferred'` | 보조 파트(comments, charts, images)의 파싱 시점을 제어합니다. |
 | `sheet_rows` / `sheetRows` | `Option<u32>` | `number?` | 무제한 | 시트당 읽을 최대 행 수입니다. 초과 행은 무시됩니다. |
 | `sheets` | `Option<Vec<String>>` | `string[]?` | 전체 | 이 목록에 포함된 시트만 파싱합니다. 선택되지 않은 시트는 워크북에 존재하지만 데이터가 없습니다. |
 | `max_unzip_size` / `maxUnzipSize` | `Option<u64>` | `number?` | 무제한 | ZIP 아카이브의 전체 압축 해제 크기 제한(바이트)입니다. zip bomb을 방지합니다. |
@@ -238,7 +238,7 @@ await wb.save("with_macros.xlsm"); // VBA가 보존됩니다
 |------|------|
 | `'lazy'` | ZIP 인덱스와 메타데이터만 파싱합니다. 시트 XML은 첫 접근 시 파싱됩니다. Node.js 기본값입니다. |
 | `'eager'` | open 시 모든 시트와 보조 파트를 파싱합니다. 이전 버전과 동일한 동작입니다. |
-| `'stream'` | 최소한의 파싱만 수행합니다. `openSheetReader()`와 함께 사용하여 순방향 메모리 제한 반복에 사용합니다. |
+| `'stream'` | 현재 Rust 코어에서는 `'lazy'`와 동일하게 동작합니다. 향후 호환성을 위해 유지되며 `openSheetReader()`는 계속 사용할 수 있습니다. |
 
 #### AuxParts
 

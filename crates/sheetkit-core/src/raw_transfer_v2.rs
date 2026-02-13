@@ -376,6 +376,7 @@ fn build_row_index_v2(row_entries: &[RowEntriesV2], min_row: u32, max_row: u32) 
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
     use sheetkit_xml::worksheet::{

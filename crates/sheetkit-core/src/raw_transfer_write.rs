@@ -551,6 +551,7 @@ fn write_sparse_data(buf: &mut [u8], row_payloads: &[EncodedRow], cell_data_star
 }
 
 #[cfg(test)]
+#[allow(clippy::needless_range_loop)]
 mod tests {
     use super::*;
     use crate::rich_text::RichTextRun;

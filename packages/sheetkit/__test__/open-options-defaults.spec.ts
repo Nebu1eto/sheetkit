@@ -10,6 +10,8 @@ const nativeCalls = vi.hoisted(() => ({
 
 vi.mock('../binding.js', () => {
   class MockNativeWorkbook {
+    noop(): void {}
+
     static openSync(path: string, options?: unknown): unknown {
       return nativeCalls.openSync(path, options);
     }

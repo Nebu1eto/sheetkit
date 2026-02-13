@@ -457,6 +457,11 @@ fn build_row_index(
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::field_reassign_with_default,
+    clippy::needless_lifetimes,
+    clippy::approx_constant
+)]
 mod tests {
     use super::*;
     use sheetkit_xml::worksheet::{

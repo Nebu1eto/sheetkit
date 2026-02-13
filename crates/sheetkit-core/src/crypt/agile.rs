@@ -723,6 +723,7 @@ fn parse_key_encryptor_attrs(e: &quick_xml::events::BytesStart<'_>) -> Result<Ke
 }
 
 #[cfg(test)]
+#[allow(clippy::explicit_counter_loop)]
 mod tests {
     use super::*;
 

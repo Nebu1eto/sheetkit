@@ -365,6 +365,7 @@ fn find_or_create_row(ws: &mut WorksheetXml, row: u32) -> &mut Row {
 }
 
 #[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
     use sheetkit_xml::worksheet::{Cell, CellTypeTag, SheetData};

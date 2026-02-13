@@ -612,6 +612,7 @@ fn refine_module_type(base_type: &VbaModuleType, name: &str) -> VbaModuleType {
 }
 
 #[cfg(test)]
+#[allow(clippy::same_item_push)]
 mod tests {
     use super::*;
 

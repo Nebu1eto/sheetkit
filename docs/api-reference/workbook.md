@@ -221,8 +221,8 @@ Options for controlling how a workbook is opened and parsed. All fields are opti
 
 | Field | Rust type | TypeScript type | Default | Description |
 |---|---|---|---|---|
-| `read_mode` / `readMode` | `Option<ReadMode>` | `'lazy' \| 'eager' \| 'stream'?` | `'lazy'` | Controls how much of the file is parsed during open. |
-| `aux_parts` / `auxParts` | `Option<AuxParts>` | `'deferred' \| 'eager'?` | `'deferred'` | Controls when auxiliary parts (comments, charts, images) are parsed. |
+| `read_mode` / `readMode` | `ReadMode` | `'lazy' \| 'eager' \| 'stream'?` | `'lazy'` | Controls how much of the file is parsed during open. |
+| `aux_parts` / `auxParts` | `AuxParts` | `'deferred' \| 'eager'?` | `'deferred'` | Controls when auxiliary parts (comments, charts, images) are parsed. |
 | `sheet_rows` / `sheetRows` | `Option<u32>` | `number?` | unlimited | Maximum number of rows to read per sheet. Rows beyond this limit are discarded. |
 | `sheets` | `Option<Vec<String>>` | `string[]?` | all | Only parse sheets whose names are in this list. Unselected sheets exist in the workbook but contain no data. |
 | `max_unzip_size` / `maxUnzipSize` | `Option<u64>` | `number?` | unlimited | Maximum total decompressed size of the ZIP archive in bytes. Prevents zip bombs. |
@@ -234,7 +234,7 @@ Options for controlling how a workbook is opened and parsed. All fields are opti
 |-------|-------------|
 | `'lazy'` | Parse ZIP index and metadata only. Sheet XML is parsed on first access. Default for Node.js. |
 | `'eager'` | Parse all sheets and auxiliary parts during open. Same behavior as previous versions. |
-| `'stream'` | Minimal parse. Use with `openSheetReader()` for forward-only bounded-memory iteration. |
+| `'stream'` | Currently behaves the same as `'lazy'` in Rust core. Use it for forward compatibility; `openSheetReader()` remains available. |
 
 #### AuxParts
 

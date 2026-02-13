@@ -539,6 +539,7 @@ impl Workbook {
 }
 
 #[cfg(test)]
+#[allow(clippy::unnecessary_cast)]
 mod tests {
     use super::*;
     use tempfile::TempDir;

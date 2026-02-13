@@ -750,6 +750,7 @@ fn remove_shapetype_block(header: &str, shapetype_id: &str) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::cloned_ref_to_slice_refs)]
 mod tests {
     use super::*;
 

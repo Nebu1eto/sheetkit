@@ -15,7 +15,7 @@ sheetkit = "0.4"
 npm install @sheetkit/node
 ```
 
-> Node.js 패키지는 napi-rs로 빌드된 네이티브 애드온입니다. 설치 시 네이티브 모듈을 컴파일하기 위해 Rust 빌드 도구(rustc, cargo)가 필요합니다.
+> Node.js 패키지는 napi-rs로 빌드된 네이티브 애드온입니다. 지원되는 OS/architecture 조합에서는 사전 빌드 바이너리를 사용하므로 Rust 툴체인이 필요하지 않습니다. 소스 빌드가 필요하거나 사전 빌드 바이너리가 없는 경우에만 Rust 툴체인이 필요합니다.
 
 ---
 
