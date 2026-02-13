@@ -2,6 +2,8 @@
 
 This guide covers the breaking changes and new APIs introduced by the async-first lazy-open refactor. All changes apply to the Node.js (`@sheetkit/node`) package. The Rust crate API is not affected.
 
+This guide is intended for migrations from versions before `0.5.0` to `0.5.0` or later.
+
 ## Summary of Changes
 
 ### Breaking Changes
@@ -26,7 +28,7 @@ This guide covers the breaking changes and new APIs introduced by the async-firs
 |-------------------|-----------------|----------|
 | `'full'` | `'eager'` | Parse all sheets and auxiliary parts during open. Same behavior as before. |
 | `'readfast'` | `'lazy'` | Parse ZIP index and metadata only. Sheet XML is parsed on first access (e.g., `getRows()`). |
-| (no equivalent) | `'stream'` | Minimal parse. Use with `openSheetReader()` for forward-only bounded-memory iteration. |
+| (no equivalent) | `'stream'` | Minimal parse intent. In current Rust core implementation, open-path behavior is the same as `'lazy'` (deferred sheet hydration and skipped eager auxiliary parsing), while `openSheetReader()` provides forward-only bounded-memory iteration. |
 
 ### Before (v0.4)
 
