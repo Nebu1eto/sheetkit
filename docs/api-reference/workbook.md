@@ -234,7 +234,7 @@ Options for controlling how a workbook is opened and parsed. All fields are opti
 |-------|-------------|
 | `'lazy'` | Parse ZIP index and metadata only. Sheet XML is parsed on first access. Default for Node.js. |
 | `'eager'` | Parse all sheets and auxiliary parts during open. Same behavior as previous versions. |
-| `'stream'` | Currently behaves the same as `'lazy'` in Rust core. Use it for forward compatibility; `openSheetReader()` remains available. |
+| `'stream'` | In the current Rust implementation, it follows the same open-path behavior as `'lazy'`: deferred sheet XML hydration and skipped eager auxiliary-part parsing. Keep using this mode for forward compatibility and streaming-oriented intent, and pair it with `openSheetReader()` when needed. |
 
 #### AuxParts
 
@@ -319,6 +319,24 @@ for await (const batch of reader) {
 | `batchSize` | `number?` | `1000` | Number of rows per batch. |
 
 **Returns:** `Promise<SheetStreamReader>`
+
+### `wb.open_sheet_reader(sheet)` / `wb.open_sheet_reader_owned(sheet)` (Rust)
+
+Rust provides equivalent streaming reader APIs on `Workbook`:
+
+```rust
+use sheetkit::Workbook;
+
+let wb = Workbook::open("large.xlsx")?;
+
+// Borrowed reader (lifetime tied to `wb`)
+let mut reader = wb.open_sheet_reader("Sheet1")?;
+
+// Owned reader (FFI-friendly, not tied to `wb` lifetime)
+let mut owned_reader = wb.open_sheet_reader_owned("Sheet1")?;
+```
+
+Use `open_sheet_reader` for normal Rust workflows and `open_sheet_reader_owned` for contexts where a self-contained reader object is required.
 
 ### `SheetStreamReader`
 

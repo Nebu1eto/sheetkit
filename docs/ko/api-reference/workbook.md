@@ -238,7 +238,7 @@ await wb.save("with_macros.xlsm"); // VBA가 보존됩니다
 |------|------|
 | `'lazy'` | ZIP 인덱스와 메타데이터만 파싱합니다. 시트 XML은 첫 접근 시 파싱됩니다. Node.js 기본값입니다. |
 | `'eager'` | open 시 모든 시트와 보조 파트를 파싱합니다. 이전 버전과 동일한 동작입니다. |
-| `'stream'` | 현재 Rust 코어에서는 `'lazy'`와 동일하게 동작합니다. 향후 호환성을 위해 유지되며 `openSheetReader()`는 계속 사용할 수 있습니다. |
+| `'stream'` | 현재 Rust 구현에서는 `'lazy'`와 동일한 open 경로로 동작합니다: 시트 XML hydrate 지연과 보조 파트 eager 파싱 생략이 동일하게 적용됩니다. 향후 호환성과 streaming 의도를 위해 이 모드를 유지하고, 필요 시 `openSheetReader()`와 함께 사용하면 됩니다. |
 
 #### AuxParts
 
@@ -323,6 +323,24 @@ for await (const batch of reader) {
 | `batchSize` | `number?` | `1000` | 배치당 행 수입니다. |
 
 **반환값:** `Promise<SheetStreamReader>`
+
+### `wb.open_sheet_reader(sheet)` / `wb.open_sheet_reader_owned(sheet)` (Rust)
+
+Rust에서는 `Workbook`에 대응되는 streaming reader API가 제공됩니다.
+
+```rust
+use sheetkit::Workbook;
+
+let wb = Workbook::open("large.xlsx")?;
+
+// Borrowed reader (`wb` 수명에 종속)
+let mut reader = wb.open_sheet_reader("Sheet1")?;
+
+// Owned reader (FFI 친화적, `wb` 수명에 비종속)
+let mut owned_reader = wb.open_sheet_reader_owned("Sheet1")?;
+```
+
+일반 Rust 워크로드에서는 `open_sheet_reader`를 사용하고, 독립적인 reader 객체가 필요한 경우에는 `open_sheet_reader_owned`를 사용하면 됩니다.
 
 ### `SheetStreamReader`
 

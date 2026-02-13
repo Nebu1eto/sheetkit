@@ -221,8 +221,10 @@ flowchart TD
 ## 5. 테스트 전략
 
 - **단위 테스트**: `#[cfg(test)]` 인라인 테스트 블록을 사용하여 모듈과 함께 배치됩니다. 각 모듈은 자체 기능을 독립적으로 테스트합니다.
-- **Node.js 테스트**: `packages/sheetkit/__test__/index.spec.ts`에 위치합니다. vitest를 사용하여 napi 바인딩을 엔드투엔드로 테스트합니다.
-- **테스트 커버리지**: 프로젝트는 모든 모듈에 걸쳐 1,300개 이상의 Rust 테스트와 200개의 Node.js 테스트를 유지합니다.
+- **Rust 테스트 규모**: 현재 워크스페이스 기준으로 `sheetkit-core`, `sheetkit-xml`, facade/integration crate를 합쳐 2,000개 이상의 Rust 테스트가 실행됩니다.
+- **Node.js 테스트 구조**: Vitest 스위트는 `packages/sheetkit/__test__/` 아래 여러 파일로 구성됩니다 (예: `index.spec.ts`, `image-formats.spec.ts`, `sparkline.spec.ts`, `vml-comments.spec.ts`, `defined-names-sheet-protection.spec.ts`, `open-options-defaults.spec.ts`, `api-behavior.spec.ts`, `vba.spec.ts`).
+- **Node.js 테스트 규모**: 현재 Node.js 테스트 스위트는 540개 테스트를 실행합니다.
+- **벤치마크 기준 문서**: 성능 관련 설명은 `benchmarks/rust/RESULTS.md`, `benchmarks/rust-comparison/RESULTS.md`, `benchmarks/node/RESULTS.md`의 최신 수치와 함께 관리해야 합니다.
 - **테스트 출력 파일**: 테스트 중 생성된 `.xlsx` 파일은 저장소를 깨끗하게 유지하기 위해 gitignore 처리됩니다.
 
 ## 6. Buffer 기반 FFI 전송

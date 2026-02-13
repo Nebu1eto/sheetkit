@@ -221,8 +221,10 @@ flowchart TD
 ## 5. Testing Strategy
 
 - **Unit tests**: Co-located with their modules using `#[cfg(test)]` inline test blocks. Each module tests its own functionality in isolation.
-- **Node.js tests**: Located at `packages/sheetkit/__test__/index.spec.ts`. Uses vitest to test the napi bindings end-to-end.
-- **Test coverage**: The project maintains over 1,300 Rust tests and 200 Node.js tests across all modules.
+- **Rust test scale**: Current workspace runs exceed 2,000 Rust tests across `sheetkit-core`, `sheetkit-xml`, and facade/integration crates.
+- **Node.js test structure**: Vitest suites live in multiple files under `packages/sheetkit/__test__/` (for example: `index.spec.ts`, `image-formats.spec.ts`, `sparkline.spec.ts`, `vml-comments.spec.ts`, `defined-names-sheet-protection.spec.ts`, `open-options-defaults.spec.ts`, `api-behavior.spec.ts`, `vba.spec.ts`).
+- **Node.js test scale**: Current Node.js suite executes 540 tests.
+- **Benchmark reference**: Keep performance claims aligned with the latest benchmark snapshots in `benchmarks/rust/RESULTS.md`, `benchmarks/rust-comparison/RESULTS.md`, and `benchmarks/node/RESULTS.md`.
 - **Test output files**: Any `.xlsx` files generated during tests are gitignored to keep the repository clean.
 
 ## 6. Buffer-Based FFI Transfer

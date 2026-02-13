@@ -66,6 +66,7 @@ function sidebarGuide(): DefaultTheme.SidebarItem[] {
         { text: 'Data Features', link: '/guide/data-features' },
         { text: 'Rendering', link: '/guide/rendering' },
         { text: 'Advanced', link: '/guide/advanced' },
+        { text: 'Async-First Migration (v0.5+)', link: '/guide/migration-async-first' },
         { text: 'CLI', link: '/guide/cli' },
       ],
     },
