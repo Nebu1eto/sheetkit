@@ -9,7 +9,7 @@ A Rust library for reading and writing Excel (.xlsx) files, with Node.js binding
 ## Features
 
 - Read/write .xlsx files
-- Rust core + Node.js bindings (napi-rs)
+- Rust core + Node.js bindings via napi-rs (also works with Deno and Bun)
 - Cell operations (string, number, boolean, date, formula)
 - Sheet management (create, delete, rename, copy, active sheet)
 - Row/column operations (insert, delete, resize, hide, outline)
@@ -84,6 +84,13 @@ pnpm add @sheetkit/node
 ```
 
 [View on npm](https://www.npmjs.com/package/@sheetkit/node)
+
+### Deno / Bun
+
+SheetKit's Node.js bindings use [napi-rs](https://napi.rs/), which is compatible with other JavaScript runtimes that support Node-API:
+
+- **Deno**: Supports napi-rs native addons via the [`--allow-ffi`](https://docs.deno.com/runtime/fundamentals/security/#ffi-(foreign-function-interface)) permission flag.
+- **Bun**: Supports Node-API natively. Most napi-rs modules [work out of the box](https://bun.com/docs/runtime/node-api).
 
 ## Documentation
 

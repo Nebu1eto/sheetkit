@@ -54,6 +54,42 @@ pnpm add @sheetkit/node
 
 [npm에서 보기](https://www.npmjs.com/package/@sheetkit/node)
 
+### Deno / Bun
+
+SheetKit의 Node.js 바인딩은 [napi-rs](https://napi.rs/)를 사용하며, Node-API를 지원하는 다른 JavaScript 런타임에서도 호환됩니다. Deno와 Bun에서도 동일한 `@sheetkit/node` 패키지를 사용할 수 있습니다.
+
+**Deno**
+
+Deno는 [`--allow-ffi`](https://docs.deno.com/runtime/fundamentals/security/#ffi-(foreign-function-interface)) 권한 플래그를 통해 napi-rs 네이티브 애드온을 지원합니다. `npm:` specifier 또는 import map으로 패키지를 설치한 후 FFI 권한을 활성화하여 실행합니다:
+
+```bash
+deno run --allow-ffi main.ts
+```
+
+```typescript
+import { Workbook } from "npm:@sheetkit/node";
+
+const wb = new Workbook();
+wb.setCellValue("Sheet1", "A1", "Hello from Deno");
+await wb.save("output.xlsx");
+```
+
+**Bun**
+
+Bun은 [Node-API를 네이티브로 지원합니다](https://bun.com/docs/runtime/node-api). Node.js와 동일한 방식으로 패키지를 설치하고 사용합니다:
+
+```bash
+bun add @sheetkit/node
+```
+
+```typescript
+import { Workbook } from "@sheetkit/node";
+
+const wb = new Workbook();
+wb.setCellValue("Sheet1", "A1", "Hello from Bun");
+await wb.save("output.xlsx");
+```
+
 ### CLI 도구
 
 커맨드 라인에서 시트 검사, 데이터 변환 등의 작업을 수행하려면:
