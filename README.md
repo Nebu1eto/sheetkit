@@ -9,7 +9,7 @@ A Rust library for reading and writing Excel (.xlsx) files, with Node.js binding
 ## Features
 
 - Read/write .xlsx files
-- Rust core + Node.js/Deno/Bun bindings (napi-rs)
+- Rust core + Node.js bindings via napi-rs (also works with Deno and Bun)
 - Cell operations (string, number, boolean, date, formula)
 - Sheet management (create, delete, rename, copy, active sheet)
 - Row/column operations (insert, delete, resize, hide, outline)

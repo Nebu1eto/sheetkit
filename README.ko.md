@@ -9,7 +9,7 @@ Excel(.xlsx) 파일을 읽고 쓰는 Rust 라이브러리. napi-rs를 통한 Nod
 ## 주요 기능
 
 - .xlsx 파일 읽기/쓰기
-- Rust 코어 + Node.js/Deno/Bun 바인딩 (napi-rs)
+- Rust 코어 + napi-rs 기반 Node.js 바인딩 (Deno, Bun에서도 사용 가능)
 - 셀 조작 (문자열, 숫자, 불리언, 날짜, 수식)
 - 시트 관리 (생성, 삭제, 이름 변경, 복사, 활성 시트)
 - 행/열 조작 (삽입, 삭제, 크기 조정, 숨기기, 아웃라인)
