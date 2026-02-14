@@ -16,6 +16,7 @@ use std::time::Instant;
 
 const WARMUP_RUNS: usize = 1;
 const BENCH_RUNS: usize = 5;
+const VALUE_PROBE_SAMPLES_PER_SHEET: usize = 32;
 
 fn fixtures_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -163,6 +164,15 @@ struct BenchResult {
     /// Number of cells actually read/parsed during the benchmark.
     /// Used for read scenarios to verify libraries do equivalent work.
     cells_read: Option<u64>,
+    /// Number of rows actually iterated during the benchmark.
+    /// Used for read scenarios to verify row-level work.
+    rows_read: Option<u64>,
+    /// Expected cell count for comparable workloads in the scenario.
+    expected_cells_read: Option<u64>,
+    /// Expected row count for comparable workloads in the scenario.
+    expected_rows_read: Option<u64>,
+    /// Library-level comparability gate (workload consensus / value probe checks).
+    workload_consistent: bool,
 }
 
 impl BenchResult {
@@ -199,10 +209,42 @@ impl BenchResult {
 /// Returns true when a benchmark result should be excluded from winner
 /// determination due to non-equivalent work.
 ///
-/// Current rule: read scenarios with `cells_read == 0` are considered
-/// non-comparable and cannot win.
+/// Current rule: read scenarios are non-comparable if:
+/// - `cells_read == 0` or `rows_read == 0`
+/// - observed row/cell counts do not match scenario expected workload counts
+/// - value probe did not match (for libraries that support probe checks)
 fn non_comparable_for_winner(result: &BenchResult) -> bool {
-    matches!(result.cells_read, Some(0))
+    result.cells_read == Some(0)
+        || result.rows_read == Some(0)
+        || !result.workload_consistent
+        || !count_matches_expected(result.cells_read, result.expected_cells_read)
+        || !count_matches_expected(result.rows_read, result.expected_rows_read)
+}
+
+fn count_matches_expected(observed: Option<u64>, expected: Option<u64>) -> bool {
+    match (observed, expected) {
+        (_, None) => true,
+        (None, Some(_)) => false,
+        (Some(a), Some(b)) => a == b,
+    }
+}
+
+fn consensus_count(values: &[u64]) -> Option<u64> {
+    if values.is_empty() {
+        return None;
+    }
+    if values.len() == 1 {
+        return Some(values[0]);
+    }
+    let mut freq: std::collections::HashMap<u64, usize> = std::collections::HashMap::new();
+    for &v in values {
+        *freq.entry(v).or_insert(0) += 1;
+    }
+    let best = freq.into_iter().max_by_key(|(_value, count)| *count);
+    match best {
+        Some((value, count)) if count >= 2 => Some(value),
+        _ => None,
+    }
 }
 
 fn bench<F>(
@@ -215,7 +257,9 @@ fn bench<F>(
 where
     F: Fn() -> Box<dyn FnOnce()>,
 {
-    bench_with_cell_count(scenario, library, category, output_path, None, make_fn)
+    bench_with_counts(
+        scenario, library, category, output_path, None, None, None, None, true, make_fn,
+    )
 }
 
 fn bench_with_cell_count<F>(
@@ -224,6 +268,35 @@ fn bench_with_cell_count<F>(
     category: &str,
     output_path: Option<&Path>,
     cells_read: Option<u64>,
+    make_fn: F,
+) -> BenchResult
+where
+    F: Fn() -> Box<dyn FnOnce()>,
+{
+    bench_with_counts(
+        scenario,
+        library,
+        category,
+        output_path,
+        cells_read,
+        None,
+        None,
+        None,
+        true,
+        make_fn,
+    )
+}
+
+fn bench_with_counts<F>(
+    scenario: &str,
+    library: &str,
+    category: &str,
+    output_path: Option<&Path>,
+    cells_read: Option<u64>,
+    rows_read: Option<u64>,
+    expected_cells_read: Option<u64>,
+    expected_rows_read: Option<u64>,
+    workload_consistent: bool,
     make_fn: F,
 ) -> BenchResult
 where
@@ -271,6 +344,10 @@ where
         memory_deltas_mb: mem_deltas,
         file_size_kb: last_size,
         cells_read,
+        rows_read,
+        expected_cells_read,
+        expected_rows_read,
+        workload_consistent,
     };
 
     let size_str = match result.file_size_kb {
@@ -281,8 +358,17 @@ where
         Some(n) => format!(" cells={n}"),
         None => String::new(),
     };
+    let rows_str = match result.rows_read {
+        Some(n) => format!(" rows={n}"),
+        None => String::new(),
+    };
+    let comparable_str = if non_comparable_for_winner(&result) {
+        " *"
+    } else {
+        ""
+    };
     println!(
-        "  [{:<14}] {:<40} med={:>8} min={:>8} max={:>8} p95={:>8} mem={:.1}MB{size_str}{cells_str}",
+        "  [{:<14}] {:<40} med={:>8} min={:>8} max={:>8} p95={:>8} mem={:.1}MB{size_str}{cells_str}{rows_str}{comparable_str}",
         library,
         scenario,
         format_ms(result.median()),
@@ -299,6 +385,128 @@ fn cleanup(path: &Path) {
     let _ = fs::remove_file(path);
 }
 
+fn normalize_probe_value(raw: &str) -> String {
+    let s = raw.trim();
+    if s.eq_ignore_ascii_case("true") {
+        return "TRUE".to_string();
+    }
+    if s.eq_ignore_ascii_case("false") {
+        return "FALSE".to_string();
+    }
+    if let Ok(n) = s.parse::<f64>() {
+        if n.is_finite() {
+            let mut out = format!("{:.12}", n);
+            while out.ends_with('0') && out.contains('.') {
+                out.pop();
+            }
+            if out.ends_with('.') {
+                out.pop();
+            }
+            if out == "-0" {
+                return "0".to_string();
+            }
+            return out;
+        }
+    }
+    s.to_string()
+}
+
+fn probe_values_equal(expected: &str, observed: &str) -> bool {
+    let exp = normalize_probe_value(expected);
+    let obs = normalize_probe_value(observed);
+    exp == obs
+        || (exp == "TRUE" && obs == "1")
+        || (exp == "FALSE" && obs == "0")
+        || (exp == "1" && obs == "TRUE")
+        || (exp == "0" && obs == "FALSE")
+}
+
+fn collect_sheetkit_value_samples(
+    filepath: &Path,
+    max_samples_per_sheet: usize,
+) -> Vec<(String, u32, u32, String)> {
+    let wb = Workbook::open(filepath).unwrap();
+    let mut samples = Vec::new();
+    for sheet in wb.sheet_names() {
+        let mut taken = 0usize;
+        for (row, cells) in wb.get_rows(sheet).unwrap() {
+            for (col, value) in cells {
+                match &value {
+                    CellValue::Bool(_) | CellValue::Number(_) | CellValue::String(_) => {}
+                    _ => continue,
+                }
+                let text = value.to_string();
+                if text.is_empty() {
+                    continue;
+                }
+                samples.push((sheet.to_string(), row, col, normalize_probe_value(&text)));
+                taken += 1;
+                if taken >= max_samples_per_sheet {
+                    break;
+                }
+            }
+            if taken >= max_samples_per_sheet {
+                break;
+            }
+        }
+    }
+    samples
+}
+
+fn probe_values_calamine(
+    filepath: &Path,
+    samples: &[(String, u32, u32, String)],
+) -> Option<(u64, u64)> {
+    use calamine::{open_workbook, Data, Reader, Xlsx};
+    let mut wb: Xlsx<_> = open_workbook(filepath).ok()?;
+    let mut wanted_sheets = std::collections::BTreeSet::new();
+    for (sheet, _, _, _) in samples {
+        wanted_sheets.insert(sheet.as_str());
+    }
+    let mut ranges: std::collections::HashMap<String, calamine::Range<Data>> =
+        std::collections::HashMap::new();
+    for sheet in wanted_sheets {
+        if let Ok(range) = wb.worksheet_range(sheet) {
+            ranges.insert(sheet.to_string(), range);
+        }
+    }
+
+    let mut mismatches = 0u64;
+    for (sheet, row, col, expected) in samples {
+        let observed = ranges
+            .get(sheet)
+            .and_then(|range| range.get_value((*row - 1, *col - 1)))
+            .filter(|v| !matches!(v, Data::Empty))
+            .map(|v| v.to_string());
+        match observed {
+            Some(text) if probe_values_equal(expected, &text) => {}
+            _ => mismatches += 1,
+        }
+    }
+    Some((samples.len() as u64, mismatches))
+}
+
+fn probe_values_edit_xlsx(
+    filepath: &Path,
+    samples: &[(String, u32, u32, String)],
+) -> Option<(u64, u64)> {
+    use edit_xlsx::{Read as _, Workbook as EditWorkbook};
+    let wb = EditWorkbook::from_path(filepath).ok()?;
+    let mut mismatches = 0u64;
+    for (sheet, row, col, expected) in samples {
+        let observed = wb
+            .get_worksheet_by_name(sheet)
+            .ok()
+            .and_then(|ws| ws.read_cell((*row, *col)).ok())
+            .and_then(|cell| cell.text)
+            .unwrap_or_default();
+        if !probe_values_equal(expected, &observed) {
+            mismatches += 1;
+        }
+    }
+    Some((samples.len() as u64, mismatches))
+}
+
 /// Count cells read by SheetKit for a given file (one-time probe).
 fn count_cells_sheetkit(filepath: &Path) -> u64 {
     let wb = Workbook::open(filepath).unwrap();
@@ -307,6 +515,15 @@ fn count_cells_sheetkit(filepath: &Path) -> u64 {
         for (_row_num, cells) in wb.get_rows(name).unwrap() {
             count += cells.len() as u64;
         }
+    }
+    count
+}
+
+fn count_rows_sheetkit(filepath: &Path) -> u64 {
+    let wb = Workbook::open(filepath).unwrap();
+    let mut count: u64 = 0;
+    for name in wb.sheet_names() {
+        count += wb.get_rows(name).unwrap().len() as u64;
     }
     count
 }
@@ -329,30 +546,68 @@ fn count_cells_calamine(filepath: &Path) -> u64 {
     count
 }
 
-/// Count non-empty cells read by edit-xlsx for a given file (one-time probe).
-/// Returns None if the file cannot be opened.
-/// Only counts cells whose text content is non-empty, matching how SheetKit's
-/// sparse iterator only yields cells with actual values.
-fn count_cells_edit_xlsx(filepath: &Path) -> Option<u64> {
-    use edit_xlsx::{Read as _, Workbook as EditWorkbook};
-    let wb = EditWorkbook::from_path(filepath).ok()?;
+fn count_rows_calamine(filepath: &Path) -> u64 {
+    use calamine::{open_workbook, Data, Reader, Xlsx};
+    let mut wb: Xlsx<_> = open_workbook(filepath).unwrap();
+    let names: Vec<String> = wb.sheet_names().to_vec();
     let mut count: u64 = 0;
-    for id in 1..=100u32 {
-        match wb.get_worksheet(id) {
-            Ok(ws) => {
-                let max_row = ws.max_row();
-                let max_col = ws.max_column();
-                for r in 1..=max_row {
-                    for c in 1..=max_col {
-                        if let Ok(cell) = ws.read_cell((r, c)) {
-                            if cell.text.as_ref().is_some_and(|t| !t.is_empty()) {
-                                count += 1;
-                            }
-                        }
-                    }
+    for name in &names {
+        if let Ok(range) = wb.worksheet_range(name) {
+            for row in range.rows() {
+                if row.iter().any(|c| !matches!(c, Data::Empty)) {
+                    count += 1;
                 }
             }
-            Err(_) => break,
+        }
+    }
+    count
+}
+
+/// Count non-empty cells read by edit-xlsx for a given file (one-time probe).
+/// Returns None if the file cannot be opened.
+/// Mirrors the benchmark loop by counting coordinates where `read_cell` succeeds.
+fn count_cells_edit_xlsx(filepath: &Path) -> Option<u64> {
+    use edit_xlsx::{Read as _, WorkSheetRow as _, Workbook as EditWorkbook};
+    let wb = EditWorkbook::from_path(filepath).ok()?;
+    let mut count: u64 = 0;
+    for ws in wb.worksheets() {
+        let max_row = ws.max_row();
+        let max_col = ws.max_column();
+        for r in 1..=max_row {
+            if ws.get_row(r).is_err() {
+                continue;
+            }
+            for c in 1..=max_col {
+                if ws.read_cell((r, c)).is_ok() {
+                    count += 1;
+                }
+            }
+        }
+    }
+    Some(count)
+}
+
+fn count_rows_edit_xlsx(filepath: &Path) -> Option<u64> {
+    use edit_xlsx::{Read as _, WorkSheetRow as _, Workbook as EditWorkbook};
+    let wb = EditWorkbook::from_path(filepath).ok()?;
+    let mut count: u64 = 0;
+    for ws in wb.worksheets() {
+        let max_row = ws.max_row();
+        let max_col = ws.max_column();
+        for r in 1..=max_row {
+            if ws.get_row(r).is_err() {
+                continue;
+            }
+            let mut has_non_empty_cell = false;
+            for c in 1..=max_col {
+                if ws.read_cell((r, c)).is_ok() {
+                    has_non_empty_cell = true;
+                    break;
+                }
+            }
+            if has_non_empty_cell {
+                count += 1;
+            }
         }
     }
     Some(count)
@@ -368,25 +623,104 @@ fn bench_read_file(results: &mut Vec<BenchResult>, filename: &str, label: &str, 
 
     println!("\n--- Read: {label} ---");
 
-    // Pre-count cells for each library to verify equivalent work
+    // Pre-count rows/cells for each library to verify comparable work.
     let sk_cells = count_cells_sheetkit(&filepath);
     let cal_cells = count_cells_calamine(&filepath);
     let edit_cells = count_cells_edit_xlsx(&filepath);
+    let sk_rows = count_rows_sheetkit(&filepath);
+    let cal_rows = count_rows_calamine(&filepath);
+    let edit_rows = count_rows_edit_xlsx(&filepath);
+    let mut cell_counts = vec![("SheetKit", sk_cells), ("calamine", cal_cells)];
+    let mut row_counts = vec![("SheetKit", sk_rows), ("calamine", cal_rows)];
+    if let Some(c) = edit_cells {
+        cell_counts.push(("edit-xlsx", c));
+    }
+    if let Some(r) = edit_rows {
+        row_counts.push(("edit-xlsx", r));
+    }
+    let cell_values: Vec<u64> = cell_counts.iter().map(|(_, n)| *n).collect();
+    let row_values: Vec<u64> = row_counts.iter().map(|(_, n)| *n).collect();
+    let expected_cells_opt = consensus_count(&cell_values);
+    let expected_rows_opt = consensus_count(&row_values);
+    let workload_cells = cell_counts
+        .iter()
+        .map(|(lib, n)| format!("{lib}={n}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let workload_rows = row_counts
+        .iter()
+        .map(|(lib, n)| format!("{lib}={n}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    println!("  workload cells: {workload_cells}");
+    println!("  workload rows : {workload_rows}");
+    let min_cells = cell_values.iter().copied().min().unwrap_or(0);
+    let max_cells = cell_values.iter().copied().max().unwrap_or(0);
+    let min_rows = row_values.iter().copied().min().unwrap_or(0);
+    let max_rows = row_values.iter().copied().max().unwrap_or(0);
+    let workload_consistent = expected_cells_opt.is_some() && expected_rows_opt.is_some();
+    if min_cells != max_cells || min_rows != max_rows {
+        println!(
+            "  NOTE: workload mismatch detected; mismatched entries are excluded from winner selection."
+        );
+    }
+    if !workload_consistent {
+        println!("  NOTE: no workload consensus across libraries; this scenario is excluded from winner selection.");
+    }
+    let samples = collect_sheetkit_value_samples(&filepath, VALUE_PROBE_SAMPLES_PER_SHEET);
+    let calamine_probe = probe_values_calamine(&filepath, &samples);
+    let edit_probe = probe_values_edit_xlsx(&filepath, &samples);
+    let calamine_probe_ok = calamine_probe
+        .as_ref()
+        .map(|(_, mismatched)| *mismatched == 0)
+        .unwrap_or(false);
+    let edit_probe_ok = edit_probe
+        .as_ref()
+        .map(|(_, mismatched)| *mismatched == 0)
+        .unwrap_or(false);
+    if !samples.is_empty() {
+        if let Some((checked, mismatched)) = calamine_probe {
+            println!(
+                "  value probe calamine: {}/{} matched",
+                checked.saturating_sub(mismatched),
+                checked
+            );
+        } else {
+            println!("  value probe calamine: unavailable");
+        }
+        if let Some((checked, mismatched)) = edit_probe {
+            println!(
+                "  value probe edit-xlsx: {}/{} matched",
+                checked.saturating_sub(mismatched),
+                checked
+            );
+        } else {
+            println!("  value probe edit-xlsx: unavailable");
+        }
+    }
 
     // SheetKit
     let fp = filepath.clone();
-    results.push(bench_with_cell_count(
+    results.push(bench_with_counts(
         &format!("Read {label}"),
         "SheetKit",
         category,
         None,
         Some(sk_cells),
+        Some(sk_rows),
+        expected_cells_opt,
+        expected_rows_opt,
+        workload_consistent,
         move || {
             let fp = fp.clone();
             Box::new(move || {
                 let wb = Workbook::open(&fp).unwrap();
                 for name in wb.sheet_names() {
-                    let _ = wb.get_rows(name).unwrap();
+                    for (_row_num, cells) in wb.get_rows(name).unwrap() {
+                        for (_col_num, value) in cells {
+                            std::hint::black_box(value);
+                        }
+                    }
                 }
             })
         },
@@ -394,19 +728,27 @@ fn bench_read_file(results: &mut Vec<BenchResult>, filename: &str, label: &str, 
 
     // SheetKit (Lazy)
     let fp = filepath.clone();
-    results.push(bench_with_cell_count(
+    results.push(bench_with_counts(
         &format!("Read {label}"),
         "SheetKit (lazy)",
         category,
         None,
         Some(sk_cells),
+        Some(sk_rows),
+        expected_cells_opt,
+        expected_rows_opt,
+        workload_consistent,
         move || {
             let fp = fp.clone();
             Box::new(move || {
                 let opts = OpenOptions::new().read_mode(ReadMode::Lazy);
                 let wb = Workbook::open_with_options(&fp, &opts).unwrap();
                 for name in wb.sheet_names() {
-                    let _ = wb.get_rows(name).unwrap();
+                    for (_row_num, cells) in wb.get_rows(name).unwrap() {
+                        for (_col_num, value) in cells {
+                            std::hint::black_box(value);
+                        }
+                    }
                 }
             })
         },
@@ -414,22 +756,30 @@ fn bench_read_file(results: &mut Vec<BenchResult>, filename: &str, label: &str, 
 
     // calamine
     let fp = filepath.clone();
-    results.push(bench_with_cell_count(
+    results.push(bench_with_counts(
         &format!("Read {label}"),
         "calamine",
         category,
         None,
         Some(cal_cells),
+        Some(cal_rows),
+        expected_cells_opt,
+        expected_rows_opt,
+        workload_consistent && calamine_probe_ok,
         move || {
             let fp = fp.clone();
             Box::new(move || {
-                use calamine::{open_workbook, Reader, Xlsx};
+                use calamine::{open_workbook, Data, Reader, Xlsx};
                 let mut wb: Xlsx<_> = open_workbook(&fp).unwrap();
                 let names: Vec<String> = wb.sheet_names().to_vec();
                 for name in &names {
                     if let Ok(range) = wb.worksheet_range(name) {
-                        for _row in range.rows() {
-                            // iterate all rows
+                        for row in range.rows() {
+                            for cell in row {
+                                if !matches!(cell, Data::Empty) {
+                                    std::hint::black_box(cell);
+                                }
+                            }
                         }
                     }
                 }
@@ -440,29 +790,33 @@ fn bench_read_file(results: &mut Vec<BenchResult>, filename: &str, label: &str, 
     // edit-xlsx (read support) -- may fail on files not created by edit-xlsx
     let fp = filepath.clone();
     if let Some(cells) = edit_cells {
-        results.push(bench_with_cell_count(
+        results.push(bench_with_counts(
             &format!("Read {label}"),
             "edit-xlsx",
             category,
             None,
             Some(cells),
+            edit_rows,
+            expected_cells_opt,
+            expected_rows_opt,
+            workload_consistent && edit_probe_ok,
             move || {
                 let fp = fp.clone();
                 Box::new(move || {
-                    use edit_xlsx::{Read as _, Workbook as EditWorkbook};
+                    use edit_xlsx::{Read as _, WorkSheetRow as _, Workbook as EditWorkbook};
                     let wb = EditWorkbook::from_path(&fp).unwrap();
-                    for id in 1..=100u32 {
-                        match wb.get_worksheet(id) {
-                            Ok(ws) => {
-                                let max_row = ws.max_row();
-                                let max_col = ws.max_column();
-                                for r in 1..=max_row {
-                                    for c in 1..=max_col {
-                                        let _ = ws.read_cell((r, c));
-                                    }
+                    for ws in wb.worksheets() {
+                        let max_row = ws.max_row();
+                        let max_col = ws.max_column();
+                        for r in 1..=max_row {
+                            if ws.get_row(r).is_err() {
+                                continue;
+                            }
+                            for c in 1..=max_col {
+                                if let Ok(cell) = ws.read_cell((r, c)) {
+                                    std::hint::black_box(cell);
                                 }
                             }
-                            Err(_) => break,
                         }
                     }
                 })
@@ -1647,7 +2001,7 @@ fn print_summary_table(results: &[BenchResult]) {
     }
     if has_non_comparable_entries {
         println!(
-            "\n* Entries marked with '*' had cells_read=0 and were excluded from winner selection."
+            "\n* Entries marked with '*' had workload-count mismatch, value-probe mismatch, or zero read counts and were excluded from winner selection."
         );
     }
 }
@@ -1813,7 +2167,7 @@ fn generate_markdown_report(results: &[BenchResult]) -> String {
 
     if has_non_comparable_entries {
         lines.push(
-            "* `*` indicates `cells_read = 0`; excluded from Winner selection as non-comparable."
+            "* `*` indicates workload-count mismatch, value-probe mismatch, or zero read counts; excluded from Winner selection as non-comparable."
                 .to_string(),
         );
         lines.push(String::new());
@@ -1823,20 +2177,37 @@ fn generate_markdown_report(results: &[BenchResult]) -> String {
     lines.push("## Detailed Statistics".to_string());
     lines.push(String::new());
     lines.push(
-        "| Scenario | Library | Median | Min | Max | P95 | Peak Mem (MB) | Cells Read |"
+        "| Scenario | Library | Median | Min | Max | P95 | Peak Mem (MB) | Rows Read | Rows Expected | Cells Read | Cells Expected | Comparable |"
             .to_string(),
     );
     lines.push(
-        "|----------|---------|--------|-----|-----|-----|---------------|------------|"
+        "|----------|---------|--------|-----|-----|-----|---------------|----------|---------------|------------|----------------|------------|"
             .to_string(),
     );
     for r in results {
+        let rows_str = match r.rows_read {
+            Some(n) => n.to_string(),
+            None => "N/A".to_string(),
+        };
+        let rows_expected_str = match r.expected_rows_read {
+            Some(n) => n.to_string(),
+            None => "N/A".to_string(),
+        };
         let cells_str = match r.cells_read {
             Some(n) => n.to_string(),
             None => "N/A".to_string(),
         };
+        let cells_expected_str = match r.expected_cells_read {
+            Some(n) => n.to_string(),
+            None => "N/A".to_string(),
+        };
+        let comparable_str = if non_comparable_for_winner(r) {
+            "No"
+        } else {
+            "Yes"
+        };
         lines.push(format!(
-            "| {} | {} | {} | {} | {} | {} | {:.1} | {} |",
+            "| {} | {} | {} | {} | {} | {} | {:.1} | {} | {} | {} | {} | {} |",
             r.scenario,
             r.library,
             format_ms(r.median()),
@@ -1844,7 +2215,11 @@ fn generate_markdown_report(results: &[BenchResult]) -> String {
             format_ms(r.max()),
             format_ms(r.p95()),
             r.peak_mem_mb(),
+            rows_str,
+            rows_expected_str,
             cells_str,
+            cells_expected_str,
+            comparable_str,
         ));
     }
     lines.push(String::new());
