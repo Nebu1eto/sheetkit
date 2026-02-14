@@ -101,6 +101,7 @@ use crate::workbook_paths::{
     resolve_relationship_target,
 };
 
+#[path = "aux_parts.rs"]
 pub(crate) mod aux;
 mod cell_ops;
 mod data;
