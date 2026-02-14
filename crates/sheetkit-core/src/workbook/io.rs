@@ -11,6 +11,47 @@ const VBA_PROJECT_CONTENT_TYPE: &str = "application/vnd.ms-office.vbaProject";
 impl Workbook {
     /// Create a new empty workbook containing a single empty sheet named "Sheet1".
     pub fn new() -> Self {
+        let workbook_xml = WorkbookXml {
+            // Excel-like workbook.xml defaults for interoperability.
+            file_version: Some(sheetkit_xml::workbook::FileVersion {
+                app_name: Some("xl".to_string()),
+                last_edited: Some("7".to_string()),
+                lowest_edited: Some("7".to_string()),
+                rup_build: Some("27425".to_string()),
+            }),
+            // Excel-like workbookPr default.
+            workbook_pr: Some(sheetkit_xml::workbook::WorkbookPr {
+                date1904: None,
+                filter_privacy: None,
+                default_theme_version: Some(166925),
+                show_objects: None,
+                backup_file: None,
+                code_name: None,
+                check_compatibility: None,
+                auto_compress_pictures: None,
+                save_external_link_values: None,
+                update_links: None,
+                hide_pivot_field_list: None,
+                show_pivot_chart_filter: None,
+                allow_refresh_query: None,
+                publish_items: None,
+                show_border_unselected_tables: None,
+                prompted_solutions: None,
+                show_ink_annotation: None,
+            }),
+            // Minimal book view default (active tab only).
+            book_views: Some(sheetkit_xml::workbook::BookViews {
+                workbook_views: vec![sheetkit_xml::workbook::WorkbookView {
+                    x_window: None,
+                    y_window: None,
+                    window_width: None,
+                    window_height: None,
+                    active_tab: Some(0),
+                }],
+            }),
+            ..WorkbookXml::default()
+        };
+
         let sst_runtime = SharedStringTable::new();
         let mut sheet_name_index = HashMap::new();
         sheet_name_index.insert("Sheet1".to_string(), 0);
@@ -18,7 +59,7 @@ impl Workbook {
             format: WorkbookFormat::default(),
             content_types: ContentTypes::default(),
             package_rels: relationships::package_rels(),
-            workbook_xml: WorkbookXml::default(),
+            workbook_xml,
             workbook_rels: relationships::workbook_rels(),
             worksheets: vec![(
                 "Sheet1".to_string(),
@@ -1917,6 +1958,38 @@ mod tests {
     fn test_new_workbook_has_sheet1() {
         let wb = Workbook::new();
         assert_eq!(wb.sheet_names(), vec!["Sheet1"]);
+    }
+
+    #[test]
+    fn test_new_workbook_writes_interop_workbook_defaults() {
+        let wb = Workbook::new();
+        let buf = wb.save_to_buffer().unwrap();
+
+        let cursor = std::io::Cursor::new(buf);
+        let mut archive = zip::ZipArchive::new(cursor).unwrap();
+        let mut workbook_xml = String::new();
+        std::io::Read::read_to_string(
+            &mut archive.by_name("xl/workbook.xml").unwrap(),
+            &mut workbook_xml,
+        )
+        .unwrap();
+
+        assert!(workbook_xml.contains("<fileVersion"));
+        assert!(workbook_xml.contains("appName=\"xl\""));
+        assert!(workbook_xml.contains("lastEdited=\"7\""));
+        assert!(workbook_xml.contains("lowestEdited=\"7\""));
+        assert!(workbook_xml.contains("rupBuild=\"27425\""));
+
+        assert!(workbook_xml.contains("<workbookPr"));
+        assert!(workbook_xml.contains("defaultThemeVersion=\"166925\""));
+
+        assert!(workbook_xml.contains("<bookViews>"));
+        assert!(workbook_xml.contains("<workbookView"));
+        assert!(workbook_xml.contains("activeTab=\"0\""));
+        assert!(!workbook_xml.contains("xWindow="));
+        assert!(!workbook_xml.contains("yWindow="));
+        assert!(!workbook_xml.contains("windowWidth="));
+        assert!(!workbook_xml.contains("windowHeight="));
     }
 
     #[test]
