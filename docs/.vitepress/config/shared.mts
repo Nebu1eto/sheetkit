@@ -4,8 +4,6 @@ export const shared = defineConfig({
   title: 'SheetKit',
   description: 'High-performance SpreadsheetML library for Rust and TypeScript',
 
-  base: '/sheetkit/',
-
   lastUpdated: true,
   cleanUrls: true,
 

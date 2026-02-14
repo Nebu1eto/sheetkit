@@ -5,7 +5,7 @@
 
 [![crates.io](https://img.shields.io/crates/v/sheetkit?logo=rust)](https://crates.io/crates/sheetkit)
 [![npm](https://img.shields.io/npm/v/%40sheetkit%2Fnode?logo=npm)](https://www.npmjs.com/package/@sheetkit/node)
-[![Docs](https://img.shields.io/badge/docs-vitepress-059669)](https://nebu1eto.github.io/sheetkit/)
+[![Docs](https://img.shields.io/badge/docs-vitepress-059669)](https://sheetkit.dev/)
 [![CI](https://github.com/Nebu1eto/sheetkit/actions/workflows/ci.yml/badge.svg)](https://github.com/Nebu1eto/sheetkit/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
@@ -16,7 +16,7 @@ A Rust library for reading and writing Excel (.xlsx) files, with Node.js binding
 > **Warning**: SheetKit is experimental. APIs may change without notice. This project is under active development.
 
 Quick links:
-- [Docs](https://nebu1eto.github.io/sheetkit/)
+- [Docs](https://sheetkit.dev/)
 - [Rust crate (crates.io)](https://crates.io/crates/sheetkit)
 - [npm package (@sheetkit/node)](https://www.npmjs.com/package/@sheetkit/node)
 - [Repository (GitHub)](https://github.com/Nebu1eto/sheetkit)
@@ -109,7 +109,7 @@ SheetKit's Node.js bindings use [napi-rs](https://napi.rs/), which is compatible
 
 ## Documentation
 
-**[Documentation Site](https://nebu1eto.github.io/sheetkit/)** | [Korean (한국어)](https://nebu1eto.github.io/sheetkit/ko/)
+**[Documentation Site](https://sheetkit.dev/)** | [Korean (한국어)](https://sheetkit.dev/ko/)
 
 See the [docs/](https://github.com/Nebu1eto/sheetkit/tree/main/docs) folder for documentation source files.
 
