@@ -714,33 +714,6 @@ fn bench_read_file(results: &mut Vec<BenchResult>, filename: &str, label: &str, 
         move || {
             let fp = fp.clone();
             Box::new(move || {
-                let wb = Workbook::open(&fp).unwrap();
-                for name in wb.sheet_names() {
-                    for (_row_num, cells) in wb.get_rows(name).unwrap() {
-                        for (_col_num, value) in cells {
-                            std::hint::black_box(value);
-                        }
-                    }
-                }
-            })
-        },
-    ));
-
-    // SheetKit (Lazy)
-    let fp = filepath.clone();
-    results.push(bench_with_counts(
-        &format!("Read {label}"),
-        "SheetKit (lazy)",
-        category,
-        None,
-        Some(sk_cells),
-        Some(sk_rows),
-        expected_cells_opt,
-        expected_rows_opt,
-        workload_consistent,
-        move || {
-            let fp = fp.clone();
-            Box::new(move || {
                 let opts = OpenOptions::new().read_mode(ReadMode::Lazy);
                 let wb = Workbook::open_with_options(&fp, &opts).unwrap();
                 for name in wb.sheet_names() {
@@ -1773,27 +1746,6 @@ fn bench_random_access_read(results: &mut Vec<BenchResult>) {
             let fp = fp.clone();
             let cells = cells.clone();
             Box::new(move || {
-                let wb = Workbook::open(&fp).unwrap();
-                for cell in &cells {
-                    let _ = wb.get_cell_value("Sheet1", cell);
-                }
-            })
-        },
-    ));
-
-    // SheetKit (Lazy)
-    let fp = filepath.clone();
-    let cells = cells_str.clone();
-    results.push(bench_with_cell_count(
-        &label,
-        "SheetKit (lazy)",
-        "Random Access",
-        None,
-        Some(cell_count),
-        move || {
-            let fp = fp.clone();
-            let cells = cells.clone();
-            Box::new(move || {
                 let opts = OpenOptions::new().read_mode(ReadMode::Lazy);
                 let wb = Workbook::open_with_options(&fp, &opts).unwrap();
                 for cell in &cells {
@@ -1843,28 +1795,10 @@ fn bench_modify_file(results: &mut Vec<BenchResult>) {
 
     // SheetKit
     let fp = filepath.clone();
-    let out = output_dir().join("cmp-modify-sheetkit.xlsx");
-    results.push(bench(label, "SheetKit", "Modify", Some(&out), move || {
-        let fp = fp.clone();
-        let out = output_dir().join("cmp-modify-sheetkit.xlsx");
-        Box::new(move || {
-            let mut wb = Workbook::open(&fp).unwrap();
-            for i in 0..1000u32 {
-                let r = i + 2;
-                wb.set_cell_value("Sheet1", &format!("A{r}"), format!("Modified_{i}"))
-                    .unwrap();
-            }
-            wb.save(&out).unwrap();
-        })
-    }));
-    cleanup(&out);
-
-    // SheetKit (Lazy)
-    let fp = filepath.clone();
     let out = output_dir().join("cmp-modify-sheetkit-rf.xlsx");
     results.push(bench(
         label,
-        "SheetKit (lazy)",
+        "SheetKit",
         "Modify",
         Some(&out),
         move || {
