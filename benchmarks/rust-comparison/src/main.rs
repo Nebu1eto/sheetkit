@@ -247,6 +247,27 @@ fn consensus_count(values: &[u64]) -> Option<u64> {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+struct WorkloadCounts {
+    cells_read: Option<u64>,
+    rows_read: Option<u64>,
+    expected_cells_read: Option<u64>,
+    expected_rows_read: Option<u64>,
+    workload_consistent: bool,
+}
+
+impl WorkloadCounts {
+    const fn unconstrained() -> Self {
+        Self {
+            cells_read: None,
+            rows_read: None,
+            expected_cells_read: None,
+            expected_rows_read: None,
+            workload_consistent: true,
+        }
+    }
+}
+
 fn bench<F>(
     scenario: &str,
     library: &str,
@@ -258,7 +279,12 @@ where
     F: Fn() -> Box<dyn FnOnce()>,
 {
     bench_with_counts(
-        scenario, library, category, output_path, None, None, None, None, true, make_fn,
+        scenario,
+        library,
+        category,
+        output_path,
+        WorkloadCounts::unconstrained(),
+        make_fn,
     )
 }
 
@@ -278,11 +304,10 @@ where
         library,
         category,
         output_path,
-        cells_read,
-        None,
-        None,
-        None,
-        true,
+        WorkloadCounts {
+            cells_read,
+            ..WorkloadCounts::unconstrained()
+        },
         make_fn,
     )
 }
@@ -292,11 +317,7 @@ fn bench_with_counts<F>(
     library: &str,
     category: &str,
     output_path: Option<&Path>,
-    cells_read: Option<u64>,
-    rows_read: Option<u64>,
-    expected_cells_read: Option<u64>,
-    expected_rows_read: Option<u64>,
-    workload_consistent: bool,
+    workload: WorkloadCounts,
     make_fn: F,
 ) -> BenchResult
 where
@@ -343,11 +364,11 @@ where
         times_ms: times,
         memory_deltas_mb: mem_deltas,
         file_size_kb: last_size,
-        cells_read,
-        rows_read,
-        expected_cells_read,
-        expected_rows_read,
-        workload_consistent,
+        cells_read: workload.cells_read,
+        rows_read: workload.rows_read,
+        expected_cells_read: workload.expected_cells_read,
+        expected_rows_read: workload.expected_rows_read,
+        workload_consistent: workload.workload_consistent,
     };
 
     let size_str = match result.file_size_kb {
@@ -706,11 +727,13 @@ fn bench_read_file(results: &mut Vec<BenchResult>, filename: &str, label: &str, 
         "SheetKit",
         category,
         None,
-        Some(sk_cells),
-        Some(sk_rows),
-        expected_cells_opt,
-        expected_rows_opt,
-        workload_consistent,
+        WorkloadCounts {
+            cells_read: Some(sk_cells),
+            rows_read: Some(sk_rows),
+            expected_cells_read: expected_cells_opt,
+            expected_rows_read: expected_rows_opt,
+            workload_consistent,
+        },
         move || {
             let fp = fp.clone();
             Box::new(move || {
@@ -734,11 +757,13 @@ fn bench_read_file(results: &mut Vec<BenchResult>, filename: &str, label: &str, 
         "calamine",
         category,
         None,
-        Some(cal_cells),
-        Some(cal_rows),
-        expected_cells_opt,
-        expected_rows_opt,
-        workload_consistent && calamine_probe_ok,
+        WorkloadCounts {
+            cells_read: Some(cal_cells),
+            rows_read: Some(cal_rows),
+            expected_cells_read: expected_cells_opt,
+            expected_rows_read: expected_rows_opt,
+            workload_consistent: workload_consistent && calamine_probe_ok,
+        },
         move || {
             let fp = fp.clone();
             Box::new(move || {
@@ -768,11 +793,13 @@ fn bench_read_file(results: &mut Vec<BenchResult>, filename: &str, label: &str, 
             "edit-xlsx",
             category,
             None,
-            Some(cells),
-            edit_rows,
-            expected_cells_opt,
-            expected_rows_opt,
-            workload_consistent && edit_probe_ok,
+            WorkloadCounts {
+                cells_read: Some(cells),
+                rows_read: edit_rows,
+                expected_cells_read: expected_cells_opt,
+                expected_rows_read: expected_rows_opt,
+                workload_consistent: workload_consistent && edit_probe_ok,
+            },
             move || {
                 let fp = fp.clone();
                 Box::new(move || {
@@ -1796,26 +1823,20 @@ fn bench_modify_file(results: &mut Vec<BenchResult>) {
     // SheetKit
     let fp = filepath.clone();
     let out = output_dir().join("cmp-modify-sheetkit-rf.xlsx");
-    results.push(bench(
-        label,
-        "SheetKit",
-        "Modify",
-        Some(&out),
-        move || {
-            let fp = fp.clone();
-            let out = output_dir().join("cmp-modify-sheetkit-rf.xlsx");
-            Box::new(move || {
-                let opts = OpenOptions::new().read_mode(ReadMode::Lazy);
-                let mut wb = Workbook::open_with_options(&fp, &opts).unwrap();
-                for i in 0..1000u32 {
-                    let r = i + 2;
-                    wb.set_cell_value("Sheet1", &format!("A{r}"), format!("Modified_{i}"))
-                        .unwrap();
-                }
-                wb.save(&out).unwrap();
-            })
-        },
-    ));
+    results.push(bench(label, "SheetKit", "Modify", Some(&out), move || {
+        let fp = fp.clone();
+        let out = output_dir().join("cmp-modify-sheetkit-rf.xlsx");
+        Box::new(move || {
+            let opts = OpenOptions::new().read_mode(ReadMode::Lazy);
+            let mut wb = Workbook::open_with_options(&fp, &opts).unwrap();
+            for i in 0..1000u32 {
+                let r = i + 2;
+                wb.set_cell_value("Sheet1", &format!("A{r}"), format!("Modified_{i}"))
+                    .unwrap();
+            }
+            wb.save(&out).unwrap();
+        })
+    }));
     cleanup(&out);
 
     // edit-xlsx -- may fail on files not created by edit-xlsx itself.
