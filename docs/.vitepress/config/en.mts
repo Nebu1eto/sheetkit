@@ -10,8 +10,8 @@ export const en = defineConfig({
   themeConfig: {
     nav: nav(),
     sidebar: {
-      '/guide/': { base: '/guide/', items: sidebarGuide() },
-      '/api-reference/': { base: '/api-reference/', items: sidebarApiReference() },
+      '/guide/': sidebarGuide(),
+      '/api-reference/': sidebarApiReference(),
       '/typescript-api/': sidebarTypescriptApi(),
     },
     editLink: {
@@ -94,19 +94,19 @@ function sidebarApiReference(): DefaultTheme.SidebarItem[] {
     {
       text: 'API Reference',
       items: [
-        { text: 'Overview', link: '/' },
-        { text: 'Workbook', link: '/workbook' },
-        { text: 'Sheet', link: '/sheet' },
-        { text: 'Cell', link: '/cell' },
-        { text: 'Row & Column', link: '/row-column' },
-        { text: 'Style', link: '/style' },
-        { text: 'Chart', link: '/chart' },
-        { text: 'Image', link: '/image' },
-        { text: 'Shape', link: '/shape' },
-        { text: 'Slicer', link: '/slicer' },
-        { text: 'Form Control', link: '/form-control' },
-        { text: 'Data Features', link: '/data-features' },
-        { text: 'Advanced', link: '/advanced' },
+        { text: 'Overview', link: '/api-reference/' },
+        { text: 'Workbook', link: '/api-reference/workbook' },
+        { text: 'Sheet', link: '/api-reference/sheet' },
+        { text: 'Cell', link: '/api-reference/cell' },
+        { text: 'Row & Column', link: '/api-reference/row-column' },
+        { text: 'Style', link: '/api-reference/style' },
+        { text: 'Chart', link: '/api-reference/chart' },
+        { text: 'Image', link: '/api-reference/image' },
+        { text: 'Shape', link: '/api-reference/shape' },
+        { text: 'Slicer', link: '/api-reference/slicer' },
+        { text: 'Form Control', link: '/api-reference/form-control' },
+        { text: 'Data Features', link: '/api-reference/data-features' },
+        { text: 'Advanced', link: '/api-reference/advanced' },
       ],
     },
   ];

@@ -10,8 +10,8 @@ export const ko = defineConfig({
   themeConfig: {
     nav: nav(),
     sidebar: {
-      '/ko/guide/': { base: '/ko/guide/', items: sidebarGuide() },
-      '/ko/api-reference/': { base: '/ko/api-reference/', items: sidebarApiReference() },
+      '/ko/guide/': sidebarGuide(),
+      '/ko/api-reference/': sidebarApiReference(),
       '/typescript-api/': sidebarTypescriptApi(),
     },
     editLink: {
