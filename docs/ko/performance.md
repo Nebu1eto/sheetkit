@@ -17,14 +17,14 @@ SheetKit은 Rust와 TypeScript 애플리케이션 모두에 네이티브 Rust �
 
 ### Rust Excel 라이브러리와의 비교
 
-Rust 라이브러리 중 SheetKit은 가장 빠른 writer입니다. 읽기의 경우 비교 가능한 전체 읽기 작업 기준에서 calamine(읽기 전용)이 더 빠르며, SheetKit은 단일 crate에서 읽기+수정+쓰기를 모두 지원하는 유일한 라이브러리입니다.
+Rust 라이브러리 중 SheetKit은 가장 빠른 writer입니다. 읽기의 경우 비교 가능한 전체 읽기 작업 기준에서 calamine(읽기 전용)이 더 빠르며, `edit-xlsx`의 읽기 결과는 비교 가능성 검증이 필요합니다.
 
 | 시나리오 | SheetKit | calamine | rust_xlsxwriter | edit-xlsx |
 |---------|----------|----------|-----------------|-----------|
-| 대용량 읽기 (50k 행) | 489ms | 323ms | N/A | 39ms* |
-| 대용량 쓰기 (50k 행 x 20 열) | 497ms | N/A | 917ms | 946ms |
-| 스트리밍 쓰기 (50k 행) | 200ms | N/A | 922ms | N/A |
-| 수정 (50k 행 파일에서 1k 셀, lazy) | 688ms | N/A | N/A | N/A |
+| 대용량 읽기 (50k 행) | 494ms | 324ms | N/A | 372ms* |
+| 대용량 쓰기 (50k 행 x 20 열) | 475ms | N/A | 886ms | 939ms |
+| 스트리밍 쓰기 (50k 행) | 191ms | N/A | 885ms | N/A |
+| 수정 (50k 행 파일에서 1k 셀) | 668ms | N/A | N/A | 537ms |
 
 \* `edit-xlsx`에서 `*`가 표시된 값은 작업량 카운트 또는 값 프로브가 일치하지 않아 Winner 계산에서 제외된 결과입니다.
 

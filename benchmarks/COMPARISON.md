@@ -112,35 +112,35 @@ SheetKit was benchmarked against other popular Rust Excel libraries. Each librar
 
 | Scenario | SheetKit | calamine | edit-xlsx | Winner |
 |----------|----------|----------|-----------|--------|
-| Large Data (50k rows x 20 cols) | 390ms | 299ms | 35ms | edit-xlsx |
-| Heavy Styles (5k rows, formatted) | 20ms | 16ms | 2ms | edit-xlsx |
-| Multi-Sheet (10 sheets x 5k rows) | 228ms | 170ms | 35ms | edit-xlsx |
-| Formulas (10k rows) | 24ms | 14ms | 0ms | edit-xlsx |
-| Strings (20k rows text-heavy) | 83ms | 66ms | 9ms | edit-xlsx |
+| Large Data (50k rows x 20 cols) | 494ms | 324ms | 372ms* | calamine |
+| Heavy Styles (5k rows, formatted) | 26ms | 17ms | 21ms* | calamine |
+| Multi-Sheet (10 sheets x 5k rows) | 289ms | 179ms | 199ms* | calamine |
+| Formulas (10k rows) | 32ms* | 15ms* | 23ms* | N/A |
+| Strings (20k rows text-heavy) | 105ms | 70ms | 81ms* | calamine |
 
 ### Write (Rust libraries)
 
 | Scenario | SheetKit | rust_xlsxwriter | edit-xlsx | Winner |
 |----------|----------|-----------------|-----------|--------|
-| 50k rows x 20 cols | 459ms | 847ms | 886ms | SheetKit |
-| 5k styled rows | 25ms | 37ms | 49ms | SheetKit |
-| 10 sheets x 5k rows | 237ms | 326ms | 393ms | SheetKit |
-| 10k rows with formulas | 21ms | 34ms | 56ms | SheetKit |
-| 20k text-heavy rows | 53ms | 64ms | 66ms | SheetKit |
-| 500 merged regions | 8ms | 2ms | 5ms | rust_xlsxwriter |
+| 50k rows x 20 cols | 475ms | 886ms | 939ms | SheetKit |
+| 5k styled rows | 27ms | 38ms | 52ms | SheetKit |
+| 10 sheets x 5k rows | 249ms | 338ms | 414ms | SheetKit |
+| 10k rows with formulas | 23ms | 36ms | 59ms | SheetKit |
+| 20k text-heavy rows | 57ms | 66ms | 71ms | SheetKit |
+| 500 merged regions | 1ms | 2ms | 5ms | SheetKit |
 
 ### Other (Rust libraries)
 
 | Scenario | SheetKit | Best alternative | Winner |
 |----------|----------|-----------------|--------|
-| Buffer round-trip (10k rows) | 105ms | 79ms (xlsxwriter+calamine) | xlsxwriter+calamine |
-| Streaming write (50k rows) | 184ms | 858ms (rust_xlsxwriter) | SheetKit |
-| Random-access read (1k cells) | 382ms | 308ms (calamine) | calamine |
-| Modify 1k cells in 50k file | 588ms | N/A (only SheetKit) | SheetKit |
+| Buffer round-trip (10k rows) | 118ms | 82ms (xlsxwriter+calamine) | xlsxwriter+calamine |
+| Streaming write (50k rows) | 191ms | 885ms (rust_xlsxwriter) | SheetKit |
+| Random-access read (1k cells) | 465ms | 321ms (calamine) | calamine |
+| Modify 1k cells in 50k file | 668ms | 537ms (edit-xlsx) | edit-xlsx |
 
-Win summary: SheetKit 11/22, edit-xlsx 8/22, calamine 1/22, rust_xlsxwriter 1/22, xlsxwriter+calamine 1/22.
+Win summary: SheetKit 11/21, calamine 8/21, edit-xlsx 1/21, xlsxwriter+calamine 1/21.
 
-Note: edit-xlsx's fast read times reflect its lazy parsing approach (deferred deserialization), not full cell data extraction. calamine, as a dedicated read-only library, is optimized for that single use case. SheetKit performs full XML parsing and in-memory model construction on read, which enables subsequent modify and write operations.
+Note: `edit-xlsx` read results marked with `*` are excluded from winner selection when workload counts or sampled value probes do not match. In particular, for some files `edit-xlsx` can fail to deserialize minimal `workbook.xml` structures and fall back to defaults, which can report very low times with `rows=0`/`cells=0`. calamine, as a dedicated read-only library, remains the fastest comparable reader in this run.
 
 ## Key Findings
 
@@ -164,9 +164,9 @@ path processes data on a worker thread, reducing V8 heap pressure.
 
 ### 4. Rust ecosystem: fastest writer, competitive reader
 
-Among pure Rust libraries, SheetKit is the fastest writer across all scenarios (except
-merged regions). For reads, calamine (read-only) and edit-xlsx (lazy parsing) are faster,
-but SheetKit is the only library that supports full read+modify+write in a single crate.
+In this run, SheetKit is the fastest writer across all write scenarios. For reads, calamine
+(read-only) is fastest on comparable workloads. `edit-xlsx` can win specific modify workloads,
+but read results with workload/value mismatches are excluded from winner selection.
 
 ## Summary
 

@@ -17,14 +17,14 @@ In the existing Node.js benchmark suite (`benchmarks/node/RESULTS.md`), SheetKit
 
 ### Compared with Rust Excel Libraries
 
-Among pure Rust libraries, SheetKit is the fastest writer. For reads, calamine (read-only) is faster on comparable full-read workloads, and SheetKit is the only library supporting full read+modify+write in a single crate.
+Among pure Rust libraries, SheetKit is the fastest writer. For reads, calamine (read-only) is faster on comparable full-read workloads, while `edit-xlsx` read results require comparability checks.
 
 | Scenario | SheetKit | calamine | rust_xlsxwriter | edit-xlsx |
 |----------|----------|----------|-----------------|-----------|
-| Read Large Data (50k rows) | 489ms | 323ms | N/A | 39ms* |
-| Write 50k rows x 20 cols | 497ms | N/A | 917ms | 946ms |
-| Streaming write (50k rows) | 200ms | N/A | 922ms | N/A |
-| Modify 1k cells in 50k file (lazy) | 688ms | N/A | N/A | N/A |
+| Read Large Data (50k rows) | 494ms | 324ms | N/A | 372ms* |
+| Write 50k rows x 20 cols | 475ms | N/A | 886ms | 939ms |
+| Streaming write (50k rows) | 191ms | N/A | 885ms | N/A |
+| Modify 1k cells in 50k file | 668ms | N/A | N/A | 537ms |
 
 \* `edit-xlsx` results marked with `*` are excluded from winner selection when workload counts or value probes do not match.
 
