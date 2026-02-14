@@ -17,7 +17,7 @@ SheetKit은 Rust와 TypeScript 애플리케이션 모두에 네이티브 Rust �
 
 ### Rust Excel 라이브러리와의 비교
 
-Rust 라이브러리 중 SheetKit은 가장 빠른 writer입니다. 읽기의 경우 calamine(읽기 전용)과 edit-xlsx(지연 파싱)가 더 빠르지만, SheetKit은 단일 crate에서 읽기+수정+쓰기를 모두 지원하는 유일한 라이브러리입니다.
+Rust 라이브러리 중 SheetKit은 가장 빠른 writer입니다. 읽기의 경우 비교 가능한 전체 읽기 작업 기준에서 calamine(읽기 전용)이 더 빠르며, SheetKit은 단일 crate에서 읽기+수정+쓰기를 모두 지원하는 유일한 라이브러리입니다.
 
 | 시나리오 | SheetKit | calamine | rust_xlsxwriter | edit-xlsx |
 |---------|----------|----------|-----------------|-----------|
@@ -26,7 +26,18 @@ Rust 라이브러리 중 SheetKit은 가장 빠른 writer입니다. 읽기의 �
 | 스트리밍 쓰기 (50k 행) | 200ms | N/A | 922ms | N/A |
 | 수정 (50k 행 파일에서 1k 셀, lazy) | 688ms | N/A | N/A | N/A |
 
-\* edit-xlsx는 0개의 셀을 읽습니다 (lazy open만 수행). 직접적인 비교가 어렵습니다.
+\* `edit-xlsx`에서 `*`가 표시된 값은 작업량 카운트 또는 값 프로브가 일치하지 않아 Winner 계산에서 제외된 결과입니다.
+
+#### `edit-xlsx` 읽기 이상치 원인
+
+SpreadsheetML에서 `workbook.xml`의 `fileVersion`, `workbookPr`, `bookViews`는 선택 요소(옵션)입니다.  
+하지만 `edit-xlsx` 0.4.x는 일부 파일에서 이 요소들을 역직렬화 시 필수처럼 처리할 수 있습니다. 이때 파싱이 실패하면 기본 워크북/워크시트 구조로 fallback되어 런타임은 매우 짧게 측정되지만 `rows=0`, `cells=0`이 되는 경우가 발생합니다.
+
+공정한 비교를 위해 Rust 비교 벤치마크는 다음 조건을 만족한 결과만 비교합니다.
+- 라이브러리 간 행/셀 작업량 카운트 일치
+- 동일 좌표 샘플에 대한 값 프로브 일치
+
+이 조건을 만족하지 못한 결과는 non-comparable로 표시하고 Winner 계산에서 제외합니다.
 
 ### Rust vs Node.js 오버헤드
 

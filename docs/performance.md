@@ -17,7 +17,7 @@ In the existing Node.js benchmark suite (`benchmarks/node/RESULTS.md`), SheetKit
 
 ### Compared with Rust Excel Libraries
 
-Among pure Rust libraries, SheetKit is the fastest writer. For reads, calamine (read-only) and edit-xlsx (lazy parsing) are faster, but SheetKit is the only library supporting full read+modify+write in a single crate.
+Among pure Rust libraries, SheetKit is the fastest writer. For reads, calamine (read-only) is faster on comparable full-read workloads, and SheetKit is the only library supporting full read+modify+write in a single crate.
 
 | Scenario | SheetKit | calamine | rust_xlsxwriter | edit-xlsx |
 |----------|----------|----------|-----------------|-----------|
@@ -26,7 +26,18 @@ Among pure Rust libraries, SheetKit is the fastest writer. For reads, calamine (
 | Streaming write (50k rows) | 200ms | N/A | 922ms | N/A |
 | Modify 1k cells in 50k file (lazy) | 688ms | N/A | N/A | N/A |
 
-\* edit-xlsx reads 0 cells (lazy open only); not directly comparable.
+\* `edit-xlsx` results marked with `*` are excluded from winner selection when workload counts or value probes do not match.
+
+#### Why `edit-xlsx` can show anomalously fast read results
+
+In SpreadsheetML, `fileVersion`, `workbookPr`, and `bookViews` under `workbook.xml` are optional.  
+However, `edit-xlsx` 0.4.x can treat them as required during deserialize for some files. When this parse fails, read flows may fall back to default workbook/worksheet structures, which can produce `rows=0` and `cells=0` while reporting very short runtime.
+
+To keep comparisons fair, the Rust comparison benchmark now requires:
+- matching rows/cells workload counts across libraries
+- sampled value-probe matches on the same coordinates
+
+Results that fail these checks are marked non-comparable and excluded from winner selection.
 
 ### Rust vs Node.js Overhead
 
