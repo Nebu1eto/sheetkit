@@ -1,10 +1,10 @@
 # SheetKit Architecture
 
-## 1. Overview
+## Overview
 
 SheetKit is a high-performance SpreadsheetML library for Rust and TypeScript, designed for reading and writing Excel (.xlsx) files. The .xlsx format is OOXML (Office Open XML), which is a ZIP archive containing XML parts. SheetKit reads the ZIP, deserializes each XML part into typed Rust structs, exposes a high-level API for manipulation, and serializes everything back into a valid .xlsx file on save.
 
-## 2. Crate Structure
+## Crate Structure
 
 ```mermaid
 flowchart TD
@@ -110,7 +110,7 @@ Node.js bindings via napi-rs (v3, no compat-mode).
 - `sheet-data.ts` -- `SheetData` class for lazy, zero-copy access to sheet cell data from a binary buffer.
 - Generated `.js` and `.d.ts` files are gitignored; tsdown handles both transpilation and declaration generation.
 
-## 3. Key Design Decisions
+## Key Design Decisions
 
 ### XML Processing
 
@@ -186,7 +186,7 @@ The Node.js bindings follow the `inner` field pattern: the napi `Workbook` class
 
 napi v3 `Either` types are used for polymorphic values instead of `JsUnknown`, providing type safety on both the Rust and TypeScript sides.
 
-## 4. Data Flow
+## Data Flow
 
 ### Reading an .xlsx file
 
@@ -218,7 +218,7 @@ flowchart TD
   write --> finish["zip::ZipWriter::finish()<br/>output .xlsx file"]
 ```
 
-## 5. Testing Strategy
+## Testing Strategy
 
 - **Unit tests**: Co-located with their modules using `#[cfg(test)]` inline test blocks. Each module tests its own functionality in isolation.
 - **Rust test scale**: Current workspace runs exceed 2,000 Rust tests across `sheetkit-core`, `sheetkit-xml`, and facade/integration crates.
@@ -227,7 +227,7 @@ flowchart TD
 - **Benchmark reference**: Keep performance claims aligned with the latest benchmark snapshots in `benchmarks/rust/RESULTS.md`, `benchmarks/rust-comparison/RESULTS.md`, and `benchmarks/node/RESULTS.md`.
 - **Test output files**: Any `.xlsx` files generated during tests are gitignored to keep the repository clean.
 
-## 6. Buffer-Based FFI Transfer
+## Buffer-Based FFI Transfer
 
 ### Problem
 

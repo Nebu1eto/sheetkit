@@ -1,4 +1,4 @@
-## 16. Freeze/Split Panes
+## Freeze/Split Panes
 
 Freeze panes lock rows and/or columns so they remain visible while scrolling.
 
@@ -56,7 +56,7 @@ const pane: string | null = wb.getPanes("Sheet1");
 
 ---
 
-## 17. Page Layout
+## Page Layout
 
 Page layout settings control how a sheet appears when printed.
 
@@ -275,7 +275,7 @@ const breaks: number[] = wb.getPageBreaks("Sheet1");
 
 ---
 
-## 18. Defined Names
+## Defined Names
 
 Defined names (named ranges) assign a symbolic name to a cell reference or formula. Names can be workbook-scoped (visible from all sheets) or sheet-scoped (visible only within a specific sheet).
 
@@ -392,7 +392,7 @@ wb.deleteDefinedName("LocalRange", "Sheet1");
 
 ---
 
-## 19. Document Properties
+## Document Properties
 
 Document properties store metadata about the workbook file.
 
@@ -564,7 +564,7 @@ const existed: boolean = wb.deleteCustomProperty("Department");
 
 ---
 
-## 20. Workbook Protection
+## Workbook Protection
 
 Workbook protection prevents structural changes to the workbook (adding, removing, or renaming sheets).
 
@@ -641,7 +641,7 @@ const isProtected: boolean = wb.isWorkbookProtected();
 
 ---
 
-## 21. Sheet Protection
+## Sheet Protection
 
 Sheet protection prevents editing of cells within a single sheet. You can optionally specify a password and grant specific permissions.
 
@@ -732,7 +732,7 @@ const isProtected: boolean = wb.isSheetProtected("Sheet1");
 
 ---
 
-## 22. Formula Evaluation
+## Formula Evaluation
 
 SheetKit includes a formula evaluator that supports 164 Excel functions. Formulas are parsed using a nom-based parser and evaluated against the current workbook data.
 
@@ -851,7 +851,7 @@ wb.calculateAll();
 
 ---
 
-## 23. Pivot Tables
+## Pivot Tables
 
 Pivot tables summarize data from a source range into a structured report.
 
@@ -976,7 +976,7 @@ wb.deletePivotTable("SalesPivot");
 
 ---
 
-## 24. StreamWriter
+## StreamWriter
 
 The `StreamWriter` provides a forward-only streaming API for writing large sheets with constant memory usage. Each `write_row()` call writes directly to a temporary file on disk. During save, the row data is streamed from the temp file into the ZIP archive without loading the full sheet into memory.
 
@@ -1126,7 +1126,7 @@ sw.writeRowWithStyle(1, ["Name", "Score"], styleId);
 
 ---
 
-## 25. Utility Functions
+## Utility Functions
 
 These utility functions are available in the Rust API only (`sheetkit_core::utils::cell_ref`).
 
@@ -1230,7 +1230,7 @@ assert!(!is_date_format_code("0%"));
 
 ---
 
-## 26. Sparklines
+## Sparklines
 
 Sparklines are mini-charts embedded in worksheet cells. SheetKit supports three sparkline types: Line, Column, and Win/Loss. Excel defines 36 style presets (indices 0-35).
 
@@ -1379,7 +1379,7 @@ let config = SparklineConfig::new("Sheet1!A1:A10", "B1");
 validate_sparkline_config(&config).unwrap(); // Ok
 ```
 
-## 27. Theme Colors
+## Theme Colors
 
 Resolve theme color slots (dk1, lt1, dk2, lt2, accent1-6, hlink, folHlink) with optional tint.
 
@@ -1503,7 +1503,7 @@ let style_id = wb.add_style(&Style {
 
 ---
 
-## 28. Rich Text
+## Rich Text
 
 Rich text allows a single cell to contain multiple text segments (runs), each with independent formatting such as font, size, bold, italic, and color.
 
@@ -1631,7 +1631,7 @@ let plain = rich_text_to_plain(&runs);
 
 ---
 
-## 29. File Encryption
+## File Encryption
 
 File-level encryption protects the entire .xlsx file with a password. Encrypted files use an OLE/CFB compound container instead of a plain ZIP archive. SheetKit supports:
 
@@ -1729,7 +1729,7 @@ try {
 
 ---
 
-## 30. Bulk Data Transfer
+## Bulk Data Transfer
 
 SheetKit provides three approaches for reading sheet data in the Node.js bindings, each with different memory and performance characteristics. All three use the same underlying binary buffer protocol internally.
 
@@ -1846,7 +1846,7 @@ sheet.columnName(25);  // 'Z'
 
 ---
 
-## 31. Sheet View Options
+## Sheet View Options
 
 Sheet view options control how a worksheet is displayed in the Excel UI, including gridlines, formula display, zoom level, view mode, and the scroll position.
 
@@ -1922,7 +1922,7 @@ console.log("Zoom:", opts.zoomScale);
 
 ---
 
-## 32. Sheet Visibility
+## Sheet Visibility
 
 Sheet visibility controls whether a sheet tab appears in the Excel UI. There are three visibility states: visible (default), hidden (user can unhide via the UI), and very hidden (can only be unhidden programmatically).
 
@@ -1981,7 +1981,7 @@ const vis = wb.getSheetVisibility("Hidden"); // "hidden"
 
 ---
 
-## 33. VBA Project Extraction
+## VBA Project Extraction
 
 Read-only access to VBA macros stored in `.xlsm` files.
 
@@ -2040,7 +2040,7 @@ if (modules) {
 
 ---
 
-## 34. Threaded Comments
+## Threaded Comments
 
 Threaded comments (Excel 2019+) support conversation-style threads with replies, author tracking via a shared person list, and a resolved/done state. They are stored separately from legacy comments as `xl/threadedComments/threadedComment{N}.xml` parts.
 
@@ -2240,7 +2240,7 @@ const persons = wb.getPersons();
 
 ---
 
-## 35. Error Types
+## Error Types
 
 All operations that can fail return `Result<T, Error>` in Rust. In TypeScript, errors are thrown as JavaScript `Error` objects with the message from the Rust error.
 

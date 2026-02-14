@@ -1,12 +1,12 @@
 # Contributing to SheetKit
 
-## 1. Prerequisites
+## Prerequisites
 
 - **Rust toolchain** (rustc, cargo) -- latest stable release
 - **Node.js** >= 18
 - **pnpm** >= 9
 
-## 2. Repository Setup
+## Repository Setup
 
 ```bash
 git clone <repo-url>
@@ -23,7 +23,7 @@ cargo clippy --workspace
 cargo fmt --check
 ```
 
-## 3. Project Structure
+## Project Structure
 
 ```
 sheetkit/
@@ -39,7 +39,7 @@ sheetkit/
   docs/                # Documentation
 ```
 
-## 4. Build Commands
+## Build Commands
 
 ### Rust workspace
 
@@ -64,7 +64,7 @@ pnpm test
 
 The `pnpm build` pipeline runs three steps in order: `build:napi` (compiles Rust and generates `binding.js`/`binding.d.ts`), `typecheck` (tsc --noEmit), and `build:ts` (tsdown transpiles `.ts` to `.js` and generates `.d.ts` declarations). The generated `.js` and `.d.ts` files are gitignored -- only TypeScript sources are committed.
 
-## 5. Development Workflow
+## Development Workflow
 
 SheetKit follows a TDD (Test-Driven Development) approach:
 
@@ -82,7 +82,7 @@ Every change must pass all of the following before submission:
 - [ ] `cargo fmt --check` -- formatting is correct
 - [ ] `cd packages/sheetkit && npx vitest run` -- Node.js tests pass (if bindings were changed)
 
-## 6. Code Style
+## Code Style
 
 ### Rust
 
@@ -101,7 +101,7 @@ Every change must pass all of the following before submission:
 - **Inline comments**: Only for logic that is not self-evident from the code itself.
 - **No section markers or decorative comments**: Do not add comment banners, separators, or ornamental markers.
 
-## 7. Adding a New Feature
+## Adding a New Feature
 
 Follow these steps when implementing a new feature:
 
@@ -143,7 +143,7 @@ Add test cases in `packages/sheetkit/__test__/index.spec.ts` covering the new bi
 
 Rebuild the napi bindings and run the full verification checklist (see Section 5).
 
-## 8. Workspace Layout
+## Workspace Layout
 
 ### Cargo workspace
 
@@ -162,7 +162,7 @@ The pnpm workspace includes:
 - `packages/*`
 - `examples/*`
 
-## 9. Key Dependencies
+## Key Dependencies
 
 | Crate | Purpose |
 |---|---|
@@ -176,7 +176,7 @@ The pnpm workspace includes:
 | `tempfile` | Temporary file creation in tests |
 | `pretty_assertions` | Improved assertion diff output in tests |
 
-## 10. Common Gotchas
+## Common Gotchas
 
 ### cargo fmt side effects
 

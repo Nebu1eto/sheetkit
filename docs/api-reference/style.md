@@ -1,4 +1,4 @@
-## 7. Styles
+## Styles
 
 Styles control the visual formatting of cells. A style is registered once with `add_style`, which returns a numeric style ID. That ID is then applied to cells, rows, or columns.
 

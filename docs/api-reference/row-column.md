@@ -1,4 +1,4 @@
-## 4. Row Operations
+## Row Operations
 
 All row numbers are 1-based.
 
@@ -126,7 +126,7 @@ const current: number = wb.getRowStyle("Sheet1", 1);
 
 ---
 
-## 5. Column Operations
+## Column Operations
 
 Columns are identified by letter names (e.g., "A", "B", "AA").
 
@@ -236,7 +236,7 @@ const current: number = wb.getColStyle("Sheet1", "A");
 
 ---
 
-## 6. Row/Column Iterators
+## Row/Column Iterators
 
 ### `get_rows(sheet)` / `getRows(sheet)`
 

@@ -1,4 +1,4 @@
-## 8. Merge Cells
+## Merge Cells
 
 Merge cells combines a rectangular range of cells into a single visual cell.
 
@@ -53,7 +53,7 @@ const ranges: string[] = wb.getMergeCells("Sheet1");
 
 ---
 
-## 9. Hyperlinks
+## Hyperlinks
 
 Hyperlinks can link cells to external URLs, internal sheet references, or email addresses.
 
@@ -152,7 +152,7 @@ interface JsHyperlinkOptions {
 
 ---
 
-## 10. Charts
+## Charts
 
 Charts render data from cell ranges and are anchored between two cells (top-left and bottom-right corners of the chart area).
 
@@ -328,7 +328,7 @@ wb.addChart("Sheet1", "D1", "K15", {
 
 ---
 
-## 11. Images
+## Images
 
 Embed images into worksheets. Supports 11 formats: PNG, JPEG, GIF, BMP, ICO, TIFF, SVG, EMF, EMZ, WMF, WMZ.
 
@@ -379,7 +379,7 @@ wb.addImage("Sheet1", {
 
 ---
 
-## 12. Data Validation
+## Data Validation
 
 Data validation restricts what values users can enter in cells.
 
@@ -501,7 +501,7 @@ Used with `Whole`, `Decimal`, `Date`, `Time`, and `TextLength` types. TypeScript
 
 ---
 
-## 13. Comments
+## Comments
 
 Comments (also known as notes) attach text annotations to individual cells.
 
@@ -584,7 +584,7 @@ No additional API calls are needed. The VML handling is transparent to the user.
 
 ---
 
-## 14. Auto-Filter
+## Auto-Filter
 
 Auto-filter adds dropdown filter controls to a header row.
 
@@ -622,7 +622,7 @@ wb.removeAutoFilter("Sheet1");
 
 ---
 
-## 15. Conditional Formatting
+## Conditional Formatting
 
 Conditional formatting changes the appearance of cells based on rules applied to their values.
 
@@ -780,7 +780,7 @@ wb.setConditionalFormat("Sheet1", "A1:A100", [{
 
 ---
 
-## 16. Tables
+## Tables
 
 Tables are structured data ranges with headers, styling, and optional auto-filter. Tables are stored as separate OOXML parts (`xl/tables/tableN.xml`) with full relationship and content-type wiring.
 
@@ -906,7 +906,7 @@ wb.deleteTable("Sheet1", "Sales");
 
 ---
 
-## 17. Data Conversion Utilities (Node.js only)
+## Data Conversion Utilities (Node.js only)
 
 These convenience methods convert between sheet data and common formats. They are available only in the TypeScript/Node.js bindings.
 

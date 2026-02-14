@@ -1,4 +1,4 @@
-## 10. Charts
+## Charts
 
 Charts render data from cell ranges and are anchored between two cells (top-left and bottom-right corners of the chart area).
 

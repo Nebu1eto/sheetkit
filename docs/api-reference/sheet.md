@@ -1,4 +1,4 @@
-## 3. Sheet Management
+## Sheet Management
 
 ### `new_sheet(name)` / `newSheet(name)`
 

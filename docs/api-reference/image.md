@@ -1,4 +1,4 @@
-## 11. Images
+## Images
 
 Embed images into worksheets.
 

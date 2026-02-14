@@ -1,10 +1,10 @@
 # SheetKit 아키텍처
 
-## 1. 개요
+## 개요
 
 SheetKit은 Rust와 TypeScript를 위한 고성능 SpreadsheetML 라이브러리로, Excel (.xlsx) 파일을 읽고 쓰기 위해 설계되었습니다. .xlsx 형식은 XML 파트를 포함하는 ZIP 아카이브인 OOXML (Office Open XML)입니다. SheetKit은 ZIP을 읽고, 각 XML 파트를 타입이 지정된 Rust 구조체로 역직렬화하며, 조작을 위한 고수준 API를 제공하고, 저장 시 모든 것을 유효한 .xlsx 파일로 직렬화합니다.
 
-## 2. 크레이트 구조
+## 크레이트 구조
 
 ```mermaid
 flowchart TD
@@ -110,7 +110,7 @@ napi-rs (v3, compat-mode 없음)를 통한 Node.js 바인딩입니다.
 - `sheet-data.ts` -- 바이너리 버퍼에서 시트 셀 데이터에 지연 접근하는 `SheetData` 클래스입니다.
 - 생성된 `.js`와 `.d.ts` 파일은 gitignore 처리됩니다. tsdown이 트랜스파일과 선언 파일 생성을 모두 처리합니다.
 
-## 3. 주요 설계 결정
+## 주요 설계 결정
 
 ### XML 처리
 
@@ -186,7 +186,7 @@ Node.js 바인딩은 `inner` 필드 패턴을 따릅니다: napi `Workbook` 클�
 
 napi v3의 `Either` 타입은 `JsUnknown` 대신 다형 값에 사용되어 Rust와 TypeScript 양쪽에서 타입 안전성을 제공합니다.
 
-## 4. 데이터 흐름
+## 데이터 흐름
 
 ### .xlsx 파일 읽기
 
@@ -218,7 +218,7 @@ flowchart TD
   write --> finish["zip::ZipWriter::finish()<br/>.xlsx 파일 생성"]
 ```
 
-## 5. 테스트 전략
+## 테스트 전략
 
 - **단위 테스트**: `#[cfg(test)]` 인라인 테스트 블록을 사용하여 모듈과 함께 배치됩니다. 각 모듈은 자체 기능을 독립적으로 테스트합니다.
 - **Rust 테스트 규모**: 현재 워크스페이스 기준으로 `sheetkit-core`, `sheetkit-xml`, facade/integration crate를 합쳐 2,000개 이상의 Rust 테스트가 실행됩니다.
@@ -227,7 +227,7 @@ flowchart TD
 - **벤치마크 기준 문서**: 성능 관련 설명은 `benchmarks/rust/RESULTS.md`, `benchmarks/rust-comparison/RESULTS.md`, `benchmarks/node/RESULTS.md`의 최신 수치와 함께 관리해야 합니다.
 - **테스트 출력 파일**: 테스트 중 생성된 `.xlsx` 파일은 저장소를 깨끗하게 유지하기 위해 gitignore 처리됩니다.
 
-## 6. Buffer 기반 FFI 전송
+## Buffer 기반 FFI 전송
 
 ### 문제
 

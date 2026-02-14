@@ -99,7 +99,7 @@ SheetKit reduces Node.js-Rust boundary cost by transferring sheet data as raw bu
 
 ## Key Optimizations
 
-### 1. Buffer-Based FFI Transfer
+### Buffer-Based FFI Transfer
 
 Instead of creating individual JavaScript objects for each cell, SheetKit serializes entire sheets into compact binary buffers that cross the FFI boundary in a single operation.
 
@@ -111,7 +111,7 @@ This optimization:
 - Reduces allocation and GC pressure from per-cell object creation
 - Maintains full type safety
 
-### 2. Internal Data Structure Optimizations
+### Internal Data Structure Optimizations
 
 SheetKit's internal representation minimizes allocations:
 
@@ -121,7 +121,7 @@ SheetKit's internal representation minimizes allocations:
 
 These optimizations benefit both Rust and Node.js performance.
 
-### 3. Density-Based Encoding
+### Density-Based Encoding
 
 The buffer encoder automatically selects between dense and sparse layouts based on cell density:
 - Dense encoding for files with ≥30% cell occupancy
@@ -275,7 +275,7 @@ The primary fixtures used for KPI measurement are:
 | `scale-1k.xlsx` | 1,001 | 10 | 75 KB | Overhead measurement |
 | `multi-sheet.xlsx` | 50,010 | 10 | 3.7 MB | Multi-sheet lazy hydration |
 
-### 1. Open Latency
+### Open Latency
 
 Measured as time from `open()` / `Workbook::open()` call to returned handle, excluding any subsequent data access.
 
@@ -287,7 +287,7 @@ Measured as time from `open()` / `Workbook::open()` call to returned handle, exc
 
 **Measurement**: Compare median open latency across all reference fixtures. Lazy and stream targets apply to every fixture individually (not just the aggregate).
 
-### 2. Peak RSS (Memory)
+### Peak RSS (Memory)
 
 Measured as peak resident set size during the operation. Use `--expose-gc` in Node.js benchmarks and external RSS sampling for Rust benchmarks.
 
@@ -301,7 +301,7 @@ Measured as peak resident set size during the operation. Use `--expose-gc` in No
 
 **Primary fixture for RSS**: `large-data.xlsx` (50k x 20, 1M cells). The `stream` mode 50 MB bound must hold for `scale-100k.xlsx` as well.
 
-### 3. getRows Throughput
+### getRows Throughput
 
 Measured as total time for `getRows("Sheet1")` on a pre-opened workbook, or equivalent Rust `get_rows()`.
 
@@ -313,7 +313,7 @@ Measured as total time for `getRows("Sheet1")` on a pre-opened workbook, or equi
 
 **Measurement**: Use `getRows-only` (pre-opened) category from `bench-baseline.ts` and `get_rows` group from `open_modes.rs`. The lazy-then-read scenario includes the on-demand hydration cost.
 
-### 4. Save Latency
+### Save Latency
 
 Measured as time from `save()` call to file written, using a temporary file target.
 
@@ -325,7 +325,7 @@ Measured as time from `save()` call to file written, using a temporary file targ
 
 **Rationale**: Untouched lazy workbooks should benefit from passthrough (no parse-serialize round-trip for unchanged parts). The single-cell edit scenario verifies that selective materialization does not introduce unexpected overhead.
 
-### 5. Node.js Async Overhead
+### Node.js Async Overhead
 
 Measured as the ratio of async API latency to sync API latency for equivalent operations.
 

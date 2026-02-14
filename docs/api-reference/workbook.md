@@ -1,4 +1,4 @@
-## 1. Workbook I/O
+## Workbook I/O
 
 The `Workbook` is the central type. It represents an in-memory `.xlsx` file and provides all operations for reading and writing spreadsheet data.
 

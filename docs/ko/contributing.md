@@ -1,12 +1,12 @@
 # SheetKit 기여 가이드
 
-## 1. 사전 요구 사항
+## 사전 요구 사항
 
 - **Rust 툴체인** (rustc, cargo) -- 최신 안정 릴리스
 - **Node.js** >= 18
 - **pnpm** >= 9
 
-## 2. 저장소 설정
+## 저장소 설정
 
 ```bash
 git clone <repo-url>
@@ -23,7 +23,7 @@ cargo clippy --workspace
 cargo fmt --check
 ```
 
-## 3. 프로젝트 구조
+## 프로젝트 구조
 
 ```
 sheetkit/
@@ -39,7 +39,7 @@ sheetkit/
   docs/                # 문서
 ```
 
-## 4. 빌드 명령어
+## 빌드 명령어
 
 ### Rust 워크스페이스
 
@@ -64,7 +64,7 @@ pnpm test
 
 `pnpm build` 파이프라인은 세 단계를 순서대로 실행합니다: `build:napi` (Rust 컴파일 및 `binding.js`/`binding.d.ts` 생성), `typecheck` (tsc --noEmit), `build:ts` (tsdown으로 `.ts`를 `.js`로 트랜스파일하고 `.d.ts` 선언 생성). 생성된 `.js`와 `.d.ts` 파일은 gitignore 처리되며, TypeScript 소스만 커밋됩니다.
 
-## 5. 개발 워크플로우
+## 개발 워크플로우
 
 SheetKit은 TDD (테스트 주도 개발) 접근 방식을 따릅니다:
 
@@ -82,7 +82,7 @@ SheetKit은 TDD (테스트 주도 개발) 접근 방식을 따릅니다:
 - [ ] `cargo fmt --check` -- 포매팅 올바름
 - [ ] `cd packages/sheetkit && npx vitest run` -- Node.js 테스트 통과 (바인딩이 변경된 경우)
 
-## 6. 코드 스타일
+## 코드 스타일
 
 ### Rust
 
@@ -101,7 +101,7 @@ SheetKit은 TDD (테스트 주도 개발) 접근 방식을 따릅니다:
 - **인라인 주석**: 코드 자체에서 자명하지 않은 로직에만 사용합니다.
 - **섹션 마커나 장식적 주석 금지**: 주석 배너, 구분선 또는 장식적 마커를 추가하지 않습니다.
 
-## 7. 새 기능 추가
+## 새 기능 추가
 
 새 기능을 구현할 때 다음 단계를 따릅니다:
 
@@ -143,7 +143,7 @@ SheetKit은 TDD (테스트 주도 개발) 접근 방식을 따릅니다:
 
 napi 바인딩을 재빌드하고 전체 검증 체크리스트를 실행합니다 (5절 참조).
 
-## 8. 워크스페이스 레이아웃
+## 워크스페이스 레이아웃
 
 ### Cargo 워크스페이스
 
@@ -162,7 +162,7 @@ pnpm 워크스페이스에는 다음이 포함됩니다:
 - `packages/*`
 - `examples/*`
 
-## 9. 주요 의존성
+## 주요 의존성
 
 | 크레이트 | 용도 |
 |---|---|
@@ -176,7 +176,7 @@ pnpm 워크스페이스에는 다음이 포함됩니다:
 | `tempfile` | 테스트에서 임시 파일 생성 |
 | `pretty_assertions` | 테스트에서 개선된 어설션 diff 출력 |
 
-## 10. 자주 발생하는 문제
+## 자주 발생하는 문제
 
 ### cargo fmt 부작용
 

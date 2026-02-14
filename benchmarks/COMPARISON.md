@@ -144,25 +144,25 @@ Note: `edit-xlsx` read results marked with `*` are excluded from winner selectio
 
 ## Key Findings
 
-### 1. Read operations: ~1.2x napi overhead (typical)
+### Read operations: ~1.2x napi overhead (typical)
 
 Read operations show modest overhead from the napi-rs FFI layer, typically around 1.15-1.20x.
 The multi-sheet scenario remains the outlier at ~2.4x due to per-sheet FFI costs. Async reads
 are slightly faster than sync, averaging ~1.15x overhead.
 
-### 2. Write operations: near parity (~1.0x)
+### Write operations: near parity (~1.0x)
 
 Write operations through napi-rs show near parity with native Rust. Large data-heavy writes
 (50k+ rows) are at 0.95-1.05x, while smaller writes with more overhead per row show
 1.1-1.4x. The batch `setSheetData()` API keeps large writes efficient.
 
-### 3. Async read shows dramatically lower memory
+### Async read shows dramatically lower memory
 
 The async `Workbook.open()` API shows near-zero RSS delta for read operations compared
 to sync. Read Large Data: 195.3MB (sync) vs 17.2MB (async). This is because the async
 path processes data on a worker thread, reducing V8 heap pressure.
 
-### 4. Rust ecosystem: fastest writer, competitive reader
+### Rust ecosystem: fastest writer, competitive reader
 
 In this run, SheetKit is the fastest writer across all write scenarios. For reads, calamine
 (read-only) is fastest on comparable workloads. `edit-xlsx` can win specific modify workloads,

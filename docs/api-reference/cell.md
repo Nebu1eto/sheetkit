@@ -1,4 +1,4 @@
-## 2. Cell Operations
+## Cell Operations
 
 ### `get_cell_value` / `getCellValue`
 
