@@ -471,4 +471,4 @@ BENCH_RUNS=3 node --expose-gc --import tsx benchmarks/node/bench-baseline.ts
 
 - [Getting Started](./getting-started.md) - Learn the basics
 - [Architecture](./architecture.md) - Understand internal design
-- [API Reference](./api-reference/) - Explore all available methods
+- [API Reference](./api-reference/) - See all available methods

@@ -58,9 +58,9 @@ SheetKit은 Rust와 TypeScript를 위한 고성능 SpreadsheetML 라이브러리
 
 ## 시작하기
 
-[기본 작업](./basic-operations.md)부터 시작하여 워크북을 생성하고 조작하는 방법을 배운 다음, [스타일](./styling.md)과 [데이터 기능](./data-features.md)을 탐색하여 더 고급 기능을 사용해보세요.
+[기본 작업](./basic-operations.md)부터 시작하여 워크북을 생성하고 조작하는 방법을 배운 다음, [스타일](./styling.md)과 [데이터 기능](./data-features.md) 문서를 이어서 확인하면 고급 기능을 사용할 수 있습니다.
 
-모든 API 메서드의 포괄적인 참고 자료는 [API 레퍼런스](../api-reference/index.md)를 참조하세요.
+모든 API 메서드 목록은 [API 레퍼런스](../api-reference/index.md)에서 확인하세요.
 
 ---
 
@@ -114,8 +114,8 @@ await wb.save('output.xlsx');
 
 ## 다음 단계
 
-- [기본 작업](./basic-operations.md)을 자세한 예제로 배워보세요
-- [스타일](./styling.md)을 적용하여 스프레드시트를 전문적으로 만들어보세요
-- [데이터 기능](./data-features.md)을 추가하여 차트, 유효성 검사, 주석 등을 포함시키세요
-- [고급](./advanced.md) 기능을 탐색하여 복잡한 워크북을 만들어보세요
+- [기본 작업](./basic-operations.md)에서 자세한 예제를 확인하세요
+- [스타일](./styling.md)에서 서식 적용 방법을 확인하세요
+- [데이터 기능](./data-features.md)에서 차트, 유효성 검사, 주석 기능을 확인하세요
+- [고급](./advanced.md)에서 복잡한 워크북 기능을 확인하세요
 - 저장소의 `examples/rust/` 및 `examples/node/`에서 완전한 예제 프로젝트를 확인하세요

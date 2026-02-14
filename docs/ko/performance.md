@@ -263,4 +263,4 @@ wb.applyStreamWriter(sw);
 
 - [시작 가이드](./getting-started.md) - 기본 사항 학습
 - [아키텍처](./architecture.md) - 내부 설계 이해
-- [API 레퍼런스](./api-reference/) - 사용 가능한 모든 메서드 탐색
+- [API 레퍼런스](./api-reference/) - 사용 가능한 모든 메서드 보기

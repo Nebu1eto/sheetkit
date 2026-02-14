@@ -8,7 +8,7 @@ The Rust core handles all Excel (.xlsx) processing, and napi-rs bindings bring t
 - **Native Performance**: Rust core with low-overhead Node.js bindings for large spreadsheets
 - **Low FFI Overhead**: Raw buffer transfer between Node.js and Rust reduces boundary overhead
 - **Type Safe**: Strongly typed APIs for both Rust and TypeScript
-- **Complete**: 110+ formula functions, 43 chart types, streaming writer, and more
+- **Feature Coverage**: 110+ formula functions, 43 chart types, and streaming writer support
 
 ## Installation
 

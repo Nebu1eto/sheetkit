@@ -58,9 +58,9 @@ SheetKit is a high-performance SpreadsheetML library for Rust and TypeScript. Th
 
 ## Getting Started
 
-Start with [Basic Operations](./basic-operations.md) to learn how to create and manipulate workbooks, then explore [Styling](./styling.md) and [Data Features](./data-features.md) for more advanced capabilities.
+Start with [Basic Operations](./basic-operations.md) to learn how to create and manipulate workbooks, then continue with [Styling](./styling.md) and [Data Features](./data-features.md) for advanced capabilities.
 
-For a comprehensive reference of every API method, see the [API Reference](../api-reference/index.md).
+For a full list of API methods, see the [API Reference](../api-reference/index.md).
 
 ---
 
@@ -117,5 +117,5 @@ await wb.save('output.xlsx');
 - Learn [Basic Operations](./basic-operations.md) with detailed examples
 - Apply [Styling](./styling.md) to make your spreadsheets look professional
 - Add [Data Features](./data-features.md) like charts, validation, and comments
-- Explore [Advanced](./advanced.md) features for complex workbooks
+- See [Advanced](./advanced.md) features for complex workbooks
 - Check out complete example projects in `examples/rust/` and `examples/node/` in the repository

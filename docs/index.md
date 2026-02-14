@@ -20,11 +20,11 @@ hero:
 features:
   - icon: ⚡
     title: Native Performance
-    details: Written in Rust for maximum throughput and minimal memory usage. Process large spreadsheets without breaking a sweat.
+    details: Written in Rust for high throughput and low memory usage. Handles large spreadsheets efficiently.
   - icon: 📊
     title: Complete SpreadsheetML Support
     details: Styles, charts, images, formulas, conditional formatting, data validation, pivot tables, streaming writer, and more.
   - icon: 🔒
     title: Type-Safe Dual Runtime
-    details: Strongly typed APIs in both Rust and TypeScript. Use the same library natively or via seamless Node.js bindings powered by napi-rs.
+    details: Strongly typed APIs in both Rust and TypeScript. Node.js bindings are powered by napi-rs.
 ---
