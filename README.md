@@ -1,5 +1,5 @@
 <h1>
-  <img src="./logo.svg" alt="SheetKit logo" width="40" height="40" align="absmiddle" />
+  <img src="https://raw.githubusercontent.com/Nebu1eto/sheetkit/main/logo.svg" alt="SheetKit logo" width="40" height="40" align="absmiddle" />
   SheetKit
 </h1>
 
@@ -11,7 +11,7 @@
 
 A Rust library for reading and writing Excel (.xlsx) files, with Node.js bindings via napi-rs.
 
-한국어 버전은 [README.ko.md](README.ko.md)를 참조하세요.
+한국어 버전은 [README.ko.md](https://github.com/Nebu1eto/sheetkit/blob/main/README.ko.md)를 참조하세요.
 
 > **Warning**: SheetKit is experimental. APIs may change without notice. This project is under active development.
 
@@ -111,7 +111,7 @@ SheetKit's Node.js bindings use [napi-rs](https://napi.rs/), which is compatible
 
 **[Documentation Site](https://nebu1eto.github.io/sheetkit/)** | [Korean (한국어)](https://nebu1eto.github.io/sheetkit/ko/)
 
-See the [docs/](docs/) folder for documentation source files.
+See the [docs/](https://github.com/Nebu1eto/sheetkit/tree/main/docs) folder for documentation source files.
 
 ## Acknowledgements
 
