@@ -1,4 +1,5 @@
 import { defineConfig } from 'vitepress';
+import llmstxt from 'vitepress-plugin-llms';
 import { withMermaid } from 'vitepress-plugin-mermaid';
 import { en } from './config/en.mts';
 import { ko } from './config/ko.mts';
@@ -25,6 +26,13 @@ export default withMermaid(
         fontSize: '16px',
         edgeLabelBackground: 'transparent',
       },
+    },
+    vite: {
+      plugins: [
+        llmstxt({
+          ignoreFiles: ['README.md'],
+        }),
+      ],
     },
   }),
 );

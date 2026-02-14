@@ -72,7 +72,19 @@ function sidebarGuide(): DefaultTheme.SidebarItem[] {
     },
     {
       text: '커뮤니티',
-      items: [{ text: '기여 가이드', link: '/ko/contributing' }],
+      items: [
+        { text: '기여 가이드', link: '/ko/contributing' },
+        {
+          text: 'Crates.io',
+          link: 'https://crates.io/crates/sheetkit',
+          target: '_blank',
+        },
+        {
+          text: 'npm',
+          link: 'https://www.npmjs.com/package/@sheetkit/node',
+          target: '_blank',
+        },
+      ],
     },
   ];
 }

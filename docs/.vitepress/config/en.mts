@@ -72,7 +72,19 @@ function sidebarGuide(): DefaultTheme.SidebarItem[] {
     },
     {
       text: 'Community',
-      items: [{ text: 'Contributing', link: '/contributing' }],
+      items: [
+        { text: 'Contributing', link: '/contributing' },
+        {
+          text: 'Crates.io',
+          link: 'https://crates.io/crates/sheetkit',
+          target: '_blank',
+        },
+        {
+          text: 'npm',
+          link: 'https://www.npmjs.com/package/@sheetkit/node',
+          target: '_blank',
+        },
+      ],
     },
   ];
 }

@@ -5,6 +5,7 @@ hero:
   name: SheetKit
   text: High-Performance SpreadsheetML Library
   tagline: Read and write Excel (.xlsx) files at native speed. Built in Rust with first-class TypeScript bindings.
+  image: /logo.svg
   actions:
     - theme: brand
       text: Get Started

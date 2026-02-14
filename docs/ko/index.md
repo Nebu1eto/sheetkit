@@ -5,6 +5,7 @@ hero:
   name: SheetKit
   text: 고성능 SpreadsheetML 라이브러리
   tagline: 네이티브 속도로 Excel (.xlsx) 파일을 읽고 씁니다. Rust로 작성되었으며, TypeScript 바인딩을 함께 제공합니다.
+  image: /logo.svg
   actions:
     - theme: brand
       text: 시작하기
