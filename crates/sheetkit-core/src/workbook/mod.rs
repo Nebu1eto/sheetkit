@@ -108,11 +108,11 @@ mod data;
 mod drawing;
 mod features;
 mod io;
-mod open_options;
+pub mod open_options;
 mod sheet_ops;
 mod source;
 
-pub use open_options::{AuxParts, OpenOptions, ReadMode};
+pub use open_options::{AuxParts, DateInterpretation, OpenOptions, ReadMode};
 pub(crate) use source::PackageSource;
 
 /// Helper to initialize an `OnceLock<WorksheetXml>` with a value at
@@ -227,6 +227,10 @@ pub struct Workbook {
     /// Optional row limit from `OpenOptions::sheet_rows`, applied during
     /// on-demand hydration of deferred sheets.
     sheet_rows_limit: Option<u32>,
+    /// Controls whether number cells carrying a date-like number format
+    /// should be surfaced as [`CellValue::Date`](crate::cell::CellValue::Date).
+    /// Sourced from [`OpenOptions::date_interpretation`].
+    date_interpretation: DateInterpretation,
 }
 
 impl Workbook {
@@ -411,11 +415,11 @@ impl Workbook {
         let xml_bytes = self.sheet_xml_bytes(idx)?;
         let cursor = std::io::Cursor::new(xml_bytes);
         let buf_reader = std::io::BufReader::new(cursor);
-        Ok(crate::stream_reader::SheetStreamReader::new(
-            buf_reader,
-            &self.sst_runtime,
-            self.sheet_rows_limit,
-        ))
+        Ok(
+            crate::stream_reader::SheetStreamReader::new(buf_reader, &self.sst_runtime)
+                .row_limit(self.sheet_rows_limit)
+                .date_promotion(self.date_interpretation, self.computed_style_is_date()),
+        )
     }
 
     /// Create an owned forward-only streaming reader for the named sheet.
@@ -431,11 +435,27 @@ impl Workbook {
         let idx = self.sheet_index(sheet)?;
         let xml_bytes = self.sheet_xml_bytes(idx)?;
         let sst_snapshot = self.sst_runtime.clone_for_read();
-        Ok(crate::stream_reader::OwnedSheetStreamReader::new(
-            xml_bytes,
-            sst_snapshot,
-            self.sheet_rows_limit,
-        ))
+        Ok(
+            crate::stream_reader::OwnedSheetStreamReader::new(xml_bytes, sst_snapshot)
+                .row_limit(self.sheet_rows_limit)
+                .date_promotion(self.date_interpretation, self.computed_style_is_date()),
+        )
+    }
+
+    /// Precompute, for each cellXf, whether its number format is a date
+    /// format. Used by streaming readers to decide whether to promote
+    /// `t="n"` cells to `CellValue::Date` under
+    /// [`DateInterpretation::NumFmt`].
+    ///
+    /// Returns an empty vector when the [`DateInterpretation::CellType`]
+    /// mode is active; stream readers short-circuit on interpretation
+    /// alone before consulting the lookup, so the empty allocation is a
+    /// cheap default and the lookup work is skipped entirely.
+    fn computed_style_is_date(&self) -> Vec<bool> {
+        if matches!(self.date_interpretation, DateInterpretation::CellType) {
+            return Vec::new();
+        }
+        crate::style::compute_style_is_date(&self.stylesheet)
     }
 
     /// Get the raw XML bytes for a sheet by index.

@@ -1172,6 +1172,40 @@ pub fn get_style(stylesheet: &StyleSheet, style_id: u32) -> Option<Style> {
     })
 }
 
+/// Precompute, for each entry in `stylesheet.cell_xfs`, whether the referenced
+/// number format is a date/time format.
+///
+/// Returns a `Vec<bool>` parallel to `cell_xfs`, where `true` marks a style
+/// that points at either a built-in date/time number format (IDs 14-22, 45-47)
+/// or a custom number format whose format code contains date/time tokens.
+///
+/// Consumers like the streaming reader can index into the returned vector with
+/// a cell's `s` attribute to cheaply decide whether a `t="n"` cell should be
+/// promoted to [`CellValue::Date`](crate::cell::CellValue::Date) under the
+/// [`DateInterpretation::NumFmt`](crate::workbook::open_options::DateInterpretation::NumFmt)
+/// policy.
+pub fn compute_style_is_date(stylesheet: &StyleSheet) -> Vec<bool> {
+    stylesheet
+        .cell_xfs
+        .xfs
+        .iter()
+        .map(|xf| {
+            let num_fmt_id = xf.num_fmt_id.unwrap_or(0);
+            if crate::cell::is_date_num_fmt(num_fmt_id) {
+                return true;
+            }
+            if num_fmt_id >= CUSTOM_NUM_FMT_BASE {
+                if let Some(nfs) = stylesheet.num_fmts.as_ref() {
+                    if let Some(nf) = nfs.num_fmts.iter().find(|nf| nf.num_fmt_id == num_fmt_id) {
+                        return crate::cell::is_date_format_code(&nf.format_code);
+                    }
+                }
+            }
+            false
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1179,6 +1213,80 @@ mod tests {
     /// Helper to create a fresh default stylesheet for tests.
     fn default_stylesheet() -> StyleSheet {
         StyleSheet::default()
+    }
+
+    fn xf_with_num_fmt(id: u32) -> Xf {
+        Xf {
+            num_fmt_id: Some(id),
+            font_id: None,
+            fill_id: None,
+            border_id: None,
+            xf_id: None,
+            apply_number_format: None,
+            apply_font: None,
+            apply_fill: None,
+            apply_border: None,
+            apply_alignment: None,
+            alignment: None,
+            protection: None,
+        }
+    }
+
+    #[test]
+    fn test_compute_style_is_date_builtin() {
+        let mut ss = default_stylesheet();
+        // xf0 = General (0), xf1 = DATE_MDY (14), xf2 = TIME_HMS (21), xf3 = DECIMAL_2 (2)
+        ss.cell_xfs.xfs = vec![
+            xf_with_num_fmt(0),
+            xf_with_num_fmt(14),
+            xf_with_num_fmt(21),
+            xf_with_num_fmt(2),
+        ];
+        ss.cell_xfs.count = Some(4);
+        let flags = compute_style_is_date(&ss);
+        assert_eq!(flags, vec![false, true, true, false]);
+    }
+
+    #[test]
+    fn test_compute_style_is_date_custom() {
+        let mut ss = default_stylesheet();
+        ss.num_fmts = Some(NumFmts {
+            count: Some(2),
+            num_fmts: vec![
+                NumFmt {
+                    num_fmt_id: 164,
+                    format_code: "yyyy-mm-dd hh:mm".to_string(),
+                },
+                NumFmt {
+                    num_fmt_id: 165,
+                    format_code: "#,##0.00".to_string(),
+                },
+            ],
+        });
+        ss.cell_xfs.xfs = vec![xf_with_num_fmt(164), xf_with_num_fmt(165)];
+        ss.cell_xfs.count = Some(2);
+        let flags = compute_style_is_date(&ss);
+        assert_eq!(flags, vec![true, false]);
+    }
+
+    #[test]
+    fn test_compute_style_is_date_missing_custom_format() {
+        let mut ss = default_stylesheet();
+        // Reference a custom numFmt ID with no matching entry.
+        ss.cell_xfs.xfs = vec![xf_with_num_fmt(200)];
+        ss.cell_xfs.count = Some(1);
+        let flags = compute_style_is_date(&ss);
+        assert_eq!(flags, vec![false]);
+    }
+
+    #[test]
+    fn test_compute_style_is_date_default_stylesheet() {
+        // The default stylesheet ships with a single cellXf pointing at
+        // numFmtId=0 (General), which is not a date format.
+        let ss = default_stylesheet();
+        let flags = compute_style_is_date(&ss);
+        assert!(!flags.is_empty());
+        assert!(flags.iter().all(|f| !*f));
     }
 
     #[test]
