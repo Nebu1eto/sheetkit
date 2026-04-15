@@ -1176,6 +1176,10 @@ pub(crate) fn js_open_options_to_core(
         Some("deferred") => sheetkit_core::workbook::AuxParts::Deferred,
         _ => sheetkit_core::workbook::AuxParts::EagerLoad,
     };
+    let date_interpretation = match js.date_interpretation.as_deref() {
+        Some("numFmt") => sheetkit_core::workbook::DateInterpretation::NumFmt,
+        _ => sheetkit_core::workbook::DateInterpretation::CellType,
+    };
     sheetkit_core::workbook::OpenOptions {
         sheet_rows: js.sheet_rows,
         sheets: js.sheets.clone(),
@@ -1183,6 +1187,7 @@ pub(crate) fn js_open_options_to_core(
         max_zip_entries: js.max_zip_entries.map(|v| v as usize),
         read_mode,
         aux_parts,
+        date_interpretation,
     }
 }
 
