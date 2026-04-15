@@ -40,7 +40,7 @@ describe('dateInterpretation option', () => {
   const out = tmpFile('test-date-interpretation.xlsx');
   afterEach(async () => cleanup(out));
 
-  it('defaults to cellType: number cells stay as numbers even with date styles', async () => {
+  it('defaults to numFmt: number cells with a date format are promoted to date', async () => {
     await writeMixedStyleWorkbook(out);
 
     const wb = await Workbook.open(out, { readMode: 'lazy' });
@@ -49,25 +49,6 @@ describe('dateInterpretation option', () => {
     assert(batch != null);
 
     expect(batch[0].cells).toHaveLength(4);
-    for (const cell of batch[0].cells) {
-      expect(cell.valueType).toBe('number');
-    }
-    expect(batch[0].cells[0].numberValue).toBe(46127);
-    expect(batch[0].cells[2].numberValue).toBe(2.5);
-    expect(batch[0].cells[3].numberValue).toBe(42);
-    await reader.close();
-  });
-
-  it('numFmt mode promotes number cells with built-in or custom date formats to date', async () => {
-    await writeMixedStyleWorkbook(out);
-
-    const wb = await Workbook.open(out, {
-      readMode: 'lazy',
-      dateInterpretation: 'numFmt',
-    });
-    const reader = await wb.openSheetReader('Sheet1');
-    const batch = await reader.next();
-    assert(batch != null);
 
     // A1: built-in date numFmtId 14 -> promoted.
     expect(batch[0].cells[0].valueType).toBe('date');
@@ -88,7 +69,26 @@ describe('dateInterpretation option', () => {
     await reader.close();
   });
 
-  it('explicit cellType matches the default behavior', async () => {
+  it('explicit numFmt matches the default behavior', async () => {
+    await writeMixedStyleWorkbook(out);
+
+    const wb = await Workbook.open(out, {
+      readMode: 'lazy',
+      dateInterpretation: 'numFmt',
+    });
+    const reader = await wb.openSheetReader('Sheet1');
+    const batch = await reader.next();
+    assert(batch != null);
+
+    expect(batch[0].cells[0].valueType).toBe('date');
+    expect(batch[0].cells[1].valueType).toBe('date');
+    expect(batch[0].cells[2].valueType).toBe('number');
+    expect(batch[0].cells[3].valueType).toBe('number');
+
+    await reader.close();
+  });
+
+  it('cellType opts into spec-literal reading: every number cell stays a number', async () => {
     await writeMixedStyleWorkbook(out);
 
     const wb = await Workbook.open(out, {
@@ -102,6 +102,9 @@ describe('dateInterpretation option', () => {
     for (const cell of batch[0].cells) {
       expect(cell.valueType).toBe('number');
     }
+    expect(batch[0].cells[0].numberValue).toBe(46127);
+    expect(batch[0].cells[2].numberValue).toBe(2.5);
+    expect(batch[0].cells[3].numberValue).toBe(42);
 
     await reader.close();
   });

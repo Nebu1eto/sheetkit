@@ -526,11 +526,11 @@ pub struct JsOpenOptions {
     /// "full" maps to "eager". Ignored when read_mode is set.
     pub parse_mode: Option<String>,
     /// Controls how date-formatted number cells are interpreted when the
-    /// cell carries `t="n"` (or is untyped). Accepts `"cellType"` (default,
-    /// spec-literal: only `t="d"` becomes a date) or `"numFmt"` (promote
-    /// `t="n"` cells whose style references a built-in date numFmt ID
-    /// 14-22/45-47, or a custom format code containing date/time tokens, to
-    /// a date cell). Values other than these are treated as `"cellType"`.
+    /// cell carries `t="n"` (or is untyped). Accepts `"numFmt"` (default,
+    /// promote `t="n"` cells whose style references a built-in date numFmt
+    /// ID 14-22/45-47, or a custom format code containing date/time tokens,
+    /// to a date cell) or `"cellType"` (spec-literal: only `t="d"` becomes
+    /// a date). Values other than these fall back to the default.
     pub date_interpretation: Option<String>,
 }
 

@@ -126,14 +126,14 @@ export type AuxParts = 'deferred' | 'eager';
 
 /**
  * Controls how date-formatted number cells are interpreted while reading.
- * - "cellType" (default): follow the cell's `t` attribute. A `t="n"` cell
- *   remains a number even when its style references a date number format;
- *   only `t="d"` cells are returned as dates.
- * - "numFmt": additionally promote `t="n"` (or untyped) cells whose style
+ * - "numFmt" (default): promote `t="n"` (or untyped) cells whose style
  *   points at a built-in date format ID (14-22, 45-47) or a custom format
- *   code containing date/time tokens to a date cell. Useful for reading
- *   files produced by Microsoft Excel, which stores dates as `t="n"` with
- *   a date format applied.
+ *   code containing date/time tokens to a date cell. Matches how Microsoft
+ *   Excel stores dates in practice.
+ * - "cellType": follow the cell's `t` attribute strictly. A `t="n"` cell
+ *   remains a number even when its style references a date number format;
+ *   only `t="d"` cells are returned as dates. Opt in when you need
+ *   spec-literal behavior.
  */
 export type DateInterpretation = 'cellType' | 'numFmt';
 
@@ -153,8 +153,9 @@ export interface OpenOptions {
   auxParts?: AuxParts;
   /**
    * How to interpret date-formatted number cells while reading. Default:
-   * "cellType" (spec-literal). Set to "numFmt" to have the reader promote
-   * `t="n"` cells carrying a date number format into date cells.
+   * "numFmt" (promote `t="n"` cells with a date number format into date
+   * cells). Set to "cellType" for spec-literal behavior where only
+   * `t="d"` cells become dates.
    */
   dateInterpretation?: DateInterpretation;
 }

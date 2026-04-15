@@ -153,13 +153,17 @@ impl Workbook {
             }
             // Formula string (cached string result)
             (CellTypeTag::FormulaString, Some(v)) => Ok(CellValue::String(v.to_string())),
-            // Number (explicit or default type) -- may be a date if styled.
+            // Number (explicit or default type) -- may be a date if styled
+            // and `DateInterpretation::NumFmt` is active.
             (CellTypeTag::None | CellTypeTag::Number, Some(v)) => {
                 let n: f64 = v
                     .parse()
                     .map_err(|_| Error::Internal(format!("invalid number: {v}")))?;
-                // Check whether this cell has a date number format.
-                if self.is_date_styled_cell(xml_cell) {
+                if matches!(
+                    self.date_interpretation,
+                    super::open_options::DateInterpretation::NumFmt
+                ) && self.is_date_styled_cell(xml_cell)
+                {
                     return Ok(CellValue::Date(n));
                 }
                 Ok(CellValue::Number(n))
@@ -1677,5 +1681,100 @@ mod tests {
             wb.get_cell_value("Sheet1", "B1").unwrap(),
             CellValue::String("new".to_string())
         );
+    }
+
+    /// Saves a workbook with a date-styled number cell and a plain-number
+    /// cell for reuse across the interpretation round-trip tests below.
+    fn write_workbook_with_date_style(path: &std::path::Path) {
+        use crate::style::{builtin_num_fmts, NumFmtStyle, Style};
+        let mut wb = Workbook::new();
+        let date_style = wb
+            .add_style(&Style {
+                num_fmt: Some(NumFmtStyle::Builtin(builtin_num_fmts::DATE_MDY)),
+                ..Style::default()
+            })
+            .unwrap();
+        wb.set_cell_value("Sheet1", "A1", 46127.0_f64).unwrap();
+        wb.set_cell_style("Sheet1", "A1", date_style).unwrap();
+        wb.set_cell_value("Sheet1", "B1", 42.0_f64).unwrap();
+        wb.save(path).unwrap();
+    }
+
+    #[test]
+    fn test_get_cell_value_num_fmt_default_promotes_date_styled_cells() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("get_cell_value_default.xlsx");
+        write_workbook_with_date_style(&path);
+
+        // Default interpretation is `NumFmt`, so date-styled numeric cells
+        // come back as dates while plain numbers stay numbers.
+        let wb = Workbook::open(&path).unwrap();
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::Date(46127.0)
+        );
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "B1").unwrap(),
+            CellValue::Number(42.0)
+        );
+    }
+
+    #[test]
+    fn test_get_cell_value_cell_type_keeps_numbers() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("get_cell_value_cell_type.xlsx");
+        write_workbook_with_date_style(&path);
+
+        // Opting into `CellType` makes the reader strictly follow the cell
+        // type attribute, so even date-styled number cells stay numbers.
+        let wb = Workbook::open_with_options(
+            &path,
+            &crate::workbook::OpenOptions::new()
+                .date_interpretation(crate::workbook::DateInterpretation::CellType),
+        )
+        .unwrap();
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::Number(46127.0)
+        );
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "B1").unwrap(),
+            CellValue::Number(42.0)
+        );
+    }
+
+    #[test]
+    fn test_get_rows_num_fmt_default_promotes_date_styled_cells() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("get_rows_default.xlsx");
+        write_workbook_with_date_style(&path);
+
+        // `get_rows` now honors the same interpretation option as
+        // `get_cell_value` and the streaming reader.
+        let wb = Workbook::open(&path).unwrap();
+        let rows = wb.get_rows("Sheet1").unwrap();
+        assert_eq!(rows.len(), 1);
+        let cells = &rows[0].1;
+        assert_eq!(cells[0].1, CellValue::Date(46127.0));
+        assert_eq!(cells[1].1, CellValue::Number(42.0));
+    }
+
+    #[test]
+    fn test_get_rows_cell_type_keeps_numbers() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("get_rows_cell_type.xlsx");
+        write_workbook_with_date_style(&path);
+
+        let wb = Workbook::open_with_options(
+            &path,
+            &crate::workbook::OpenOptions::new()
+                .date_interpretation(crate::workbook::DateInterpretation::CellType),
+        )
+        .unwrap();
+        let rows = wb.get_rows("Sheet1").unwrap();
+        assert_eq!(rows.len(), 1);
+        let cells = &rows[0].1;
+        assert_eq!(cells[0].1, CellValue::Number(46127.0));
+        assert_eq!(cells[1].1, CellValue::Number(42.0));
     }
 }

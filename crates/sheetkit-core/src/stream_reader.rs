@@ -1270,20 +1270,24 @@ mod tests {
     }
 
     #[test]
-    fn test_integration_date_interpretation_cell_type_default() {
+    fn test_integration_date_interpretation_cell_type_opt_in() {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("dates_cell_type.xlsx");
         write_mixed_style_workbook(&path);
 
+        // Explicitly opt into spec-literal interpretation; the default is
+        // `NumFmt` so this has to be requested by the caller.
         let wb = crate::workbook::Workbook::open_with_options(
             &path,
-            &crate::workbook::OpenOptions::new().read_mode(crate::workbook::ReadMode::Lazy),
+            &crate::workbook::OpenOptions::new()
+                .read_mode(crate::workbook::ReadMode::Lazy)
+                .date_interpretation(crate::workbook::DateInterpretation::CellType),
         )
         .unwrap();
         let mut reader = wb.open_sheet_reader("Sheet1").unwrap();
         let rows = reader.next_batch(10).unwrap();
 
-        // All number cells remain Number under the default policy, regardless
+        // All number cells remain Number when CellType is requested, regardless
         // of whether their style references a date format.
         assert_eq!(rows[0].cells[0].1, CellValue::Number(46127.0));
         match &rows[0].cells[1].1 {

@@ -208,7 +208,9 @@ fn compute_range(
         let (c2, r2) = cell_name_to_coordinates(parts[1])?;
         Ok((c1.min(c2), r1.min(r2), c1.max(c2), r1.max(r2)))
     } else {
-        let rows = get_rows(ws, sst)?;
+        // Rendering computes bounds from cell presence only, so date
+        // promotion is not relevant here. Skip the lookup.
+        let rows = get_rows(ws, sst, &[])?;
         if rows.is_empty() {
             return Ok((1, 1, 1, 1));
         }
@@ -584,7 +586,9 @@ fn find_cell_value(ws: &WorksheetXml, sst: &SharedStringTable, col: u32, row: u3
                 .cells
                 .binary_search_by_key(&col, |c| c.col)
                 .ok()
-                .map(|ci| resolve_cell_value(&row_data.cells[ci], sst))
+                // Rendering formats numeric values using the stylesheet
+                // directly; no date-promotion step is needed here.
+                .map(|ci| resolve_cell_value(&row_data.cells[ci], sst, &[]))
         })
         .unwrap_or(CellValue::Empty)
 }

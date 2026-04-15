@@ -1177,8 +1177,8 @@ pub(crate) fn js_open_options_to_core(
         _ => sheetkit_core::workbook::AuxParts::EagerLoad,
     };
     let date_interpretation = match js.date_interpretation.as_deref() {
-        Some("numFmt") => sheetkit_core::workbook::DateInterpretation::NumFmt,
-        _ => sheetkit_core::workbook::DateInterpretation::CellType,
+        Some("cellType") => sheetkit_core::workbook::DateInterpretation::CellType,
+        _ => sheetkit_core::workbook::DateInterpretation::NumFmt,
     };
     sheetkit_core::workbook::OpenOptions {
         sheet_rows: js.sheet_rows,
