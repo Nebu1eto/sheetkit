@@ -227,6 +227,7 @@ Options for controlling how a workbook is opened and parsed. All fields are opti
 | `sheets` | `Option<Vec<String>>` | `string[]?` | all | Only parse sheets whose names are in this list. Unselected sheets exist in the workbook but contain no data. |
 | `max_unzip_size` / `maxUnzipSize` | `Option<u64>` | `number?` | unlimited | Maximum total decompressed size of the ZIP archive in bytes. Prevents zip bombs. |
 | `max_zip_entries` / `maxZipEntries` | `Option<usize>` | `number?` | unlimited | Maximum number of entries in the ZIP archive. Prevents zip bombs. |
+| `date_interpretation` / `dateInterpretation` | `DateInterpretation` | `'cellType' \| 'numFmt'?` | `'cellType'` | Controls how date-formatted number cells are surfaced while reading. |
 
 #### ReadMode
 
@@ -242,6 +243,28 @@ Options for controlling how a workbook is opened and parsed. All fields are opti
 |-------|-------------|
 | `'deferred'` | Auxiliary parts are loaded on first access. Default. |
 | `'eager'` | All auxiliary parts are parsed during open. |
+
+#### DateInterpretation
+
+OOXML stores dates as `t="n"` number cells with a date number format attached, so the cell type alone never tells you that a value is a date. Choose how the reader should resolve that ambiguity.
+
+| Value | Description |
+|-------|-------------|
+| `'cellType'` | Spec-literal. Only `t="d"` cells become dates; `t="n"` cells remain numbers regardless of their number format. Default. |
+| `'numFmt'` | Additionally promote `t="n"` cells whose style references a built-in date format (IDs 14-22, 45-47) or a custom format code containing date/time tokens (`y`, `m`, `d`, `h`, `s`) to a date cell. Use this when reading files produced by Microsoft Excel. |
+
+```rust
+use sheetkit::{DateInterpretation, OpenOptions, Workbook};
+
+let opts = OpenOptions::new().date_interpretation(DateInterpretation::NumFmt);
+let wb = Workbook::open_with_options("excel_report.xlsx", &opts)?;
+```
+
+```typescript
+const wb = await Workbook.open("excel_report.xlsx", {
+  dateInterpretation: "numFmt",
+});
+```
 
 ### `Workbook::open_with_options(path, options)` / `Workbook.open(path, options?)`
 

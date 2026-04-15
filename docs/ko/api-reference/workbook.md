@@ -231,6 +231,7 @@ await wb.save("with_macros.xlsm"); // VBA가 보존됩니다
 | `sheets` | `Option<Vec<String>>` | `string[]?` | 전체 | 이 목록에 포함된 시트만 파싱합니다. 선택되지 않은 시트는 워크북에 존재하지만 데이터가 없습니다. |
 | `max_unzip_size` / `maxUnzipSize` | `Option<u64>` | `number?` | 무제한 | ZIP 아카이브의 전체 압축 해제 크기 제한(바이트)입니다. zip bomb을 방지합니다. |
 | `max_zip_entries` / `maxZipEntries` | `Option<usize>` | `number?` | 무제한 | ZIP 아카이브의 최대 엔트리 수입니다. zip bomb을 방지합니다. |
+| `date_interpretation` / `dateInterpretation` | `DateInterpretation` | `'cellType' \| 'numFmt'?` | `'cellType'` | 날짜 서식이 적용된 숫자 셀을 어떻게 해석할지 제어합니다. |
 
 #### ReadMode
 
@@ -246,6 +247,28 @@ await wb.save("with_macros.xlsm"); // VBA가 보존됩니다
 |------|------|
 | `'deferred'` | 보조 파트는 첫 접근 시 로드됩니다. 기본값입니다. |
 | `'eager'` | open 시 모든 보조 파트를 파싱합니다. |
+
+#### DateInterpretation
+
+OOXML은 날짜를 `t="n"` 숫자 셀 + 날짜 number format 조합으로 저장하기 때문에, 셀 타입만으로는 값이 날짜인지 알 수 없습니다. 이 모호성을 reader가 어떻게 해석할지 선택합니다.
+
+| 값 | 설명 |
+|------|------|
+| `'cellType'` | 스펙 그대로입니다. `t="d"` 셀만 날짜가 되고, `t="n"` 셀은 서식과 무관하게 숫자로 남습니다. 기본값입니다. |
+| `'numFmt'` | `t="n"` 셀 중 스타일이 built-in 날짜 서식 ID(14-22, 45-47)를 참조하거나 커스텀 서식 코드에 날짜/시간 토큰(`y`, `m`, `d`, `h`, `s`)이 포함된 경우까지 날짜 셀로 승격합니다. Microsoft Excel이 생성한 파일을 읽을 때 사용합니다. |
+
+```rust
+use sheetkit::{DateInterpretation, OpenOptions, Workbook};
+
+let opts = OpenOptions::new().date_interpretation(DateInterpretation::NumFmt);
+let wb = Workbook::open_with_options("excel_report.xlsx", &opts)?;
+```
+
+```typescript
+const wb = await Workbook.open("excel_report.xlsx", {
+  dateInterpretation: "numFmt",
+});
+```
 
 ### `Workbook::open_with_options(path, options)` / `Workbook.open(path, options?)`
 
