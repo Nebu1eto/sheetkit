@@ -72,7 +72,7 @@ Add `sheetkit` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-sheetkit = "0.5.0"
+sheetkit = "0.5.1"
 ```
 
 ### Node.js
