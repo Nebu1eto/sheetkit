@@ -18,6 +18,7 @@ use crate::cell::CellValue;
 use crate::error::{Error, Result};
 use crate::sst::SharedStringTable;
 use crate::utils::cell_ref::cell_name_to_coordinates;
+use crate::workbook::open_options::DateInterpretation;
 
 /// A single row produced by the streaming reader.
 #[derive(Debug, Clone)]
@@ -39,24 +40,65 @@ pub struct SheetStreamReader<'a, R: BufRead> {
     done: bool,
     row_limit: Option<u32>,
     rows_emitted: u32,
+    date_interpretation: DateInterpretation,
+    style_is_date: Vec<bool>,
 }
 
 impl<'a, R: BufRead> SheetStreamReader<'a, R> {
     /// Create a new streaming reader over the given `BufRead` source.
     ///
     /// `sst` is a reference to the shared string table for resolving
-    /// shared string cell values. `row_limit` optionally caps the number
-    /// of rows returned.
-    pub fn new(source: R, sst: &'a SharedStringTable, row_limit: Option<u32>) -> Self {
+    /// shared string cell values. Optional configuration (row limit, date
+    /// interpretation) is applied via the builder methods.
+    pub fn new(source: R, sst: &'a SharedStringTable) -> Self {
         let mut reader = quick_xml::Reader::from_reader(source);
         reader.config_mut().trim_text(false);
         Self {
             reader,
             sst,
             done: false,
-            row_limit,
+            row_limit: None,
             rows_emitted: 0,
+            date_interpretation: DateInterpretation::default(),
+            style_is_date: Vec::new(),
         }
+    }
+
+    /// Cap the number of rows produced by this reader. `None` means no
+    /// limit (the default).
+    pub fn row_limit(mut self, limit: Option<u32>) -> Self {
+        self.row_limit = limit;
+        self
+    }
+
+    /// Configure how date-formatted number cells are interpreted.
+    ///
+    /// `style_is_date` is a per-style boolean produced by
+    /// [`crate::style::compute_style_is_date`]; it is indexed by each
+    /// cell's `s` attribute. Empty vectors are equivalent to "no style
+    /// was a date format", which is the safe default.
+    pub fn date_promotion(
+        mut self,
+        interpretation: DateInterpretation,
+        style_is_date: Vec<bool>,
+    ) -> Self {
+        self.date_interpretation = interpretation;
+        self.style_is_date = style_is_date;
+        self
+    }
+
+    /// Returns `true` when `style_idx` refers to a style whose number
+    /// format is a date format and the reader is configured with
+    /// [`DateInterpretation::NumFmt`].
+    fn should_promote_to_date(&self, style_idx: Option<u32>) -> bool {
+        if !matches!(self.date_interpretation, DateInterpretation::NumFmt) {
+            return false;
+        }
+        let idx = match style_idx {
+            Some(i) => i as usize,
+            None => return false,
+        };
+        self.style_is_date.get(idx).copied().unwrap_or(false)
     }
 
     /// Read the next batch of rows. Returns an empty `Vec` when there are no
@@ -129,19 +171,27 @@ impl<'a, R: BufRead> SheetStreamReader<'a, R> {
                 .map_err(|e| Error::XmlParse(e.to_string()))?
             {
                 Event::Start(ref e) if e.name() == QName(b"c") => {
-                    let (col, cell_type) = extract_cell_attrs(e)?;
+                    let (col, cell_type, style_idx) = extract_cell_attrs(e)?;
                     if let Some(col) = col {
-                        let cv = self.parse_cell_body(cell_type.as_deref())?;
+                        let promote = self.should_promote_to_date(style_idx);
+                        let cv = self.parse_cell_body(cell_type.as_deref(), promote)?;
                         cells.push((col, cv));
                     } else {
                         self.skip_to_end_of(b"c")?;
                     }
                 }
                 Event::Empty(ref e) if e.name() == QName(b"c") => {
-                    let (col, cell_type) = extract_cell_attrs(e)?;
+                    let (col, cell_type, style_idx) = extract_cell_attrs(e)?;
                     if let Some(col) = col {
-                        let cv =
-                            resolve_cell_value(self.sst, cell_type.as_deref(), None, None, None)?;
+                        let promote = self.should_promote_to_date(style_idx);
+                        let cv = resolve_cell_value(
+                            self.sst,
+                            cell_type.as_deref(),
+                            None,
+                            None,
+                            None,
+                            promote,
+                        )?;
                         cells.push((col, cv));
                     }
                 }
@@ -159,7 +209,11 @@ impl<'a, R: BufRead> SheetStreamReader<'a, R> {
 
     /// Parse the body of a `<c>` element (its child `<v>`, `<f>`, `<is>`
     /// elements) after the cell attributes have been extracted.
-    fn parse_cell_body(&mut self, cell_type: Option<&str>) -> Result<CellValue> {
+    fn parse_cell_body(
+        &mut self,
+        cell_type: Option<&str>,
+        promote_to_date: bool,
+    ) -> Result<CellValue> {
         let mut value_text: Option<String> = None;
         let mut formula_text: Option<String> = None;
         let mut inline_string: Option<String> = None;
@@ -212,6 +266,7 @@ impl<'a, R: BufRead> SheetStreamReader<'a, R> {
             value_text.as_deref(),
             formula_text,
             inline_string,
+            promote_to_date,
         )
     }
 
@@ -284,15 +339,17 @@ pub struct OwnedSheetStreamReader {
     done: bool,
     row_limit: Option<u32>,
     rows_emitted: u32,
+    date_interpretation: DateInterpretation,
+    style_is_date: Vec<bool>,
 }
 
 impl OwnedSheetStreamReader {
     /// Create a new owned streaming reader.
     ///
     /// `xml_bytes` is the raw worksheet XML. `sst` is a read-only clone of
-    /// the shared string table. `row_limit` optionally caps the total number
-    /// of rows returned.
-    pub fn new(xml_bytes: Vec<u8>, sst: SharedStringTable, row_limit: Option<u32>) -> Self {
+    /// the shared string table. Configuration is applied via builder
+    /// methods ([`Self::row_limit`], [`Self::date_promotion`]).
+    pub fn new(xml_bytes: Vec<u8>, sst: SharedStringTable) -> Self {
         let cursor = std::io::Cursor::new(xml_bytes);
         let buf_reader = std::io::BufReader::new(cursor);
         let mut reader = quick_xml::Reader::from_reader(buf_reader);
@@ -301,9 +358,41 @@ impl OwnedSheetStreamReader {
             reader,
             sst,
             done: false,
-            row_limit,
+            row_limit: None,
             rows_emitted: 0,
+            date_interpretation: DateInterpretation::default(),
+            style_is_date: Vec::new(),
         }
+    }
+
+    /// Cap the number of rows produced by this reader. `None` means no
+    /// limit (the default).
+    pub fn row_limit(mut self, limit: Option<u32>) -> Self {
+        self.row_limit = limit;
+        self
+    }
+
+    /// Configure how date-formatted number cells are interpreted.
+    /// See [`SheetStreamReader::date_promotion`] for details.
+    pub fn date_promotion(
+        mut self,
+        interpretation: DateInterpretation,
+        style_is_date: Vec<bool>,
+    ) -> Self {
+        self.date_interpretation = interpretation;
+        self.style_is_date = style_is_date;
+        self
+    }
+
+    fn should_promote_to_date(&self, style_idx: Option<u32>) -> bool {
+        if !matches!(self.date_interpretation, DateInterpretation::NumFmt) {
+            return false;
+        }
+        let idx = match style_idx {
+            Some(i) => i as usize,
+            None => return false,
+        };
+        self.style_is_date.get(idx).copied().unwrap_or(false)
     }
 
     /// Read the next batch of rows. Returns an empty `Vec` when there are no
@@ -374,19 +463,27 @@ impl OwnedSheetStreamReader {
                 .map_err(|e| Error::XmlParse(e.to_string()))?
             {
                 Event::Start(ref e) if e.name() == QName(b"c") => {
-                    let (col, cell_type) = extract_cell_attrs(e)?;
+                    let (col, cell_type, style_idx) = extract_cell_attrs(e)?;
                     if let Some(col) = col {
-                        let cv = self.parse_cell_body(cell_type.as_deref())?;
+                        let promote = self.should_promote_to_date(style_idx);
+                        let cv = self.parse_cell_body(cell_type.as_deref(), promote)?;
                         cells.push((col, cv));
                     } else {
                         self.skip_to_end_of(b"c")?;
                     }
                 }
                 Event::Empty(ref e) if e.name() == QName(b"c") => {
-                    let (col, cell_type) = extract_cell_attrs(e)?;
+                    let (col, cell_type, style_idx) = extract_cell_attrs(e)?;
                     if let Some(col) = col {
-                        let cv =
-                            resolve_cell_value(&self.sst, cell_type.as_deref(), None, None, None)?;
+                        let promote = self.should_promote_to_date(style_idx);
+                        let cv = resolve_cell_value(
+                            &self.sst,
+                            cell_type.as_deref(),
+                            None,
+                            None,
+                            None,
+                            promote,
+                        )?;
                         cells.push((col, cv));
                     }
                 }
@@ -402,7 +499,11 @@ impl OwnedSheetStreamReader {
         Ok(StreamRow { row_number, cells })
     }
 
-    fn parse_cell_body(&mut self, cell_type: Option<&str>) -> Result<CellValue> {
+    fn parse_cell_body(
+        &mut self,
+        cell_type: Option<&str>,
+        promote_to_date: bool,
+    ) -> Result<CellValue> {
         let mut value_text: Option<String> = None;
         let mut formula_text: Option<String> = None;
         let mut inline_string: Option<String> = None;
@@ -455,6 +556,7 @@ impl OwnedSheetStreamReader {
             value_text.as_deref(),
             formula_text,
             inline_string,
+            promote_to_date,
         )
     }
 
@@ -529,12 +631,14 @@ fn extract_row_number(start: &quick_xml::events::BytesStart<'_>) -> Result<u32> 
     ))
 }
 
-/// Extract the cell reference (column index) and type attribute from a `<c>` element.
+/// Extract the cell reference (column index), type attribute, and style
+/// index from a `<c>` element.
 fn extract_cell_attrs(
     start: &quick_xml::events::BytesStart<'_>,
-) -> Result<(Option<u32>, Option<String>)> {
+) -> Result<(Option<u32>, Option<String>, Option<u32>)> {
     let mut cell_ref: Option<String> = None;
     let mut cell_type: Option<String> = None;
+    let mut style_idx: Option<u32> = None;
 
     for attr in start.attributes().flatten() {
         match attr.key {
@@ -552,6 +656,11 @@ fn extract_cell_attrs(
                         .to_string(),
                 );
             }
+            QName(b"s") => {
+                let raw =
+                    std::str::from_utf8(&attr.value).map_err(|e| Error::XmlParse(e.to_string()))?;
+                style_idx = raw.parse::<u32>().ok();
+            }
             _ => {}
         }
     }
@@ -561,16 +670,22 @@ fn extract_cell_attrs(
         None => None,
     };
 
-    Ok((col, cell_type))
+    Ok((col, cell_type, style_idx))
 }
 
 /// Resolve cell type, value text, formula, and inline string into a `CellValue`.
+///
+/// `promote_to_date` is honored only for non-formula numeric cells (`t="n"`
+/// or untyped). When true, such cells are returned as [`CellValue::Date`]
+/// instead of [`CellValue::Number`], used by the
+/// [`DateInterpretation::NumFmt`] path of the streaming reader.
 fn resolve_cell_value(
     sst: &SharedStringTable,
     cell_type: Option<&str>,
     value_text: Option<&str>,
     formula_text: Option<String>,
     inline_string: Option<String>,
+    promote_to_date: bool,
 ) -> Result<CellValue> {
     if let Some(formula) = formula_text {
         let cached = match (cell_type, value_text) {
@@ -613,7 +728,11 @@ fn resolve_cell_value(
             let n: f64 = v
                 .parse()
                 .map_err(|_| Error::Internal(format!("invalid number: {v}")))?;
-            Ok(CellValue::Number(n))
+            if promote_to_date {
+                Ok(CellValue::Date(n))
+            } else {
+                Ok(CellValue::Number(n))
+            }
         }
         _ => Ok(CellValue::Empty),
     }
@@ -645,7 +764,7 @@ mod tests {
 
     fn read_all(xml: &str, sst: &SharedStringTable, row_limit: Option<u32>) -> Vec<StreamRow> {
         let cursor = Cursor::new(xml.as_bytes().to_vec());
-        let mut reader = SheetStreamReader::new(cursor, sst, row_limit);
+        let mut reader = SheetStreamReader::new(cursor, sst).row_limit(row_limit);
         let mut all = Vec::new();
         loop {
             let batch = reader.next_batch(100).unwrap();
@@ -669,7 +788,7 @@ mod tests {
         );
 
         let cursor = Cursor::new(xml.as_bytes().to_vec());
-        let mut reader = SheetStreamReader::new(cursor, &sst, None);
+        let mut reader = SheetStreamReader::new(cursor, &sst);
 
         let batch1 = reader.next_batch(2).unwrap();
         assert_eq!(batch1.len(), 2);
@@ -765,7 +884,7 @@ mod tests {
         let xml = worksheet_xml(r#"<row r="1"><c r="A1" t="s"><v>999</v></c></row>"#);
 
         let cursor = Cursor::new(xml.as_bytes().to_vec());
-        let mut reader = SheetStreamReader::new(cursor, &sst, None);
+        let mut reader = SheetStreamReader::new(cursor, &sst);
         let result = reader.next_batch(10);
         assert!(result.is_err());
     }
@@ -948,7 +1067,7 @@ mod tests {
         let sst = SharedStringTable::new();
         let xml = worksheet_xml(r#"<row r="1"><c r="A1"><v>1</v></c></row>"#);
         let cursor = Cursor::new(xml.as_bytes().to_vec());
-        let reader = SheetStreamReader::new(cursor, &sst, None);
+        let reader = SheetStreamReader::new(cursor, &sst);
         reader.close();
     }
 
@@ -962,7 +1081,7 @@ mod tests {
 "#,
         );
         let cursor = Cursor::new(xml.as_bytes().to_vec());
-        let mut reader = SheetStreamReader::new(cursor, &sst, None);
+        let mut reader = SheetStreamReader::new(cursor, &sst);
         let batch = reader.next_batch(1).unwrap();
         assert_eq!(batch.len(), 1);
         drop(reader);
@@ -974,7 +1093,7 @@ mod tests {
         let xml = worksheet_xml(r#"<row r="1"><c r="A1"><v>1</v></c></row>"#);
 
         let cursor = Cursor::new(xml.as_bytes().to_vec());
-        let mut reader = SheetStreamReader::new(cursor, &sst, None);
+        let mut reader = SheetStreamReader::new(cursor, &sst);
         assert!(reader.has_more());
 
         let batch = reader.next_batch(100).unwrap();
@@ -997,7 +1116,7 @@ mod tests {
         );
 
         let cursor = Cursor::new(xml.as_bytes().to_vec());
-        let mut reader = SheetStreamReader::new(cursor, &sst, None);
+        let mut reader = SheetStreamReader::new(cursor, &sst);
 
         for expected_row in 1..=3 {
             let batch = reader.next_batch(1).unwrap();
@@ -1106,5 +1225,105 @@ mod tests {
         let wb = crate::workbook::Workbook::new();
         let result = wb.open_sheet_reader("NonExistent");
         assert!(result.is_err());
+    }
+
+    /// End-to-end date interpretation test harness. Builds a workbook with
+    /// mixed styled cells, saves it, reopens under both policies, and lets
+    /// the caller assert on the returned cell values.
+    fn write_mixed_style_workbook(path: &std::path::Path) {
+        use crate::style::{builtin_num_fmts, NumFmtStyle, Style};
+        let mut wb = crate::workbook::Workbook::new();
+        let builtin_date_style = wb
+            .add_style(&Style {
+                num_fmt: Some(NumFmtStyle::Builtin(builtin_num_fmts::DATE_MDY)),
+                ..Style::default()
+            })
+            .unwrap();
+        let custom_date_style = wb
+            .add_style(&Style {
+                num_fmt: Some(NumFmtStyle::Custom("yyyy-mm-dd hh:mm".to_string())),
+                ..Style::default()
+            })
+            .unwrap();
+        let decimal_style = wb
+            .add_style(&Style {
+                num_fmt: Some(NumFmtStyle::Builtin(builtin_num_fmts::DECIMAL_2)),
+                ..Style::default()
+            })
+            .unwrap();
+
+        // A1: number + built-in date format.
+        wb.set_cell_value("Sheet1", "A1", 46127.0_f64).unwrap();
+        wb.set_cell_style("Sheet1", "A1", builtin_date_style)
+            .unwrap();
+        // B1: number + custom date-like format.
+        wb.set_cell_value("Sheet1", "B1", 46127.9993_f64).unwrap();
+        wb.set_cell_style("Sheet1", "B1", custom_date_style)
+            .unwrap();
+        // C1: number + non-date format (decimal 2).
+        wb.set_cell_value("Sheet1", "C1", 2.5_f64).unwrap();
+        wb.set_cell_style("Sheet1", "C1", decimal_style).unwrap();
+        // D1: number with no explicit style.
+        wb.set_cell_value("Sheet1", "D1", 42.0_f64).unwrap();
+
+        wb.save(path).unwrap();
+    }
+
+    #[test]
+    fn test_integration_date_interpretation_cell_type_opt_in() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("dates_cell_type.xlsx");
+        write_mixed_style_workbook(&path);
+
+        // Explicitly opt into spec-literal interpretation; the default is
+        // `NumFmt` so this has to be requested by the caller.
+        let wb = crate::workbook::Workbook::open_with_options(
+            &path,
+            &crate::workbook::OpenOptions::new()
+                .read_mode(crate::workbook::ReadMode::Lazy)
+                .date_interpretation(crate::workbook::DateInterpretation::CellType),
+        )
+        .unwrap();
+        let mut reader = wb.open_sheet_reader("Sheet1").unwrap();
+        let rows = reader.next_batch(10).unwrap();
+
+        // All number cells remain Number when CellType is requested, regardless
+        // of whether their style references a date format.
+        assert_eq!(rows[0].cells[0].1, CellValue::Number(46127.0));
+        match &rows[0].cells[1].1 {
+            CellValue::Number(v) => assert!((*v - 46127.9993).abs() < 1e-9),
+            other => panic!("expected Number, got {:?}", other),
+        }
+        assert_eq!(rows[0].cells[2].1, CellValue::Number(2.5));
+        assert_eq!(rows[0].cells[3].1, CellValue::Number(42.0));
+    }
+
+    #[test]
+    fn test_integration_date_interpretation_num_fmt_promotes_date_styles() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("dates_num_fmt.xlsx");
+        write_mixed_style_workbook(&path);
+
+        let wb = crate::workbook::Workbook::open_with_options(
+            &path,
+            &crate::workbook::OpenOptions::new()
+                .read_mode(crate::workbook::ReadMode::Lazy)
+                .date_interpretation(crate::workbook::DateInterpretation::NumFmt),
+        )
+        .unwrap();
+        let mut reader = wb.open_sheet_reader("Sheet1").unwrap();
+        let rows = reader.next_batch(10).unwrap();
+
+        // A1: built-in date format → promoted to Date.
+        assert_eq!(rows[0].cells[0].1, CellValue::Date(46127.0));
+        // B1: custom date format code → promoted to Date.
+        match &rows[0].cells[1].1 {
+            CellValue::Date(v) => assert!((*v - 46127.9993).abs() < 1e-9),
+            other => panic!("expected Date, got {:?}", other),
+        }
+        // C1: non-date format → stays Number.
+        assert_eq!(rows[0].cells[2].1, CellValue::Number(2.5));
+        // D1: no style → stays Number.
+        assert_eq!(rows[0].cells[3].1, CellValue::Number(42.0));
     }
 }

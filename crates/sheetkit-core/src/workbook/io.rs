@@ -101,6 +101,7 @@ impl Workbook {
             package_source: None,
             read_mode: ReadMode::default(),
             sheet_rows_limit: None,
+            date_interpretation: super::DateInterpretation::default(),
         }
     }
 
@@ -729,6 +730,7 @@ impl Workbook {
             package_source: None,
             read_mode: options.read_mode,
             sheet_rows_limit: options.sheet_rows,
+            date_interpretation: options.date_interpretation,
         })
     }
 

@@ -124,6 +124,19 @@ export type ReadMode = 'lazy' | 'stream' | 'eager';
  */
 export type AuxParts = 'deferred' | 'eager';
 
+/**
+ * Controls how date-formatted number cells are interpreted while reading.
+ * - "numFmt" (default): promote `t="n"` (or untyped) cells whose style
+ *   points at a built-in date format ID (14-22, 45-47) or a custom format
+ *   code containing date/time tokens to a date cell. Matches how Microsoft
+ *   Excel stores dates in practice.
+ * - "cellType": follow the cell's `t` attribute strictly. A `t="n"` cell
+ *   remains a number even when its style references a date number format;
+ *   only `t="d"` cells are returned as dates. Opt in when you need
+ *   spec-literal behavior.
+ */
+export type DateInterpretation = 'cellType' | 'numFmt';
+
 /** Options for controlling how a workbook is opened and parsed. */
 export interface OpenOptions {
   /** Read mode: "lazy" (recommended for read-only), "eager", or "stream". Default: "lazy". */
@@ -138,6 +151,13 @@ export interface OpenOptions {
   maxZipEntries?: number;
   /** Auxiliary parts loading policy. Default: "deferred". */
   auxParts?: AuxParts;
+  /**
+   * How to interpret date-formatted number cells while reading. Default:
+   * "numFmt" (promote `t="n"` cells with a date number format into date
+   * cells). Set to "cellType" for spec-literal behavior where only
+   * `t="d"` cells become dates.
+   */
+  dateInterpretation?: DateInterpretation;
 }
 
 type CellValueInput = string | number | boolean | DateValue | null;

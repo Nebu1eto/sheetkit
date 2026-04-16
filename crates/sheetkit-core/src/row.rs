@@ -17,10 +17,17 @@ use crate::utils::constants::{MAX_ROWS, MAX_ROW_HEIGHT};
 /// Returns a Vec of `(row_number, Vec<(column_number, CellValue)>)` tuples.
 /// Column numbers are 1-based (A=1, B=2, ...). Only rows that contain at
 /// least one cell are included (sparse).
+///
+/// `style_is_date` is a per-style-index flag (from
+/// [`crate::style::compute_style_is_date`]) that marks which styles carry
+/// a date number format. Pass an empty slice to skip date promotion, or
+/// the workbook's precomputed lookup to have `t="n"` cells with a date
+/// format returned as [`CellValue::Date`].
 #[allow(clippy::type_complexity)]
 pub fn get_rows(
     ws: &WorksheetXml,
     sst: &SharedStringTable,
+    style_is_date: &[bool],
 ) -> Result<Vec<(u32, Vec<(u32, CellValue)>)>> {
     let mut result = Vec::new();
 
@@ -36,7 +43,7 @@ pub fn get_rows(
             } else {
                 cell_name_to_coordinates(cell.r.as_str())?.0
             };
-            let value = resolve_cell_value(cell, sst);
+            let value = resolve_cell_value(cell, sst, style_is_date);
             cells.push((col_num, value));
         }
 
@@ -62,12 +69,19 @@ pub fn resolve_sst_value(sst: &SharedStringTable, index: &str) -> CellValue {
 /// Handles all cell type tags (shared string, boolean, error, inline string,
 /// formula string, number) and SST lookup. This is the core dispatch that both
 /// `resolve_cell_value` and future buffer-pack paths share.
+///
+/// When `promote_number_to_date` is `true`, non-formula numeric cells are
+/// returned as [`CellValue::Date`] rather than [`CellValue::Number`]. The
+/// caller decides whether promotion applies by consulting the cell's style
+/// index against its precomputed date-style lookup; this function stays
+/// style-agnostic.
 pub fn parse_cell_type_value(
     cell_type: CellTypeTag,
     value: Option<&str>,
     formula: Option<&sheetkit_xml::worksheet::CellFormula>,
     inline_str: Option<&sheetkit_xml::worksheet::InlineString>,
     sst: &SharedStringTable,
+    promote_number_to_date: bool,
 ) -> CellValue {
     if let Some(f) = formula {
         let expr = f.value.clone().unwrap_or_default();
@@ -96,7 +110,13 @@ pub fn parse_cell_type_value(
         }
         (CellTypeTag::FormulaString, Some(v)) => CellValue::String(v.to_string()),
         (CellTypeTag::None | CellTypeTag::Number, Some(v)) => match v.parse::<f64>() {
-            Ok(n) => CellValue::Number(n),
+            Ok(n) => {
+                if promote_number_to_date {
+                    CellValue::Date(n)
+                } else {
+                    CellValue::Number(n)
+                }
+            }
             Err(_) => CellValue::Empty,
         },
         _ => CellValue::Empty,
@@ -104,17 +124,29 @@ pub fn parse_cell_type_value(
 }
 
 /// Resolve the value of an XML cell to a [`CellValue`], using the SST for
-/// shared string lookups. Thin wrapper over [`parse_cell_type_value`].
+/// shared string lookups. Thin wrapper over [`parse_cell_type_value`] that
+/// also consults `style_is_date` (indexed by `cell.s`) to decide whether a
+/// numeric cell should be surfaced as a date.
+///
+/// Pass an empty slice to disable date promotion; the returned values will
+/// then be spec-literal (`CellValue::Number` for `t="n"` cells regardless
+/// of number format).
 pub fn resolve_cell_value(
     cell: &sheetkit_xml::worksheet::Cell,
     sst: &SharedStringTable,
+    style_is_date: &[bool],
 ) -> CellValue {
+    let promote_number_to_date = cell
+        .s
+        .and_then(|idx| style_is_date.get(idx as usize).copied())
+        .unwrap_or(false);
     parse_cell_type_value(
         cell.t,
         cell.v.as_deref(),
         cell.f.as_deref(),
         cell.is.as_deref(),
         sst,
+        promote_number_to_date,
     )
 }
 
@@ -800,7 +832,7 @@ mod tests {
     fn test_get_rows_empty_sheet() {
         let ws = WorksheetXml::default();
         let sst = SharedStringTable::new();
-        let rows = get_rows(&ws, &sst).unwrap();
+        let rows = get_rows(&ws, &sst, &[]).unwrap();
         assert!(rows.is_empty());
     }
 
@@ -808,7 +840,7 @@ mod tests {
     fn test_get_rows_returns_numeric_values() {
         let ws = sample_ws();
         let sst = SharedStringTable::new();
-        let rows = get_rows(&ws, &sst).unwrap();
+        let rows = get_rows(&ws, &sst, &[]).unwrap();
 
         assert_eq!(rows.len(), 3);
 
@@ -873,7 +905,7 @@ mod tests {
             }],
         };
 
-        let rows = get_rows(&ws, &sst).unwrap();
+        let rows = get_rows(&ws, &sst, &[]).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].1[0].1, CellValue::String("hello".to_string()));
         assert_eq!(rows[0].1[1].1, CellValue::String("world".to_string()));
@@ -936,7 +968,7 @@ mod tests {
             }],
         };
 
-        let rows = get_rows(&ws, &sst).unwrap();
+        let rows = get_rows(&ws, &sst, &[]).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].1[0].1, CellValue::String("text".to_string()));
         assert_eq!(rows[0].1[1].1, CellValue::Number(42.5));
@@ -1003,7 +1035,7 @@ mod tests {
         };
 
         let sst = SharedStringTable::new();
-        let rows = get_rows(&ws, &sst).unwrap();
+        let rows = get_rows(&ws, &sst, &[]).unwrap();
         // Only rows 1 and 3 should be returned (row 2 has no cells).
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].0, 1);
@@ -1041,7 +1073,7 @@ mod tests {
         };
 
         let sst = SharedStringTable::new();
-        let rows = get_rows(&ws, &sst).unwrap();
+        let rows = get_rows(&ws, &sst, &[]).unwrap();
         assert_eq!(rows.len(), 1);
         match &rows[0].1[0].1 {
             CellValue::Formula { expr, result } => {
@@ -1080,7 +1112,7 @@ mod tests {
         };
 
         let sst = SharedStringTable::new();
-        let rows = get_rows(&ws, &sst).unwrap();
+        let rows = get_rows(&ws, &sst, &[]).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].1[0].1, CellValue::String("inline text".to_string()));
     }

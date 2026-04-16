@@ -227,6 +227,7 @@ Options for controlling how a workbook is opened and parsed. All fields are opti
 | `sheets` | `Option<Vec<String>>` | `string[]?` | all | Only parse sheets whose names are in this list. Unselected sheets exist in the workbook but contain no data. |
 | `max_unzip_size` / `maxUnzipSize` | `Option<u64>` | `number?` | unlimited | Maximum total decompressed size of the ZIP archive in bytes. Prevents zip bombs. |
 | `max_zip_entries` / `maxZipEntries` | `Option<usize>` | `number?` | unlimited | Maximum number of entries in the ZIP archive. Prevents zip bombs. |
+| `date_interpretation` / `dateInterpretation` | `DateInterpretation` | `'cellType' \| 'numFmt'?` | `'numFmt'` | Controls how date-formatted number cells are surfaced while reading. |
 
 #### ReadMode
 
@@ -242,6 +243,33 @@ Options for controlling how a workbook is opened and parsed. All fields are opti
 |-------|-------------|
 | `'deferred'` | Auxiliary parts are loaded on first access. Default. |
 | `'eager'` | All auxiliary parts are parsed during open. |
+
+#### DateInterpretation
+
+OOXML stores dates as `t="n"` number cells with a date number format attached, so the cell type alone never tells you that a value is a date. Choose how the reader should resolve that ambiguity. All read paths (`get_cell_value`, `get_rows` / `get_cols`, and the streaming reader) honor this option identically.
+
+| Value | Description |
+|-------|-------------|
+| `'numFmt'` | Default. Promote `t="n"` cells whose style references a built-in date format (IDs 14-22, 45-47) or a custom format code containing date/time tokens (`y`, `m`, `d`, `h`, `s`) to a date cell. Matches how Microsoft Excel authors files in practice. |
+| `'cellType'` | Spec-literal. Only `t="d"` cells become dates; `t="n"` cells remain numbers regardless of their number format. Opt in when the raw cell type must be the source of truth. |
+
+```rust
+use sheetkit::{DateInterpretation, OpenOptions, Workbook};
+
+// Opt into spec-literal interpretation (default is NumFmt).
+let opts = OpenOptions::new().date_interpretation(DateInterpretation::CellType);
+let wb = Workbook::open_with_options("strict.xlsx", &opts)?;
+```
+
+```typescript
+// Default behavior already promotes Excel-authored date cells.
+const wb = await Workbook.open("excel_report.xlsx");
+
+// Or opt into spec-literal interpretation.
+const strict = await Workbook.open("strict.xlsx", {
+  dateInterpretation: "cellType",
+});
+```
 
 ### `Workbook::open_with_options(path, options)` / `Workbook.open(path, options?)`
 

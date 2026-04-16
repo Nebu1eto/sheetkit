@@ -22,13 +22,15 @@ use crate::utils::constants::{MAX_COLUMNS, MAX_COLUMN_WIDTH};
 ///
 /// Returns a Vec of `(column_name, Vec<(row_number, CellValue)>)` tuples.
 /// Only columns that have data are included (sparse). The columns are sorted
-/// by column order (A, B, ..., Z, AA, AB, ...).
+/// by column order (A, B, ..., Z, AA, AB, ...). `style_is_date` has the
+/// same meaning as in [`crate::row::get_rows`].
 #[allow(clippy::type_complexity)]
 pub fn get_cols(
     ws: &WorksheetXml,
     sst: &SharedStringTable,
+    style_is_date: &[bool],
 ) -> Result<Vec<(String, Vec<(u32, CellValue)>)>> {
-    let rows = get_rows(ws, sst)?;
+    let rows = get_rows(ws, sst, style_is_date)?;
 
     // Transpose row-based data into column-based data using a BTreeMap
     // keyed by column number so columns are naturally sorted.
@@ -732,7 +734,7 @@ mod tests {
     fn test_get_cols_empty_sheet() {
         let ws = WorksheetXml::default();
         let sst = SharedStringTable::new();
-        let cols = get_cols(&ws, &sst).unwrap();
+        let cols = get_cols(&ws, &sst, &[]).unwrap();
         assert!(cols.is_empty());
     }
 
@@ -740,7 +742,7 @@ mod tests {
     fn test_get_cols_transposes_row_data() {
         let ws = sample_ws();
         let sst = SharedStringTable::new();
-        let cols = get_cols(&ws, &sst).unwrap();
+        let cols = get_cols(&ws, &sst, &[]).unwrap();
 
         // sample_ws has:
         //   Row 1: A1=10, B1=20, D1=40
@@ -844,7 +846,7 @@ mod tests {
             ],
         };
 
-        let cols = get_cols(&ws, &sst).unwrap();
+        let cols = get_cols(&ws, &sst, &[]).unwrap();
         assert_eq!(cols.len(), 2);
 
         // Column A: "Name", "Alice"
@@ -906,7 +908,7 @@ mod tests {
         };
 
         let sst = SharedStringTable::new();
-        let cols = get_cols(&ws, &sst).unwrap();
+        let cols = get_cols(&ws, &sst, &[]).unwrap();
 
         assert_eq!(cols.len(), 3);
         assert_eq!(cols[0].0, "A");

@@ -26,6 +26,32 @@ pub enum AuxParts {
     EagerLoad,
 }
 
+/// Controls how number cells carrying a date-like number format are
+/// returned.
+///
+/// OOXML distinguishes between a cell's value type (`t="n"`, `t="d"`, ...)
+/// and the number format applied to it. Microsoft Excel itself almost
+/// never emits `t="d"`; dates are instead stored as `t="n"` with a date
+/// number format attached. Depending on the caller's needs, sheetkit can
+/// either honor the `t` attribute literally or promote such number cells
+/// to [`CellValue::Date`](crate::cell::CellValue::Date).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DateInterpretation {
+    /// Follow the cell's `t` attribute strictly. A `t="n"` cell is
+    /// returned as `CellValue::Number` even when its number format is a
+    /// date format; only `t="d"` cells become `CellValue::Date`. Matches
+    /// the OOXML spec literally. Opt in when you want to treat the raw
+    /// cell type as the source of truth.
+    CellType,
+    /// Promote `t="n"` (or untyped) cells whose style references a
+    /// built-in date number format (IDs 14-22, 45-47) or a custom format
+    /// code containing date/time tokens (y, m, d, h, s) to
+    /// `CellValue::Date`. This is the default, and matches how Microsoft
+    /// Excel stores dates in practice.
+    #[default]
+    NumFmt,
+}
+
 /// Options for controlling how a workbook is opened and parsed.
 ///
 /// All fields default to `None` (no limit). Read mode defaults to `Lazy`
@@ -59,6 +85,12 @@ pub struct OpenOptions {
 
     /// Controls when auxiliary parts are parsed.
     pub aux_parts: AuxParts,
+
+    /// Controls how date-formatted number cells are returned. Defaults to
+    /// [`DateInterpretation::NumFmt`], which matches how Excel authors
+    /// files in practice. Use [`DateInterpretation::CellType`] when you
+    /// want spec-literal behavior.
+    pub date_interpretation: DateInterpretation,
 }
 
 impl OpenOptions {
@@ -101,6 +133,15 @@ impl OpenOptions {
     /// Set the auxiliary parts parsing policy.
     pub fn aux_parts(mut self, policy: AuxParts) -> Self {
         self.aux_parts = policy;
+        self
+    }
+
+    /// Set the date interpretation policy. When set to
+    /// [`DateInterpretation::NumFmt`], number cells that carry a date
+    /// number format are returned as `CellValue::Date` instead of
+    /// `CellValue::Number`.
+    pub fn date_interpretation(mut self, interpretation: DateInterpretation) -> Self {
+        self.date_interpretation = interpretation;
         self
     }
 
@@ -153,6 +194,21 @@ mod tests {
         assert!(opts.max_zip_entries.is_none());
         assert_eq!(opts.read_mode, ReadMode::Lazy);
         assert!(opts.skip_aux_parts());
+        assert_eq!(opts.date_interpretation, DateInterpretation::NumFmt);
+    }
+
+    #[test]
+    fn test_date_interpretation_default_is_num_fmt() {
+        assert_eq!(DateInterpretation::default(), DateInterpretation::NumFmt);
+    }
+
+    #[test]
+    fn test_date_interpretation_builder() {
+        let opts = OpenOptions::new().date_interpretation(DateInterpretation::CellType);
+        assert_eq!(opts.date_interpretation, DateInterpretation::CellType);
+
+        let opts = opts.date_interpretation(DateInterpretation::NumFmt);
+        assert_eq!(opts.date_interpretation, DateInterpretation::NumFmt);
     }
 
     #[test]

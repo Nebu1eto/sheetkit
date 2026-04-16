@@ -366,7 +366,8 @@ impl Workbook {
     #[allow(clippy::type_complexity)]
     pub fn get_rows(&self, sheet: &str) -> Result<Vec<(u32, Vec<(u32, CellValue)>)>> {
         let ws = self.worksheet_ref(sheet)?;
-        crate::row::get_rows(ws, &self.sst_runtime)
+        let style_is_date = self.computed_style_is_date();
+        crate::row::get_rows(ws, &self.sst_runtime, &style_is_date)
     }
 
     /// Get all columns with their data from a sheet.
@@ -376,7 +377,8 @@ impl Workbook {
     #[allow(clippy::type_complexity)]
     pub fn get_cols(&self, sheet: &str) -> Result<Vec<(String, Vec<(u32, CellValue)>)>> {
         let ws = self.worksheet_ref(sheet)?;
-        crate::col::get_cols(ws, &self.sst_runtime)
+        let style_is_date = self.computed_style_is_date();
+        crate::col::get_cols(ws, &self.sst_runtime, &style_is_date)
     }
 
     /// Set the width of a column.
