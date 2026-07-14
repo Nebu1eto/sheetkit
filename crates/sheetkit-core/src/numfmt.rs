@@ -67,16 +67,10 @@ pub fn format_number(value: f64, format_code: &str) -> String {
 
     let (cleaned, _color) = strip_color_and_condition(section);
 
-    // When multiple sections handle sign presentation, use absolute value:
-    // - Standard sign-based sections (>= 2 sections): the negative section
-    //   format includes its own sign (parentheses, literal minus, etc.)
-    // - Conditional sections: the format encodes its own sign presentation,
-    //   so always pass absolute value to avoid double signs
-    let use_abs = if has_any_condition {
-        sections.len() >= 2
-    } else {
-        sections.len() >= 2 && value < 0.0
-    };
+    // Standard negative sections format the magnitude. Conditional sections
+    // still receive the signed value; their selected pattern may or may not
+    // supply the sign presentation.
+    let use_abs = !has_any_condition && sections.len() >= 2 && value < 0.0;
     let effective_value = if use_abs { value.abs() } else { value };
 
     if cleaned == "@" {
@@ -426,13 +420,15 @@ fn is_date_time_format(format: &str) -> bool {
 fn format_date_time(value: f64, format: &str) -> String {
     let int_part = value.floor() as i64;
     let frac = value.fract().abs();
-    let total_seconds = (frac * 86_400.0).round() as u64;
+    let rounded_seconds = (frac * 86_400.0).round() as u64;
+    let day_carry = rounded_seconds / 86_400;
+    let total_seconds = rounded_seconds % 86_400;
     let mut hours = (total_seconds / 3600) as u32;
     let minutes = ((total_seconds % 3600) / 60) as u32;
     let seconds = (total_seconds % 60) as u32;
     let subsec_frac = (frac * 86_400.0) - (total_seconds as f64);
 
-    let date_opt = serial_to_date(value);
+    let date_opt = serial_to_date(int_part as f64 + day_carry as f64);
     let (year, month, day) = if let Some(date) = date_opt {
         (date.year() as u32, date.month(), date.day())
     } else {
@@ -512,6 +508,17 @@ fn format_date_time(value: f64, format: &str) -> String {
         if ch == '*' && i + 1 < len {
             i += 2;
             continue;
+        }
+
+        // Elapsed time brackets [h], [mm], and [ss] represent the complete
+        // signed duration rather than a clock component.
+        if ch == '[' {
+            if let Some((unit_seconds, end)) = elapsed_bracket_token(&chars, i) {
+                let elapsed_seconds = (value * 86_400.0).round() as i64;
+                result.push_str(&(elapsed_seconds / unit_seconds).to_string());
+                i = end;
+                continue;
+            }
         }
 
         let lower = ch.to_ascii_lowercase();
@@ -594,25 +601,6 @@ fn format_date_time(value: f64, format: &str) -> String {
 
         if lower == 'h' {
             let count = count_char(&chars, i, 'h');
-            // Check for elapsed hours [h]
-            if i > 0 && chars[i - 1] == '[' {
-                // Elapsed hours: total hours from the serial number
-                let serial_days = value.floor() as i64;
-                let elapsed_h = serial_days
-                    .saturating_mul(24)
-                    .saturating_add((total_seconds / 3600) as i64);
-                // Find the closing bracket after the 'h' tokens
-                let mut end = i + count;
-                if end < len && chars[end] == ']' {
-                    end += 1; // skip the ']'
-                }
-                if elapsed_h < 0 {
-                    result.push('-');
-                }
-                result.push_str(&elapsed_h.unsigned_abs().to_string());
-                i = end;
-                continue;
-            }
             if count == 1 {
                 result.push_str(&format!("{}", hours));
             } else {
@@ -660,40 +648,6 @@ fn format_date_time(value: f64, format: &str) -> String {
             continue;
         }
 
-        // Elapsed time brackets [h], [mm], [ss]
-        if ch == '[' {
-            // Look ahead to see if this is [h], [hh], [mm], [ss]
-            if i + 2 < len && chars[i + 1].eq_ignore_ascii_case(&'h') {
-                // Let the 'h' handler deal with it -- pass the '['
-                result.push(ch);
-                i += 1;
-                continue;
-            }
-            if i + 2 < len && chars[i + 1].eq_ignore_ascii_case(&'m') {
-                let count = count_char(&chars, i + 1, 'm');
-                let end = i + 1 + count;
-                if end < len && chars[end] == ']' {
-                    let elapsed_m = (int_part as u64) * 24 * 60 + total_seconds / 60;
-                    result.push_str(&format!("{}", elapsed_m));
-                    i = end + 1;
-                    continue;
-                }
-            }
-            if i + 2 < len && chars[i + 1].eq_ignore_ascii_case(&'s') {
-                let count = count_char(&chars, i + 1, 's');
-                let end = i + 1 + count;
-                if end < len && chars[end] == ']' {
-                    let elapsed_s = (int_part as u64) * 24 * 3600 + total_seconds;
-                    result.push_str(&format!("{}", elapsed_s));
-                    i = end + 1;
-                    continue;
-                }
-            }
-            result.push(ch);
-            i += 1;
-            continue;
-        }
-
         if ch == '.' && i + 1 < len && chars[i + 1] == '0' {
             // Fractional seconds
             result.push('.');
@@ -714,6 +668,19 @@ fn format_date_time(value: f64, format: &str) -> String {
     }
 
     result
+}
+
+fn elapsed_bracket_token(chars: &[char], start: usize) -> Option<(i64, usize)> {
+    let token = chars.get(start + 1)?.to_ascii_lowercase();
+    let unit_seconds = match token {
+        'h' => 3_600,
+        'm' => 60,
+        's' => 1,
+        _ => return None,
+    };
+    let count = count_char(chars, start + 1, token);
+    let end = start + 1 + count;
+    (chars.get(end) == Some(&']')).then_some((unit_seconds, end + 1))
 }
 
 /// Determine whether an 'm' token at position `pos` in the format chars
@@ -776,6 +743,7 @@ fn format_numeric(value: f64, format: &str) -> String {
 
     // Count decimal places from the format
     let decimal_places = count_decimal_places(format);
+    let required_decimal_places = count_required_decimal_places(format);
 
     // Check for thousands separator (comma grouping)
     let has_comma_grouping = has_thousands_separator(format);
@@ -827,6 +795,7 @@ fn format_numeric(value: f64, format: &str) -> String {
     let mut i = 0;
     let mut in_quotes = false;
     let mut number_placed = false;
+    let emit_minus = is_negative && !has_explicit_negative_presentation(format);
 
     while i < len {
         let ch = chars[i];
@@ -860,14 +829,14 @@ fn format_numeric(value: f64, format: &str) -> String {
             // Find the end of the numeric pattern
             let num_end = find_numeric_end(&chars, i);
             // Place the formatted number
-            let num_str = if decimal_places > 0 {
-                let frac_str = format!("{:0>width$}", frac_part, width = decimal_places);
-                format!("{}.{}", padded_int, frac_str)
-            } else {
-                padded_int.clone()
-            };
+            let num_str = format_decimal_number(
+                &padded_int,
+                frac_part,
+                decimal_places,
+                required_decimal_places,
+            );
 
-            if is_negative {
+            if emit_minus {
                 output.push('-');
             }
             output.push_str(&num_str);
@@ -908,19 +877,59 @@ fn format_numeric(value: f64, format: &str) -> String {
     if !number_placed {
         let has_digit_placeholder = format.chars().any(|c| c == '0' || c == '#');
         if has_digit_placeholder {
-            if is_negative {
+            if emit_minus {
                 output.push('-');
             }
-            if decimal_places > 0 {
-                let frac_str = format!("{:0>width$}", frac_part, width = decimal_places);
-                output.push_str(&format!("{}.{}", padded_int, frac_str));
-            } else {
-                output.push_str(&padded_int);
-            }
+            output.push_str(&format_decimal_number(
+                &padded_int,
+                frac_part,
+                decimal_places,
+                required_decimal_places,
+            ));
         }
     }
 
     output
+}
+
+fn format_decimal_number(
+    integer: &str,
+    fraction: u64,
+    decimal_places: usize,
+    required_decimal_places: usize,
+) -> String {
+    if decimal_places == 0 {
+        return integer.to_string();
+    }
+
+    let mut fraction = format!("{fraction:0>decimal_places$}");
+    while fraction.len() > required_decimal_places && fraction.ends_with('0') {
+        fraction.pop();
+    }
+    if fraction.is_empty() {
+        integer.to_string()
+    } else {
+        format!("{integer}.{fraction}")
+    }
+}
+
+fn has_explicit_negative_presentation(format: &str) -> bool {
+    let mut in_quotes = false;
+    let mut escaped = false;
+    for ch in format.chars() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+        } else if ch == '"' {
+            in_quotes = !in_quotes;
+        } else if !in_quotes && matches!(ch, '-' | '(') {
+            return true;
+        }
+    }
+    false
 }
 
 fn format_has_unquoted_char(format: &str, target: char) -> bool {
@@ -975,6 +984,39 @@ fn count_decimal_places(format: &str) -> usize {
         if found_dot && (ch == '0' || ch == '#') {
             count += 1;
         } else if found_dot && ch != '0' && ch != '#' {
+            break;
+        }
+    }
+    count
+}
+
+fn count_required_decimal_places(format: &str) -> usize {
+    let mut in_quotes = false;
+    let mut escaped = false;
+    let mut found_dot = false;
+    let mut count = 0;
+
+    for ch in format.chars() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' {
+            escaped = true;
+            continue;
+        }
+        if ch == '"' {
+            in_quotes = !in_quotes;
+            continue;
+        }
+        if in_quotes {
+            continue;
+        }
+        if ch == '.' && !found_dot {
+            found_dot = true;
+        } else if found_dot && ch == '0' {
+            count += 1;
+        } else if found_dot && ch != '#' {
             break;
         }
     }
@@ -1136,20 +1178,37 @@ fn find_numeric_end(chars: &[char], start: usize) -> usize {
 
 fn format_scientific(value: f64, format: &str) -> String {
     let decimal_places = count_decimal_places(format);
-    let formatted = format!("{:.*E}", decimal_places, value.abs());
-
-    // Split into mantissa and exponent
-    let parts: Vec<&str> = formatted.split('E').collect();
-    if parts.len() != 2 {
-        return formatted;
+    let integer_placeholders = scientific_integer_placeholders(format);
+    let engineering = integer_placeholders > 1;
+    let abs = value.abs();
+    let mut exp = if abs == 0.0 {
+        0
+    } else {
+        abs.log10().floor() as i32
+    };
+    if engineering {
+        exp = exp.div_euclid(3) * 3;
     }
-
-    let mantissa = parts[0];
-    let exp_str = parts[1];
-    let exp: i32 = exp_str.parse().unwrap_or(0);
+    let mut mantissa = if abs == 0.0 {
+        0.0
+    } else {
+        abs / 10f64.powi(exp)
+    };
+    let limit = if engineering {
+        10f64.powi(integer_placeholders as i32)
+    } else {
+        10.0
+    };
+    let factor = 10f64.powi(decimal_places as i32);
+    mantissa = (mantissa * factor).round() / factor;
+    if mantissa >= limit {
+        mantissa /= if engineering { 1_000.0 } else { 10.0 };
+        exp += if engineering { 3 } else { 1 };
+    }
+    let mantissa = format!("{:.*}", decimal_places, mantissa);
 
     // Count the '0' digits after E+/E- in the format to determine exponent width
-    let exp_width = count_exponent_zeros(format).max(2);
+    let exp_width = count_exponent_zeros(format).max(1);
 
     // Determine sign character for exponent
     let has_plus = format.contains("E+") || format.contains("e+");
@@ -1178,6 +1237,20 @@ fn format_scientific(value: f64, format: &str) -> String {
     format!("{}{}{}{}", sign, mantissa, e_char, exp_display)
 }
 
+fn scientific_integer_placeholders(format: &str) -> usize {
+    let e_pos = format
+        .char_indices()
+        .find_map(|(i, ch)| matches!(ch, 'E' | 'e').then_some(i))
+        .unwrap_or(format.len());
+    format[..e_pos]
+        .split_once('.')
+        .map_or(&format[..e_pos], |(integer, _)| integer)
+        .chars()
+        .filter(|ch| matches!(ch, '0' | '#'))
+        .count()
+        .max(1)
+}
+
 fn count_exponent_zeros(format: &str) -> usize {
     let upper = format.to_uppercase();
     if let Some(pos) = upper.find("E+").or_else(|| upper.find("E-")) {
@@ -1190,26 +1263,10 @@ fn count_exponent_zeros(format: &str) -> usize {
 
 fn format_fraction(value: f64, format: &str) -> String {
     let abs = value.abs();
-    let whole = abs.floor() as i64;
+    let mut whole = abs.floor() as i64;
     let frac = abs - whole as f64;
 
     let sign = if value < 0.0 { "-" } else { "" };
-
-    // Determine the maximum denominator from the denominator width (digits after '/')
-    let denom_q_count = format
-        .split('/')
-        .nth(1)
-        .map(|s| s.chars().filter(|&c| c == '?').count())
-        .unwrap_or(1);
-    let max_denom = if denom_q_count >= 4 {
-        9999
-    } else if denom_q_count >= 3 {
-        999
-    } else if denom_q_count >= 2 {
-        99
-    } else {
-        9
-    };
 
     if frac < 1e-10 {
         if format.contains('#') {
@@ -1218,10 +1275,33 @@ fn format_fraction(value: f64, format: &str) -> String {
         return format!("{}{}    ", sign, whole);
     }
 
-    // Find the best rational approximation
-    let (num, den) = best_fraction(frac, max_denom);
+    let (mut num, den) = if let Some(den) = fixed_fraction_denominator(format) {
+        ((frac * den as f64).round() as u64, den)
+    } else {
+        let denom_q_count = format
+            .split('/')
+            .nth(1)
+            .map(|s| s.chars().filter(|&c| c == '?').count())
+            .unwrap_or(1);
+        let max_denom = match denom_q_count {
+            0 | 1 => 9,
+            2 => 99,
+            3 => 999,
+            _ => 9999,
+        };
+        best_fraction(frac, max_denom)
+    };
+
+    if num == den {
+        whole += 1;
+        num = 0;
+    }
 
     let has_whole = format.contains('#');
+
+    if num == 0 {
+        return format!("{}{}", sign, whole);
+    }
 
     if has_whole {
         if whole > 0 {
@@ -1233,6 +1313,15 @@ fn format_fraction(value: f64, format: &str) -> String {
         let total_num = whole as u64 * den + num;
         format!("{}{}/{}", sign, total_num, den)
     }
+}
+
+fn fixed_fraction_denominator(format: &str) -> Option<u64> {
+    let denominator = format.split_once('/')?.1;
+    let digits: String = denominator
+        .chars()
+        .take_while(|ch| ch.is_ascii_digit())
+        .collect();
+    (!digits.is_empty()).then(|| digits.parse().ok()).flatten()
 }
 
 fn best_fraction(value: f64, max_denom: u64) -> (u64, u64) {
@@ -1346,7 +1435,15 @@ mod tests {
 
     #[test]
     fn test_format_negative_elapsed_hours() {
-        assert_eq!(format_number(-1.5, "[h]:mm"), "[-36:00");
+        assert_eq!(format_number(-1.5, "[h]:mm"), "-36:00");
+    }
+
+    #[test]
+    fn test_format_elapsed_bracket_tokens() {
+        assert_eq!(format_number(1.5, "[h]"), "36");
+        assert_eq!(format_number(1.5, "[mm]"), "2160");
+        assert_eq!(format_number(1.5, "[ss]"), "129600");
+        assert_eq!(format_number(-1.5, "[mm]"), "-2160");
     }
 
     #[test]
@@ -1386,6 +1483,13 @@ mod tests {
     fn test_format_scientific_small() {
         let result = format_number(0.001, "0.00E+00");
         assert_eq!(result, "1.00E-03");
+    }
+
+    #[test]
+    fn test_format_engineering_notation_and_exponent_width() {
+        assert_eq!(format_number(12_345.0, "##0.0E+0"), "12.3E+3");
+        assert_eq!(format_number(0.0123, "##0.0E+0"), "12.3E-3");
+        assert_eq!(format_number(12_345.0, "0.0E+000"), "1.2E+004");
     }
 
     #[test]
@@ -1448,6 +1552,17 @@ mod tests {
                 .unwrap(),
         );
         assert_eq!(format_number(serial, "h:mm:ss"), "14:30:45");
+    }
+
+    #[test]
+    fn test_format_time_rounding_carries_to_next_day() {
+        let serial =
+            crate::cell::date_to_serial(chrono::NaiveDate::from_ymd_opt(2024, 1, 1).unwrap())
+                + (86_399.5 / 86_400.0);
+        assert_eq!(
+            format_number(serial, "m/d/yyyy h:mm:ss"),
+            "1/2/2024 0:00:00"
+        );
     }
 
     #[test]
@@ -1535,6 +1650,19 @@ mod tests {
         let result = format_number(0.333, "# ??/??");
         // Should approximate to something close to 1/3
         assert!(result.contains("/"), "result was: {}", result);
+    }
+
+    #[test]
+    fn test_format_fraction_fixed_denominator() {
+        assert_eq!(format_number(1.25, "# ?/8"), "1 2/8");
+        assert_eq!(format_number(0.125, "?/16"), "2/16");
+    }
+
+    #[test]
+    fn test_format_optional_fractional_digits() {
+        assert_eq!(format_number(1.2, "0.##"), "1.2");
+        assert_eq!(format_number(1.0, "0.##"), "1");
+        assert_eq!(format_number(1.2, "0.0#"), "1.2");
     }
 
     #[test]
@@ -1743,6 +1871,13 @@ mod tests {
         assert_eq!(format_number(5.0, fmt), "+5");
         assert_eq!(format_number(-3.0, fmt), "-3");
         assert_eq!(format_number(0.0, fmt), "0");
+    }
+
+    #[test]
+    fn test_conditional_section_preserves_or_formats_negative_sign_once() {
+        assert_eq!(format_number(-3.0, "[<0]0;0"), "-3");
+        assert_eq!(format_number(-3.0, "[<0]-0;0"), "-3");
+        assert_eq!(format_number(-3.0, "[<0](0);0"), "(3)");
     }
 
     #[test]

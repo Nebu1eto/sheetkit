@@ -752,10 +752,13 @@ fn xml_font_to_style(font: &Font) -> FontStyle {
     FontStyle {
         name: font.name.as_ref().map(|n| n.val.clone()),
         size: font.sz.as_ref().map(|s| s.val),
-        bold: font.b.is_some(),
-        italic: font.i.is_some(),
+        bold: font.b.as_ref().is_some_and(|b| b.val.unwrap_or(true)),
+        italic: font.i.as_ref().is_some_and(|i| i.val.unwrap_or(true)),
         underline: font.u.is_some(),
-        strikethrough: font.strike.is_some(),
+        strikethrough: font
+            .strike
+            .as_ref()
+            .is_some_and(|strike| strike.val.unwrap_or(true)),
         color: font.color.as_ref().and_then(xml_color_to_style),
     }
 }
@@ -1328,6 +1331,50 @@ mod tests {
         // Font list should have grown.
         assert_eq!(ss.fonts.fonts.len(), 2);
         assert!(ss.fonts.fonts[1].b.is_some());
+    }
+
+    #[test]
+    fn test_xml_font_boolean_values_respect_explicit_false() {
+        use sheetkit_xml::styles::BoolVal;
+
+        let font = Font {
+            b: Some(BoolVal { val: Some(false) }),
+            i: Some(BoolVal { val: Some(false) }),
+            strike: Some(BoolVal { val: Some(false) }),
+            u: None,
+            sz: None,
+            color: None,
+            name: None,
+            family: None,
+            scheme: None,
+        };
+
+        let style = xml_font_to_style(&font);
+        assert!(!style.bold);
+        assert!(!style.italic);
+        assert!(!style.strikethrough);
+    }
+
+    #[test]
+    fn test_xml_font_boolean_values_default_to_true_when_val_is_absent() {
+        use sheetkit_xml::styles::BoolVal;
+
+        let font = Font {
+            b: Some(BoolVal { val: None }),
+            i: Some(BoolVal { val: None }),
+            strike: Some(BoolVal { val: None }),
+            u: None,
+            sz: None,
+            color: None,
+            name: None,
+            family: None,
+            scheme: None,
+        };
+
+        let style = xml_font_to_style(&font);
+        assert!(style.bold);
+        assert!(style.italic);
+        assert!(style.strikethrough);
     }
 
     #[test]

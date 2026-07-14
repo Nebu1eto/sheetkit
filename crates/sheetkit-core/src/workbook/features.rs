@@ -1028,7 +1028,13 @@ impl Workbook {
     /// visual features to include.
     pub fn render_to_svg(&self, options: &crate::render::RenderOptions) -> Result<String> {
         let ws = self.worksheet_ref(&options.sheet_name)?;
-        crate::render::render_to_svg(ws, &self.sst_runtime, &self.stylesheet, options)
+        crate::render::render_to_svg_with_theme(
+            ws,
+            &self.sst_runtime,
+            &self.stylesheet,
+            &self.theme_colors,
+            options,
+        )
     }
 }
 

@@ -762,6 +762,25 @@ mod tests {
     }
 
     #[test]
+    fn test_font_boolean_values_parse_ooxml_lexical_forms() {
+        let font: Font = quick_xml::de::from_str(
+            r#"<font><b val="0"/><i val="1"/><strike val="false"/></font>"#,
+        )
+        .unwrap();
+
+        assert_eq!(font.b.unwrap().val, Some(false));
+        assert_eq!(font.i.unwrap().val, Some(true));
+        assert_eq!(font.strike.unwrap().val, Some(false));
+    }
+
+    #[test]
+    fn test_font_boolean_value_without_val_remains_unspecified() {
+        let font: Font = quick_xml::de::from_str(r#"<font><b/></font>"#).unwrap();
+
+        assert_eq!(font.b.unwrap().val, None);
+    }
+
+    #[test]
     fn test_color_rgb() {
         let color = Color {
             auto: None,

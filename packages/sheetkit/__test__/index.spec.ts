@@ -2181,8 +2181,8 @@ describe('Sparklines', () => {
 describe('Theme Colors', () => {
   it('should return default theme colors by index', () => {
     const wb = new Workbook();
-    expect(wb.getThemeColor(0, null)).toBe('FF000000');
-    expect(wb.getThemeColor(1, null)).toBe('FFFFFFFF');
+    expect(wb.getThemeColor(0, null)).toBe('FFFFFFFF');
+    expect(wb.getThemeColor(1, null)).toBe('FF000000');
     expect(wb.getThemeColor(4, null)).toBe('FF4472C4');
     expect(wb.getThemeColor(11, null)).toBe('FF954F72');
   });
@@ -2194,10 +2194,7 @@ describe('Theme Colors', () => {
 
   it('should apply tint to theme colors', () => {
     const wb = new Workbook();
-    const lightened = wb.getThemeColor(0, 0.5);
-    expect(lightened).toBeTruthy();
-    expect(lightened).toMatch(/^FF/);
-    expect(lightened).not.toBe('FF000000');
+    expect(wb.getThemeColor(1, 0.5)).toBe('FF808080');
   });
 
   it('should return base color with zero tint', () => {

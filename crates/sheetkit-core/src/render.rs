@@ -13,8 +13,10 @@ use crate::style::{
     get_style, AlignmentStyle, BorderLineStyle, FontStyle, HorizontalAlign, PatternType,
     StyleColor, VerticalAlign,
 };
+use crate::theme::{default_theme_colors, resolve_theme_color};
 use crate::utils::cell_ref::{cell_name_to_coordinates, column_number_to_name};
 use sheetkit_xml::styles::StyleSheet;
+use sheetkit_xml::theme::ThemeColors;
 use sheetkit_xml::worksheet::WorksheetXml;
 
 /// Default column width in pixels (approximately 8.43 characters at 7px each).
@@ -97,6 +99,17 @@ pub fn render_to_svg(
     stylesheet: &StyleSheet,
     options: &RenderOptions,
 ) -> Result<String> {
+    render_to_svg_with_theme(ws, sst, stylesheet, &default_theme_colors(), options)
+}
+
+/// Render a worksheet to SVG using the supplied theme colors.
+pub(crate) fn render_to_svg_with_theme(
+    ws: &WorksheetXml,
+    sst: &SharedStringTable,
+    stylesheet: &StyleSheet,
+    theme: &ThemeColors,
+    options: &RenderOptions,
+) -> Result<String> {
     if options.scale <= 0.0 {
         return Err(Error::InvalidArgument(format!(
             "render scale must be positive, got {}",
@@ -164,7 +177,7 @@ pub fn render_to_svg(
     );
 
     // Render cell fills
-    render_cell_fills(&mut svg, ws, sst, stylesheet, &layouts, min_col, min_row);
+    render_cell_fills(&mut svg, ws, stylesheet, theme, &layouts);
 
     // Render gridlines
     if options.show_gridlines {
@@ -180,11 +193,11 @@ pub fn render_to_svg(
     }
 
     // Render cell borders
-    render_cell_borders(&mut svg, ws, stylesheet, &layouts, min_col, min_row);
+    render_cell_borders(&mut svg, ws, stylesheet, theme, &layouts, min_col, min_row);
 
     // Render cell text
     render_cell_text(
-        &mut svg, ws, sst, stylesheet, &layouts, min_col, min_row, options,
+        &mut svg, ws, sst, stylesheet, theme, &layouts, min_col, min_row, options,
     );
 
     svg.push_str("</svg>");
@@ -346,11 +359,9 @@ fn render_row_headers(
 fn render_cell_fills(
     svg: &mut String,
     ws: &WorksheetXml,
-    _sst: &SharedStringTable,
     stylesheet: &StyleSheet,
+    theme: &ThemeColors,
     layouts: &[CellLayout],
-    _min_col: u32,
-    _min_row: u32,
 ) {
     for layout in layouts {
         let style_id = find_cell_style(ws, layout.col, layout.row);
@@ -361,7 +372,7 @@ fn render_cell_fills(
             if let Some(ref fill) = style.fill {
                 if fill.pattern == PatternType::Solid {
                     if let Some(ref color) = fill.fg_color {
-                        let hex = style_color_to_hex(color);
+                        let hex = style_color_to_hex(color, theme);
                         svg.push_str(&format!(
                             r#"<rect x="{}" y="{}" width="{}" height="{}" fill="{}"/>"#,
                             layout.x, layout.y, layout.width, layout.height, hex
@@ -407,6 +418,7 @@ fn render_cell_borders(
     svg: &mut String,
     ws: &WorksheetXml,
     stylesheet: &StyleSheet,
+    theme: &ThemeColors,
     layouts: &[CellLayout],
     _min_col: u32,
     _min_row: u32,
@@ -431,25 +443,25 @@ fn render_cell_borders(
         let y2 = layout.y + layout.height;
 
         if let Some(ref left) = border.left {
-            let (sw, color) = border_line_attrs(left.style, left.color.as_ref());
+            let (sw, color) = border_line_attrs(left.style, left.color.as_ref(), theme);
             svg.push_str(&format!(
                 r#"<line x1="{x1}" y1="{y1}" x2="{x1}" y2="{y2}" stroke="{color}" stroke-width="{sw}"/>"#,
             ));
         }
         if let Some(ref right) = border.right {
-            let (sw, color) = border_line_attrs(right.style, right.color.as_ref());
+            let (sw, color) = border_line_attrs(right.style, right.color.as_ref(), theme);
             svg.push_str(&format!(
                 r#"<line x1="{x2}" y1="{y1}" x2="{x2}" y2="{y2}" stroke="{color}" stroke-width="{sw}"/>"#,
             ));
         }
         if let Some(ref top) = border.top {
-            let (sw, color) = border_line_attrs(top.style, top.color.as_ref());
+            let (sw, color) = border_line_attrs(top.style, top.color.as_ref(), theme);
             svg.push_str(&format!(
                 r#"<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y1}" stroke="{color}" stroke-width="{sw}"/>"#,
             ));
         }
         if let Some(ref bottom) = border.bottom {
-            let (sw, color) = border_line_attrs(bottom.style, bottom.color.as_ref());
+            let (sw, color) = border_line_attrs(bottom.style, bottom.color.as_ref(), theme);
             svg.push_str(&format!(
                 r#"<line x1="{x1}" y1="{y2}" x2="{x2}" y2="{y2}" stroke="{color}" stroke-width="{sw}"/>"#,
             ));
@@ -464,6 +476,7 @@ fn render_cell_text(
     ws: &WorksheetXml,
     sst: &SharedStringTable,
     stylesheet: &StyleSheet,
+    theme: &ThemeColors,
     layouts: &[CellLayout],
     _min_col: u32,
     _min_row: u32,
@@ -509,7 +522,7 @@ fn render_cell_text(
                 attrs.push_str(&format!(r#" font-size="{size}""#));
             }
             if let Some(ref color) = f.color {
-                let hex = style_color_to_hex(color);
+                let hex = style_color_to_hex(color, theme);
                 attrs.push_str(&format!(r#" fill="{hex}""#));
             }
             let mut decorations = Vec::new();
@@ -559,17 +572,36 @@ fn compute_text_y(
 
 /// Find the style ID for a cell at the given coordinates.
 fn find_cell_style(ws: &WorksheetXml, col: u32, row: u32) -> u32 {
-    ws.sheet_data
+    let row_data = ws
+        .sheet_data
         .rows
         .binary_search_by_key(&row, |r| r.r)
         .ok()
-        .and_then(|idx| {
-            let row_data = &ws.sheet_data.rows[idx];
-            row_data
-                .cells
-                .binary_search_by_key(&col, |c| c.col)
-                .ok()
-                .and_then(|ci| row_data.cells[ci].s)
+        .map(|idx| &ws.sheet_data.rows[idx]);
+
+    if let Some(row_data) = row_data {
+        if let Some(cell) = row_data
+            .cells
+            .binary_search_by_key(&col, |c| c.col)
+            .ok()
+            .map(|idx| &row_data.cells[idx])
+        {
+            if let Some(style) = cell.s {
+                return style;
+            }
+        }
+        if let Some(style) = row_data.s {
+            return style;
+        }
+    }
+
+    ws.cols
+        .as_ref()
+        .and_then(|cols| {
+            cols.cols
+                .iter()
+                .find(|column| column.min <= col && col <= column.max)
+                .and_then(|column| column.style)
         })
         .unwrap_or(0)
 }
@@ -598,7 +630,7 @@ fn find_cell_value(ws: &WorksheetXml, sst: &SharedStringTable, col: u32, row: u3
 /// Handles several input formats: 8-char ARGB (`FF000000`), 6-char RGB
 /// (`000000`), and values already prefixed with `#`. Always returns a
 /// `#RRGGBB` string suitable for SVG attributes.
-fn style_color_to_hex(color: &StyleColor) -> String {
+fn style_color_to_hex(color: &StyleColor, theme: &ThemeColors) -> String {
     match color {
         StyleColor::Rgb(rgb) => {
             let stripped = rgb.strip_prefix('#').unwrap_or(rgb);
@@ -609,12 +641,19 @@ fn style_color_to_hex(color: &StyleColor) -> String {
                 format!("#{stripped}")
             }
         }
-        StyleColor::Theme(_) | StyleColor::Indexed(_) => "#000000".to_string(),
+        StyleColor::Theme(index) => resolve_theme_color(theme, *index, None)
+            .map(|color| style_color_to_hex(&StyleColor::Rgb(color), theme))
+            .unwrap_or_else(|| "#000000".to_string()),
+        StyleColor::Indexed(_) => "#000000".to_string(),
     }
 }
 
 /// Convert a border line style to SVG stroke-width and color.
-fn border_line_attrs(style: BorderLineStyle, color: Option<&StyleColor>) -> (f64, String) {
+fn border_line_attrs(
+    style: BorderLineStyle,
+    color: Option<&StyleColor>,
+    theme: &ThemeColors,
+) -> (f64, String) {
     let stroke_width = match style {
         BorderLineStyle::Thin | BorderLineStyle::Hair => 1.0,
         BorderLineStyle::Medium
@@ -625,7 +664,7 @@ fn border_line_attrs(style: BorderLineStyle, color: Option<&StyleColor>) -> (f64
         _ => 1.0,
     };
     let color_str = color
-        .map(style_color_to_hex)
+        .map(|color| style_color_to_hex(color, theme))
         .unwrap_or_else(|| "#000000".to_string());
     (stroke_width, color_str)
 }
@@ -653,7 +692,7 @@ mod tests {
     use crate::sst::SharedStringTable;
     use crate::style::{add_style, StyleBuilder};
     use sheetkit_xml::styles::StyleSheet;
-    use sheetkit_xml::worksheet::{Cell, CellTypeTag, Row, SheetData, WorksheetXml};
+    use sheetkit_xml::worksheet::{Cell, CellTypeTag, Col, Cols, Row, SheetData, WorksheetXml};
 
     fn default_options(sheet: &str) -> RenderOptions {
         RenderOptions {
@@ -915,6 +954,115 @@ mod tests {
     }
 
     #[test]
+    fn test_render_applies_row_style_when_cell_has_no_style() {
+        let (mut ws, sst) = simple_ws_and_sst();
+        let mut ss = StyleSheet::default();
+        let style_id =
+            add_style(&mut ss, &StyleBuilder::new().solid_fill("FFFF0000").build()).unwrap();
+        ws.sheet_data.rows[0].s = Some(style_id);
+
+        let svg = render_to_svg(&ws, &sst, &ss, &default_options("Sheet1")).unwrap();
+
+        assert!(svg.contains("fill=\"#FF0000\""));
+    }
+
+    #[test]
+    fn test_render_applies_column_style_when_cell_and_row_have_no_style() {
+        let (mut ws, sst) = simple_ws_and_sst();
+        let mut ss = StyleSheet::default();
+        let style_id =
+            add_style(&mut ss, &StyleBuilder::new().solid_fill("FF00FF00").build()).unwrap();
+        ws.cols = Some(Cols {
+            cols: vec![Col {
+                min: 1,
+                max: 1,
+                width: None,
+                style: Some(style_id),
+                hidden: None,
+                custom_width: None,
+                outline_level: None,
+            }],
+        });
+
+        let svg = render_to_svg(&ws, &sst, &ss, &default_options("Sheet1")).unwrap();
+
+        assert!(svg.contains("fill=\"#00FF00\""));
+    }
+
+    #[test]
+    fn test_cell_style_precedence_includes_explicit_default_style() {
+        let (mut ws, _sst) = simple_ws_and_sst();
+        ws.sheet_data.rows[0].s = Some(2);
+        ws.sheet_data.rows[0].cells[0].s = Some(0);
+        ws.cols = Some(Cols {
+            cols: vec![Col {
+                min: 1,
+                max: 2,
+                width: None,
+                style: Some(3),
+                hidden: None,
+                custom_width: None,
+                outline_level: None,
+            }],
+        });
+
+        assert_eq!(find_cell_style(&ws, 1, 1), 0);
+        assert_eq!(find_cell_style(&ws, 2, 1), 2);
+        assert_eq!(find_cell_style(&ws, 1, 3), 3);
+    }
+
+    #[test]
+    fn test_render_resolves_theme_colors_with_default_theme() {
+        let (mut ws, sst) = simple_ws_and_sst();
+        let mut ss = StyleSheet::default();
+        let style_id = add_style(
+            &mut ss,
+            &StyleBuilder::new()
+                .fill_pattern(PatternType::Solid)
+                .fill_fg_color(StyleColor::Theme(4))
+                .font_color(StyleColor::Theme(5))
+                .border_all(BorderLineStyle::Thin, StyleColor::Theme(6))
+                .build(),
+        )
+        .unwrap();
+        ws.sheet_data.rows[0].cells[0].s = Some(style_id);
+
+        let svg = render_to_svg(&ws, &sst, &ss, &default_options("Sheet1")).unwrap();
+
+        assert!(svg.contains("fill=\"#4472C4\""));
+        assert!(svg.contains("fill=\"#ED7D31\""));
+        assert!(svg.contains("stroke=\"#A5A5A5\""));
+    }
+
+    #[test]
+    fn test_render_resolves_theme_colors_with_supplied_theme() {
+        let (mut ws, sst) = simple_ws_and_sst();
+        let mut ss = StyleSheet::default();
+        let style_id = add_style(
+            &mut ss,
+            &StyleBuilder::new()
+                .fill_pattern(PatternType::Solid)
+                .fill_fg_color(StyleColor::Theme(4))
+                .font_color(StyleColor::Theme(5))
+                .border_all(BorderLineStyle::Thin, StyleColor::Theme(6))
+                .build(),
+        )
+        .unwrap();
+        ws.sheet_data.rows[0].cells[0].s = Some(style_id);
+        let mut theme = crate::theme::default_theme_colors();
+        theme.colors[4] = "FF112233".to_string();
+        theme.colors[5] = "FF445566".to_string();
+        theme.colors[6] = "FF778899".to_string();
+
+        let svg =
+            render_to_svg_with_theme(&ws, &sst, &ss, &theme, &default_options("Sheet1")).unwrap();
+
+        assert!(svg.contains("fill=\"#112233\""));
+        assert!(svg.contains("fill=\"#445566\""));
+        assert!(svg.contains("stroke=\"#778899\""));
+    }
+
+    #[test]
     fn test_render_font_color() {
         let (mut ws, sst) = simple_ws_and_sst();
         let mut ss = StyleSheet::default();
@@ -1024,24 +1172,33 @@ mod tests {
     #[test]
     fn test_style_color_to_hex_argb() {
         let color = StyleColor::Rgb("FFFF0000".to_string());
-        assert_eq!(style_color_to_hex(&color), "#FF0000");
+        assert_eq!(
+            style_color_to_hex(&color, &default_theme_colors()),
+            "#FF0000"
+        );
     }
 
     #[test]
     fn test_style_color_to_hex_rgb() {
         let color = StyleColor::Rgb("00FF00".to_string());
-        assert_eq!(style_color_to_hex(&color), "#00FF00");
+        assert_eq!(
+            style_color_to_hex(&color, &default_theme_colors()),
+            "#00FF00"
+        );
     }
 
     #[test]
-    fn test_style_color_to_hex_theme_defaults_to_black() {
+    fn test_style_color_to_hex_theme_uses_default_theme() {
         let color = StyleColor::Theme(4);
-        assert_eq!(style_color_to_hex(&color), "#000000");
+        assert_eq!(
+            style_color_to_hex(&color, &default_theme_colors()),
+            "#4472C4"
+        );
     }
 
     #[test]
     fn test_border_line_attrs_thin() {
-        let (sw, color) = border_line_attrs(BorderLineStyle::Thin, None);
+        let (sw, color) = border_line_attrs(BorderLineStyle::Thin, None, &default_theme_colors());
         assert_eq!(sw, 1.0);
         assert_eq!(color, "#000000");
     }
@@ -1049,7 +1206,8 @@ mod tests {
     #[test]
     fn test_border_line_attrs_thick_with_color() {
         let c = StyleColor::Rgb("FF0000FF".to_string());
-        let (sw, color) = border_line_attrs(BorderLineStyle::Thick, Some(&c));
+        let (sw, color) =
+            border_line_attrs(BorderLineStyle::Thick, Some(&c), &default_theme_colors());
         assert_eq!(sw, 3.0);
         assert_eq!(color, "#0000FF");
     }
@@ -1225,19 +1383,25 @@ mod tests {
     #[test]
     fn test_style_color_to_hex_already_prefixed() {
         let color = StyleColor::Rgb("#FF0000".to_string());
-        assert_eq!(style_color_to_hex(&color), "#FF0000");
+        assert_eq!(
+            style_color_to_hex(&color, &default_theme_colors()),
+            "#FF0000"
+        );
     }
 
     #[test]
     fn test_style_color_to_hex_prefixed_argb() {
         let color = StyleColor::Rgb("#FFFF0000".to_string());
-        assert_eq!(style_color_to_hex(&color), "#FF0000");
+        assert_eq!(
+            style_color_to_hex(&color, &default_theme_colors()),
+            "#FF0000"
+        );
     }
 
     #[test]
     fn test_style_color_to_hex_no_double_hash() {
         let color = StyleColor::Rgb("#00FF00".to_string());
-        let hex = style_color_to_hex(&color);
+        let hex = style_color_to_hex(&color, &default_theme_colors());
         assert!(
             !hex.starts_with("##"),
             "should not produce double hash, got: {hex}"

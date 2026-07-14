@@ -140,8 +140,12 @@ mod tests {
   </a:themeElements>
 </a:theme>"#;
         let colors = parse_theme_colors(xml);
+        // ThemeColors retains DrawingML clrScheme order, independent of the
+        // SpreadsheetML `theme` index mapping used by cell styles.
         assert_eq!(colors.colors[0], "FF000000");
         assert_eq!(colors.colors[1], "FFFFFFFF");
+        assert_eq!(colors.colors[2], "FF44546A");
+        assert_eq!(colors.colors[3], "FFE7E6E6");
         assert_eq!(colors.colors[4], "FF4472C4");
         assert_eq!(colors.colors[11], "FF954F72");
     }
