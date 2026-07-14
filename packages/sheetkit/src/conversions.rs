@@ -20,21 +20,36 @@ use sheetkit_core::validation::{
 
 use crate::types::*;
 
-pub(crate) fn js_value_to_cell_value(
-    v: napi::bindgen_prelude::Either5<
-        String,
-        f64,
-        bool,
-        crate::types::DateValue,
-        napi::bindgen_prelude::Null,
-    >,
-) -> CellValue {
+pub(crate) type JsCellInputValue = Either6<String, f64, bool, DateValue, FormulaValue, Null>;
+pub(crate) type JsCellOutputValue = Either6<Null, bool, f64, String, DateValue, FormulaValue>;
+
+pub(crate) fn js_value_to_cell_value(v: JsCellInputValue) -> CellValue {
     match v {
-        napi::bindgen_prelude::Either5::A(s) => CellValue::String(s),
-        napi::bindgen_prelude::Either5::B(n) => CellValue::Number(n),
-        napi::bindgen_prelude::Either5::C(b) => CellValue::Bool(b),
-        napi::bindgen_prelude::Either5::D(d) => CellValue::Date(d.serial),
-        napi::bindgen_prelude::Either5::E(_) => CellValue::Empty,
+        Either6::A(s) => CellValue::String(s),
+        Either6::B(n) => CellValue::Number(n),
+        Either6::C(b) => CellValue::Bool(b),
+        Either6::D(d) => CellValue::Date(d.serial),
+        Either6::E(formula) => CellValue::Formula {
+            expr: formula.formula,
+            result: formula
+                .result
+                .map(|result| Box::new(formula_result_to_cell_value(result))),
+        },
+        Either6::F(_) => CellValue::Empty,
+    }
+}
+
+fn formula_result_to_cell_value(value: FormulaResultValue) -> CellValue {
+    match value.value_type.as_str() {
+        "boolean" => CellValue::Bool(value.bool_value.unwrap_or(false)),
+        "number" => CellValue::Number(value.number_value.unwrap_or(0.0)),
+        "date" => value
+            .date
+            .map(|date| CellValue::Date(date.serial))
+            .unwrap_or_default(),
+        "error" => CellValue::Error(value.value.unwrap_or_default()),
+        "string" => CellValue::String(value.value.unwrap_or_default()),
+        _ => CellValue::Empty,
     }
 }
 
@@ -93,6 +108,7 @@ pub(crate) fn cell_value_to_row_cell(column: String, value: CellValue) -> JsRowC
         value: str_val,
         number_value: num_val,
         bool_value: bool_val,
+        formula: cell_value_to_formula_value(&value),
     }
 }
 
@@ -104,6 +120,7 @@ pub(crate) fn cell_value_to_col_cell(row: u32, value: CellValue) -> JsColCell {
         value: str_val,
         number_value: num_val,
         bool_value: bool_val,
+        formula: cell_value_to_formula_value(&value),
     }
 }
 
@@ -160,15 +177,13 @@ pub(crate) fn hyperlink_info_to_js(info: &HyperlinkInfo) -> JsHyperlinkInfo {
     }
 }
 
-pub(crate) fn cell_value_to_either(
-    value: CellValue,
-) -> Result<Either5<Null, bool, f64, String, DateValue>> {
+pub(crate) fn cell_value_to_either(value: CellValue) -> Result<JsCellOutputValue> {
     Ok(match value {
-        CellValue::Empty => Either5::A(Null),
-        CellValue::Bool(b) => Either5::B(b),
-        CellValue::Number(n) => Either5::C(n),
-        CellValue::String(s) => Either5::D(s),
-        CellValue::Date(serial) => Either5::E(DateValue {
+        CellValue::Empty => Either6::A(Null),
+        CellValue::Bool(b) => Either6::B(b),
+        CellValue::Number(n) => Either6::C(n),
+        CellValue::String(s) => Either6::D(s),
+        CellValue::Date(serial) => Either6::E(DateValue {
             kind: "date".to_string(),
             serial,
             iso: sheetkit_core::cell::serial_to_datetime(serial).map(|dt| {
@@ -179,24 +194,112 @@ pub(crate) fn cell_value_to_either(
                 }
             }),
         }),
-        CellValue::Formula { expr, .. } => Either5::D(expr),
-        CellValue::Error(e) => Either5::D(e),
+        CellValue::Formula { expr, result } => Either6::F(FormulaValue {
+            kind: "formula".to_string(),
+            formula: expr,
+            result: result.map(|result| cell_value_to_formula_result(&result)),
+        }),
+        CellValue::Error(e) => Either6::D(e),
         CellValue::RichString(runs) => {
-            Either5::D(sheetkit_core::rich_text::rich_text_to_plain(&runs))
+            Either6::D(sheetkit_core::rich_text::rich_text_to_plain(&runs))
+        }
+    })
+}
+
+pub(crate) fn cell_value_to_formula_value(value: &CellValue) -> Option<FormulaValue> {
+    let CellValue::Formula { expr, result } = value else {
+        return None;
+    };
+    Some(FormulaValue {
+        kind: "formula".to_string(),
+        formula: expr.clone(),
+        result: result.as_deref().map(cell_value_to_formula_result),
+    })
+}
+
+fn cell_value_to_formula_result(value: &CellValue) -> FormulaResultValue {
+    match value {
+        CellValue::Empty => FormulaResultValue {
+            value_type: "empty".to_string(),
+            value: None,
+            number_value: None,
+            bool_value: None,
+            date: None,
+        },
+        CellValue::Bool(value) => FormulaResultValue {
+            value_type: "boolean".to_string(),
+            value: None,
+            number_value: None,
+            bool_value: Some(*value),
+            date: None,
+        },
+        CellValue::Number(value) => FormulaResultValue {
+            value_type: "number".to_string(),
+            value: None,
+            number_value: Some(*value),
+            bool_value: None,
+            date: None,
+        },
+        CellValue::String(value) => FormulaResultValue {
+            value_type: "string".to_string(),
+            value: Some(value.clone()),
+            number_value: None,
+            bool_value: None,
+            date: None,
+        },
+        CellValue::Date(serial) => FormulaResultValue {
+            value_type: "date".to_string(),
+            value: None,
+            number_value: None,
+            bool_value: None,
+            date: Some(DateValue {
+                kind: "date".to_string(),
+                serial: *serial,
+                iso: serial_to_iso(*serial),
+            }),
+        },
+        CellValue::Error(value) => FormulaResultValue {
+            value_type: "error".to_string(),
+            value: Some(value.clone()),
+            number_value: None,
+            bool_value: None,
+            date: None,
+        },
+        CellValue::Formula { expr, .. } => FormulaResultValue {
+            value_type: "formula".to_string(),
+            value: Some(expr.clone()),
+            number_value: None,
+            bool_value: None,
+            date: None,
+        },
+        CellValue::RichString(runs) => FormulaResultValue {
+            value_type: "string".to_string(),
+            value: Some(sheetkit_core::rich_text::rich_text_to_plain(runs)),
+            number_value: None,
+            bool_value: None,
+            date: None,
+        },
+    }
+}
+
+fn serial_to_iso(serial: f64) -> Option<String> {
+    sheetkit_core::cell::serial_to_datetime(serial).map(|dt| {
+        if serial.fract() == 0.0 {
+            dt.format("%Y-%m-%d").to_string()
+        } else {
+            dt.format("%Y-%m-%dT%H:%M:%S").to_string()
         }
     })
 }
 
 pub(crate) fn parse_style_color(s: &str) -> Option<StyleColor> {
-    if s.starts_with('#') && s.len() == 7 {
-        // #RRGGBB format (stored as-is)
-        Some(StyleColor::Rgb(s.to_string()))
+    if let Some(rgb) = s.strip_prefix('#') {
+        (rgb.len() == 6 && rgb.chars().all(|c| c.is_ascii_hexdigit()))
+            .then(|| StyleColor::Rgb(format!("FF{}", rgb.to_ascii_uppercase())))
     } else if s.len() == 8 && s.chars().all(|c| c.is_ascii_hexdigit()) {
-        // AARRGGBB format (e.g. "FFFFFF00")
-        Some(StyleColor::Rgb(s.to_string()))
+        Some(StyleColor::Rgb(s.to_ascii_uppercase()))
     } else if s.len() == 6 && s.chars().all(|c| c.is_ascii_hexdigit()) {
-        // RRGGBB format (e.g. "FF0000")
-        Some(StyleColor::Rgb(s.to_string()))
+        Some(StyleColor::Rgb(format!("FF{}", s.to_ascii_uppercase())))
     } else if let Some(theme_str) = s.strip_prefix("theme:") {
         theme_str.parse::<u32>().ok().map(StyleColor::Theme)
     } else if let Some(indexed_str) = s.strip_prefix("indexed:") {
@@ -222,26 +325,26 @@ pub(crate) fn parse_pattern_type(s: &str) -> PatternType {
     }
 }
 
-pub(crate) fn parse_border_line_style(s: &str) -> BorderLineStyle {
+pub(crate) fn parse_border_line_style(s: &str) -> Option<BorderLineStyle> {
     match s.to_lowercase().as_str() {
-        "none" => BorderLineStyle::Thin, // "none" maps to Thin (no visible border)
-        "thin" => BorderLineStyle::Thin,
-        "medium" => BorderLineStyle::Medium,
-        "thick" => BorderLineStyle::Thick,
-        "dashed" => BorderLineStyle::Dashed,
-        "dotted" => BorderLineStyle::Dotted,
-        "double" => BorderLineStyle::Double,
-        "hair" => BorderLineStyle::Hair,
-        "mediumdashed" => BorderLineStyle::MediumDashed,
-        "dashdot" => BorderLineStyle::DashDot,
-        "mediumdashdot" => BorderLineStyle::MediumDashDot,
-        "dashdotdot" => BorderLineStyle::DashDotDot,
-        "mediumdashdotdot" => BorderLineStyle::MediumDashDotDot,
-        "slantdashdot" => BorderLineStyle::SlantDashDot,
+        "none" => None,
+        "thin" => Some(BorderLineStyle::Thin),
+        "medium" => Some(BorderLineStyle::Medium),
+        "thick" => Some(BorderLineStyle::Thick),
+        "dashed" => Some(BorderLineStyle::Dashed),
+        "dotted" => Some(BorderLineStyle::Dotted),
+        "double" => Some(BorderLineStyle::Double),
+        "hair" => Some(BorderLineStyle::Hair),
+        "mediumdashed" => Some(BorderLineStyle::MediumDashed),
+        "dashdot" => Some(BorderLineStyle::DashDot),
+        "mediumdashdot" => Some(BorderLineStyle::MediumDashDot),
+        "dashdotdot" => Some(BorderLineStyle::DashDotDot),
+        "mediumdashdotdot" => Some(BorderLineStyle::MediumDashDotDot),
+        "slantdashdot" => Some(BorderLineStyle::SlantDashDot),
         _other => {
             #[cfg(debug_assertions)]
             eprintln!("warning: unknown border line style '{_other}', defaulting to Thin");
-            BorderLineStyle::Thin
+            Some(BorderLineStyle::Thin)
         }
     }
 }
@@ -301,20 +404,22 @@ pub(crate) fn js_style_to_core(js: &JsStyle) -> Style {
             gradient: None,
         }),
         border: js.border.as_ref().map(|b| {
-            let side = |s: &JsBorderSideStyle| BorderSideStyle {
-                style: s
-                    .style
-                    .as_ref()
-                    .map(|s| parse_border_line_style(s))
-                    .unwrap_or(BorderLineStyle::Thin),
-                color: s.color.as_ref().and_then(|s| parse_style_color(s)),
+            let side = |s: &JsBorderSideStyle| match s.style.as_deref() {
+                Some(style) => parse_border_line_style(style).map(|style| BorderSideStyle {
+                    style,
+                    color: s.color.as_ref().and_then(|s| parse_style_color(s)),
+                }),
+                None => Some(BorderSideStyle {
+                    style: BorderLineStyle::Thin,
+                    color: s.color.as_ref().and_then(|s| parse_style_color(s)),
+                }),
             };
             BorderStyle {
-                left: b.left.as_ref().map(&side),
-                right: b.right.as_ref().map(&side),
-                top: b.top.as_ref().map(&side),
-                bottom: b.bottom.as_ref().map(&side),
-                diagonal: b.diagonal.as_ref().map(&side),
+                left: b.left.as_ref().and_then(side),
+                right: b.right.as_ref().and_then(side),
+                top: b.top.as_ref().and_then(side),
+                bottom: b.bottom.as_ref().and_then(side),
+                diagonal: b.diagonal.as_ref().and_then(side),
             }
         }),
         alignment: js.alignment.as_ref().map(|a| AlignmentStyle {
@@ -629,20 +734,22 @@ pub(crate) fn js_conditional_style_to_core(js: &JsConditionalStyle) -> Condition
             gradient: None,
         }),
         border: js.border.as_ref().map(|b| {
-            let side = |s: &JsBorderSideStyle| BorderSideStyle {
-                style: s
-                    .style
-                    .as_ref()
-                    .map(|s| parse_border_line_style(s))
-                    .unwrap_or(BorderLineStyle::Thin),
-                color: s.color.as_ref().and_then(|s| parse_style_color(s)),
+            let side = |s: &JsBorderSideStyle| match s.style.as_deref() {
+                Some(style) => parse_border_line_style(style).map(|style| BorderSideStyle {
+                    style,
+                    color: s.color.as_ref().and_then(|s| parse_style_color(s)),
+                }),
+                None => Some(BorderSideStyle {
+                    style: BorderLineStyle::Thin,
+                    color: s.color.as_ref().and_then(|s| parse_style_color(s)),
+                }),
             };
             BorderStyle {
-                left: b.left.as_ref().map(&side),
-                right: b.right.as_ref().map(&side),
-                top: b.top.as_ref().map(&side),
-                bottom: b.bottom.as_ref().map(&side),
-                diagonal: b.diagonal.as_ref().map(&side),
+                left: b.left.as_ref().and_then(side),
+                right: b.right.as_ref().and_then(side),
+                top: b.top.as_ref().and_then(side),
+                bottom: b.bottom.as_ref().and_then(side),
+                diagonal: b.diagonal.as_ref().and_then(side),
             }
         }),
         num_fmt: js
@@ -1295,5 +1402,136 @@ pub(crate) fn core_sparkline_to_js(
         show_axis: if config.show_axis { Some(true) } else { None },
         line_weight: config.line_weight,
         style: config.style,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalizes_rgb_style_colors_to_uppercase_argb() {
+        assert!(
+            matches!(parse_style_color("#a1b2c3"), Some(StyleColor::Rgb(value)) if value == "FFA1B2C3")
+        );
+        assert!(
+            matches!(parse_style_color("a1b2c3"), Some(StyleColor::Rgb(value)) if value == "FFA1B2C3")
+        );
+        assert!(
+            matches!(parse_style_color("80a1b2c3"), Some(StyleColor::Rgb(value)) if value == "80A1B2C3")
+        );
+        assert!(parse_style_color("#12345").is_none());
+        assert!(parse_style_color("GG0000").is_none());
+    }
+
+    #[test]
+    fn no_border_side_is_omitted() {
+        let style = JsStyle {
+            font: None,
+            fill: None,
+            border: Some(JsBorderStyle {
+                left: Some(JsBorderSideStyle {
+                    style: Some("none".to_string()),
+                    color: Some("FF0000".to_string()),
+                }),
+                right: None,
+                top: None,
+                bottom: None,
+                diagonal: None,
+            }),
+            alignment: None,
+            num_fmt_id: None,
+            custom_num_fmt: None,
+            protection: None,
+        };
+        assert!(js_style_to_core(&style)
+            .border
+            .expect("border")
+            .left
+            .is_none());
+    }
+
+    #[test]
+    fn formula_conversion_preserves_expression_and_cached_result() {
+        let value = CellValue::Formula {
+            expr: "A1+1".to_string(),
+            result: Some(Box::new(CellValue::Number(42.0))),
+        };
+        let formula = cell_value_to_formula_value(&value).expect("formula conversion");
+        assert_eq!(formula.kind, "formula");
+        assert_eq!(formula.formula, "A1+1");
+        assert_eq!(
+            formula.result.expect("cached result").number_value,
+            Some(42.0)
+        );
+    }
+
+    #[test]
+    fn napi_formula_output_preserves_cached_date() {
+        let value = cell_value_to_either(CellValue::Formula {
+            expr: "TODAY()".to_string(),
+            result: Some(Box::new(CellValue::Date(45292.5))),
+        })
+        .expect("formula output");
+
+        let Either6::F(formula) = value else {
+            panic!("expected formula output");
+        };
+        assert_eq!(formula.formula, "TODAY()");
+        assert_eq!(
+            formula
+                .result
+                .expect("cached result")
+                .date
+                .expect("cached date")
+                .serial,
+            45292.5
+        );
+    }
+
+    #[test]
+    fn row_cells_preserve_formula_and_cached_result() {
+        let cell = cell_value_to_row_cell(
+            "A".to_string(),
+            CellValue::Formula {
+                expr: "A1+1".to_string(),
+                result: Some(Box::new(CellValue::Number(42.0))),
+            },
+        );
+        assert_eq!(cell.value_type, "formula");
+        let formula = cell.formula.expect("formula");
+        assert_eq!(formula.formula, "A1+1");
+        assert_eq!(
+            formula.result.expect("cached result").number_value,
+            Some(42.0)
+        );
+    }
+
+    #[test]
+    fn open_options_keep_unspecified_defaults_and_parse_mode_fallback() {
+        let options = |parse_mode| JsOpenOptions {
+            sheet_rows: None,
+            sheets: None,
+            max_unzip_size: None,
+            max_zip_entries: None,
+            read_mode: None,
+            aux_parts: None,
+            parse_mode,
+            date_interpretation: None,
+        };
+        let defaults = js_open_options_to_core(Some(&options(None)));
+        assert!(matches!(
+            defaults.read_mode,
+            sheetkit_core::workbook::ReadMode::Eager
+        ));
+        assert!(matches!(
+            defaults.aux_parts,
+            sheetkit_core::workbook::AuxParts::EagerLoad
+        ));
+        let legacy = js_open_options_to_core(Some(&options(Some("readfast".to_string()))));
+        assert!(matches!(
+            legacy.read_mode,
+            sheetkit_core::workbook::ReadMode::Lazy
+        ));
     }
 }

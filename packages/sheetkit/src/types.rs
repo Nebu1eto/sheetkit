@@ -51,10 +51,32 @@ pub struct JsProtectionStyle {
 
 #[napi(object)]
 pub struct DateValue {
-    #[napi(js_name = "type")]
     pub kind: String,
     pub serial: f64,
     pub iso: Option<String>,
+}
+
+/// The cached value of a formula cell.
+#[napi(object)]
+pub struct FormulaResultValue {
+    /// Value type: "empty", "string", "number", "boolean", "date", or "error".
+    pub value_type: String,
+    pub value: Option<String>,
+    pub number_value: Option<f64>,
+    pub bool_value: Option<bool>,
+    pub date: Option<DateValue>,
+}
+
+/// A formula expression and its optional cached result.
+#[napi(object)]
+pub struct FormulaValue {
+    /// Always "formula".
+    #[napi(js_name = "type")]
+    pub kind: String,
+    /// Formula expression without the leading equals sign.
+    pub formula: String,
+    /// Cached result when present in the workbook.
+    pub result: Option<FormulaResultValue>,
 }
 
 #[napi(object)]
@@ -359,6 +381,8 @@ pub struct JsRowCell {
     pub number_value: Option<f64>,
     /// Boolean value (only set when value_type is "boolean").
     pub bool_value: Option<bool>,
+    /// Formula expression and cached result when value_type is "formula".
+    pub formula: Option<FormulaValue>,
 }
 
 /// A row with its 1-based row number and cell data.
@@ -383,6 +407,8 @@ pub struct JsColCell {
     pub number_value: Option<f64>,
     /// Boolean value (only set when value_type is "boolean").
     pub bool_value: Option<bool>,
+    /// Formula expression and cached result when value_type is "formula".
+    pub formula: Option<FormulaValue>,
 }
 
 /// A column with its name and cell data.
@@ -539,9 +565,15 @@ pub struct JsOpenOptions {
 pub struct JsCellEntry {
     /// Cell reference (e.g., "A1", "B2").
     pub cell: String,
-    /// Cell value: string, number, boolean, DateValue, or null.
-    pub value:
-        napi::bindgen_prelude::Either5<String, f64, bool, DateValue, napi::bindgen_prelude::Null>,
+    /// Cell value: string, number, boolean, DateValue, FormulaValue, or null.
+    pub value: napi::bindgen_prelude::Either6<
+        String,
+        f64,
+        bool,
+        DateValue,
+        FormulaValue,
+        napi::bindgen_prelude::Null,
+    >,
 }
 
 /// Sheet view options for controlling how a sheet is displayed.

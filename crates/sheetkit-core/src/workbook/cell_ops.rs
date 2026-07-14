@@ -38,6 +38,18 @@ impl Workbook {
         value: impl Into<CellValue>,
     ) -> Result<()> {
         let value = value.into();
+        let date_style = if matches!(value, CellValue::Date(_)) {
+            let mut style = self
+                .get_cell_style(sheet, cell)?
+                .and_then(|id| crate::style::get_style(&self.stylesheet, id))
+                .unwrap_or_default();
+            style.num_fmt = Some(crate::style::NumFmtStyle::Builtin(
+                crate::style::builtin_num_fmts::DATE_MDY,
+            ));
+            Some(self.add_style(&style)?)
+        } else {
+            None
+        };
 
         // Validate string length.
         if let CellValue::String(ref s) = value {
@@ -100,6 +112,9 @@ impl Workbook {
 
         let xml_cell = &mut row.cells[cell_idx];
         value_to_xml_cell(&mut self.sst_runtime, xml_cell, value);
+        if let Some(style_id) = date_style {
+            xml_cell.s = Some(style_id);
+        }
 
         Ok(())
     }
@@ -114,6 +129,9 @@ impl Workbook {
                 (CellTypeTag::Error, Some(v)) => Some(Box::new(CellValue::Error(v.clone()))),
                 (CellTypeTag::FormulaString, Some(v)) => {
                     Some(Box::new(CellValue::String(v.clone())))
+                }
+                (CellTypeTag::Date, Some(v)) => {
+                    Some(Box::new(CellValue::Date(parse_date_cell_value(v)?)))
                 }
                 (_, Some(v)) => v
                     .parse::<f64>()
@@ -153,6 +171,9 @@ impl Workbook {
             }
             // Formula string (cached string result)
             (CellTypeTag::FormulaString, Some(v)) => Ok(CellValue::String(v.to_string())),
+            // ISO 8601 date/time values are used by explicit OOXML `t="d"`
+            // cells. Numeric serials are accepted for interoperability.
+            (CellTypeTag::Date, Some(v)) => Ok(CellValue::Date(parse_date_cell_value(v)?)),
             // Number (explicit or default type) -- may be a date if styled
             // and `DateInterpretation::NumFmt` is active.
             (CellTypeTag::None | CellTypeTag::Number, Some(v)) => {
@@ -704,6 +725,23 @@ impl Workbook {
     }
 }
 
+fn parse_date_cell_value(value: &str) -> Result<f64> {
+    value
+        .parse::<f64>()
+        .ok()
+        .or_else(|| {
+            chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S%.f")
+                .ok()
+                .map(crate::cell::datetime_to_serial)
+        })
+        .or_else(|| {
+            chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d")
+                .ok()
+                .map(crate::cell::date_to_serial)
+        })
+        .ok_or_else(|| Error::Internal(format!("invalid ISO date cell value: {value}")))
+}
+
 /// Write a CellValue into an XML Cell (mutating it in place).
 pub(crate) fn value_to_xml_cell(
     sst: &mut SharedStringTable,
@@ -734,13 +772,16 @@ pub(crate) fn value_to_xml_cell(
             xml_cell.t = CellTypeTag::Boolean;
             xml_cell.v = Some(if b { "1" } else { "0" }.to_string());
         }
-        CellValue::Formula { expr, .. } => {
+        CellValue::Formula { expr, result } => {
             xml_cell.f = Some(Box::new(CellFormula {
                 t: None,
                 reference: None,
                 si: None,
                 value: Some(expr),
             }));
+            if let Some(result) = result.as_deref() {
+                write_formula_cached_result(xml_cell, result);
+            }
         }
         CellValue::Error(e) => {
             xml_cell.t = CellTypeTag::Error;
@@ -753,6 +794,33 @@ pub(crate) fn value_to_xml_cell(
             let idx = sst.add_rich_text(&runs);
             xml_cell.t = CellTypeTag::SharedString;
             xml_cell.v = Some(idx.to_string());
+        }
+    }
+}
+
+fn write_formula_cached_result(xml_cell: &mut Cell, result: &CellValue) {
+    match result {
+        CellValue::Empty | CellValue::Formula { .. } | CellValue::RichString(_) => {}
+        CellValue::Bool(value) => {
+            xml_cell.t = CellTypeTag::Boolean;
+            xml_cell.v = Some(if *value { "1" } else { "0" }.to_string());
+        }
+        CellValue::Number(value) => xml_cell.v = Some(value.to_string()),
+        CellValue::Date(serial) => {
+            xml_cell.t = CellTypeTag::Date;
+            xml_cell.v = Some(
+                crate::cell::serial_to_datetime(*serial)
+                    .map(|value| value.format("%Y-%m-%dT%H:%M:%S").to_string())
+                    .unwrap_or_else(|| serial.to_string()),
+            );
+        }
+        CellValue::String(value) => {
+            xml_cell.t = CellTypeTag::FormulaString;
+            xml_cell.v = Some(value.clone());
+        }
+        CellValue::Error(value) => {
+            xml_cell.t = CellTypeTag::Error;
+            xml_cell.v = Some(value.clone());
         }
     }
 }
@@ -947,17 +1015,86 @@ mod tests {
     }
 
     #[test]
-    fn test_date_value_without_style_returns_number() {
+    fn test_date_value_applies_default_date_style() {
         let mut wb = Workbook::new();
-        // Set a date value without a date style.
+        // Set a date value without an explicit date style.
         let date_serial =
             crate::cell::date_to_serial(chrono::NaiveDate::from_ymd_opt(2024, 6, 15).unwrap());
         wb.set_cell_value("Sheet1", "A1", CellValue::Date(date_serial))
             .unwrap();
 
-        // Without a date style, the value is read back as Number.
+        // The write applies the default date style, so it reads back as Date.
         let val = wb.get_cell_value("Sheet1", "A1").unwrap();
-        assert_eq!(val, CellValue::Number(date_serial));
+        assert_eq!(val, CellValue::Date(date_serial));
+    }
+
+    #[test]
+    fn test_explicit_iso_date_cell_is_date() {
+        let wb = Workbook::new();
+        let cell = Cell {
+            r: "A1".into(),
+            col: 1,
+            s: None,
+            t: CellTypeTag::Date,
+            v: Some("2024-06-15".to_string()),
+            f: None,
+            is: None,
+        };
+
+        assert_eq!(
+            wb.xml_cell_to_value(&cell).unwrap(),
+            CellValue::Date(crate::cell::date_to_serial(
+                chrono::NaiveDate::from_ymd_opt(2024, 6, 15).unwrap()
+            ))
+        );
+    }
+
+    #[test]
+    fn test_explicit_numeric_date_cell_is_date() {
+        let wb = Workbook::new();
+        let cell = Cell {
+            r: "A1".into(),
+            col: 1,
+            s: None,
+            t: CellTypeTag::Date,
+            v: Some("45292.5".to_string()),
+            f: None,
+            is: None,
+        };
+
+        assert_eq!(
+            wb.xml_cell_to_value(&cell).unwrap(),
+            CellValue::Date(45292.5)
+        );
+    }
+
+    #[test]
+    fn test_formula_with_explicit_date_cache_preserves_date_result() {
+        let wb = Workbook::new();
+        let cell = Cell {
+            r: "A1".into(),
+            col: 1,
+            s: None,
+            t: CellTypeTag::Date,
+            v: Some("2024-06-15".to_string()),
+            f: Some(Box::new(CellFormula {
+                t: None,
+                reference: None,
+                si: None,
+                value: Some("TODAY()".to_string()),
+            })),
+            is: None,
+        };
+
+        assert_eq!(
+            wb.xml_cell_to_value(&cell).unwrap(),
+            CellValue::Formula {
+                expr: "TODAY()".to_string(),
+                result: Some(Box::new(CellValue::Date(crate::cell::date_to_serial(
+                    chrono::NaiveDate::from_ymd_opt(2024, 6, 15).unwrap()
+                )))),
+            }
+        );
     }
 
     #[test]
@@ -1021,6 +1158,50 @@ mod tests {
                 assert_eq!(expr, "SUM(B1:B10)");
             }
             other => panic!("expected Formula, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_formula_cached_results_roundtrip_through_save() {
+        let cases = [
+            ("A1", CellValue::Number(42.0)),
+            ("A2", CellValue::Bool(true)),
+            ("A3", CellValue::String("cached".to_string())),
+            ("A4", CellValue::Error("#DIV/0!".to_string())),
+            ("A5", CellValue::Date(45292.5)),
+        ];
+        let mut wb = Workbook::new();
+        for (cell, result) in &cases {
+            wb.set_cell_value(
+                "Sheet1",
+                cell,
+                CellValue::Formula {
+                    expr: "1+1".to_string(),
+                    result: Some(Box::new(result.clone())),
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                wb.get_cell_value("Sheet1", cell).unwrap(),
+                CellValue::Formula {
+                    expr: "1+1".to_string(),
+                    result: Some(Box::new(result.clone())),
+                }
+            );
+        }
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("formula_cached_results.xlsx");
+        wb.save(&path).unwrap();
+        let reopened = Workbook::open(&path).unwrap();
+        for (cell, result) in &cases {
+            assert_eq!(
+                reopened.get_cell_value("Sheet1", cell).unwrap(),
+                CellValue::Formula {
+                    expr: "1+1".to_string(),
+                    result: Some(Box::new(result.clone())),
+                }
+            );
         }
     }
 

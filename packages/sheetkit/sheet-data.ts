@@ -1,6 +1,13 @@
 import assert from 'node:assert';
 
-export type CellValue = string | number | boolean | null;
+/** An Excel date value represented by its serial number. */
+export interface DateValue {
+  kind: 'date';
+  serial: number;
+  iso: string | null;
+}
+
+export type CellValue = string | number | boolean | DateValue | null;
 export type CellTypeName = 'empty' | 'number' | 'string' | 'boolean' | 'date' | 'error' | 'formula';
 
 const CELL_STRIDE = 9;
@@ -144,11 +151,17 @@ export class SheetData {
     return this.#colCount;
   }
 
+  /** 1-based worksheet column represented by the first buffered column. */
+  get minCol(): number {
+    return this.#minCol;
+  }
+
   #decodeCellValueV1(type: number, payloadOffset: number): CellValue {
     switch (type) {
       case TYPE_NUMBER:
-      case TYPE_DATE:
         return this.#view.getFloat64(payloadOffset, true);
+      case TYPE_DATE:
+        return { kind: 'date', serial: this.#view.getFloat64(payloadOffset, true), iso: null };
       case TYPE_STRING:
       case TYPE_RICH_STRING: {
         const idx = this.#view.getUint32(payloadOffset, true);
@@ -179,8 +192,9 @@ export class SheetData {
   #decodeCellValueV2(type: number, payloadOffset: number): CellValue {
     switch (type) {
       case TYPE_NUMBER:
-      case TYPE_DATE:
         return this.#view.getFloat64(payloadOffset, true);
+      case TYPE_DATE:
+        return { kind: 'date', serial: this.#view.getFloat64(payloadOffset, true), iso: null };
       case TYPE_STRING:
       case TYPE_RICH_STRING:
         return this.#readInlineString(payloadOffset).value;

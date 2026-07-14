@@ -1,5 +1,4 @@
 import type {
-  DateValue,
   JsAppProperties,
   JsCellEntry,
   JsChartConfig,
@@ -50,11 +49,14 @@ import {
 } from './binding.js';
 import type { RawRowsResult } from './buffer-codec.js';
 import { decodeRowsBuffer, decodeRowsIterator, decodeRowsRawBuffer } from './buffer-codec.js';
-import type { CellTypeName, CellValue } from './sheet-data.js';
+import type { CellTypeName, CellValue as SheetDataCellValue } from './sheet-data.js';
 import { SheetData } from './sheet-data.js';
 
+export type { DateValue } from './sheet-data.js';
+
+import type { DateValue } from './sheet-data.js';
+
 export type {
-  DateValue,
   JsAlignmentStyle,
   JsAppProperties,
   JsBorderSideStyle,
@@ -160,7 +162,46 @@ export interface OpenOptions {
   dateInterpretation?: DateInterpretation;
 }
 
-type CellValueInput = string | number | boolean | DateValue | null;
+/** Cached output associated with a formula expression. */
+export interface FormulaResultValue {
+  valueType: 'empty' | 'string' | 'number' | 'boolean' | 'date' | 'error' | 'formula';
+  value?: string;
+  numberValue?: number;
+  boolValue?: boolean;
+  date?: DateValue;
+}
+
+/** A formula expression with the cached result read from the workbook. */
+export interface FormulaValue {
+  type: 'formula';
+  formula: string;
+  result?: FormulaResultValue;
+}
+
+/** A cell's public value representation. */
+export type CellValue = string | number | boolean | DateValue | FormulaValue | null;
+
+type CellValueInput = string | number | boolean | DateValue | FormulaValue | null;
+type NativeCellValueInput = Parameters<NativeWorkbook['setCellValue']>[2];
+
+function toNativeCellValue(value: CellValueInput): NativeCellValueInput {
+  if (typeof value !== 'object' || value === null) {
+    return value as NativeCellValueInput;
+  }
+  if ('kind' in value && value.kind === 'date') {
+    return { ...value, iso: value.iso ?? undefined } as NativeCellValueInput;
+  }
+  if ('type' in value && value.type === 'formula' && value.result?.date) {
+    return {
+      ...value,
+      result: {
+        ...value.result,
+        date: { ...value.result.date, iso: value.result.date.iso ?? undefined },
+      },
+    } as NativeCellValueInput;
+  }
+  return value as NativeCellValueInput;
+}
 
 export interface ToJsonOptions {
   /** Use first row as keys (true), or provide custom key names. */
@@ -194,8 +235,9 @@ export interface FromJsonOptions {
   startCell?: string;
 }
 
-function cellValueToString(v: CellValue): string {
+function cellValueToString(v: SheetDataCellValue): string {
   if (v === null || v === undefined) return '';
+  if (typeof v === 'object' && v.kind === 'date') return v.iso ?? String(v.serial);
   return String(v);
 }
 
@@ -389,9 +431,9 @@ class Workbook {
     await this.#native.saveWithPassword(path, password);
   }
 
-  /** Get the value of a cell. Returns string, number, boolean, DateValue, or null. */
-  getCellValue(sheet: string, cell: string): null | boolean | number | string | DateValue {
-    return this.#native.getCellValue(sheet, cell);
+  /** Get the value of a cell. */
+  getCellValue(sheet: string, cell: string): CellValue {
+    return this.#native.getCellValue(sheet, cell) as CellValue;
   }
 
   /** Get the formatted display text for a cell, applying its number format. */
@@ -401,7 +443,7 @@ class Workbook {
 
   /** Set the value of a cell. Pass string, number, boolean, DateValue, or null to clear. */
   setCellValue(sheet: string, cell: string, value: CellValueInput): void {
-    this.#native.setCellValue(sheet, cell, value);
+    this.#native.setCellValue(sheet, cell, toNativeCellValue(value));
   }
 
   /** Set multiple cell values at once. */
@@ -411,7 +453,7 @@ class Workbook {
 
   /** Set values in a single row starting from the given column. */
   setRowValues(sheet: string, row: number, startCol: string, values: CellValueInput[]): void {
-    this.#native.setRowValues(sheet, row, startCol, values);
+    this.#native.setRowValues(sheet, row, startCol, values.map(toNativeCellValue));
   }
 
   /** Set a block of cell values from a 2D array. */
@@ -420,7 +462,11 @@ class Workbook {
     data: CellValueInput[][],
     startCell?: string | undefined | null,
   ): void {
-    this.#native.setSheetData(sheet, data, startCell);
+    this.#native.setSheetData(
+      sheet,
+      data.map((row) => row.map(toNativeCellValue)),
+      startCell,
+    );
   }
 
   /** Create a new empty sheet. Returns the 0-based sheet index. */
@@ -952,8 +998,8 @@ class Workbook {
   }
 
   /** Evaluate a formula string against the current workbook data. */
-  evaluateFormula(sheet: string, formula: string): null | boolean | number | string | DateValue {
-    return this.#native.evaluateFormula(sheet, formula);
+  evaluateFormula(sheet: string, formula: string): CellValue {
+    return this.#native.evaluateFormula(sheet, formula) as CellValue;
   }
 
   /** Recalculate all formula cells in the workbook. */
@@ -1090,7 +1136,7 @@ class Workbook {
       dataStartIndex = 1;
     } else {
       const colCount = rows.reduce((max, row) => Math.max(max, row.length), 0);
-      keys = Array.from({ length: colCount }, (_, i) => columnNumberToLetter(i + 1));
+      keys = Array.from({ length: colCount }, (_, i) => columnNumberToLetter(sd.minCol + i));
       dataStartIndex = 0;
     }
 
@@ -1119,12 +1165,18 @@ class Workbook {
     if (rows.length === 0) return '';
 
     const maxCols = rows.reduce((max, row) => Math.max(max, row.length), 0);
+    const leadingEmptyFields = sd.minCol - 1;
     const lines: string[] = [];
 
     for (const row of rows) {
       const fields: string[] = [];
-      for (let c = 0; c < maxCols; c++) {
-        const val = c < row.length ? row[c] : null;
+      for (let c = 0; c < leadingEmptyFields + maxCols; c++) {
+        if (c < leadingEmptyFields) {
+          fields.push('');
+          continue;
+        }
+        const rowIndex = c - leadingEmptyFields;
+        const val = rowIndex < row.length ? row[rowIndex] : null;
         let str = cellValueToString(val);
         if (escapeFormulas && str.length > 0 && '=+\x2D@'.includes(str[0])) {
           str = `\t${str}`;
@@ -1207,7 +1259,7 @@ class Workbook {
 
     const colLetter = columnNumberToLetter(startCol);
     const cellRef = `${colLetter}${startRow}`;
-    this.#native.setSheetData(sheet, grid, cellRef);
+    this.setSheetData(sheet, grid, cellRef);
   }
 
   /** Get the workbook format ("xlsx", "xlsm", "xltx", "xltm", "xlam"). */
@@ -1266,4 +1318,4 @@ function builtinFormatCode(id: number): string | null {
 }
 
 export { builtinFormatCode, formatNumber, JsStreamWriter, SheetData, SheetStreamReader, Workbook };
-export type { CellTypeName, CellValue, RawRowsResult, RowData };
+export type { CellTypeName, RawRowsResult, RowData };

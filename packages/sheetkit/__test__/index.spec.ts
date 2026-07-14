@@ -1,4 +1,5 @@
 import assert from 'node:assert';
+import { execFileSync } from 'node:child_process';
 import { access, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -10,6 +11,31 @@ const TEST_DIR = import.meta.dirname;
 
 function tmpFile(name: string) {
   return join(TEST_DIR, name);
+}
+
+function isDateValue(
+  value: unknown,
+): value is { kind: 'date'; serial: number; iso: string | null } {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'kind' in value &&
+    value.kind === 'date' &&
+    'serial' in value &&
+    'iso' in value
+  );
+}
+
+function isFormulaValue(
+  value: unknown,
+): value is { type: 'formula'; formula: string; result?: unknown } {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'type' in value &&
+    value.type === 'formula' &&
+    'formula' in value
+  );
 }
 
 async function cleanup(...files: string[]) {
@@ -1098,6 +1124,31 @@ describe('Phase 9 - StreamWriter', () => {
     expect(wb2.getCellValue('Data', 'B2')).toBe(100);
   });
 
+  it('should roundtrip streamed date and formula values', async () => {
+    const wb = new Workbook();
+    const sw = wb.newStreamWriter('Typed');
+    sw.writeRow(1, [
+      { kind: 'date', serial: 45292 },
+      {
+        type: 'formula',
+        formula: '1+1',
+        result: { valueType: 'number', numberValue: 2 },
+      },
+    ]);
+    wb.applyStreamWriter(sw);
+    await wb.save(out);
+
+    const reopened = await Workbook.open(out);
+    const date = reopened.getCellValue('Typed', 'A1');
+    assert(isDateValue(date));
+    expect(date.serial).toBe(45292);
+
+    const formula = reopened.getCellValue('Typed', 'B1');
+    assert(isFormulaValue(formula));
+    expect(formula.formula).toBe('1+1');
+    expect(formula.result).toEqual({ valueType: 'number', numberValue: 2 });
+  });
+
   it('should roundtrip freeze panes', async () => {
     const wb = new Workbook();
     const sw = wb.newStreamWriter('Frozen');
@@ -1567,13 +1618,13 @@ describe('Date CellValue', () => {
     // Create a date style (numFmtId 14 = m/d/yyyy)
     const styleId = wb.addStyle({ numFmtId: 14 });
     // Set a date value using the object format (Jan 1, 2024 = serial 45292)
-    wb.setCellValue('Sheet1', 'A1', { type: 'date', serial: 45292 });
+    wb.setCellValue('Sheet1', 'A1', { kind: 'date', serial: 45292, iso: null });
     wb.setCellStyle('Sheet1', 'A1', styleId);
 
     // Read it back - should be a date object
-    const val = wb.getCellValue('Sheet1', 'A1') as { type: string; serial: number; iso?: string };
+    const val = wb.getCellValue('Sheet1', 'A1');
     expect(val).not.toBeNull();
-    expect(val.type).toBe('date');
+    assert(isDateValue(val));
     expect(val.serial).toBe(45292);
     expect(val.iso).toBe('2024-01-01');
   });
@@ -1592,13 +1643,13 @@ describe('Date CellValue', () => {
     const wb = new Workbook();
     // Create a datetime style (numFmtId 22 = m/d/yyyy h:mm)
     const styleId = wb.addStyle({ numFmtId: 22 });
-    wb.setCellValue('Sheet1', 'A1', { type: 'date', serial: 45292.5 });
+    wb.setCellValue('Sheet1', 'A1', { kind: 'date', serial: 45292.5, iso: null });
     wb.setCellStyle('Sheet1', 'A1', styleId);
     await wb.save(out);
 
     const wb2 = await Workbook.open(out);
-    const val = wb2.getCellValue('Sheet1', 'A1') as { type: string; serial: number; iso?: string };
-    expect(val.type).toBe('date');
+    const val = wb2.getCellValue('Sheet1', 'A1');
+    assert(isDateValue(val));
     expect(val.serial).toBe(45292.5);
     expect(val.iso).toBe('2024-01-01T12:00:00');
   });
@@ -1606,12 +1657,51 @@ describe('Date CellValue', () => {
   it('should handle date with custom date format', () => {
     const wb = new Workbook();
     const styleId = wb.addStyle({ customNumFmt: 'yyyy-mm-dd' });
-    wb.setCellValue('Sheet1', 'A1', { type: 'date', serial: 45292 });
+    wb.setCellValue('Sheet1', 'A1', { kind: 'date', serial: 45292, iso: null });
     wb.setCellStyle('Sheet1', 'A1', styleId);
 
-    const val = wb.getCellValue('Sheet1', 'A1') as { type: string; serial: number; iso?: string };
-    expect(val.type).toBe('date');
+    const val = wb.getCellValue('Sheet1', 'A1');
+    assert(isDateValue(val));
     expect(val.serial).toBe(45292);
+  });
+
+  it('should preserve formula text and cached result through reopen', async () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', {
+      type: 'formula',
+      formula: '1+1',
+      result: { valueType: 'number', numberValue: 2 },
+    });
+    await wb.save(out);
+
+    const wb2 = await Workbook.open(out);
+    const value = wb2.getCellValue('Sheet1', 'A1');
+    assert(isFormulaValue(value));
+    expect(value.formula).toBe('1+1');
+    expect(value.result).toEqual({ valueType: 'number', numberValue: 2 });
+  });
+});
+
+describe('style normalization', () => {
+  const out = tmpFile('test-style-normalization.xlsx');
+  afterEach(async () => cleanup(out));
+
+  it('should normalize RGB colors and omit none border sides', async () => {
+    const wb = new Workbook();
+    const styleId = wb.addStyle({
+      font: { color: '#a1b2c3' },
+      fill: { pattern: 'solid', fgColor: '80d4e5f6' },
+      border: { left: { style: 'none', color: '#ff0000' } },
+    });
+    wb.setCellValue('Sheet1', 'A1', 'styled');
+    wb.setCellStyle('Sheet1', 'A1', styleId);
+    await wb.save(out);
+
+    const stylesXml = execFileSync('unzip', ['-p', out, 'xl/styles.xml'], { encoding: 'utf8' });
+    expect(stylesXml).toContain('FFA1B2C3');
+    expect(stylesXml).toContain('80D4E5F6');
+    expect(stylesXml).not.toContain('style="none"');
+    expect(stylesXml).not.toContain('FFFF0000');
   });
 });
 
@@ -2568,7 +2658,7 @@ describe('Buffer round-trip cell types', () => {
   it('should transfer date cells as numbers', () => {
     const wb = new Workbook();
     const styleId = wb.addStyle({ numFmtId: 14 });
-    wb.setCellValue('Sheet1', 'A1', { type: 'date', serial: 45292 });
+    wb.setCellValue('Sheet1', 'A1', { kind: 'date', serial: 45292, iso: null });
     wb.setCellStyle('Sheet1', 'A1', styleId);
     const buf = wb.getRowsBuffer('Sheet1');
     const sd = new SheetData(buf);
@@ -3111,6 +3201,13 @@ describe('toCSV', () => {
     const csv = wb.toCSV('Sheet1');
     expect(csv).toBe('=SUM(A1)');
   });
+
+  it('should preserve absolute column offsets for data starting at C', () => {
+    const wb = new Workbook();
+    wb.setSheetData('Sheet1', [['=SUM(A1)', 'value']], 'C1');
+
+    expect(wb.toCSV('Sheet1', { escapeFormulas: true })).toBe(',,\t=SUM(A1),value');
+  });
 });
 
 describe('toHTML', () => {
@@ -3278,6 +3375,23 @@ describe('fromJSON', () => {
     expect(result).toEqual([
       { A: 'x', B: 1 },
       { A: 'y', B: 2 },
+    ]);
+  });
+
+  it('should use absolute column names without a header', () => {
+    const wb = new Workbook();
+    wb.setSheetData(
+      'Sheet1',
+      [
+        ['first', 1],
+        ['second', 2],
+      ],
+      'C1',
+    );
+
+    expect(wb.toJSON('Sheet1', { header: false })).toEqual([
+      { C: 'first', D: 1 },
+      { C: 'second', D: 2 },
     ]);
   });
 
@@ -5679,7 +5793,7 @@ describe('v2 buffer round-trip cell types', () => {
 
   it('should transfer date cells as numbers', () => {
     const wb = new Workbook();
-    wb.setCellValue('Sheet1', 'A1', { type: 'date', serial: 45292 });
+    wb.setCellValue('Sheet1', 'A1', { kind: 'date', serial: 45292, iso: null });
     wb.setCellStyle('Sheet1', 'A1', wb.addStyle({ numFmtId: 14 }));
     const buf = wb.getRowsBufferV2('Sheet1');
     const sd = new SheetData(buf);

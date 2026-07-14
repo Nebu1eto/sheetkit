@@ -9,15 +9,15 @@ export declare class JsStreamWriter {
   /** Set column width for a range of columns. */
   setColWidthRange(minCol: number, maxCol: number, width: number): void
   /** Write a row of values. Rows must be written in ascending order. */
-  writeRow(row: number, values: Array<string | number | boolean | null>): void
+  writeRow(row: number, values: Array<JsCellInputValue>): void
   /**
    * Write multiple rows at once starting at the given row number.
    * More efficient than calling writeRow in a loop because it crosses
    * the FFI boundary only once.
    */
-  writeRows(startRow: number, rows: Array<Array<string | number | boolean | null>>): void
+  writeRows(startRow: number, rows: Array<Array<JsCellInputValue>>): void
   /** Write a row with a specific style ID applied to all cells. */
-  writeRowWithStyle(row: number, values: Array<string | number | boolean | null>, styleId: number): void
+  writeRowWithStyle(row: number, values: Array<JsCellInputValue>, styleId: number): void
   /** Add a merge cell reference (e.g., "A1:C3"). */
   addMergeCell(reference: string): void
   /** Set column style for a single column (1-based). */
@@ -91,7 +91,7 @@ export declare class Workbook {
   /** Get the names of all sheets in workbook order. */
   get sheetNames(): Array<string>
   /** Get the value of a cell. Returns string, number, boolean, DateValue, or null. */
-  getCellValue(sheet: string, cell: string): null | boolean | number | string | DateValue
+  getCellValue(sheet: string, cell: string): JsCellOutputValue
   /**
    * Get the formatted display text for a cell, applying its number format.
    * Returns the value formatted according to the cell's style.
@@ -108,7 +108,7 @@ export declare class Workbook {
    */
   static builtinFormatCode(id: number): string | null
   /** Set the value of a cell. Pass string, number, boolean, DateValue, or null to clear. */
-  setCellValue(sheet: string, cell: string, value: string | number | boolean | DateValue | null): void
+  setCellValue(sheet: string, cell: string, value: JsCellInputValue): void
   /**
    * Set multiple cell values at once. More efficient than calling
    * setCellValue repeatedly because it crosses the FFI boundary only once.
@@ -118,13 +118,13 @@ export declare class Workbook {
    * Set values in a single row starting from the given column.
    * Values are placed left-to-right starting at startCol (e.g., "A").
    */
-  setRowValues(sheet: string, row: number, startCol: string, values: Array<string | number | boolean | DateValue | null>): void
+  setRowValues(sheet: string, row: number, startCol: string, values: Array<JsCellInputValue>): void
   /**
    * Set a block of cell values from a 2D array.
    * Each inner array is a row, each element is a cell value.
    * Optionally specify a start cell (default "A1").
    */
-  setSheetData(sheet: string, data: Array<Array<string | number | boolean | DateValue | null>>, startCell?: string | undefined | null): void
+  setSheetData(sheet: string, data: Array<Array<JsCellInputValue>>, startCell?: string | undefined | null): void
   /** Create a new empty sheet. Returns the 0-based sheet index. */
   newSheet(name: string): number
   /** Delete a sheet by name. */
@@ -349,7 +349,7 @@ export declare class Workbook {
    */
   fillFormula(sheet: string, range: string, formula: string): void
   /** Evaluate a formula string against the current workbook data. */
-  evaluateFormula(sheet: string, formula: string): null | boolean | number | string | DateValue
+  evaluateFormula(sheet: string, formula: string): JsCellOutputValue
   /** Recalculate all formula cells in the workbook. */
   calculateAll(): void
   /** Add a pivot table to the workbook. */
@@ -433,9 +433,29 @@ export declare class Workbook {
 }
 
 export interface DateValue {
-  type: string
+  kind: string
   serial: number
   iso?: string
+}
+
+/** The cached value of a formula cell. */
+export interface FormulaResultValue {
+  /** Value type: "empty", "string", "number", "boolean", "date", or "error". */
+  valueType: string
+  value?: string
+  numberValue?: number
+  boolValue?: boolean
+  date?: DateValue
+}
+
+/** A formula expression and its optional cached result. */
+export interface FormulaValue {
+  /** Always "formula". */
+  type: string
+  /** Formula expression without the leading equals sign. */
+  formula: string
+  /** Cached result when present in the workbook. */
+  result?: FormulaResultValue
 }
 
 export interface JsAlignmentStyle {
@@ -473,8 +493,8 @@ export interface JsBorderStyle {
 export interface JsCellEntry {
   /** Cell reference (e.g., "A1", "B2"). */
   cell: string
-  /** Cell value: string, number, boolean, DateValue, or null. */
-  value: string | number | boolean | DateValue | null
+  /** Cell value: string, number, boolean, DateValue, FormulaValue, or null. */
+  value: string | number | boolean | DateValue | FormulaValue | null
 }
 
 export interface JsChartConfig {
@@ -505,6 +525,8 @@ export interface JsColCell {
   numberValue?: number
   /** Boolean value (only set when value_type is "boolean"). */
   boolValue?: boolean
+  /** Formula expression and cached result when value_type is "formula". */
+  formula?: FormulaValue
 }
 
 /** A column with its name and cell data. */
@@ -944,6 +966,8 @@ export interface JsRowCell {
   numberValue?: number
   /** Boolean value (only set when value_type is "boolean"). */
   boolValue?: boolean
+  /** Formula expression and cached result when value_type is "formula". */
+  formula?: FormulaValue
 }
 
 /** A row with its 1-based row number and cell data. */

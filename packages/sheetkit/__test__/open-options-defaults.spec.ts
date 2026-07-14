@@ -106,6 +106,35 @@ describe('OpenOptions wrapper defaults', () => {
     });
   });
 
+  it('applies defaults when a partial option explicitly contains undefined', () => {
+    const path = '/tmp/test.xlsx';
+    const buffer = Buffer.from('xlsx');
+
+    Workbook.openSync(path, { readMode: undefined });
+    Workbook.openBufferSync(buffer, { auxParts: undefined });
+
+    expect(nativeCalls.openSync).toHaveBeenCalledWith(path, {
+      readMode: 'lazy',
+      auxParts: 'deferred',
+    });
+    expect(nativeCalls.openBufferSync).toHaveBeenCalledWith(buffer, {
+      auxParts: 'deferred',
+      readMode: 'lazy',
+    });
+  });
+
+  it('applies defaults when options are null', async () => {
+    const path = '/tmp/test.xlsx';
+    const buffer = Buffer.from('xlsx');
+
+    Workbook.openSync(path, null);
+    await Workbook.openBuffer(buffer, null);
+
+    const expectedDefaults = { readMode: 'lazy', auxParts: 'deferred' } as const;
+    expect(nativeCalls.openSync).toHaveBeenCalledWith(path, expectedDefaults);
+    expect(nativeCalls.openBuffer).toHaveBeenCalledWith(buffer, expectedDefaults);
+  });
+
   it('preserves legacy parseMode-only options', () => {
     const path = '/tmp/test.xlsx';
     Workbook.openSync(path, { parseMode: 'full' } as JsOpenOptions);

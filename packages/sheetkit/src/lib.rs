@@ -196,7 +196,7 @@ impl Workbook {
         &self,
         sheet: String,
         cell: String,
-    ) -> Result<Either5<Null, bool, f64, String, DateValue>> {
+    ) -> Result<crate::conversions::JsCellOutputValue> {
         let value = self
             .inner
             .get_cell_value(&sheet, &cell)
@@ -233,15 +233,9 @@ impl Workbook {
         &mut self,
         sheet: String,
         cell: String,
-        value: Either5<String, f64, bool, DateValue, Null>,
+        value: crate::conversions::JsCellInputValue,
     ) -> Result<()> {
-        let cell_value = match value {
-            Either5::A(s) => CellValue::String(s),
-            Either5::B(n) => CellValue::Number(n),
-            Either5::C(b) => CellValue::Bool(b),
-            Either5::D(d) => CellValue::Date(d.serial),
-            Either5::E(_) => CellValue::Empty,
-        };
+        let cell_value = js_value_to_cell_value(value);
         self.inner
             .set_cell_value(&sheet, &cell, cell_value)
             .map_err(|e| Error::from_reason(e.to_string()))
@@ -269,7 +263,7 @@ impl Workbook {
         sheet: String,
         row: u32,
         start_col: String,
-        values: Vec<Either5<String, f64, bool, DateValue, Null>>,
+        values: Vec<crate::conversions::JsCellInputValue>,
     ) -> Result<()> {
         let col_num = crate::conversions::parse_column_name(&start_col)?;
         let cell_values: Vec<CellValue> = values.into_iter().map(js_value_to_cell_value).collect();
@@ -286,7 +280,7 @@ impl Workbook {
     pub fn set_sheet_data(
         &mut self,
         sheet: String,
-        data: Vec<Vec<Either5<String, f64, bool, DateValue, Null>>>,
+        data: Vec<Vec<crate::conversions::JsCellInputValue>>,
         start_cell: Option<String>,
     ) -> Result<()> {
         let (start_col, start_row) = if let Some(ref cell) = start_cell {
@@ -1448,7 +1442,7 @@ impl Workbook {
         &self,
         sheet: String,
         formula: String,
-    ) -> Result<Either5<Null, bool, f64, String, DateValue>> {
+    ) -> Result<crate::conversions::JsCellOutputValue> {
         let result = self
             .inner
             .evaluate_formula(&sheet, &formula)

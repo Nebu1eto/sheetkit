@@ -650,8 +650,12 @@ fn build_row_xml(
                 xml.push_str("</v></c>");
             }
             CellValue::Date(serial) => {
-                xml.push_str("><v>");
-                xml.push_str(&serial.to_string());
+                xml.push_str(" t=\"d\"><v>");
+                if let Some(datetime) = crate::cell::serial_to_datetime(*serial) {
+                    xml.push_str(&datetime.format("%Y-%m-%dT%H:%M:%S").to_string());
+                } else {
+                    xml.push_str(&serial.to_string());
+                }
                 xml.push_str("</v></c>");
             }
             CellValue::Bool(b) => {
@@ -668,7 +672,8 @@ fn build_row_xml(
                         CellValue::String(_) => xml.push_str(" t=\"str\""),
                         CellValue::Bool(_) => xml.push_str(" t=\"b\""),
                         CellValue::Error(_) => xml.push_str(" t=\"e\""),
-                        _ => {} // Number/Date: default (no t) is numeric
+                        CellValue::Date(_) => xml.push_str(" t=\"d\""),
+                        _ => {} // Number: default (no t) is numeric
                     }
                 }
                 xml.push_str("><f>");
@@ -693,7 +698,11 @@ fn build_row_xml(
                         }
                         CellValue::Date(d) => {
                             xml.push_str("<v>");
-                            xml.push_str(&d.to_string());
+                            if let Some(datetime) = crate::cell::serial_to_datetime(*d) {
+                                xml.push_str(&datetime.format("%Y-%m-%dT%H:%M:%S").to_string());
+                            } else {
+                                xml.push_str(&d.to_string());
+                            }
                             xml.push_str("</v>");
                         }
                         CellValue::Error(e) => {
@@ -1659,11 +1668,8 @@ mod tests {
         sw.write_row(1, &[CellValue::Date(45306.0)]).unwrap();
         let xml = finish_and_get_xml(sw);
 
-        // Date is serialized as a plain numeric <v> with no type tag
-        assert!(xml.contains("<v>45306</v>"));
-        // Should not have t="..." attribute (same as Number)
-        assert!(!xml.contains("t=\"inlineStr\""));
-        assert!(!xml.contains("t=\"b\""));
+        assert!(xml.contains("t=\"d\""));
+        assert!(xml.contains("<v>2024-01-15T00:00:00</v>"));
     }
 
     #[test]
@@ -1673,7 +1679,7 @@ mod tests {
         sw.write_row(1, &[CellValue::Date(45306.5)]).unwrap();
         let xml = finish_and_get_xml(sw);
 
-        assert!(xml.contains("<v>45306.5</v>"));
+        assert!(xml.contains("<v>2024-01-15T12:00:00</v>"));
     }
 
     #[test]
