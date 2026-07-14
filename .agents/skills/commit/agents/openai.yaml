@@ -1,0 +1,4 @@
+interface:
+  display_name: "Commit"
+  short_description: "Create SheetKit-compliant git commits"
+  default_prompt: "Use $commit to create a SheetKit-compliant git commit for the staged changes."

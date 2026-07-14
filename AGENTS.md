@@ -28,6 +28,26 @@ SheetKit is a Rust library for reading and writing Excel (.xlsx) files, with Nod
 
 Follow a TDD approach: write tests FIRST, then implement. Tests should verify essential behaviors, not trivial things.
 
+### AI Usage
+
+- Follow `AI_POLICY.md` for all AI-assisted work.
+- Disclose AI assistance in commit messages with an `Assisted-by` trailer in
+  the format `Assisted-by: <agent name>:<model version>`.
+- Do not use `Co-authored-by` or `Generated with` trailers for AI assistants.
+
+### Commits
+
+- Use the `commit` skill for all commits.
+- Use `[<package>] <type>(#<issue>): <summary>` for commit subjects.
+- Omit `(#<issue>)` when no GitHub issue number is provided or known.
+- Use `[*]` for repository-wide changes and the affected crate or package name
+  otherwise.
+- Write the body as concise `- <what and why changed>` bullets.
+- Keep the subject and each body bullet at or under 72 characters.
+- Sign commits when git signing is configured and available.
+- Add `Assisted-by` and `Signed-off-by` trailers.
+- Run `pnpm format` before committing.
+
 ### Build Commands
 
 ```bash
