@@ -505,6 +505,7 @@ impl StreamWriter {
         }
 
         // Build row XML directly and write to temp file.
+        validate_stream_values(values)?;
         let xml = build_row_xml(row, values, cell_style_id, options);
         let bytes = xml.as_bytes();
         self.ensure_temp_file()?.write_all(bytes)?;
@@ -727,6 +728,9 @@ fn build_row_xml(
 /// Escape XML special characters into an existing string buffer.
 fn xml_escape_into(buf: &mut String, s: &str) {
     for ch in s.chars() {
+        if !is_xml_char(ch) {
+            continue;
+        }
         match ch {
             '&' => buf.push_str("&amp;"),
             '<' => buf.push_str("&lt;"),
@@ -735,6 +739,33 @@ fn xml_escape_into(buf: &mut String, s: &str) {
             '\'' => buf.push_str("&apos;"),
             _ => buf.push(ch),
         }
+    }
+}
+
+/// XML 1.0 permits tab, LF, and CR control whitespace; other controls are
+/// removed deterministically before text is escaped.
+fn is_xml_char(ch: char) -> bool {
+    matches!(ch, '\t' | '\n' | '\r')
+        || matches!(ch as u32, 0x20..=0xD7FF | 0xE000..=0xFFFD | 0x10000..=0x10FFFF)
+}
+
+fn validate_stream_values(values: &[CellValue]) -> Result<()> {
+    for value in values {
+        validate_stream_value(value)?;
+    }
+    Ok(())
+}
+
+fn validate_stream_value(value: &CellValue) -> Result<()> {
+    match value {
+        CellValue::Number(n) | CellValue::Date(n) if !n.is_finite() => {
+            Err(Error::StreamNonFiniteValue)
+        }
+        CellValue::Formula {
+            result: Some(result),
+            ..
+        } => validate_stream_value(result),
+        _ => Ok(()),
     }
 }
 
@@ -1919,5 +1950,49 @@ mod tests {
             result.unwrap_err(),
             Error::StreamRowAlreadyWritten { row: 3 }
         ));
+    }
+
+    #[test]
+    fn test_rejects_non_finite_values_without_advancing_stream_state() {
+        let mut sw = StreamWriter::new("Sheet1");
+        let error = sw.write_row(1, &[CellValue::Number(f64::NAN)]).unwrap_err();
+        assert!(matches!(error, Error::StreamNonFiniteValue));
+        assert_eq!(sw.last_row, 0);
+        assert_eq!(sw.bytes_written, 0);
+
+        let error = sw
+            .write_row(
+                1,
+                &[CellValue::Formula {
+                    expr: "1/0".to_string(),
+                    result: Some(Box::new(CellValue::Date(f64::INFINITY))),
+                }],
+            )
+            .unwrap_err();
+        assert!(matches!(error, Error::StreamNonFiniteValue));
+        assert_eq!(sw.last_row, 0);
+    }
+
+    #[test]
+    fn test_sanitizes_illegal_xml_controls_and_preserves_whitespace() {
+        let mut sw = StreamWriter::new("Sheet1");
+        sw.write_row(
+            1,
+            &[
+                CellValue::String("a\u{0001}b\t\n\rc".to_string()),
+                CellValue::Formula {
+                    expr: "A1&\"\u{0002}x\"".to_string(),
+                    result: Some(Box::new(CellValue::String("r\u{0003}s".to_string()))),
+                },
+            ],
+        )
+        .unwrap();
+        let xml = finish_and_get_xml(sw);
+        assert!(!xml.contains('\u{0001}'));
+        assert!(!xml.contains('\u{0002}'));
+        assert!(!xml.contains('\u{0003}'));
+        assert!(xml.contains("a b\t\n\rc") || xml.contains("ab\t\n\rc"));
+        let parsed: WorksheetXml = quick_xml::de::from_str(&xml).unwrap();
+        assert_eq!(parsed.sheet_data.rows.len(), 1);
     }
 }

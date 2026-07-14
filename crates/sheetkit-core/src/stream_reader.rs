@@ -18,6 +18,7 @@ use crate::cell::CellValue;
 use crate::error::{Error, Result};
 use crate::sst::SharedStringTable;
 use crate::utils::cell_ref::cell_name_to_coordinates;
+use crate::utils::constants::{MAX_COLUMNS, MAX_ROWS};
 use crate::workbook::open_options::DateInterpretation;
 
 /// A single row produced by the streaming reader.
@@ -42,6 +43,7 @@ pub struct SheetStreamReader<'a, R: BufRead> {
     rows_emitted: u32,
     date_interpretation: DateInterpretation,
     style_is_date: Vec<bool>,
+    last_row_number: u32,
 }
 
 impl<'a, R: BufRead> SheetStreamReader<'a, R> {
@@ -61,6 +63,7 @@ impl<'a, R: BufRead> SheetStreamReader<'a, R> {
             rows_emitted: 0,
             date_interpretation: DateInterpretation::default(),
             style_is_date: Vec::new(),
+            last_row_number: 0,
         }
     }
 
@@ -129,8 +132,10 @@ impl<'a, R: BufRead> SheetStreamReader<'a, R> {
                 .map_err(|e| Error::XmlParse(e.to_string()))?
             {
                 Event::Start(ref e) if e.name() == QName(b"row") => {
-                    let row_number = extract_row_number(e)?;
+                    let row_number =
+                        resolve_row_number(extract_row_number(e)?, self.last_row_number)?;
                     let row = self.parse_row_body(row_number)?;
+                    self.last_row_number = row_number;
                     self.rows_emitted += 1;
                     if !row.cells.is_empty() {
                         rows.push(row);
@@ -161,6 +166,7 @@ impl<'a, R: BufRead> SheetStreamReader<'a, R> {
     /// the row number has been extracted from the opening tag.
     fn parse_row_body(&mut self, row_number: u32) -> Result<StreamRow> {
         let mut cells = Vec::new();
+        let mut last_col = 0;
         let mut buf = Vec::with_capacity(1024);
 
         loop {
@@ -171,29 +177,27 @@ impl<'a, R: BufRead> SheetStreamReader<'a, R> {
                 .map_err(|e| Error::XmlParse(e.to_string()))?
             {
                 Event::Start(ref e) if e.name() == QName(b"c") => {
-                    let (col, cell_type, style_idx) = extract_cell_attrs(e)?;
-                    if let Some(col) = col {
-                        let promote = self.should_promote_to_date(style_idx);
-                        let cv = self.parse_cell_body(cell_type.as_deref(), promote)?;
-                        cells.push((col, cv));
-                    } else {
-                        self.skip_to_end_of(b"c")?;
-                    }
+                    let (explicit_col, cell_type, style_idx) = extract_cell_attrs(e)?;
+                    let col = resolve_cell_column(explicit_col, last_col)?;
+                    let promote = self.should_promote_to_date(style_idx);
+                    let cv = self.parse_cell_body(cell_type.as_deref(), promote)?;
+                    last_col = col;
+                    cells.push((col, cv));
                 }
                 Event::Empty(ref e) if e.name() == QName(b"c") => {
-                    let (col, cell_type, style_idx) = extract_cell_attrs(e)?;
-                    if let Some(col) = col {
-                        let promote = self.should_promote_to_date(style_idx);
-                        let cv = resolve_cell_value(
-                            self.sst,
-                            cell_type.as_deref(),
-                            None,
-                            None,
-                            None,
-                            promote,
-                        )?;
-                        cells.push((col, cv));
-                    }
+                    let (explicit_col, cell_type, style_idx) = extract_cell_attrs(e)?;
+                    let col = resolve_cell_column(explicit_col, last_col)?;
+                    let promote = self.should_promote_to_date(style_idx);
+                    let cv = resolve_cell_value(
+                        self.sst,
+                        cell_type.as_deref(),
+                        None,
+                        None,
+                        None,
+                        promote,
+                    )?;
+                    last_col = col;
+                    cells.push((col, cv));
                 }
                 Event::End(ref e) if e.name() == QName(b"row") => break,
                 Event::Eof => {
@@ -219,6 +223,7 @@ impl<'a, R: BufRead> SheetStreamReader<'a, R> {
         let mut inline_string: Option<String> = None;
         let mut buf = Vec::with_capacity(512);
         let mut in_is = false;
+        let mut in_phonetic = false;
 
         loop {
             buf.clear();
@@ -236,7 +241,9 @@ impl<'a, R: BufRead> SheetStreamReader<'a, R> {
                     } else if local.as_ref() == b"is" {
                         in_is = true;
                         inline_string = Some(String::new());
-                    } else if local.as_ref() == b"t" && in_is {
+                    } else if local.as_ref() == b"rPh" && in_is {
+                        in_phonetic = true;
+                    } else if local.as_ref() == b"t" && in_is && !in_phonetic {
                         let t = self.read_text_content(b"t")?;
                         if let Some(ref mut is) = inline_string {
                             is.push_str(&t);
@@ -250,6 +257,8 @@ impl<'a, R: BufRead> SheetStreamReader<'a, R> {
                     }
                     if local.as_ref() == b"is" {
                         in_is = false;
+                    } else if local.as_ref() == b"rPh" {
+                        in_phonetic = false;
                     }
                 }
                 Event::Eof => {
@@ -295,36 +304,6 @@ impl<'a, R: BufRead> SheetStreamReader<'a, R> {
         }
         Ok(text)
     }
-
-    /// Skip all events until the matching end tag for the given element.
-    fn skip_to_end_of(&mut self, tag: &[u8]) -> Result<()> {
-        let mut buf = Vec::with_capacity(256);
-        let mut depth: u32 = 1;
-        loop {
-            buf.clear();
-            match self
-                .reader
-                .read_event_into(&mut buf)
-                .map_err(|e| Error::XmlParse(e.to_string()))?
-            {
-                Event::Start(ref e) if e.local_name().as_ref() == tag => {
-                    depth += 1;
-                }
-                Event::End(ref e) if e.local_name().as_ref() == tag => {
-                    depth -= 1;
-                    if depth == 0 {
-                        break;
-                    }
-                }
-                Event::Eof => {
-                    self.done = true;
-                    break;
-                }
-                _ => {}
-            }
-        }
-        Ok(())
-    }
 }
 
 /// Owning variant of [`SheetStreamReader`] for use in FFI contexts where
@@ -341,6 +320,7 @@ pub struct OwnedSheetStreamReader {
     rows_emitted: u32,
     date_interpretation: DateInterpretation,
     style_is_date: Vec<bool>,
+    last_row_number: u32,
 }
 
 impl OwnedSheetStreamReader {
@@ -362,6 +342,7 @@ impl OwnedSheetStreamReader {
             rows_emitted: 0,
             date_interpretation: DateInterpretation::default(),
             style_is_date: Vec::new(),
+            last_row_number: 0,
         }
     }
 
@@ -423,8 +404,10 @@ impl OwnedSheetStreamReader {
                 .map_err(|e| Error::XmlParse(e.to_string()))?
             {
                 Event::Start(ref e) if e.name() == QName(b"row") => {
-                    let row_number = extract_row_number(e)?;
+                    let row_number =
+                        resolve_row_number(extract_row_number(e)?, self.last_row_number)?;
                     let row = self.parse_row_body(row_number)?;
+                    self.last_row_number = row_number;
                     self.rows_emitted += 1;
                     if !row.cells.is_empty() {
                         rows.push(row);
@@ -453,6 +436,7 @@ impl OwnedSheetStreamReader {
 
     fn parse_row_body(&mut self, row_number: u32) -> Result<StreamRow> {
         let mut cells = Vec::new();
+        let mut last_col = 0;
         let mut buf = Vec::with_capacity(1024);
 
         loop {
@@ -463,29 +447,27 @@ impl OwnedSheetStreamReader {
                 .map_err(|e| Error::XmlParse(e.to_string()))?
             {
                 Event::Start(ref e) if e.name() == QName(b"c") => {
-                    let (col, cell_type, style_idx) = extract_cell_attrs(e)?;
-                    if let Some(col) = col {
-                        let promote = self.should_promote_to_date(style_idx);
-                        let cv = self.parse_cell_body(cell_type.as_deref(), promote)?;
-                        cells.push((col, cv));
-                    } else {
-                        self.skip_to_end_of(b"c")?;
-                    }
+                    let (explicit_col, cell_type, style_idx) = extract_cell_attrs(e)?;
+                    let col = resolve_cell_column(explicit_col, last_col)?;
+                    let promote = self.should_promote_to_date(style_idx);
+                    let cv = self.parse_cell_body(cell_type.as_deref(), promote)?;
+                    last_col = col;
+                    cells.push((col, cv));
                 }
                 Event::Empty(ref e) if e.name() == QName(b"c") => {
-                    let (col, cell_type, style_idx) = extract_cell_attrs(e)?;
-                    if let Some(col) = col {
-                        let promote = self.should_promote_to_date(style_idx);
-                        let cv = resolve_cell_value(
-                            &self.sst,
-                            cell_type.as_deref(),
-                            None,
-                            None,
-                            None,
-                            promote,
-                        )?;
-                        cells.push((col, cv));
-                    }
+                    let (explicit_col, cell_type, style_idx) = extract_cell_attrs(e)?;
+                    let col = resolve_cell_column(explicit_col, last_col)?;
+                    let promote = self.should_promote_to_date(style_idx);
+                    let cv = resolve_cell_value(
+                        &self.sst,
+                        cell_type.as_deref(),
+                        None,
+                        None,
+                        None,
+                        promote,
+                    )?;
+                    last_col = col;
+                    cells.push((col, cv));
                 }
                 Event::End(ref e) if e.name() == QName(b"row") => break,
                 Event::Eof => {
@@ -509,6 +491,7 @@ impl OwnedSheetStreamReader {
         let mut inline_string: Option<String> = None;
         let mut buf = Vec::with_capacity(512);
         let mut in_is = false;
+        let mut in_phonetic = false;
 
         loop {
             buf.clear();
@@ -526,7 +509,9 @@ impl OwnedSheetStreamReader {
                     } else if local.as_ref() == b"is" {
                         in_is = true;
                         inline_string = Some(String::new());
-                    } else if local.as_ref() == b"t" && in_is {
+                    } else if local.as_ref() == b"rPh" && in_is {
+                        in_phonetic = true;
+                    } else if local.as_ref() == b"t" && in_is && !in_phonetic {
                         let t = self.read_text_content(b"t")?;
                         if let Some(ref mut is) = inline_string {
                             is.push_str(&t);
@@ -540,6 +525,8 @@ impl OwnedSheetStreamReader {
                     }
                     if local.as_ref() == b"is" {
                         in_is = false;
+                    } else if local.as_ref() == b"rPh" {
+                        in_phonetic = false;
                     }
                 }
                 Event::Eof => {
@@ -584,51 +571,41 @@ impl OwnedSheetStreamReader {
         }
         Ok(text)
     }
-
-    fn skip_to_end_of(&mut self, tag: &[u8]) -> Result<()> {
-        let mut buf = Vec::with_capacity(256);
-        let mut depth: u32 = 1;
-        loop {
-            buf.clear();
-            match self
-                .reader
-                .read_event_into(&mut buf)
-                .map_err(|e| Error::XmlParse(e.to_string()))?
-            {
-                Event::Start(ref e) if e.local_name().as_ref() == tag => {
-                    depth += 1;
-                }
-                Event::End(ref e) if e.local_name().as_ref() == tag => {
-                    depth -= 1;
-                    if depth == 0 {
-                        break;
-                    }
-                }
-                Event::Eof => {
-                    self.done = true;
-                    break;
-                }
-                _ => {}
-            }
-        }
-        Ok(())
-    }
 }
 
 /// Extract the `r` (row number) attribute from a `<row>` element.
-fn extract_row_number(start: &quick_xml::events::BytesStart<'_>) -> Result<u32> {
+fn extract_row_number(start: &quick_xml::events::BytesStart<'_>) -> Result<Option<u32>> {
     for attr in start.attributes().flatten() {
         if attr.key == QName(b"r") {
             let val =
                 std::str::from_utf8(&attr.value).map_err(|e| Error::XmlParse(e.to_string()))?;
             return val
                 .parse::<u32>()
+                .map(Some)
                 .map_err(|e| Error::XmlParse(format!("invalid row number: {e}")));
         }
     }
-    Err(Error::XmlParse(
-        "row element missing r attribute".to_string(),
-    ))
+    Ok(None)
+}
+
+fn resolve_row_number(explicit: Option<u32>, previous: u32) -> Result<u32> {
+    let row = explicit.unwrap_or_else(|| previous.saturating_add(1));
+    if row == 0 || row > MAX_ROWS || row <= previous {
+        return Err(Error::XmlParse(format!(
+            "invalid or out-of-order row number: {row}"
+        )));
+    }
+    Ok(row)
+}
+
+fn resolve_cell_column(explicit: Option<u32>, previous: u32) -> Result<u32> {
+    let col = explicit.unwrap_or_else(|| previous.saturating_add(1));
+    if col == 0 || col > MAX_COLUMNS || col <= previous {
+        return Err(Error::XmlParse(format!(
+            "invalid or out-of-order column number: {col}"
+        )));
+    }
+    Ok(col)
 }
 
 /// Extract the cell reference (column index), type attribute, and style
@@ -1325,5 +1302,51 @@ mod tests {
         assert_eq!(rows[0].cells[2].1, CellValue::Number(2.5));
         // D1: no style → stays Number.
         assert_eq!(rows[0].cells[3].1, CellValue::Number(42.0));
+    }
+
+    #[test]
+    fn test_infers_missing_row_and_cell_references() {
+        let xml = worksheet_xml(
+            r#"<row><c t="n"><v>1</v></c><c t="n"><v>2</v></c></row>
+<row r="3"><c r="C3" t="n"><v>3</v></c><c t="n"><v>4</v></c></row>"#,
+        );
+        let rows = read_all(&xml, &make_sst(&[]), None);
+        assert_eq!(rows[0].row_number, 1);
+        assert_eq!(
+            rows[0].cells,
+            vec![(1, CellValue::Number(1.0)), (2, CellValue::Number(2.0))]
+        );
+        assert_eq!(rows[1].row_number, 3);
+        assert_eq!(
+            rows[1].cells,
+            vec![(3, CellValue::Number(3.0)), (4, CellValue::Number(4.0))]
+        );
+    }
+
+    #[test]
+    fn test_rejects_out_of_order_or_out_of_bounds_inferred_positions() {
+        let xml = worksheet_xml(r#"<row r="2"><c r="B2"/><c r="A2"/></row>"#);
+        let cursor = Cursor::new(xml.into_bytes());
+        let sst = make_sst(&[]);
+        let mut reader = SheetStreamReader::new(cursor, &sst);
+        assert!(matches!(reader.next_batch(1), Err(Error::XmlParse(_))));
+
+        let xml = worksheet_xml(r#"<row r="1048577"><c r="A1048577"/></row>"#);
+        let cursor = Cursor::new(xml.into_bytes());
+        let sst = make_sst(&[]);
+        let mut reader = SheetStreamReader::new(cursor, &sst);
+        assert!(matches!(reader.next_batch(1), Err(Error::XmlParse(_))));
+    }
+
+    #[test]
+    fn test_inline_strings_exclude_phonetic_runs() {
+        let xml = worksheet_xml(
+            r#"<row r="1"><c r="A1" t="inlineStr"><is><r><t>Base</t></r><rPh sb="0" eb="4"><t>phonetic</t></rPh><r><t> Text</t></r></is></c></row>"#,
+        );
+        let rows = read_all(&xml, &make_sst(&[]), None);
+        assert_eq!(
+            rows[0].cells[0],
+            (1, CellValue::String("Base Text".to_string()))
+        );
     }
 }

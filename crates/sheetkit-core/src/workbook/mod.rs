@@ -265,11 +265,19 @@ impl Workbook {
             })
     }
 
-    /// Invalidate streamed data for a sheet by index. Must be called before
-    /// any mutation to a sheet that may have been created via StreamWriter,
-    /// so that the normal WorksheetXml serialization path is used on save.
+    /// Discard streamed backing for an explicitly whole-sheet replacement.
     pub(crate) fn invalidate_streamed(&mut self, idx: usize) {
         self.streamed_sheets.remove(&idx);
+    }
+
+    /// Reject mutations that cannot preserve streamed rows.
+    pub(crate) fn reject_streamed_mutation(&self, idx: usize) -> Result<()> {
+        if self.streamed_sheets.contains_key(&idx) {
+            return Err(Error::StreamedSheetMutation {
+                sheet: self.worksheets[idx].0.clone(),
+            });
+        }
+        Ok(())
     }
 
     /// Mark a sheet as dirty (modified). Dirty sheets are always serialized
@@ -338,12 +346,11 @@ impl Workbook {
 
     /// Get a mutable reference to the worksheet XML for the named sheet.
     ///
-    /// If the sheet has streamed data (from [`apply_stream_writer`]), the
-    /// streamed entry is removed so that subsequent edits are not silently
-    /// ignored on save. Deferred sheets are hydrated on demand.
+    /// Random-access mutation of streamed sheets is rejected because their
+    /// backing rows are not materialized in this worksheet XML.
     pub(crate) fn worksheet_mut(&mut self, sheet: &str) -> Result<&mut WorksheetXml> {
         let idx = self.sheet_index(sheet)?;
-        self.invalidate_streamed(idx);
+        self.reject_streamed_mutation(idx)?;
         self.ensure_hydrated(idx)?;
         self.mark_sheet_dirty(idx);
         Ok(self.worksheets[idx].1.get_mut().unwrap())
@@ -434,6 +441,7 @@ impl Workbook {
     /// Hydrate if needed and return a mutable reference to the worksheet
     /// at the given index. Callers must hold `&mut self`.
     pub(crate) fn worksheet_mut_by_index(&mut self, idx: usize) -> Result<&mut WorksheetXml> {
+        self.reject_streamed_mutation(idx)?;
         self.ensure_hydrated(idx)?;
         self.mark_sheet_dirty(idx);
         Ok(self.worksheets[idx].1.get_mut().unwrap())

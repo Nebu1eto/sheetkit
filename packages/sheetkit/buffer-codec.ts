@@ -11,8 +11,11 @@ const TYPE_FORMULA = 0x06;
 const TYPE_RICH_STRING = 0x07;
 const FLAG_SPARSE = 0x01;
 const HEADER_SIZE = 16;
+const ROW_INDEX_ENTRY_SIZE = 8;
 const MAGIC_V1 = 0x534b5244;
 const MAGIC_V2 = 0x534b5232;
+const VERSION_V1 = 1;
+const VERSION_V2 = 2;
 const SPARSE_ENTRY_SIZE = 11;
 const EMPTY_ROW_OFFSET = 0xffffffff;
 
@@ -79,6 +82,124 @@ function cachedColumnName(n: number): string {
 
 function detectMagic(view: DataView): number {
   return view.getUint32(0, true);
+}
+
+function requireRange(length: number, offset: number, size: number, section: string): void {
+  if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(size) || offset < 0 || size < 0) {
+    throw new Error(`Invalid buffer: ${section} offset overflow`);
+  }
+  const end = offset + size;
+  if (!Number.isSafeInteger(end) || end > length) {
+    throw new Error(`Invalid buffer: truncated ${section}`);
+  }
+}
+
+function validateBuffer(buf: Buffer, view: DataView, magic: number): void {
+  const length = buf.length;
+  const version = view.getUint16(4, true);
+  const rowCount = view.getUint32(6, true);
+  const colCount = view.getUint16(10, true);
+  const flags = view.getUint32(12, true);
+  const isV2 = magic === MAGIC_V2;
+  const expectedVersion = isV2 ? VERSION_V2 : VERSION_V1;
+  if (version !== expectedVersion)
+    throw new Error(`Invalid buffer: unsupported version ${version}`);
+  if (isV2 ? (flags & 0xffff) !== 0 : (flags & 0xfffe) !== 0) {
+    throw new Error('Invalid buffer: invalid flags');
+  }
+  if (rowCount === 0 && colCount === 0 && flags === 0 && length === HEADER_SIZE) return;
+  const rowIndexSize = rowCount * ROW_INDEX_ENTRY_SIZE;
+  requireRange(length, HEADER_SIZE, rowIndexSize, 'row index');
+  const cellDataStart = HEADER_SIZE + rowIndexSize;
+  const entries: RowIndexEntry[] = [];
+  for (let i = 0; i < rowCount; i++) {
+    const offset = HEADER_SIZE + i * ROW_INDEX_ENTRY_SIZE;
+    const rowNum = view.getUint32(offset, true);
+    if (rowNum === 0) throw new Error('Invalid buffer: row number must be non-zero');
+    entries.push({ rowNum, cellOffset: view.getUint32(offset + 4, true) });
+  }
+
+  if (!isV2) {
+    requireRange(length, cellDataStart, 8, 'string table header');
+    const stringCount = view.getUint32(cellDataStart, true);
+    const blobSize = view.getUint32(cellDataStart + 4, true);
+    const offsetsStart = cellDataStart + 8;
+    const offsetsSize = stringCount * 4;
+    requireRange(length, offsetsStart, offsetsSize, 'string table offsets');
+    const blobStart = offsetsStart + offsetsSize;
+    requireRange(length, blobStart, blobSize, 'string table blob');
+    let previous = 0;
+    for (let i = 0; i < stringCount; i++) {
+      const offset = view.getUint32(offsetsStart + i * 4, true);
+      if (offset < previous || offset > blobSize) {
+        throw new Error('Invalid buffer: string offsets must be monotonic and in bounds');
+      }
+      previous = offset;
+    }
+    const dataStart = blobStart + blobSize;
+    if ((flags & FLAG_SPARSE) === 0) {
+      const rowSize = colCount * CELL_STRIDE;
+      requireRange(length, dataStart, rowCount * rowSize, 'dense cell data');
+      for (let i = 0; i < rowCount; i++) {
+        if (entries[i].cellOffset !== i * rowSize) {
+          throw new Error('Invalid buffer: dense row offsets are inconsistent');
+        }
+      }
+      if (dataStart + rowCount * rowSize !== length)
+        throw new Error('Invalid buffer: trailing data');
+      return;
+    }
+    validateSparseRows(view, length, entries, dataStart, false, colCount);
+    return;
+  }
+  validateSparseRows(view, length, entries, cellDataStart, true, colCount);
+}
+
+function validateSparseRows(
+  view: DataView,
+  length: number,
+  entries: RowIndexEntry[],
+  dataStart: number,
+  isV2: boolean,
+  colCount: number,
+): void {
+  let cursor = dataStart;
+  for (const entry of entries) {
+    requireRange(length, cursor, 2, 'sparse row');
+    const cellCount = view.getUint16(cursor, true);
+    if (entry.cellOffset === EMPTY_ROW_OFFSET) {
+      if (cellCount !== 0) throw new Error('Invalid buffer: empty row has cells');
+      cursor += 2;
+      continue;
+    }
+    if (entry.cellOffset !== cursor - dataStart) {
+      throw new Error('Invalid buffer: sparse row offsets are inconsistent');
+    }
+    cursor += 2;
+    for (let i = 0; i < cellCount; i++) {
+      const entrySize = isV2 ? 3 : SPARSE_ENTRY_SIZE;
+      requireRange(length, cursor, entrySize, 'sparse cell');
+      const col = view.getUint16(cursor, true);
+      if (col >= colCount) throw new Error('Invalid buffer: cell column is out of range');
+      const type = view.getUint8(cursor + 2);
+      if (type > TYPE_RICH_STRING) throw new Error(`Invalid buffer: unknown cell type ${type}`);
+      if (!isV2) {
+        cursor += SPARSE_ENTRY_SIZE;
+        continue;
+      }
+      cursor += 3;
+      let payloadSize = 0;
+      if (type === TYPE_NUMBER || type === TYPE_DATE) payloadSize = 8;
+      else if (type === TYPE_BOOL) payloadSize = 1;
+      else if (type >= TYPE_STRING) {
+        requireRange(length, cursor, 4, 'v2 string length');
+        payloadSize = 4 + view.getUint32(cursor, true);
+      }
+      requireRange(length, cursor, payloadSize, 'v2 cell payload');
+      cursor += payloadSize;
+    }
+  }
+  if (cursor !== length) throw new Error('Invalid buffer: trailing data');
 }
 
 function readHeaderV1(view: DataView): BufferHeader {
@@ -333,6 +454,11 @@ function parseBuffer(buf: Buffer | null): ParsedBuffer | null {
   const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
   const magic = detectMagic(view);
 
+  if (magic !== MAGIC_V1 && magic !== MAGIC_V2) {
+    throw new Error(`Invalid buffer: bad magic 0x${magic.toString(16)}`);
+  }
+  validateBuffer(buf, view, magic);
+
   if (magic === MAGIC_V2) {
     const header = readHeaderV2(view);
     if (header.rowCount === 0 || header.colCount === 0) {
@@ -356,7 +482,7 @@ function parseBuffer(buf: Buffer | null): ParsedBuffer | null {
     return { format: 'v1', view, header, rowIndex, strings, cellDataStart, minCol };
   }
 
-  throw new Error(`Invalid buffer: bad magic 0x${magic.toString(16)}`);
+  throw new Error('Invalid buffer: unsupported format');
 }
 
 /** Decode a binary buffer (v1 or v2) into JsRowData objects. */

@@ -76,6 +76,14 @@ pub enum Error {
     #[error("stream writer already finished")]
     StreamAlreadyFinished,
 
+    /// A random-access mutation would discard a streamed sheet's row data.
+    #[error("cannot mutate streamed sheet '{sheet}' with random-access operations")]
+    StreamedSheetMutation { sheet: String },
+
+    /// A streamed numeric or date value is not finite.
+    #[error("streamed numeric values must be finite")]
+    StreamNonFiniteValue,
+
     /// Column widths cannot be set after rows have been written.
     #[error("cannot set column width after rows have been written")]
     StreamColumnsAfterRows,

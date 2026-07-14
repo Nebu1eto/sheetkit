@@ -34,6 +34,7 @@
 //! ```
 
 use crate::error::Result;
+use crate::raw_transfer::{inline_string_visible_text, SharedFormulaResolver};
 use crate::sst::SharedStringTable;
 use crate::utils::cell_ref::cell_name_to_coordinates;
 use sheetkit_xml::worksheet::{CellTypeTag, WorksheetXml};
@@ -209,6 +210,7 @@ fn collect_cell_entries_v2(
     min_col: u32,
 ) -> Result<Vec<RowEntriesV2>> {
     let mut result = Vec::with_capacity(ws.sheet_data.rows.len());
+    let shared_formulas = SharedFormulaResolver::new(ws)?;
 
     for row in &ws.sheet_data.rows {
         if row.cells.is_empty() {
@@ -219,7 +221,7 @@ fn collect_cell_entries_v2(
         for cell in &row.cells {
             let col = resolve_col(cell)?;
             let relative_col = (col - min_col) as u16;
-            let (type_tag, payload) = encode_cell_value_v2(cell, sst)?;
+            let (type_tag, payload) = encode_cell_value_v2(cell, sst, &shared_formulas)?;
             cells.push(CellEntryV2 {
                 col: relative_col,
                 type_tag,
@@ -239,14 +241,12 @@ fn collect_cell_entries_v2(
 fn encode_cell_value_v2(
     cell: &sheetkit_xml::worksheet::Cell,
     sst: &SharedStringTable,
+    shared_formulas: &SharedFormulaResolver,
 ) -> Result<(u8, CellPayload)> {
     if cell.f.is_some() {
-        let formula_expr = cell
-            .f
-            .as_ref()
-            .and_then(|f| f.value.as_deref())
-            .unwrap_or("");
-        return Ok((TYPE_FORMULA, CellPayload::Str(formula_expr.to_string())));
+        if let Some(formula_expr) = shared_formulas.formula_for(cell)? {
+            return Ok((TYPE_FORMULA, CellPayload::Str(formula_expr)));
+        }
     }
 
     match cell.t {
@@ -281,11 +281,11 @@ fn encode_cell_value_v2(
         CellTypeTag::InlineString => {
             let text = cell
                 .is
-                .as_ref()
-                .and_then(|is| is.t.as_deref())
-                .or(cell.v.as_deref())
-                .unwrap_or("");
-            Ok((TYPE_STRING, CellPayload::Str(text.to_string())))
+                .as_deref()
+                .map(inline_string_visible_text)
+                .or_else(|| cell.v.clone())
+                .unwrap_or_default();
+            Ok((TYPE_STRING, CellPayload::Str(text)))
         }
         CellTypeTag::Date => {
             if let Some(ref v) = cell.v {
@@ -379,6 +379,7 @@ fn build_row_index_v2(row_entries: &[RowEntriesV2], min_row: u32, max_row: u32) 
 #[allow(clippy::field_reassign_with_default)]
 mod tests {
     use super::*;
+    use sheetkit_xml::shared_strings::{R, T};
     use sheetkit_xml::worksheet::{
         Cell, CellFormula, CellTypeTag, CompactCellRef, InlineString, Row, SheetData, WorksheetXml,
     };
@@ -604,11 +605,83 @@ mod tests {
     }
 
     #[test]
+    fn test_shared_formula_followers_shift_relative_references() {
+        let sst = SharedStringTable::new();
+        let mut master = make_cell("B2", 2, CellTypeTag::None, Some("1"));
+        master.f = Some(Box::new(CellFormula {
+            t: Some("shared".to_string()),
+            reference: Some("B2:C3".to_string()),
+            si: Some(7),
+            value: Some("A2+$A$1".to_string()),
+        }));
+        let mut across = make_cell("C2", 3, CellTypeTag::None, Some("2"));
+        across.f = Some(Box::new(CellFormula {
+            t: Some("shared".to_string()),
+            reference: None,
+            si: Some(7),
+            value: None,
+        }));
+        let mut down = make_cell("B3", 2, CellTypeTag::None, Some("3"));
+        down.f = Some(Box::new(CellFormula {
+            t: Some("shared".to_string()),
+            reference: None,
+            si: Some(7),
+            value: None,
+        }));
+        let ws = make_worksheet(vec![
+            make_row(2, vec![master, across]),
+            make_row(3, vec![down]),
+        ]);
+        let buf = sheet_to_raw_buffer_v2(&ws, &sst).unwrap();
+        let cell_data_start = HEADER_SIZE + 16;
+        let row2_offset = read_u32_le(&buf, HEADER_SIZE + 4);
+        let row3_offset = read_u32_le(&buf, HEADER_SIZE + 12);
+        let row2 = read_v2_row_cells(&buf, cell_data_start + row2_offset as usize);
+        let row3 = read_v2_row_cells(&buf, cell_data_start + row3_offset as usize);
+
+        assert_eq!(
+            row2,
+            vec![
+                (0, TYPE_FORMULA, "A2+$A$1".to_string()),
+                (1, TYPE_FORMULA, "B2+$A$1".to_string())
+            ]
+        );
+        assert_eq!(row3, vec![(0, TYPE_FORMULA, "A3+$A$1".to_string())]);
+    }
+
+    #[test]
+    fn test_shared_formula_without_master_uses_cached_value_or_empty() {
+        let sst = SharedStringTable::new();
+        let mut cached = make_cell("A1", 1, CellTypeTag::None, Some("17"));
+        cached.f = Some(Box::new(CellFormula {
+            t: Some("shared".to_string()),
+            reference: None,
+            si: Some(99),
+            value: None,
+        }));
+        let mut missing = make_cell("B1", 2, CellTypeTag::None, None);
+        missing.f = Some(Box::new(CellFormula {
+            t: Some("shared".to_string()),
+            reference: None,
+            si: Some(99),
+            value: None,
+        }));
+        let ws = make_worksheet(vec![make_row(1, vec![cached, missing])]);
+        let buf = sheet_to_raw_buffer_v2(&ws, &sst).unwrap();
+        let cells = read_v2_row_cells(&buf, HEADER_SIZE + 8);
+
+        assert_eq!(cells[0], (0, TYPE_NUMBER, "17".to_string()));
+        assert_eq!(cells[1], (1, TYPE_EMPTY, String::new()));
+    }
+
+    #[test]
     fn test_inline_string_cell() {
         let sst = SharedStringTable::new();
         let mut cell = make_cell("A1", 1, CellTypeTag::InlineString, None);
         cell.is = Some(Box::new(InlineString {
             t: Some("Inline Text".to_string()),
+            r: vec![],
+            r_ph: vec![],
         }));
         let ws = make_worksheet(vec![make_row(1, vec![cell])]);
         let buf = sheet_to_raw_buffer_v2(&ws, &sst).unwrap();
@@ -620,6 +693,60 @@ mod tests {
         assert_eq!(cells.len(), 1);
         assert_eq!(cells[0].1, TYPE_STRING);
         assert_eq!(cells[0].2, "Inline Text");
+    }
+
+    #[test]
+    fn test_inline_string_preserves_escaped_visible_text() {
+        let sst = SharedStringTable::new();
+        let mut cell = make_cell("A1", 1, CellTypeTag::InlineString, None);
+        cell.is = Some(Box::new(InlineString {
+            t: Some("A < B & C".to_string()),
+            r: vec![],
+            r_ph: vec![],
+        }));
+        let ws = make_worksheet(vec![make_row(1, vec![cell])]);
+        let buf = sheet_to_raw_buffer_v2(&ws, &sst).unwrap();
+        let cells = read_v2_row_cells(&buf, HEADER_SIZE + 8);
+
+        assert_eq!(cells, vec![(0, TYPE_STRING, "A < B & C".to_string())]);
+    }
+
+    #[test]
+    fn test_inline_rich_text_concatenates_runs_without_phonetics() {
+        let sst = SharedStringTable::new();
+        let mut cell = make_cell("A1", 1, CellTypeTag::InlineString, None);
+        cell.is = Some(Box::new(InlineString {
+            t: None,
+            r: vec![
+                R {
+                    r_pr: None,
+                    t: T {
+                        xml_space: None,
+                        value: "Bold".to_string(),
+                    },
+                },
+                R {
+                    r_pr: None,
+                    t: T {
+                        xml_space: Some("preserve".to_string()),
+                        value: " Text & More".to_string(),
+                    },
+                },
+            ],
+            r_ph: vec![sheetkit_xml::worksheet::PhoneticRun {
+                sb: Some(0),
+                eb: Some(4),
+                value: "phonetic".to_string(),
+            }],
+        }));
+        let ws = make_worksheet(vec![make_row(1, vec![cell])]);
+        let buf = sheet_to_raw_buffer_v2(&ws, &sst).unwrap();
+        let cells = read_v2_row_cells(&buf, HEADER_SIZE + 8);
+
+        assert_eq!(
+            cells,
+            vec![(0, TYPE_STRING, "Bold Text & More".to_string())]
+        );
     }
 
     #[test]

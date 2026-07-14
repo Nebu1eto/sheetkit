@@ -50,7 +50,7 @@ impl Workbook {
         }
 
         let sheet_idx = self.sheet_index(sheet)?;
-        self.invalidate_streamed(sheet_idx);
+        self.reject_streamed_mutation(sheet_idx)?;
         self.ensure_hydrated(sheet_idx)?;
         self.mark_sheet_dirty(sheet_idx);
 
@@ -499,7 +499,7 @@ impl Workbook {
         entries: Vec<(String, CellValue)>,
     ) -> Result<()> {
         let sheet_idx = self.sheet_index(sheet)?;
-        self.invalidate_streamed(sheet_idx);
+        self.reject_streamed_mutation(sheet_idx)?;
         self.ensure_hydrated(sheet_idx)?;
         self.mark_sheet_dirty(sheet_idx);
 
@@ -596,6 +596,8 @@ impl Workbook {
         start_col: u32,
     ) -> Result<()> {
         let sheet_idx = self.sheet_index(sheet)?;
+        // This API deliberately replaces streamed backing with typed data.
+        self.invalidate_streamed(sheet_idx);
         self.ensure_hydrated(sheet_idx)?;
         self.mark_sheet_dirty(sheet_idx);
 
@@ -1776,5 +1778,32 @@ mod tests {
         let cells = &rows[0].1;
         assert_eq!(cells[0].1, CellValue::Number(46127.0));
         assert_eq!(cells[1].1, CellValue::Number(42.0));
+    }
+
+    #[test]
+    fn test_set_sheet_data_replaces_streamed_backing_on_save() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("streamed_sheet_data_replacement.xlsx");
+        let mut wb = Workbook::new();
+        let mut writer = wb.new_stream_writer("Streamed").unwrap();
+        writer
+            .write_row(1, &[CellValue::String("streamed".to_string())])
+            .unwrap();
+        wb.apply_stream_writer(writer).unwrap();
+
+        wb.set_sheet_data(
+            "Streamed",
+            vec![vec![CellValue::String("replacement".to_string())]],
+            1,
+            1,
+        )
+        .unwrap();
+        wb.save(&path).unwrap();
+
+        let reopened = Workbook::open(&path).unwrap();
+        assert_eq!(
+            reopened.get_cell_value("Streamed", "A1").unwrap(),
+            CellValue::String("replacement".to_string())
+        );
     }
 }

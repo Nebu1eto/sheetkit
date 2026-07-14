@@ -13,9 +13,12 @@ use std::collections::HashMap;
 use crate::cell::CellValue;
 use crate::error::{Error, Result};
 use crate::rich_text;
+use crate::utils::constants::{MAX_COLUMNS, MAX_ROWS};
 
 const MAGIC: u32 = 0x534B5244;
 const VERSION: u16 = 1;
+const MAGIC_V2: u32 = crate::raw_transfer_v2::MAGIC_V2;
+const VERSION_V2: u16 = crate::raw_transfer_v2::VERSION_V2;
 const HEADER_SIZE: usize = 16;
 const ROW_INDEX_ENTRY_SIZE: usize = 8;
 const CELL_STRIDE: usize = 9;
@@ -57,16 +60,24 @@ fn read_header(buf: &[u8]) -> Result<BufferHeader> {
             HEADER_SIZE
         )));
     }
-    let magic = u32::from_le_bytes(buf[0..4].try_into().unwrap());
+    let magic = read_u32(buf, 0, "header")?;
     if magic != MAGIC {
         return Err(Error::Internal(format!(
             "invalid buffer magic: expected 0x{MAGIC:08X}, got 0x{magic:08X}"
         )));
     }
-    let version = u16::from_le_bytes(buf[4..6].try_into().unwrap());
-    let row_count = u32::from_le_bytes(buf[6..10].try_into().unwrap());
-    let col_count = u16::from_le_bytes(buf[10..12].try_into().unwrap());
-    let flags = u32::from_le_bytes(buf[12..16].try_into().unwrap());
+    let version = read_u16(buf, 4, "header")?;
+    if version != VERSION {
+        return Err(Error::Internal(format!(
+            "unsupported buffer version: {version}"
+        )));
+    }
+    let row_count = read_u32(buf, 6, "header")?;
+    let col_count = read_u16(buf, 10, "header")?;
+    let flags = read_u32(buf, 12, "header")?;
+    if flags & 0x0000_FFFE != 0 {
+        return Err(Error::Internal("invalid v1 buffer flags".to_string()));
+    }
     Ok(BufferHeader {
         _version: version,
         row_count,
@@ -75,9 +86,58 @@ fn read_header(buf: &[u8]) -> Result<BufferHeader> {
     })
 }
 
+fn checked_end(start: usize, len: usize, context: &str) -> Result<usize> {
+    start
+        .checked_add(len)
+        .ok_or_else(|| Error::Internal(format!("{context} exceeds addressable buffer size")))
+}
+
+fn read_u16(buf: &[u8], offset: usize, context: &str) -> Result<u16> {
+    let end = checked_end(offset, 2, context)?;
+    let bytes = buf
+        .get(offset..end)
+        .ok_or_else(|| Error::Internal(format!("buffer too short for {context}")))?;
+    Ok(u16::from_le_bytes(
+        bytes.try_into().expect("fixed-size slice"),
+    ))
+}
+
+fn read_u32(buf: &[u8], offset: usize, context: &str) -> Result<u32> {
+    let end = checked_end(offset, 4, context)?;
+    let bytes = buf
+        .get(offset..end)
+        .ok_or_else(|| Error::Internal(format!("buffer too short for {context}")))?;
+    Ok(u32::from_le_bytes(
+        bytes.try_into().expect("fixed-size slice"),
+    ))
+}
+
+fn read_f64(buf: &[u8], offset: usize, context: &str) -> Result<f64> {
+    let end = checked_end(offset, 8, context)?;
+    let bytes = buf
+        .get(offset..end)
+        .ok_or_else(|| Error::Internal(format!("buffer too short for {context}")))?;
+    Ok(f64::from_le_bytes(
+        bytes.try_into().expect("fixed-size slice"),
+    ))
+}
+
+fn validate_coordinate(row: u32, col: u32) -> Result<()> {
+    if !(1..=MAX_ROWS).contains(&row) {
+        return Err(Error::Internal("row number is out of range".to_string()));
+    }
+    if !(1..=MAX_COLUMNS).contains(&col) {
+        return Err(Error::Internal("cell column is out of range".to_string()));
+    }
+    Ok(())
+}
+
 fn read_row_index(buf: &[u8], row_count: u32) -> Result<Vec<(u32, u32)>> {
     let start = HEADER_SIZE;
-    let end = start + row_count as usize * ROW_INDEX_ENTRY_SIZE;
+    let size = (row_count as usize)
+        .checked_mul(ROW_INDEX_ENTRY_SIZE)
+        .ok_or_else(|| Error::Internal("row index exceeds addressable buffer size".to_string()))?;
+    let end = checked_end(start, size, "row index")?;
     if buf.len() < end {
         return Err(Error::Internal(format!(
             "buffer too short for row index: {} bytes (need {})",
@@ -87,9 +147,22 @@ fn read_row_index(buf: &[u8], row_count: u32) -> Result<Vec<(u32, u32)>> {
     }
     let mut entries = Vec::with_capacity(row_count as usize);
     for i in 0..row_count as usize {
-        let offset = start + i * ROW_INDEX_ENTRY_SIZE;
-        let row_num = u32::from_le_bytes(buf[offset..offset + 4].try_into().unwrap());
-        let row_off = u32::from_le_bytes(buf[offset + 4..offset + 8].try_into().unwrap());
+        let offset = checked_end(
+            start,
+            i.checked_mul(ROW_INDEX_ENTRY_SIZE).ok_or_else(|| {
+                Error::Internal("row index exceeds addressable buffer size".to_string())
+            })?,
+            "row index",
+        )?;
+        let row_num = read_u32(buf, offset, "row index entry")?;
+        if !(1..=MAX_ROWS).contains(&row_num) {
+            return Err(Error::Internal("row number is out of range".to_string()));
+        }
+        let row_off = read_u32(
+            buf,
+            checked_end(offset, 4, "row index entry")?,
+            "row index entry",
+        )?;
         entries.push((row_num, row_off));
     }
     Ok(entries)
@@ -105,8 +178,12 @@ fn read_string_table(buf: &[u8], offset: usize) -> Result<(Vec<String>, usize)> 
             "buffer too short for string table header".to_string(),
         ));
     }
-    let count = u32::from_le_bytes(buf[offset..offset + 4].try_into().unwrap()) as usize;
-    let blob_size = u32::from_le_bytes(buf[offset + 4..offset + 8].try_into().unwrap()) as usize;
+    let count = read_u32(buf, offset, "string table header")? as usize;
+    let blob_size = read_u32(
+        buf,
+        checked_end(offset, 4, "string table header")?,
+        "string table header",
+    )? as usize;
 
     let offsets_start = header_end;
     let offsets_end = offsets_start
@@ -131,8 +208,14 @@ fn read_string_table(buf: &[u8], offset: usize) -> Result<(Vec<String>, usize)> 
 
     let mut string_offsets = Vec::with_capacity(count);
     for i in 0..count {
-        let pos = offsets_start + i * 4;
-        let off = u32::from_le_bytes(buf[pos..pos + 4].try_into().unwrap()) as usize;
+        let pos = checked_end(
+            offsets_start,
+            i.checked_mul(4).ok_or_else(|| {
+                Error::Internal("string table offsets exceed addressable buffer size".to_string())
+            })?,
+            "string table offsets",
+        )?;
+        let off = read_u32(buf, pos, "string table offset")? as usize;
         string_offsets.push(off);
     }
 
@@ -151,8 +234,8 @@ fn read_string_table(buf: &[u8], offset: usize) -> Result<(Vec<String>, usize)> 
                 "string table offsets must be monotonic and within the blob".to_string(),
             ));
         }
-        let start = blob_start + offset;
-        let end = blob_start + next_offset;
+        let start = checked_end(blob_start, offset, "string table blob")?;
+        let end = checked_end(blob_start, next_offset, "string table blob")?;
         let s = std::str::from_utf8(&buf[start..end])
             .map_err(|e| Error::Internal(format!("invalid UTF-8 in string table: {e}")))?;
         strings.push(s.to_string());
@@ -166,24 +249,29 @@ fn decode_cell_payload(type_tag: u8, payload: &[u8], strings: &[String]) -> Resu
     match type_tag {
         TYPE_EMPTY => Ok(CellValue::Empty),
         TYPE_NUMBER => {
-            let n = f64::from_le_bytes(payload[0..8].try_into().unwrap());
+            let n = read_f64(payload, 0, "cell payload")?;
             Ok(CellValue::Number(n))
         }
         TYPE_STRING => {
-            let idx = u32::from_le_bytes(payload[0..4].try_into().unwrap()) as usize;
+            let idx = read_u32(payload, 0, "cell payload")? as usize;
             let s = strings
                 .get(idx)
                 .cloned()
                 .ok_or_else(|| Error::Internal(format!("string index {idx} out of range")))?;
             Ok(CellValue::String(s))
         }
-        TYPE_BOOL => Ok(CellValue::Bool(payload[0] != 0)),
+        TYPE_BOOL => Ok(CellValue::Bool(
+            *payload
+                .first()
+                .ok_or_else(|| Error::Internal("buffer too short for cell payload".to_string()))?
+                != 0,
+        )),
         TYPE_DATE => {
-            let n = f64::from_le_bytes(payload[0..8].try_into().unwrap());
+            let n = read_f64(payload, 0, "cell payload")?;
             Ok(CellValue::Date(n))
         }
         TYPE_ERROR => {
-            let idx = u32::from_le_bytes(payload[0..4].try_into().unwrap()) as usize;
+            let idx = read_u32(payload, 0, "cell payload")? as usize;
             let s = strings
                 .get(idx)
                 .cloned()
@@ -191,7 +279,7 @@ fn decode_cell_payload(type_tag: u8, payload: &[u8], strings: &[String]) -> Resu
             Ok(CellValue::Error(s))
         }
         TYPE_FORMULA => {
-            let idx = u32::from_le_bytes(payload[0..4].try_into().unwrap()) as usize;
+            let idx = read_u32(payload, 0, "cell payload")? as usize;
             let expr = strings
                 .get(idx)
                 .cloned()
@@ -199,14 +287,16 @@ fn decode_cell_payload(type_tag: u8, payload: &[u8], strings: &[String]) -> Resu
             Ok(CellValue::Formula { expr, result: None })
         }
         TYPE_RICH_STRING => {
-            let idx = u32::from_le_bytes(payload[0..4].try_into().unwrap()) as usize;
+            let idx = read_u32(payload, 0, "cell payload")? as usize;
             let s = strings
                 .get(idx)
                 .cloned()
                 .ok_or_else(|| Error::Internal(format!("string index {idx} out of range")))?;
             Ok(CellValue::String(s))
         }
-        _ => Ok(CellValue::Empty),
+        _ => Err(Error::Internal(format!(
+            "unknown cell type tag: {type_tag}"
+        ))),
     }
 }
 
@@ -216,14 +306,28 @@ fn read_dense_cells(
     row_index: &[(u32, u32)],
     col_count: u16,
     strings: &[String],
+    min_col: u32,
 ) -> Result<Vec<CellRow>> {
+    let row_size = (col_count as usize)
+        .checked_mul(CELL_STRIDE)
+        .ok_or_else(|| Error::Internal("dense row exceeds addressable buffer size".to_string()))?;
     let mut result = Vec::new();
-    for &(row_num, offset) in row_index {
+    for (i, &(row_num, offset)) in row_index.iter().enumerate() {
         if offset == EMPTY_ROW_SENTINEL {
-            continue;
+            return Err(Error::Internal(
+                "dense row index cannot be empty".to_string(),
+            ));
         }
-        let row_start = cell_data_start + offset as usize;
-        let row_end = row_start + col_count as usize * CELL_STRIDE;
+        let expected_offset = i.checked_mul(row_size).ok_or_else(|| {
+            Error::Internal("dense row offset exceeds addressable buffer size".to_string())
+        })?;
+        if offset as usize != expected_offset {
+            return Err(Error::Internal(
+                "dense row offsets are inconsistent".to_string(),
+            ));
+        }
+        let row_start = checked_end(cell_data_start, expected_offset, "dense row data")?;
+        let row_end = checked_end(row_start, row_size, "dense row data")?;
         if buf.len() < row_end {
             return Err(Error::Internal(format!(
                 "buffer too short for dense row data at offset {}",
@@ -232,14 +336,24 @@ fn read_dense_cells(
         }
         let mut cells = Vec::new();
         for c in 0..col_count as usize {
-            let cell_offset = row_start + c * CELL_STRIDE;
+            let cell_offset = checked_end(
+                row_start,
+                c.checked_mul(CELL_STRIDE).ok_or_else(|| {
+                    Error::Internal("dense cell offset exceeds addressable buffer size".to_string())
+                })?,
+                "dense cell data",
+            )?;
             let type_tag = buf[cell_offset];
             if type_tag == TYPE_EMPTY {
                 continue;
             }
             let payload = &buf[cell_offset + 1..cell_offset + 9];
             let value = decode_cell_payload(type_tag, payload, strings)?;
-            cells.push((c as u32 + 1, value));
+            let col = min_col
+                .checked_add(c as u32)
+                .ok_or_else(|| Error::Internal("cell column is out of range".to_string()))?;
+            validate_coordinate(row_num, col)?;
+            cells.push((col, value));
         }
         if !cells.is_empty() {
             result.push((row_num, cells));
@@ -253,21 +367,34 @@ fn read_sparse_cells(
     cell_data_start: usize,
     row_index: &[(u32, u32)],
     strings: &[String],
+    min_col: u32,
+    col_count: u16,
 ) -> Result<Vec<CellRow>> {
     let mut result = Vec::new();
+    let mut expected_offset = 0usize;
     for &(row_num, offset) in row_index {
         if offset == EMPTY_ROW_SENTINEL {
+            let empty_pos = checked_end(cell_data_start, expected_offset, "sparse row data")?;
+            if read_u16(buf, empty_pos, "sparse empty row cell count")? != 0 {
+                return Err(Error::Internal(
+                    "sparse empty row must have zero cells".to_string(),
+                ));
+            }
+            expected_offset = checked_end(expected_offset, 2, "sparse row data")?;
             continue;
         }
-        let pos = cell_data_start + offset as usize;
-        if buf.len() < pos + 2 {
+        if offset as usize != expected_offset {
             return Err(Error::Internal(
-                "buffer too short for sparse row cell count".to_string(),
+                "sparse row offsets are inconsistent".to_string(),
             ));
         }
-        let cell_count = u16::from_le_bytes(buf[pos..pos + 2].try_into().unwrap()) as usize;
-        let entries_start = pos + 2;
-        let entries_end = entries_start + cell_count * SPARSE_ENTRY_SIZE;
+        let pos = checked_end(cell_data_start, expected_offset, "sparse row data")?;
+        let cell_count = read_u16(buf, pos, "sparse row cell count")? as usize;
+        let entries_start = checked_end(pos, 2, "sparse row data")?;
+        let entries_len = cell_count.checked_mul(SPARSE_ENTRY_SIZE).ok_or_else(|| {
+            Error::Internal("sparse row entries exceed addressable buffer size".to_string())
+        })?;
+        let entries_end = checked_end(entries_start, entries_len, "sparse row entries")?;
         if buf.len() < entries_end {
             return Err(Error::Internal(format!(
                 "buffer too short for sparse row entries at offset {}",
@@ -276,13 +403,41 @@ fn read_sparse_cells(
         }
         let mut cells = Vec::with_capacity(cell_count);
         for i in 0..cell_count {
-            let entry_off = entries_start + i * SPARSE_ENTRY_SIZE;
-            let col = u16::from_le_bytes(buf[entry_off..entry_off + 2].try_into().unwrap());
-            let type_tag = buf[entry_off + 2];
-            let payload = &buf[entry_off + 3..entry_off + 11];
+            let entry_off = checked_end(
+                entries_start,
+                i.checked_mul(SPARSE_ENTRY_SIZE).ok_or_else(|| {
+                    Error::Internal("sparse row entries exceed addressable buffer size".to_string())
+                })?,
+                "sparse row entry",
+            )?;
+            let col = read_u16(buf, entry_off, "sparse cell column")?;
+            if col >= col_count {
+                return Err(Error::Internal(
+                    "sparse cell column is out of range".to_string(),
+                ));
+            }
+            let type_tag = *buf
+                .get(checked_end(entry_off, 2, "sparse row entry")?)
+                .ok_or_else(|| {
+                    Error::Internal("buffer too short for sparse cell type".to_string())
+                })?;
+            let payload_start = checked_end(entry_off, 3, "sparse row entry")?;
+            let payload_end = checked_end(entry_off, SPARSE_ENTRY_SIZE, "sparse row entry")?;
+            let payload = &buf[payload_start..payload_end];
             let value = decode_cell_payload(type_tag, payload, strings)?;
-            cells.push((col as u32 + 1, value));
+            let col = min_col
+                .checked_add(col as u32)
+                .ok_or_else(|| Error::Internal("cell column is out of range".to_string()))?;
+            validate_coordinate(row_num, col)?;
+            cells.push((col, value));
         }
+        expected_offset = checked_end(
+            expected_offset,
+            2usize.checked_add(entries_len).ok_or_else(|| {
+                Error::Internal("sparse row entries exceed addressable buffer size".to_string())
+            })?,
+            "sparse row data",
+        )?;
         if !cells.is_empty() {
             result.push((row_num, cells));
         }
@@ -295,21 +450,223 @@ fn read_sparse_cells(
 /// Returns rows as `(row_number, cells)` where each cell is
 /// `(col_number, CellValue)`. Both row and column numbers are 1-based.
 pub fn raw_buffer_to_cells(buf: &[u8]) -> Result<Vec<CellRow>> {
+    if buf.len() < HEADER_SIZE {
+        return Err(Error::Internal(format!(
+            "buffer too short for header: {} bytes (need {})",
+            buf.len(),
+            HEADER_SIZE
+        )));
+    }
+    if read_u32(buf, 0, "header")? == MAGIC_V2 {
+        return raw_buffer_v2_to_cells(buf);
+    }
     let header = read_header(buf)?;
-    if header.row_count == 0 {
+    if header.row_count == 0
+        && header.col_count == 0
+        && header.flags == 0
+        && buf.len() == HEADER_SIZE
+    {
         return Ok(Vec::new());
     }
-
     let row_index = read_row_index(buf, header.row_count)?;
-    let string_table_offset = HEADER_SIZE + header.row_count as usize * ROW_INDEX_ENTRY_SIZE;
+    let row_index_size = (header.row_count as usize)
+        .checked_mul(ROW_INDEX_ENTRY_SIZE)
+        .ok_or_else(|| Error::Internal("row index exceeds addressable buffer size".to_string()))?;
+    let string_table_offset = checked_end(HEADER_SIZE, row_index_size, "row index")?;
     let (strings, cell_data_start) = read_string_table(buf, string_table_offset)?;
-
+    let min_col = (header.flags >> 16).max(1);
     let is_sparse = header.flags & FLAG_SPARSE != 0;
-    if is_sparse {
-        read_sparse_cells(buf, cell_data_start, &row_index, &strings)
+    let rows = if is_sparse {
+        read_sparse_cells(
+            buf,
+            cell_data_start,
+            &row_index,
+            &strings,
+            min_col,
+            header.col_count,
+        )?
     } else {
-        read_dense_cells(buf, cell_data_start, &row_index, header.col_count, &strings)
+        read_dense_cells(
+            buf,
+            cell_data_start,
+            &row_index,
+            header.col_count,
+            &strings,
+            min_col,
+        )?
+    };
+    let expected_cell_data_len = if is_sparse {
+        let mut size = 0usize;
+        for &(_, offset) in &row_index {
+            let pos = checked_end(cell_data_start, size, "sparse row data")?;
+            let cell_count = read_u16(buf, pos, "sparse row cell count")? as usize;
+            let row_size = 2usize
+                .checked_add(cell_count.checked_mul(SPARSE_ENTRY_SIZE).ok_or_else(|| {
+                    Error::Internal("sparse row entries exceed addressable buffer size".to_string())
+                })?)
+                .ok_or_else(|| {
+                    Error::Internal("sparse row entries exceed addressable buffer size".to_string())
+                })?;
+            if offset != EMPTY_ROW_SENTINEL && offset as usize != size {
+                return Err(Error::Internal(
+                    "sparse row offsets are inconsistent".to_string(),
+                ));
+            }
+            size = checked_end(size, row_size, "sparse row data")?;
+        }
+        size
+    } else {
+        (header.row_count as usize)
+            .checked_mul(header.col_count as usize)
+            .and_then(|n| n.checked_mul(CELL_STRIDE))
+            .ok_or_else(|| {
+                Error::Internal("dense cell data exceeds addressable buffer size".to_string())
+            })?
+    };
+    let expected_end = checked_end(cell_data_start, expected_cell_data_len, "cell data")?;
+    if expected_end != buf.len() {
+        return Err(Error::Internal(
+            "buffer has trailing data or inconsistent cell section".to_string(),
+        ));
     }
+    Ok(rows)
+}
+
+fn raw_buffer_v2_to_cells(buf: &[u8]) -> Result<Vec<CellRow>> {
+    let version = read_u16(buf, 4, "header")?;
+    if version != VERSION_V2 {
+        return Err(Error::Internal(format!(
+            "unsupported buffer version: {version}"
+        )));
+    }
+    let row_count = read_u32(buf, 6, "header")?;
+    let col_count = read_u16(buf, 10, "header")?;
+    let flags = read_u32(buf, 12, "header")?;
+    if flags & 0x0000_FFFF != 0 {
+        return Err(Error::Internal("invalid v2 buffer flags".to_string()));
+    }
+    if row_count == 0 && col_count == 0 && flags == 0 && buf.len() == HEADER_SIZE {
+        return Ok(Vec::new());
+    }
+    let min_col = (flags >> 16).max(1);
+    let row_index = read_row_index(buf, row_count)?;
+    let row_index_size = (row_count as usize)
+        .checked_mul(ROW_INDEX_ENTRY_SIZE)
+        .ok_or_else(|| Error::Internal("row index exceeds addressable buffer size".to_string()))?;
+    let cell_data_start = checked_end(HEADER_SIZE, row_index_size, "row index")?;
+    let mut expected_offset = 0usize;
+    let mut result = Vec::new();
+
+    for &(row_num, offset) in &row_index {
+        let pos = checked_end(cell_data_start, expected_offset, "v2 row data")?;
+        let cell_count = read_u16(buf, pos, "v2 row cell count")? as usize;
+        if offset == EMPTY_ROW_SENTINEL {
+            if cell_count != 0 {
+                return Err(Error::Internal(
+                    "v2 empty row must have zero cells".to_string(),
+                ));
+            }
+            expected_offset = checked_end(expected_offset, 2, "v2 row data")?;
+            continue;
+        }
+        if offset as usize != expected_offset {
+            return Err(Error::Internal(
+                "v2 row offsets are inconsistent".to_string(),
+            ));
+        }
+        let mut cells = Vec::with_capacity(cell_count);
+        let mut cursor = checked_end(pos, 2, "v2 row data")?;
+        for _ in 0..cell_count {
+            let col = read_u16(buf, cursor, "v2 cell column")?;
+            if col >= col_count {
+                return Err(Error::Internal(
+                    "v2 cell column is out of range".to_string(),
+                ));
+            }
+            let type_tag = *buf
+                .get(checked_end(cursor, 2, "v2 cell")?)
+                .ok_or_else(|| Error::Internal("buffer too short for v2 cell type".to_string()))?;
+            let payload_start = checked_end(cursor, 3, "v2 cell")?;
+            let (value, payload_size) = match type_tag {
+                TYPE_EMPTY => (CellValue::Empty, 0),
+                TYPE_NUMBER => (
+                    CellValue::Number(read_f64(buf, payload_start, "v2 number payload")?),
+                    8,
+                ),
+                TYPE_DATE => (
+                    CellValue::Date(read_f64(buf, payload_start, "v2 date payload")?),
+                    8,
+                ),
+                TYPE_BOOL => (
+                    CellValue::Bool(
+                        *buf.get(payload_start).ok_or_else(|| {
+                            Error::Internal("buffer too short for v2 bool payload".to_string())
+                        })? != 0,
+                    ),
+                    1,
+                ),
+                TYPE_STRING | TYPE_ERROR | TYPE_FORMULA | TYPE_RICH_STRING => {
+                    let byte_len = read_u32(buf, payload_start, "v2 string length")? as usize;
+                    let text_start = checked_end(payload_start, 4, "v2 string payload")?;
+                    let text_end = checked_end(text_start, byte_len, "v2 string payload")?;
+                    let text =
+                        std::str::from_utf8(buf.get(text_start..text_end).ok_or_else(|| {
+                            Error::Internal("buffer too short for v2 string payload".to_string())
+                        })?)
+                        .map_err(|e| {
+                            Error::Internal(format!("invalid UTF-8 in v2 string payload: {e}"))
+                        })?
+                        .to_string();
+                    let value = match type_tag {
+                        TYPE_STRING | TYPE_RICH_STRING => CellValue::String(text),
+                        TYPE_ERROR => CellValue::Error(text),
+                        TYPE_FORMULA => CellValue::Formula {
+                            expr: text,
+                            result: None,
+                        },
+                        _ => unreachable!(),
+                    };
+                    (
+                        value,
+                        4usize.checked_add(byte_len).ok_or_else(|| {
+                            Error::Internal(
+                                "v2 string payload exceeds addressable buffer size".to_string(),
+                            )
+                        })?,
+                    )
+                }
+                _ => {
+                    return Err(Error::Internal(format!(
+                        "unknown cell type tag: {type_tag}"
+                    )))
+                }
+            };
+            let cell_size = 3usize.checked_add(payload_size).ok_or_else(|| {
+                Error::Internal("v2 cell exceeds addressable buffer size".to_string())
+            })?;
+            cursor = checked_end(cursor, cell_size, "v2 cell")?;
+            if !matches!(value, CellValue::Empty) {
+                let col = min_col
+                    .checked_add(col as u32)
+                    .ok_or_else(|| Error::Internal("cell column is out of range".to_string()))?;
+                validate_coordinate(row_num, col)?;
+                cells.push((col, value));
+            }
+        }
+        expected_offset = cursor
+            .checked_sub(cell_data_start)
+            .ok_or_else(|| Error::Internal("v2 cell offset precedes data section".to_string()))?;
+        if !cells.is_empty() {
+            result.push((row_num, cells));
+        }
+    }
+    let expected_end = checked_end(cell_data_start, expected_offset, "v2 cell data")?;
+    if expected_end != buf.len() {
+        return Err(Error::Internal(
+            "buffer has trailing data or inconsistent cell section".to_string(),
+        ));
+    }
+    Ok(result)
 }
 
 struct StringTable {
@@ -585,6 +942,19 @@ mod tests {
     }
 
     #[test]
+    fn test_decode_header_only_empty_buffers() {
+        let mut v1 = vec![0u8; HEADER_SIZE];
+        v1[0..4].copy_from_slice(&MAGIC.to_le_bytes());
+        v1[4..6].copy_from_slice(&VERSION.to_le_bytes());
+        assert!(raw_buffer_to_cells(&v1).unwrap().is_empty());
+
+        let mut v2 = vec![0u8; HEADER_SIZE];
+        v2[0..4].copy_from_slice(&MAGIC_V2.to_le_bytes());
+        v2[4..6].copy_from_slice(&VERSION_V2.to_le_bytes());
+        assert!(raw_buffer_to_cells(&v2).unwrap().is_empty());
+    }
+
+    #[test]
     fn test_decode_single_number() {
         let rows = vec![(1, vec![(1, CellValue::Number(42.5))])];
         let buf = cells_to_raw_buffer(&rows).unwrap();
@@ -771,6 +1141,79 @@ mod tests {
         buf[0..4].copy_from_slice(&0xDEADBEEFu32.to_le_bytes());
         let err = raw_buffer_to_cells(&buf).unwrap_err();
         assert!(err.to_string().contains("invalid buffer magic"));
+    }
+
+    #[test]
+    fn rejects_unknown_versions_and_trailing_data() {
+        let rows = vec![(1, vec![(1, CellValue::Number(1.0))])];
+        let mut unknown_version = cells_to_raw_buffer(&rows).unwrap();
+        unknown_version[4..6].copy_from_slice(&99u16.to_le_bytes());
+        assert!(raw_buffer_to_cells(&unknown_version)
+            .unwrap_err()
+            .to_string()
+            .contains("unsupported buffer version"));
+
+        let mut trailing = cells_to_raw_buffer(&rows).unwrap();
+        trailing.push(0);
+        assert!(raw_buffer_to_cells(&trailing)
+            .unwrap_err()
+            .to_string()
+            .contains("trailing data"));
+    }
+
+    #[test]
+    fn rejects_truncated_and_inconsistent_sections() {
+        let rows = vec![(1, vec![(1, CellValue::String("value".to_string()))])];
+        let buf = cells_to_raw_buffer(&rows).unwrap();
+        for length in 0..buf.len() {
+            assert!(
+                raw_buffer_to_cells(&buf[..length]).is_err(),
+                "length {length}"
+            );
+        }
+
+        let mut descending_offsets = buf.clone();
+        let string_table = HEADER_SIZE + ROW_INDEX_ENTRY_SIZE;
+        descending_offsets[string_table..string_table + 4].copy_from_slice(&2u32.to_le_bytes());
+        descending_offsets[string_table + 8..string_table + 12]
+            .copy_from_slice(&4u32.to_le_bytes());
+        descending_offsets[string_table + 12..string_table + 16]
+            .copy_from_slice(&3u32.to_le_bytes());
+        assert!(raw_buffer_to_cells(&descending_offsets).is_err());
+
+        let mut oversized_count = buf.clone();
+        oversized_count[6..10].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(raw_buffer_to_cells(&oversized_count).is_err());
+    }
+
+    #[test]
+    fn decodes_v1_min_col_and_v2_coordinates() {
+        let rows = vec![(1, vec![(1, CellValue::String("v1".to_string()))])];
+        let mut v1 = cells_to_raw_buffer(&rows).unwrap();
+        let flags =
+            (3u32 << 16) | (u32::from_le_bytes(v1[12..16].try_into().unwrap()) & FLAG_SPARSE);
+        v1[12..16].copy_from_slice(&flags.to_le_bytes());
+        assert_eq!(
+            raw_buffer_to_cells(&v1).unwrap(),
+            vec![(1, vec![(3, CellValue::String("v1".to_string()))])]
+        );
+
+        let mut v2 = Vec::new();
+        v2.extend_from_slice(&crate::raw_transfer_v2::MAGIC_V2.to_le_bytes());
+        v2.extend_from_slice(&crate::raw_transfer_v2::VERSION_V2.to_le_bytes());
+        v2.extend_from_slice(&1u32.to_le_bytes());
+        v2.extend_from_slice(&1u16.to_le_bytes());
+        v2.extend_from_slice(&(3u32 << 16).to_le_bytes());
+        v2.extend_from_slice(&1u32.to_le_bytes());
+        v2.extend_from_slice(&0u32.to_le_bytes());
+        v2.extend_from_slice(&1u16.to_le_bytes());
+        v2.extend_from_slice(&0u16.to_le_bytes());
+        v2.push(TYPE_NUMBER);
+        v2.extend_from_slice(&42.0f64.to_le_bytes());
+        assert_eq!(
+            raw_buffer_to_cells(&v2).unwrap(),
+            vec![(1, vec![(3, CellValue::Number(42.0))])],
+        );
     }
 
     #[test]

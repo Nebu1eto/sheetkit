@@ -1117,6 +1117,8 @@ mod tests {
                     f: None,
                     is: Some(Box::new(sheetkit_xml::worksheet::InlineString {
                         t: Some("inline text".to_string()),
+                        r: vec![],
+                        r_ph: vec![],
                     })),
                 }],
             }],

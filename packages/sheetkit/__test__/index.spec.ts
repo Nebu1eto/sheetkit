@@ -2498,9 +2498,33 @@ describe('setSheetDataBuffer', () => {
   it('should handle empty buffer without error', () => {
     const wb = new Workbook();
     const emptyBuf = wb.getRowsBuffer('Sheet1');
+    expect(decodeRowsBuffer(emptyBuf)).toEqual([]);
     const wb2 = new Workbook();
     wb2.setSheetDataBuffer('Sheet1', emptyBuf);
     expect(wb2.getCellValue('Sheet1', 'A1')).toBeNull();
+  });
+
+  it('accepts v2 buffers and preserves their absolute C-column coordinates', () => {
+    const source = new Workbook();
+    source.setCellValue('Sheet1', 'C1', 'column C');
+    const target = new Workbook();
+    target.setSheetDataBuffer('Sheet1', source.getRowsBufferV2('Sheet1'));
+    expect(target.getCellValue('Sheet1', 'C1')).toBe('column C');
+    expect(target.getCellValue('Sheet1', 'A1')).toBeNull();
+  });
+
+  it('leaves the sheet unchanged when a transfer buffer is malformed', () => {
+    const source = new Workbook();
+    source.setCellValue('Sheet1', 'A1', 'new value');
+    const malformed = Buffer.from(source.getRowsBuffer('Sheet1'));
+    malformed.writeUInt16LE(99, 4);
+
+    const target = new Workbook();
+    target.setCellValue('Sheet1', 'A1', 'existing value');
+    expect(() => target.setSheetDataBuffer('Sheet1', malformed)).toThrow(
+      'unsupported buffer version',
+    );
+    expect(target.getCellValue('Sheet1', 'A1')).toBe('existing value');
   });
 });
 
@@ -2741,6 +2765,38 @@ describe('decodeRowsBuffer', () => {
     expect(decodeRowsBuffer(null)).toEqual([]);
     expect(decodeRowsBuffer(Buffer.alloc(0))).toEqual([]);
     expect(decodeRowsBuffer(Buffer.alloc(5))).toEqual([]);
+  });
+
+  it('rejects malformed versions, sections, and offsets before decoding', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'value');
+    const valid = wb.getRowsBuffer('Sheet1');
+
+    const unknownVersion = Buffer.from(valid);
+    unknownVersion.writeUInt16LE(99, 4);
+    expect(() => decodeRowsBuffer(unknownVersion)).toThrow('unsupported version');
+
+    const descendingOffsets = Buffer.from(valid);
+    const stringTable = 16 + 8;
+    descendingOffsets.writeUInt32LE(2, stringTable);
+    descendingOffsets.writeUInt32LE(4, stringTable + 8);
+    descendingOffsets.writeUInt32LE(3, stringTable + 12);
+    expect(() => decodeRowsBuffer(descendingOffsets)).toThrow('string offsets');
+
+    const oversizedRows = Buffer.from(valid);
+    oversizedRows.writeUInt32LE(0xffffffff, 6);
+    expect(() => decodeRowsBuffer(oversizedRows)).toThrow('truncated row index');
+
+    for (let length = 16; length < valid.length; length++) {
+      expect(() => decodeRowsBuffer(valid.subarray(0, length))).toThrow();
+    }
+  });
+
+  it('retains C-column coordinates for v1 and v2 buffers', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'C1', 'column C');
+    expect(decodeRowsBuffer(wb.getRowsBuffer('Sheet1'))[0].cells[0].column).toBe('C');
+    expect(decodeRowsBuffer(wb.getRowsBufferV2('Sheet1'))[0].cells[0].column).toBe('C');
   });
 
   it('should return correct valueType strings', () => {

@@ -645,6 +645,28 @@ pub struct CellFormula {
 pub struct InlineString {
     #[serde(rename = "t", skip_serializing_if = "Option::is_none")]
     pub t: Option<String>,
+
+    /// Rich text runs. Their formatting is preserved in XML but callers can
+    /// concatenate the nested text for the visible cell value.
+    #[serde(rename = "r", default)]
+    pub r: Vec<crate::shared_strings::R>,
+
+    /// Phonetic annotations associated with inline text.
+    #[serde(rename = "rPh", default)]
+    pub r_ph: Vec<PhoneticRun>,
+}
+
+/// A phonetic annotation (`rPh`) attached to inline rich text.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PhoneticRun {
+    #[serde(rename = "@sb", skip_serializing_if = "Option::is_none")]
+    pub sb: Option<u32>,
+
+    #[serde(rename = "@eb", skip_serializing_if = "Option::is_none")]
+    pub eb: Option<u32>,
+
+    #[serde(rename = "$value", default)]
+    pub value: String,
 }
 
 /// Auto filter.
@@ -1210,6 +1232,8 @@ mod tests {
             f: None,
             is: Some(Box::new(InlineString {
                 t: Some("Hello World".to_string()),
+                r: vec![],
+                r_ph: vec![],
             })),
         };
         let xml = quick_xml::se::to_string(&cell).unwrap();
@@ -1218,6 +1242,19 @@ mod tests {
         assert_eq!(parsed.t, CellTypeTag::InlineString);
         assert!(parsed.is.is_some());
         assert_eq!(parsed.is.unwrap().t, Some("Hello World".to_string()));
+    }
+
+    #[test]
+    fn test_inline_string_rich_runs_exclude_phonetic_annotations() {
+        let xml = r#"<c r="A1" t="inlineStr"><is><r><t>Bold</t></r><r><t xml:space="preserve"> Text</t></r><rPh sb="0" eb="4">phonetic</rPh></is></c>"#;
+        let cell: Cell = quick_xml::de::from_str(xml).unwrap();
+        let inline = cell.is.unwrap();
+
+        assert_eq!(inline.r.len(), 2);
+        assert_eq!(inline.r[0].t.value, "Bold");
+        assert_eq!(inline.r[1].t.value, "Text");
+        assert_eq!(inline.r_ph.len(), 1);
+        assert_eq!(inline.r_ph[0].value, "phonetic");
     }
 
     #[test]

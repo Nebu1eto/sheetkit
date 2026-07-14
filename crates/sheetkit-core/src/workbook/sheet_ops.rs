@@ -5163,10 +5163,7 @@ mod tests {
     }
 
     #[test]
-    fn test_stream_edit_after_apply_takes_effect() {
-        // Regression: edits via set_cell_value after apply_stream_writer must
-        // not be silently ignored. The edit invalidates the streamed data so
-        // the normal WorksheetXml serialization path is used on save.
+    fn test_stream_edit_after_apply_is_rejected_without_losing_rows() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("stream_edit_after.xlsx");
 
@@ -5175,14 +5172,14 @@ mod tests {
         sw.write_row(1, &[CellValue::from("old")]).unwrap();
         wb.apply_stream_writer(sw).unwrap();
 
-        // Edit the streamed sheet: this should invalidate streamed data.
-        wb.set_cell_value("S", "A1", "new").unwrap();
+        let error = wb.set_cell_value("S", "A1", "new").unwrap_err();
+        assert!(matches!(error, Error::StreamedSheetMutation { .. }));
         wb.save(&path).unwrap();
 
         let wb2 = Workbook::open(&path).unwrap();
         assert_eq!(
             wb2.get_cell_value("S", "A1").unwrap(),
-            CellValue::String("new".to_string())
+            CellValue::String("old".to_string())
         );
     }
 
