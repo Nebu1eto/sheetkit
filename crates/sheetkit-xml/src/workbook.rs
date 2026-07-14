@@ -19,6 +19,9 @@ pub struct WorkbookXml {
     #[serde(rename = "fileVersion", skip_serializing_if = "Option::is_none")]
     pub file_version: Option<FileVersion>,
 
+    #[serde(rename = "fileSharing", skip_serializing_if = "Option::is_none")]
+    pub file_sharing: Option<FileSharing>,
+
     #[serde(rename = "workbookPr", skip_serializing_if = "Option::is_none")]
     pub workbook_pr: Option<WorkbookPr>,
 
@@ -31,11 +34,17 @@ pub struct WorkbookXml {
     #[serde(rename = "sheets")]
     pub sheets: Sheets,
 
+    #[serde(rename = "externalReferences", skip_serializing_if = "Option::is_none")]
+    pub external_references: Option<ExternalReferences>,
+
     #[serde(rename = "definedNames", skip_serializing_if = "Option::is_none")]
     pub defined_names: Option<DefinedNames>,
 
     #[serde(rename = "calcPr", skip_serializing_if = "Option::is_none")]
     pub calc_pr: Option<CalcPr>,
+
+    #[serde(rename = "oleSize", skip_serializing_if = "Option::is_none")]
+    pub ole_size: Option<OleSize>,
 
     #[serde(rename = "pivotCaches", skip_serializing_if = "Option::is_none")]
     pub pivot_caches: Option<PivotCaches>,
@@ -57,11 +66,45 @@ pub struct FileVersion {
     pub rup_build: Option<String>,
 }
 
+/// Workbook file-sharing settings.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FileSharing {
+    #[serde(
+        rename = "@readOnlyRecommended",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub read_only_recommended: Option<bool>,
+
+    #[serde(rename = "@userName", skip_serializing_if = "Option::is_none")]
+    pub user_name: Option<String>,
+
+    #[serde(
+        rename = "@reservationPassword",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub reservation_password: Option<String>,
+
+    #[serde(rename = "@algorithmName", skip_serializing_if = "Option::is_none")]
+    pub algorithm_name: Option<String>,
+
+    #[serde(rename = "@hashValue", skip_serializing_if = "Option::is_none")]
+    pub hash_value: Option<String>,
+
+    #[serde(rename = "@saltValue", skip_serializing_if = "Option::is_none")]
+    pub salt_value: Option<String>,
+
+    #[serde(rename = "@spinCount", skip_serializing_if = "Option::is_none")]
+    pub spin_count: Option<u32>,
+}
+
 /// Workbook properties.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkbookPr {
     #[serde(rename = "@date1904", skip_serializing_if = "Option::is_none")]
     pub date1904: Option<bool>,
+
+    #[serde(rename = "@dateCompatibility", skip_serializing_if = "Option::is_none")]
+    pub date_compatibility: Option<bool>,
 
     #[serde(rename = "@filterPrivacy", skip_serializing_if = "Option::is_none")]
     pub filter_privacy: Option<bool>,
@@ -92,6 +135,12 @@ pub struct WorkbookPr {
         skip_serializing_if = "Option::is_none"
     )]
     pub auto_compress_pictures: Option<bool>,
+
+    #[serde(
+        rename = "@refreshAllConnections",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub refresh_all_connections: Option<bool>,
 
     #[serde(
         rename = "@saveExternalLinkValues",
@@ -164,6 +213,20 @@ pub struct WorkbookView {
 pub struct Sheets {
     #[serde(rename = "sheet")]
     pub sheets: Vec<SheetEntry>,
+}
+
+/// Container for external workbook references.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExternalReferences {
+    #[serde(rename = "externalReference", default)]
+    pub references: Vec<ExternalReference>,
+}
+
+/// Relationship to an external workbook reference.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ExternalReference {
+    #[serde(rename = "@r:id", alias = "@id")]
+    pub r_id: String,
 }
 
 /// Individual sheet entry in the workbook.
@@ -274,6 +337,13 @@ pub struct CalcPr {
     pub force_full_calc: Option<bool>,
 }
 
+/// Range occupied by embedded OLE objects.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OleSize {
+    #[serde(rename = "@ref")]
+    pub reference: String,
+}
+
 /// Container for pivot cache references in the workbook.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PivotCaches {
@@ -297,6 +367,7 @@ impl Default for WorkbookXml {
             xmlns: namespaces::SPREADSHEET_ML.to_string(),
             xmlns_r: namespaces::RELATIONSHIPS.to_string(),
             file_version: None,
+            file_sharing: None,
             workbook_pr: None,
             workbook_protection: None,
             book_views: None,
@@ -308,8 +379,10 @@ impl Default for WorkbookXml {
                     r_id: "rId1".to_string(),
                 }],
             },
+            external_references: None,
             defined_names: None,
             calc_pr: None,
+            ole_size: None,
             pivot_caches: None,
         }
     }
@@ -318,6 +391,49 @@ impl Default for WorkbookXml {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_workbook_passthrough_elements_roundtrip_in_schema_order() {
+        let xml = r#"<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><fileSharing readOnlyRecommended="true" userName="owner" reservationPassword="ABCD"/><workbookPr dateCompatibility="true" refreshAllConnections="true"/><sheets><sheet name="Sheet1" sheetId="1" r:id="rId1"/></sheets><externalReferences><externalReference r:id="rId2"/><externalReference r:id="rId3"/></externalReferences><definedNames/><calcPr calcId="1"/><oleSize ref="A1:C3"/><pivotCaches/></workbook>"#;
+
+        let workbook: WorkbookXml = quick_xml::de::from_str(xml).unwrap();
+        assert_eq!(
+            workbook.file_sharing.as_ref().unwrap().user_name.as_deref(),
+            Some("owner")
+        );
+        assert_eq!(
+            workbook
+                .external_references
+                .as_ref()
+                .unwrap()
+                .references
+                .len(),
+            2
+        );
+        assert_eq!(workbook.ole_size.as_ref().unwrap().reference, "A1:C3");
+        assert_eq!(
+            workbook.workbook_pr.as_ref().unwrap().date_compatibility,
+            Some(true)
+        );
+        assert_eq!(
+            workbook
+                .workbook_pr
+                .as_ref()
+                .unwrap()
+                .refresh_all_connections,
+            Some(true)
+        );
+
+        let serialized = quick_xml::se::to_string(&workbook).unwrap();
+        assert!(serialized.find("fileSharing").unwrap() < serialized.find("workbookPr").unwrap());
+        assert!(
+            serialized.find("externalReferences").unwrap()
+                < serialized.find("definedNames").unwrap()
+        );
+        assert!(serialized.find("calcPr").unwrap() < serialized.find("oleSize").unwrap());
+        let reparsed: WorkbookXml = quick_xml::de::from_str(&serialized).unwrap();
+        assert_eq!(workbook, reparsed);
+    }
 
     #[test]
     fn test_workbook_default() {
@@ -389,8 +505,10 @@ mod tests {
                 lowest_edited: Some("7".to_string()),
                 rup_build: Some("27425".to_string()),
             }),
+            file_sharing: None,
             workbook_pr: Some(WorkbookPr {
                 date1904: Some(false),
+                date_compatibility: None,
                 filter_privacy: None,
                 default_theme_version: Some(166925),
                 show_objects: None,
@@ -398,6 +516,7 @@ mod tests {
                 code_name: None,
                 check_compatibility: None,
                 auto_compress_pictures: None,
+                refresh_all_connections: None,
                 save_external_link_values: None,
                 update_links: None,
                 hide_pivot_field_list: None,
@@ -426,6 +545,7 @@ mod tests {
                     r_id: "rId1".to_string(),
                 }],
             },
+            external_references: None,
             defined_names: None,
             calc_pr: Some(CalcPr {
                 calc_id: Some(191029),
@@ -442,6 +562,7 @@ mod tests {
                 concurrent_manual_count: None,
                 force_full_calc: None,
             }),
+            ole_size: None,
             pivot_caches: None,
         };
 
@@ -526,6 +647,7 @@ mod tests {
     fn test_extended_workbook_pr_roundtrip() {
         let pr = WorkbookPr {
             date1904: Some(false),
+            date_compatibility: Some(true),
             filter_privacy: Some(true),
             default_theme_version: Some(166925),
             show_objects: Some("all".to_string()),
@@ -533,6 +655,7 @@ mod tests {
             code_name: Some("ThisWorkbook".to_string()),
             check_compatibility: Some(true),
             auto_compress_pictures: Some(false),
+            refresh_all_connections: Some(true),
             save_external_link_values: Some(true),
             update_links: Some("always".to_string()),
             hide_pivot_field_list: Some(false),
@@ -655,6 +778,7 @@ mod tests {
         let wb = WorkbookXml {
             workbook_pr: Some(WorkbookPr {
                 date1904: Some(false),
+                date_compatibility: None,
                 filter_privacy: None,
                 default_theme_version: None,
                 show_objects: None,
@@ -662,6 +786,7 @@ mod tests {
                 code_name: None,
                 check_compatibility: None,
                 auto_compress_pictures: None,
+                refresh_all_connections: None,
                 save_external_link_values: None,
                 update_links: None,
                 hide_pivot_field_list: None,

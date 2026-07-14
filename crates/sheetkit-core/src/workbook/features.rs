@@ -171,6 +171,7 @@ impl Workbook {
         let idx = self.sheet_index(sheet)?;
         self.hydrate_comments(idx);
         crate::comment::add_comment(&mut self.sheet_comments[idx], config);
+        self.mark_sheet_dirty(idx);
         // Invalidate cached VML so save() regenerates it from current comments.
         if idx < self.sheet_vml.len() {
             self.sheet_vml[idx] = None;
@@ -195,10 +196,12 @@ impl Workbook {
     pub fn remove_comment(&mut self, sheet: &str, cell: &str) -> Result<()> {
         let idx = self.sheet_index(sheet)?;
         self.hydrate_comments(idx);
-        crate::comment::remove_comment(&mut self.sheet_comments[idx], cell);
-        // Invalidate cached VML so save() regenerates or omits it.
-        if idx < self.sheet_vml.len() {
-            self.sheet_vml[idx] = None;
+        if crate::comment::remove_comment(&mut self.sheet_comments[idx], cell) {
+            self.mark_sheet_dirty(idx);
+            // Invalidate cached VML so save() regenerates or omits it.
+            if idx < self.sheet_vml.len() {
+                self.sheet_vml[idx] = None;
+            }
         }
         Ok(())
     }
@@ -399,6 +402,7 @@ impl Workbook {
 
         self.tables.push((table_path, table_xml, sheet_idx));
         self.deferred_parts.mark_dirty(AuxCategory::Tables);
+        self.mark_sheet_dirty(sheet_idx);
         Ok(())
     }
 
@@ -951,6 +955,7 @@ impl Workbook {
         config.validate()?;
         self.hydrate_form_controls(idx);
         self.sheet_form_controls[idx].push(config);
+        self.mark_sheet_dirty(idx);
         // Invalidate cached VML so save() regenerates from current state.
         if idx < self.sheet_vml.len() {
             self.sheet_vml[idx] = None;
@@ -990,6 +995,7 @@ impl Workbook {
             )));
         }
         controls.remove(index);
+        self.mark_sheet_dirty(idx);
         // Invalidate cached VML.
         if idx < self.sheet_vml.len() {
             self.sheet_vml[idx] = None;
@@ -1026,7 +1032,26 @@ impl Workbook {
 mod tests {
     use super::*;
     use crate::workbook::open_options::{OpenOptions, ReadMode};
+    use std::io::Read;
     use tempfile::TempDir;
+
+    fn zip_part(buffer: &[u8], name: &str) -> Vec<u8> {
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(buffer)).unwrap();
+        let mut bytes = Vec::new();
+        archive
+            .by_name(name)
+            .unwrap()
+            .read_to_end(&mut bytes)
+            .unwrap();
+        bytes
+    }
+
+    fn zip_entry_count(buffer: &[u8], name: &str) -> usize {
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(buffer)).unwrap();
+        (0..archive.len())
+            .filter(|index| archive.by_index(*index).unwrap().name() == name)
+            .count()
+    }
 
     #[test]
     fn test_workbook_add_data_validation() {
@@ -1114,6 +1139,39 @@ mod tests {
 
         let comments = wb.get_comments("Sheet1").unwrap();
         assert!(comments.is_empty());
+    }
+
+    #[test]
+    fn test_remove_missing_comment_preserves_clean_worksheet_bytes() {
+        let mut workbook = Workbook::new();
+        workbook
+            .add_comment(
+                "Sheet1",
+                &crate::comment::CommentConfig {
+                    cell: "A1".to_string(),
+                    author: "Author".to_string(),
+                    text: "Existing comment".to_string(),
+                },
+            )
+            .unwrap();
+        let original = workbook.save_to_buffer().unwrap();
+        let options = OpenOptions::new().read_mode(ReadMode::Eager);
+        let mut opened = Workbook::open_from_buffer_with_options(&original, &options).unwrap();
+        let sheet_path = "xl/worksheets/sheet1.xml";
+        let vml_path = "xl/drawings/vmlDrawing1.vml";
+        let rels_path = "xl/worksheets/_rels/sheet1.xml.rels";
+        let raw_sheet = zip_part(&original, sheet_path);
+        let raw_vml = zip_part(&original, vml_path);
+        let raw_rels = zip_part(&original, rels_path);
+
+        opened.remove_comment("Sheet1", "B2").unwrap();
+        let saved = opened.save_to_buffer().unwrap();
+
+        assert!(!opened.is_sheet_dirty(0));
+        assert_eq!(zip_part(&saved, sheet_path), raw_sheet);
+        assert_eq!(zip_part(&saved, vml_path), raw_vml);
+        assert_eq!(zip_part(&saved, rels_path), raw_rels);
+        assert_eq!(zip_entry_count(&saved, vml_path), 1);
     }
 
     #[test]

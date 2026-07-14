@@ -277,6 +277,12 @@ pub struct Xf {
     #[serde(rename = "@applyAlignment", skip_serializing_if = "Option::is_none")]
     pub apply_alignment: Option<bool>,
 
+    #[serde(rename = "@applyProtection", skip_serializing_if = "Option::is_none")]
+    pub apply_protection: Option<bool>,
+
+    #[serde(rename = "@quotePrefix", skip_serializing_if = "Option::is_none")]
+    pub quote_prefix: Option<bool>,
+
     #[serde(rename = "alignment", skip_serializing_if = "Option::is_none")]
     pub alignment: Option<Alignment>,
 
@@ -538,6 +544,8 @@ impl Default for StyleSheet {
                     apply_fill: None,
                     apply_border: None,
                     apply_alignment: None,
+                    apply_protection: None,
+                    quote_prefix: None,
                     alignment: None,
                     protection: None,
                 }],
@@ -555,6 +563,8 @@ impl Default for StyleSheet {
                     apply_fill: None,
                     apply_border: None,
                     apply_alignment: None,
+                    apply_protection: None,
+                    quote_prefix: None,
                     alignment: None,
                     protection: None,
                 }],
@@ -576,6 +586,21 @@ impl Default for StyleSheet {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_xf_apply_protection_and_quote_prefix_roundtrip() {
+        let xml = r#"<xf numFmtId="0" applyProtection="true" quotePrefix="true"><protection locked="false"/></xf>"#;
+
+        let xf: Xf = quick_xml::de::from_str(xml).unwrap();
+        assert_eq!(xf.apply_protection, Some(true));
+        assert_eq!(xf.quote_prefix, Some(true));
+
+        let serialized = quick_xml::se::to_string(&xf).unwrap();
+        assert!(serialized.contains("applyProtection=\"true\""));
+        assert!(serialized.contains("quotePrefix=\"true\""));
+        let reparsed: Xf = quick_xml::de::from_str(&serialized).unwrap();
+        assert_eq!(xf, reparsed);
+    }
 
     #[test]
     fn test_stylesheet_default() {
@@ -812,6 +837,8 @@ mod tests {
             apply_fill: None,
             apply_border: None,
             apply_alignment: Some(true),
+            apply_protection: None,
+            quote_prefix: None,
             alignment: Some(Alignment {
                 horizontal: Some("center".to_string()),
                 vertical: Some("center".to_string()),

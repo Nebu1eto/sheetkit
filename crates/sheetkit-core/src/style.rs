@@ -971,6 +971,8 @@ fn xfs_equal(a: &Xf, b: &Xf) -> bool {
         && a.font_id == b.font_id
         && a.fill_id == b.fill_id
         && a.border_id == b.border_id
+        && a.apply_protection == b.apply_protection
+        && a.quote_prefix == b.quote_prefix
         && a.alignment == b.alignment
         && a.protection == b.protection
 }
@@ -1105,6 +1107,12 @@ pub fn add_style(stylesheet: &mut StyleSheet, style: &Style) -> Result<u32> {
         } else {
             None
         },
+        apply_protection: if protection.is_some() {
+            Some(true)
+        } else {
+            None
+        },
+        quote_prefix: None,
         alignment,
         protection,
     };
@@ -1227,9 +1235,23 @@ mod tests {
             apply_fill: None,
             apply_border: None,
             apply_alignment: None,
+            apply_protection: None,
+            quote_prefix: None,
             alignment: None,
             protection: None,
         }
+    }
+
+    #[test]
+    fn test_xfs_equal_includes_passthrough_flags() {
+        let xf = xf_with_num_fmt(0);
+        let mut with_quote_prefix = xf.clone();
+        with_quote_prefix.quote_prefix = Some(true);
+        assert!(!xfs_equal(&xf, &with_quote_prefix));
+
+        let mut with_apply_protection = xf.clone();
+        with_apply_protection.apply_protection = Some(true);
+        assert!(!xfs_equal(&xf, &with_apply_protection));
     }
 
     #[test]

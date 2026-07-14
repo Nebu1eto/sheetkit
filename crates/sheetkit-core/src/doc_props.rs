@@ -198,6 +198,8 @@ pub(crate) fn delete_custom_property(
 pub struct WorkbookSettings {
     /// Use 1904 date system instead of 1900.
     pub date1904: Option<bool>,
+    /// Preserve date compatibility behavior.
+    pub date_compatibility: Option<bool>,
     /// Filter privacy setting.
     pub filter_privacy: Option<bool>,
     /// Default theme version.
@@ -210,6 +212,8 @@ pub struct WorkbookSettings {
     pub check_compatibility: Option<bool>,
     /// Auto compress pictures.
     pub auto_compress_pictures: Option<bool>,
+    /// Refresh all external data connections on open.
+    pub refresh_all_connections: Option<bool>,
     /// Backup file setting.
     pub backup_file: Option<bool>,
     /// Save external link values.
@@ -236,12 +240,14 @@ impl From<&WorkbookPr> for WorkbookSettings {
     fn from(pr: &WorkbookPr) -> Self {
         Self {
             date1904: pr.date1904,
+            date_compatibility: pr.date_compatibility,
             filter_privacy: pr.filter_privacy,
             default_theme_version: pr.default_theme_version,
             show_objects: pr.show_objects.clone(),
             code_name: pr.code_name.clone(),
             check_compatibility: pr.check_compatibility,
             auto_compress_pictures: pr.auto_compress_pictures,
+            refresh_all_connections: pr.refresh_all_connections,
             backup_file: pr.backup_file,
             save_external_link_values: pr.save_external_link_values,
             update_links: pr.update_links.clone(),
@@ -261,12 +267,14 @@ impl WorkbookSettings {
     pub fn to_workbook_pr(&self) -> WorkbookPr {
         WorkbookPr {
             date1904: self.date1904,
+            date_compatibility: self.date_compatibility,
             filter_privacy: self.filter_privacy,
             default_theme_version: self.default_theme_version,
             show_objects: self.show_objects.clone(),
             code_name: self.code_name.clone(),
             check_compatibility: self.check_compatibility,
             auto_compress_pictures: self.auto_compress_pictures,
+            refresh_all_connections: self.refresh_all_connections,
             backup_file: self.backup_file,
             save_external_link_values: self.save_external_link_values,
             update_links: self.update_links.clone(),
@@ -489,12 +497,14 @@ mod tests {
     fn test_workbook_settings_default() {
         let settings = WorkbookSettings::default();
         assert!(settings.date1904.is_none());
+        assert!(settings.date_compatibility.is_none());
         assert!(settings.filter_privacy.is_none());
         assert!(settings.default_theme_version.is_none());
         assert!(settings.show_objects.is_none());
         assert!(settings.code_name.is_none());
         assert!(settings.check_compatibility.is_none());
         assert!(settings.auto_compress_pictures.is_none());
+        assert!(settings.refresh_all_connections.is_none());
         assert!(settings.backup_file.is_none());
         assert!(settings.save_external_link_values.is_none());
         assert!(settings.update_links.is_none());
@@ -511,12 +521,14 @@ mod tests {
     fn test_workbook_settings_to_xml_roundtrip() {
         let settings = WorkbookSettings {
             date1904: Some(false),
+            date_compatibility: Some(true),
             filter_privacy: Some(true),
             default_theme_version: Some(166925),
             show_objects: Some("all".to_string()),
             code_name: Some("ThisWorkbook".to_string()),
             check_compatibility: Some(true),
             auto_compress_pictures: Some(false),
+            refresh_all_connections: Some(true),
             backup_file: Some(true),
             save_external_link_values: Some(true),
             update_links: Some("always".to_string()),
@@ -532,12 +544,14 @@ mod tests {
         let back = WorkbookSettings::from(&pr);
 
         assert_eq!(back.date1904, Some(false));
+        assert_eq!(back.date_compatibility, Some(true));
         assert_eq!(back.filter_privacy, Some(true));
         assert_eq!(back.default_theme_version, Some(166925));
         assert_eq!(back.show_objects.as_deref(), Some("all"));
         assert_eq!(back.code_name.as_deref(), Some("ThisWorkbook"));
         assert_eq!(back.check_compatibility, Some(true));
         assert_eq!(back.auto_compress_pictures, Some(false));
+        assert_eq!(back.refresh_all_connections, Some(true));
         assert_eq!(back.backup_file, Some(true));
         assert_eq!(back.save_external_link_values, Some(true));
         assert_eq!(back.update_links.as_deref(), Some("always"));

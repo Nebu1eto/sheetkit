@@ -22,6 +22,7 @@ impl Workbook {
             // Excel-like workbookPr default.
             workbook_pr: Some(sheetkit_xml::workbook::WorkbookPr {
                 date1904: None,
+                date_compatibility: None,
                 filter_privacy: None,
                 default_theme_version: Some(166925),
                 show_objects: None,
@@ -29,6 +30,7 @@ impl Workbook {
                 code_name: None,
                 check_compatibility: None,
                 auto_compress_pictures: None,
+                refresh_all_connections: None,
                 save_external_link_values: None,
                 update_links: None,
                 hide_pivot_field_list: None,
@@ -60,6 +62,8 @@ impl Workbook {
             content_types: ContentTypes::default(),
             package_rels: relationships::package_rels(),
             workbook_xml,
+            raw_workbook_xml: None,
+            workbook_xml_baseline: None,
             workbook_rels: relationships::workbook_rels(),
             worksheets: vec![(
                 "Sheet1".to_string(),
@@ -71,6 +75,8 @@ impl Workbook {
             charts: vec![],
             raw_charts: vec![],
             drawings: vec![],
+            raw_graph_parts: HashMap::new(),
+            dirty_graph_parts: HashSet::new(),
             images: vec![],
             worksheet_drawings: HashMap::new(),
             worksheet_rels: HashMap::new(),
@@ -78,6 +84,8 @@ impl Workbook {
             core_properties: None,
             app_properties: None,
             custom_properties: None,
+            raw_doc_props: HashMap::new(),
+            dirty_doc_props: HashSet::new(),
             pivot_tables: vec![],
             pivot_cache_defs: vec![],
             pivot_cache_records: vec![],
@@ -196,8 +204,11 @@ impl Workbook {
         let package_rels: Relationships = read_xml_part(archive, "_rels/.rels")?;
         known_paths.insert("_rels/.rels".to_string());
 
-        // Parse xl/workbook.xml
-        let workbook_xml: WorkbookXml = read_xml_part(archive, "xl/workbook.xml")?;
+        // Parse xl/workbook.xml while retaining exact source bytes for
+        // passthrough when its typed owner remains unchanged.
+        let raw_workbook_xml = read_bytes_part(archive, "xl/workbook.xml")?;
+        let workbook_xml: WorkbookXml = deserialize_xml_bytes(&raw_workbook_xml)?;
+        let workbook_xml_baseline = workbook_xml.clone();
         known_paths.insert("xl/workbook.xml".to_string());
 
         // Parse xl/_rels/workbook.xml.rels
@@ -231,14 +242,12 @@ impl Workbook {
             let should_parse = options.should_parse_sheet(&sheet_entry.name);
 
             if should_parse && !defer_sheets {
-                // Eager mode + selected: parse immediately.
-                let mut ws: WorksheetXml = read_xml_part(archive, &sheet_path)?;
-                for row in &mut ws.sheet_data.rows {
-                    row.cells.shrink_to_fit();
-                }
-                ws.sheet_data.rows.shrink_to_fit();
+                // Eager mode + selected: parse immediately while retaining
+                // exact source bytes for clean-sheet passthrough.
+                let raw_bytes = read_bytes_part(archive, &sheet_path)?;
+                let ws = deserialize_worksheet_xml(&raw_bytes)?;
                 worksheets.push((sheet_entry.name.clone(), initialized_lock(ws)));
-                raw_sheet_xml.push(None);
+                raw_sheet_xml.push(Some(raw_bytes));
             } else if !should_parse {
                 // Filtered out (any mode): store raw bytes for round-trip save
                 // but initialize the OnceLock with an empty worksheet so that
@@ -307,10 +316,12 @@ impl Workbook {
         let mut drawing_rels: HashMap<usize, Relationships> = HashMap::new();
         let mut charts: Vec<(String, ChartSpace)> = Vec::new();
         let mut raw_charts: Vec<(String, Vec<u8>)> = Vec::new();
+        let mut raw_graph_parts: HashMap<String, Vec<u8>> = HashMap::new();
         let mut images: Vec<(String, Vec<u8>)> = Vec::new();
         let mut core_properties: Option<sheetkit_xml::doc_props::CoreProperties> = None;
         let mut app_properties: Option<sheetkit_xml::doc_props::ExtendedProperties> = None;
         let mut custom_properties: Option<sheetkit_xml::doc_props::CustomProperties> = None;
+        let mut raw_doc_props: HashMap<String, Vec<u8>> = HashMap::new();
         let mut pivot_cache_defs = Vec::new();
         let mut pivot_tables = Vec::new();
         let mut pivot_cache_records = Vec::new();
@@ -327,6 +338,7 @@ impl Workbook {
 
         if !skip_aux {
             let mut drawing_path_to_idx: HashMap<String, usize> = HashMap::new();
+            let mut drawing_paths: HashSet<String> = HashSet::new();
 
             for (sheet_idx, sheet_path) in worksheet_paths.iter().enumerate() {
                 let Some(rels) = worksheet_rels.get(&sheet_idx) else {
@@ -363,16 +375,22 @@ impl Workbook {
                     .find(|r| r.rel_type == rel_types::DRAWING)
                 {
                     let drawing_path = resolve_relationship_target(sheet_path, &drawing_rel.target);
+                    drawing_paths.insert(drawing_path.clone());
                     let drawing_idx = if let Some(idx) = drawing_path_to_idx.get(&drawing_path) {
                         *idx
-                    } else if let Ok(drawing) = read_xml_part::<WsDr, _>(archive, &drawing_path) {
+                    } else {
+                        let Ok(bytes) = read_bytes_part(archive, &drawing_path) else {
+                            continue;
+                        };
+                        known_paths.insert(drawing_path.clone());
+                        raw_graph_parts.insert(drawing_path.clone(), bytes.clone());
+                        let Ok(drawing) = deserialize_xml_bytes::<WsDr>(&bytes) else {
+                            continue;
+                        };
                         let idx = drawings.len();
                         drawings.push((drawing_path.clone(), drawing));
-                        drawing_path_to_idx.insert(drawing_path.clone(), idx);
-                        known_paths.insert(drawing_path);
+                        drawing_path_to_idx.insert(drawing_path, idx);
                         idx
-                    } else {
-                        continue;
                     };
                     worksheet_drawings.insert(sheet_idx, drawing_idx);
                 }
@@ -385,13 +403,17 @@ impl Workbook {
                     continue;
                 }
                 let drawing_path = ovr.part_name.trim_start_matches('/').to_string();
-                if drawing_path_to_idx.contains_key(&drawing_path) {
+                if !drawing_paths.insert(drawing_path.clone()) {
                     continue;
                 }
-                if let Ok(drawing) = read_xml_part::<WsDr, _>(archive, &drawing_path) {
+                if let Ok(bytes) = read_bytes_part(archive, &drawing_path) {
+                    known_paths.insert(drawing_path.clone());
+                    raw_graph_parts.insert(drawing_path.clone(), bytes.clone());
+                    let Ok(drawing) = deserialize_xml_bytes::<WsDr>(&bytes) else {
+                        continue;
+                    };
                     let idx = drawings.len();
                     drawings.push((drawing_path.clone(), drawing));
-                    known_paths.insert(drawing_path.clone());
                     drawing_path_to_idx.insert(drawing_path, idx);
                 }
             }
@@ -399,33 +421,40 @@ impl Workbook {
             let mut seen_chart_paths: HashSet<String> = HashSet::new();
             let mut seen_image_paths: HashSet<String> = HashSet::new();
 
-            for (drawing_idx, (drawing_path, _)) in drawings.iter().enumerate() {
-                let drawing_rels_path = relationship_part_path(drawing_path);
-                let Ok(rels) = read_xml_part::<Relationships, _>(archive, &drawing_rels_path)
-                else {
+            for drawing_path in drawing_paths {
+                let drawing_rels_path = relationship_part_path(&drawing_path);
+                let Ok(rels_bytes) = read_bytes_part(archive, &drawing_rels_path) else {
                     continue;
                 };
-                known_paths.insert(drawing_rels_path);
+                known_paths.insert(drawing_rels_path.clone());
+                raw_graph_parts.insert(drawing_rels_path, rels_bytes.clone());
+                let Ok(rels) = deserialize_xml_bytes::<Relationships>(&rels_bytes) else {
+                    continue;
+                };
+                let Some(&drawing_idx) = drawing_path_to_idx.get(&drawing_path) else {
+                    continue;
+                };
 
                 for rel in &rels.relationships {
                     if rel.rel_type == rel_types::CHART {
-                        let chart_path = resolve_relationship_target(drawing_path, &rel.target);
+                        let chart_path = resolve_relationship_target(&drawing_path, &rel.target);
                         if seen_chart_paths.insert(chart_path.clone()) {
-                            match read_xml_part::<ChartSpace, _>(archive, &chart_path) {
+                            let Ok(bytes) = read_bytes_part(archive, &chart_path) else {
+                                continue;
+                            };
+                            known_paths.insert(chart_path.clone());
+                            match deserialize_xml_bytes::<ChartSpace>(&bytes) {
                                 Ok(chart) => {
-                                    known_paths.insert(chart_path.clone());
+                                    raw_graph_parts.insert(chart_path.clone(), bytes);
                                     charts.push((chart_path, chart));
                                 }
                                 Err(_) => {
-                                    if let Ok(bytes) = read_bytes_part(archive, &chart_path) {
-                                        known_paths.insert(chart_path.clone());
-                                        raw_charts.push((chart_path, bytes));
-                                    }
+                                    raw_charts.push((chart_path, bytes));
                                 }
                             }
                         }
                     } else if rel.rel_type == rel_types::IMAGE {
-                        let image_path = resolve_relationship_target(drawing_path, &rel.target);
+                        let image_path = resolve_relationship_target(&drawing_path, &rel.target);
                         if seen_image_paths.insert(image_path.clone()) {
                             if let Ok(bytes) = read_bytes_part(archive, &image_path) {
                                 known_paths.insert(image_path.clone());
@@ -446,40 +475,42 @@ impl Workbook {
                 }
                 let chart_path = ovr.part_name.trim_start_matches('/').to_string();
                 if seen_chart_paths.insert(chart_path.clone()) {
-                    match read_xml_part::<ChartSpace, _>(archive, &chart_path) {
+                    let Ok(bytes) = read_bytes_part(archive, &chart_path) else {
+                        continue;
+                    };
+                    known_paths.insert(chart_path.clone());
+                    match deserialize_xml_bytes::<ChartSpace>(&bytes) {
                         Ok(chart) => {
-                            known_paths.insert(chart_path.clone());
+                            raw_graph_parts.insert(chart_path.clone(), bytes);
                             charts.push((chart_path, chart));
                         }
                         Err(_) => {
-                            if let Ok(bytes) = read_bytes_part(archive, &chart_path) {
-                                known_paths.insert(chart_path.clone());
-                                raw_charts.push((chart_path, bytes));
-                            }
+                            raw_charts.push((chart_path, bytes));
                         }
                     }
                 }
             }
 
-            // Parse docProps/core.xml (optional - uses manual XML parsing)
-            core_properties = read_string_part(archive, "docProps/core.xml")
-                .ok()
-                .and_then(|xml_str| {
-                    sheetkit_xml::doc_props::deserialize_core_properties(&xml_str).ok()
-                });
-            known_paths.insert("docProps/core.xml".to_string());
-
-            // Parse docProps/app.xml (optional - uses serde)
-            app_properties = read_xml_part(archive, "docProps/app.xml").ok();
-            known_paths.insert("docProps/app.xml".to_string());
-
-            // Parse docProps/custom.xml (optional - uses manual XML parsing)
-            custom_properties = read_string_part(archive, "docProps/custom.xml")
-                .ok()
-                .and_then(|xml_str| {
-                    sheetkit_xml::doc_props::deserialize_custom_properties(&xml_str).ok()
-                });
-            known_paths.insert("docProps/custom.xml".to_string());
+            // Parse each document-property part independently while retaining
+            // its original bytes, including malformed or unsupported content.
+            if let Ok(bytes) = read_bytes_part(archive, "docProps/core.xml") {
+                let xml = String::from_utf8_lossy(&bytes);
+                core_properties = sheetkit_xml::doc_props::deserialize_core_properties(&xml).ok();
+                raw_doc_props.insert("docProps/core.xml".to_string(), bytes);
+                known_paths.insert("docProps/core.xml".to_string());
+            }
+            if let Ok(bytes) = read_bytes_part(archive, "docProps/app.xml") {
+                app_properties = deserialize_xml_bytes(&bytes).ok();
+                raw_doc_props.insert("docProps/app.xml".to_string(), bytes);
+                known_paths.insert("docProps/app.xml".to_string());
+            }
+            if let Ok(bytes) = read_bytes_part(archive, "docProps/custom.xml") {
+                let xml = String::from_utf8_lossy(&bytes);
+                custom_properties =
+                    sheetkit_xml::doc_props::deserialize_custom_properties(&xml).ok();
+                raw_doc_props.insert("docProps/custom.xml".to_string(), bytes);
+                known_paths.insert("docProps/custom.xml".to_string());
+            }
 
             // Parse pivot cache definitions, pivot tables, and pivot cache records.
             for ovr in &content_types.overrides {
@@ -695,6 +726,8 @@ impl Workbook {
             content_types,
             package_rels,
             workbook_xml,
+            raw_workbook_xml: Some(raw_workbook_xml),
+            workbook_xml_baseline: Some(workbook_xml_baseline),
             workbook_rels,
             worksheets,
             stylesheet,
@@ -703,6 +736,8 @@ impl Workbook {
             charts,
             raw_charts,
             drawings,
+            raw_graph_parts,
+            dirty_graph_parts: HashSet::new(),
             images,
             worksheet_drawings,
             worksheet_rels,
@@ -710,6 +745,8 @@ impl Workbook {
             core_properties,
             app_properties,
             custom_properties,
+            raw_doc_props,
+            dirty_doc_props: HashSet::new(),
             pivot_tables,
             pivot_cache_defs,
             pivot_cache_records,
@@ -722,9 +759,8 @@ impl Workbook {
             deferred_parts,
             vba_blob,
             tables,
-            // Sheets with raw bytes (deferred or filtered) start clean;
-            // eagerly-parsed sheets (no raw bytes) start dirty so they
-            // always take the serialize path on save.
+            // Every opened sheet retains raw bytes and starts clean. A later
+            // owner mutation marks only its sheet dirty.
             sheet_dirty: raw_sheet_xml.iter().map(|raw| raw.is_none()).collect(),
             raw_sheet_xml,
             slicer_defs,
@@ -1277,6 +1313,7 @@ impl Workbook {
         generated_lifecycle_paths.extend(self.drawings.iter().map(|(path, _)| path.clone()));
         generated_lifecycle_paths.extend(self.charts.iter().map(|(path, _)| path.clone()));
         generated_lifecycle_paths.extend(self.raw_charts.iter().map(|(path, _)| path.clone()));
+        generated_lifecycle_paths.extend(self.raw_graph_parts.keys().cloned());
         generated_lifecycle_paths.extend(self.images.iter().map(|(path, _)| path.clone()));
         generated_lifecycle_paths.extend(self.tables.iter().map(|(path, _, _)| path.clone()));
         generated_lifecycle_paths.extend(self.pivot_tables.iter().map(|(path, _)| path.clone()));
@@ -1314,6 +1351,7 @@ impl Workbook {
         if self.custom_properties.is_some() {
             generated_lifecycle_paths.insert("docProps/custom.xml".to_string());
         }
+        generated_lifecycle_paths.extend(self.raw_doc_props.keys().cloned());
         if has_any_threaded {
             generated_lifecycle_paths.extend(
                 self.sheet_threaded_comments
@@ -1340,7 +1378,15 @@ impl Workbook {
         write_xml_part(zip, "_rels/.rels", &self.package_rels, options)?;
 
         // xl/workbook.xml
-        write_xml_part(zip, "xl/workbook.xml", &self.workbook_xml, options)?;
+        if let (Some(raw), Some(baseline)) = (&self.raw_workbook_xml, &self.workbook_xml_baseline) {
+            if self.workbook_xml == *baseline {
+                write_bytes_part(zip, "xl/workbook.xml", raw, options)?;
+            } else {
+                write_xml_part(zip, "xl/workbook.xml", &self.workbook_xml, options)?;
+            }
+        } else {
+            write_xml_part(zip, "xl/workbook.xml", &self.workbook_xml, options)?;
+        }
 
         // xl/_rels/workbook.xml.rels
         write_xml_part(zip, "xl/_rels/workbook.xml.rels", &workbook_rels, options)?;
@@ -1369,9 +1415,7 @@ impl Workbook {
                 legacy_drawing_rids.contains_key(&i) || table_parts_by_sheet.contains_key(&i);
             if !dirty && !needs_aux_injection {
                 if let Some(Some(raw_bytes)) = self.raw_sheet_xml.get(i) {
-                    zip.start_file(&entry_name, options)
-                        .map_err(|e| Error::Zip(e.to_string()))?;
-                    zip.write_all(raw_bytes)?;
+                    write_bytes_part(zip, &entry_name, raw_bytes, options)?;
                     continue;
                 }
             }
@@ -1478,14 +1522,26 @@ impl Workbook {
             zip.write_all(vml_bytes)?;
         }
 
+        let mut emitted_graph_paths: HashSet<String> = HashSet::new();
+
         // xl/drawings/drawing{N}.xml -- write drawing parts
         for (path, drawing) in &self.drawings {
-            write_xml_part(zip, path, drawing, options)?;
+            if let Some(bytes) = self.clean_raw_graph_part(path) {
+                write_bytes_part(zip, path, bytes, options)?;
+            } else {
+                write_xml_part(zip, path, drawing, options)?;
+            }
+            emitted_graph_paths.insert(path.clone());
         }
 
         // xl/charts/chart{N}.xml -- write chart parts
         for (path, chart) in &self.charts {
-            write_xml_part(zip, path, chart, options)?;
+            if let Some(bytes) = self.clean_raw_graph_part(path) {
+                write_bytes_part(zip, path, bytes, options)?;
+            } else {
+                write_xml_part(zip, path, chart, options)?;
+            }
+            emitted_graph_paths.insert(path.clone());
         }
         for (path, data) in &self.raw_charts {
             if self.charts.iter().any(|(p, _)| p == path) {
@@ -1493,7 +1549,8 @@ impl Workbook {
             }
             zip.start_file(path, options)
                 .map_err(|e| Error::Zip(e.to_string()))?;
-            zip.write_all(data)?;
+            zip.write_all(self.clean_raw_graph_part(path).unwrap_or(data))?;
+            emitted_graph_paths.insert(path.clone());
         }
 
         // xl/media/image{N}.{ext} -- write image data
@@ -1514,8 +1571,21 @@ impl Workbook {
         for (drawing_idx, rels) in &self.drawing_rels {
             if let Some((drawing_path, _)) = self.drawings.get(*drawing_idx) {
                 let path = relationship_part_path(drawing_path);
-                write_xml_part(zip, &path, rels, options)?;
+                if let Some(bytes) = self.clean_raw_graph_part(&path) {
+                    write_bytes_part(zip, &path, bytes, options)?;
+                } else {
+                    write_xml_part(zip, &path, rels, options)?;
+                }
+                emitted_graph_paths.insert(path);
             }
+        }
+
+        // Raw drawing or relationship parts that could not be parsed eagerly.
+        for (path, data) in &self.raw_graph_parts {
+            if self.dirty_graph_parts.contains(path) || emitted_graph_paths.contains(path) {
+                continue;
+            }
+            write_bytes_part(zip, path, data, options)?;
         }
 
         // xl/pivotTables/pivotTable{N}.xml
@@ -1572,7 +1642,9 @@ impl Workbook {
         }
 
         // docProps/core.xml
-        if let Some(ref props) = self.core_properties {
+        if let Some(raw) = self.clean_raw_doc_prop("docProps/core.xml") {
+            write_bytes_part(zip, "docProps/core.xml", raw, options)?;
+        } else if let Some(ref props) = self.core_properties {
             let xml_str = sheetkit_xml::doc_props::serialize_core_properties(props);
             zip.start_file("docProps/core.xml", options)
                 .map_err(|e| Error::Zip(e.to_string()))?;
@@ -1580,12 +1652,16 @@ impl Workbook {
         }
 
         // docProps/app.xml
-        if let Some(ref props) = self.app_properties {
+        if let Some(raw) = self.clean_raw_doc_prop("docProps/app.xml") {
+            write_bytes_part(zip, "docProps/app.xml", raw, options)?;
+        } else if let Some(ref props) = self.app_properties {
             write_xml_part(zip, "docProps/app.xml", props, options)?;
         }
 
         // docProps/custom.xml
-        if let Some(ref props) = self.custom_properties {
+        if let Some(raw) = self.clean_raw_doc_prop("docProps/custom.xml") {
+            write_bytes_part(zip, "docProps/custom.xml", raw, options)?;
+        } else if let Some(ref props) = self.custom_properties {
             let xml_str = sheetkit_xml::doc_props::serialize_custom_properties(props);
             zip.start_file("docProps/custom.xml", options)
                 .map_err(|e| Error::Zip(e.to_string()))?;
@@ -1645,6 +1721,7 @@ impl Workbook {
             for (path, _) in &self.raw_charts {
                 emitted_owned.insert(path.clone());
             }
+            emitted_owned.extend(self.raw_graph_parts.keys().cloned());
             for (path, _) in &self.images {
                 emitted_owned.insert(path.clone());
             }
@@ -1687,6 +1764,7 @@ impl Workbook {
             if self.custom_properties.is_some() {
                 emitted_owned.insert("docProps/custom.xml".to_string());
             }
+            emitted_owned.extend(self.raw_doc_props.keys().cloned());
             if has_any_threaded {
                 for (i, tc) in self.sheet_threaded_comments.iter().enumerate() {
                     if tc.is_some() {
@@ -1776,6 +1854,10 @@ pub(crate) fn read_xml_part<T: serde::de::DeserializeOwned, R: std::io::Read + s
     let buf_cap = size.clamp(8192, LARGE_BUF_CAPACITY);
     let reader = std::io::BufReader::with_capacity(buf_cap, entry);
     quick_xml::de::from_reader(reader).map_err(|e| Error::XmlDeserialize(e.to_string()))
+}
+
+fn deserialize_xml_bytes<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T> {
+    quick_xml::de::from_reader(bytes).map_err(|e| Error::XmlDeserialize(e.to_string()))
 }
 
 #[derive(Default)]
@@ -2023,8 +2105,20 @@ pub(crate) fn serialize_worksheet_with_extras(
         let mut result = String::with_capacity(XML_DECLARATION.len() + 1 + body.len() + extra_len);
         result.push_str(XML_DECLARATION);
         result.push('\n');
-        result.push_str(prefix);
-        result.push_str(&legacy_xml);
+        // Clean owners bypass this helper through raw passthrough. Dirty
+        // owners are rebuilt in worksheet schema order without raw merging.
+        if !legacy_xml.is_empty() {
+            if let Some(table_parts_start) = prefix.find("<tableParts") {
+                result.push_str(&prefix[..table_parts_start]);
+                result.push_str(&legacy_xml);
+                result.push_str(&prefix[table_parts_start..]);
+            } else {
+                result.push_str(prefix);
+                result.push_str(&legacy_xml);
+            }
+        } else {
+            result.push_str(prefix);
+        }
         result.push_str(&ext_xml);
         result.push_str(closing);
         Ok(result)
@@ -2209,9 +2303,18 @@ pub(crate) fn write_xml_part<T: Serialize, W: std::io::Write + std::io::Seek>(
     options: SimpleFileOptions,
 ) -> Result<()> {
     let xml = serialize_xml(value)?;
+    write_bytes_part(zip, name, xml.as_bytes(), options)
+}
+
+fn write_bytes_part<W: std::io::Write + std::io::Seek>(
+    zip: &mut zip::ZipWriter<W>,
+    name: &str,
+    bytes: &[u8],
+    options: SimpleFileOptions,
+) -> Result<()> {
     zip.start_file(name, options)
         .map_err(|e| Error::Zip(e.to_string()))?;
-    zip.write_all(xml.as_bytes())?;
+    zip.write_all(bytes)?;
     Ok(())
 }
 
@@ -2282,6 +2385,131 @@ mod tests {
             writer.finish().unwrap();
         }
         output
+    }
+
+    fn workbook_with_chart_buffer() -> Vec<u8> {
+        use crate::chart::{ChartConfig, ChartSeries, ChartType};
+
+        let mut workbook = Workbook::new();
+        workbook.new_sheet("Sheet2").unwrap();
+        workbook
+            .add_chart(
+                "Sheet1",
+                "E2",
+                "L15",
+                &ChartConfig {
+                    chart_type: ChartType::Col,
+                    title: Some("Preserved chart".to_string()),
+                    series: vec![ChartSeries {
+                        name: "Values".to_string(),
+                        categories: "Sheet1!$A$1:$A$3".to_string(),
+                        values: "Sheet1!$B$1:$B$3".to_string(),
+                        x_values: None,
+                        bubble_sizes: None,
+                    }],
+                    show_legend: true,
+                    view_3d: None,
+                },
+            )
+            .unwrap();
+        workbook.save_to_buffer().unwrap()
+    }
+
+    fn opaque_graph_buffer() -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>) {
+        let base = workbook_with_chart_buffer();
+
+        let chart = String::from_utf8(zip_part(&base, "xl/charts/chart1.xml")).unwrap();
+        let chart = chart.replacen(
+            "xmlns:c=\"http://schemas.openxmlformats.org/drawingml/2006/chart\"",
+            "xmlns:c='http://schemas.openxmlformats.org/drawingml/2006/chart'",
+            1,
+        );
+        assert!(chart.contains("xmlns:c='"));
+
+        let drawing = String::from_utf8(zip_part(&base, "xl/drawings/drawing1.xml")).unwrap();
+        let drawing = drawing.replacen(
+            "xmlns:xdr=\"http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing\"",
+            "xmlns:xdr='http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing'",
+            1,
+        );
+        assert!(drawing.contains("xmlns:xdr='"));
+        if let Err(error) = deserialize_xml_bytes::<WsDr>(drawing.as_bytes()) {
+            panic!("opaque drawing must remain partially parseable: {error}");
+        }
+
+        let drawing_rels =
+            String::from_utf8(zip_part(&base, "xl/drawings/_rels/drawing1.xml.rels"))
+                .unwrap()
+                .replacen(
+                    "</Relationships>",
+                    "<!--preserve-this-comment--></Relationships>",
+                    1,
+                );
+
+        let chart = chart.into_bytes();
+        let drawing = drawing.into_bytes();
+        let drawing_rels = drawing_rels.into_bytes();
+        let rewritten = rewrite_zip_parts(
+            &base,
+            &[
+                ("xl/charts/chart1.xml", Some(chart.clone())),
+                ("xl/drawings/drawing1.xml", Some(drawing.clone())),
+                (
+                    "xl/drawings/_rels/drawing1.xml.rels",
+                    Some(drawing_rels.clone()),
+                ),
+            ],
+        );
+        (rewritten, chart, drawing, drawing_rels)
+    }
+
+    fn unsupported_graph_buffer() -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        let base = workbook_with_chart_buffer();
+        let chart = String::from_utf8(zip_part(&base, "xl/charts/chart1.xml")).unwrap();
+        let chart = chart.replacen(
+            "</c:barChart>",
+            "<c:dLbls><c:showVal val=\"1\"/></c:dLbls></c:barChart>",
+            1,
+        );
+        let chart = chart.replacen(
+            "</c:plotArea>",
+            concat!(
+                "<c:dateAx><c:axId val=\"9001\"/></c:dateAx>",
+                "<c:valAx><c:axId val=\"9002\"/></c:valAx>",
+                "<c:spPr><a:solidFill xmlns:a=\"http://schemas.openxmlformats.org/",
+                "drawingml/2006/main\"><a:srgbClr val=\"123456\"/></a:solidFill></c:spPr>",
+                "</c:plotArea>"
+            ),
+            1,
+        );
+
+        let drawing = String::from_utf8(zip_part(&base, "xl/drawings/drawing1.xml")).unwrap();
+        let drawing = drawing.replacen(
+            "<xdr:twoCellAnchor>",
+            "<xdr:twoCellAnchor editAs=\"oneCell\">",
+            1,
+        );
+        let drawing = drawing.replacen(
+            "</xdr:twoCellAnchor>",
+            concat!(
+                "<xdr:cxnSp/><xdr:grpSp/>",
+                "</xdr:twoCellAnchor>",
+                "<xdr:absoluteAnchor><xdr:pos x=\"0\" y=\"0\"/>",
+                "<xdr:ext cx=\"1\" cy=\"1\"/><xdr:sp/></xdr:absoluteAnchor>"
+            ),
+            1,
+        );
+
+        let chart = chart.into_bytes();
+        let drawing = drawing.into_bytes();
+        let rewritten = rewrite_zip_parts(
+            &base,
+            &[
+                ("xl/charts/chart1.xml", Some(chart.clone())),
+                ("xl/drawings/drawing1.xml", Some(drawing.clone())),
+            ],
+        );
+        (rewritten, chart, drawing)
     }
 
     fn assert_canonical_sst_metadata(buffer: &[u8]) {
@@ -5033,7 +5261,7 @@ mod tests {
     }
 
     #[test]
-    fn test_eager_open_sheets_are_dirty() {
+    fn test_eager_open_sheets_start_clean() {
         use crate::workbook::open_options::{AuxParts, OpenOptions, ReadMode};
 
         let mut wb = Workbook::new();
@@ -5045,8 +5273,8 @@ mod tests {
             .aux_parts(AuxParts::EagerLoad);
         let wb2 = Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
         assert!(
-            wb2.is_sheet_dirty(0),
-            "eagerly parsed sheet should be dirty"
+            !wb2.is_sheet_dirty(0),
+            "eagerly parsed sheet should retain raw bytes and start clean"
         );
     }
 
@@ -5172,5 +5400,608 @@ mod tests {
             wb3.get_cell_value("Sheet2", "A1").unwrap(),
             CellValue::String("s2".to_string()),
         );
+    }
+
+    #[test]
+    fn eager_open_preserves_clean_graph_xml() {
+        let (input, chart, drawing, drawing_rels) = opaque_graph_buffer();
+        let options = OpenOptions::new()
+            .read_mode(ReadMode::Eager)
+            .aux_parts(AuxParts::EagerLoad);
+        let mut workbook = Workbook::open_from_buffer_with_options(&input, &options).unwrap();
+
+        assert_eq!(workbook.raw_charts.len(), 1);
+        assert!(!workbook
+            .raw_graph_parts
+            .contains_key("xl/charts/chart1.xml"));
+        assert_eq!(
+            workbook.drawings.len(),
+            1,
+            "drawing must parse successfully"
+        );
+        workbook
+            .set_cell_value("Sheet1", "A20", "unrelated edit")
+            .unwrap();
+        assert!(workbook.dirty_graph_parts.is_empty());
+
+        let saved = workbook.save_to_buffer().unwrap();
+        assert_eq!(zip_part(&saved, "xl/charts/chart1.xml"), chart);
+        assert_eq!(zip_part(&saved, "xl/drawings/drawing1.xml"), drawing);
+        assert_eq!(
+            zip_part(&saved, "xl/drawings/_rels/drawing1.xml.rels"),
+            drawing_rels
+        );
+    }
+
+    #[test]
+    fn clean_typed_chart_owner_prefers_its_raw_original() {
+        let base = workbook_with_chart_buffer();
+        let raw_chart = zip_part(&base, "xl/charts/chart1.xml")
+            .into_iter()
+            .chain(b"\n".iter().copied())
+            .collect::<Vec<_>>();
+        let mut workbook = Workbook::new();
+        use crate::chart::{ChartConfig, ChartSeries, ChartType};
+        workbook
+            .add_chart(
+                "Sheet1",
+                "E2",
+                "L15",
+                &ChartConfig {
+                    chart_type: ChartType::Col,
+                    title: None,
+                    series: vec![ChartSeries {
+                        name: "Values".to_string(),
+                        categories: "Sheet1!$A$1:$A$3".to_string(),
+                        values: "Sheet1!$B$1:$B$3".to_string(),
+                        x_values: None,
+                        bubble_sizes: None,
+                    }],
+                    show_legend: false,
+                    view_3d: None,
+                },
+            )
+            .unwrap();
+        workbook.remember_raw_graph_part("xl/charts/chart1.xml".to_string(), raw_chart.clone());
+        workbook.dirty_graph_parts.remove("xl/charts/chart1.xml");
+
+        let saved = workbook.save_to_buffer().unwrap();
+        assert_eq!(zip_part(&saved, "xl/charts/chart1.xml"), raw_chart);
+    }
+
+    #[test]
+    fn raw_graph_paths_are_reserved_for_part_allocation() {
+        let mut workbook = Workbook::new();
+        workbook.remember_raw_graph_part("xl/charts/chart1.xml".to_string(), b"chart".to_vec());
+        workbook
+            .remember_raw_graph_part("xl/drawings/drawing1.xml".to_string(), b"drawing".to_vec());
+
+        assert_eq!(
+            workbook.next_available_part_path("xl/charts/chart", ".xml"),
+            "xl/charts/chart2.xml"
+        );
+        assert_eq!(
+            workbook.next_available_part_path("xl/drawings/drawing", ".xml"),
+            "xl/drawings/drawing2.xml"
+        );
+    }
+
+    #[test]
+    fn lazy_hydration_is_read_only_for_graph_parts() {
+        let (input, chart, drawing, drawing_rels) = opaque_graph_buffer();
+        let options = OpenOptions::new().read_mode(ReadMode::Lazy);
+        let mut workbook = Workbook::open_from_buffer_with_options(&input, &options).unwrap();
+
+        workbook.hydrate_drawings();
+        assert_eq!(workbook.raw_charts.len(), 1);
+        assert!(!workbook
+            .raw_graph_parts
+            .contains_key("xl/charts/chart1.xml"));
+        assert_eq!(
+            workbook.drawings.len(),
+            1,
+            "drawing must hydrate successfully"
+        );
+        assert!(workbook.dirty_graph_parts.is_empty());
+
+        let saved = workbook.save_to_buffer().unwrap();
+        assert_eq!(zip_part(&saved, "xl/charts/chart1.xml"), chart);
+        assert_eq!(zip_part(&saved, "xl/drawings/drawing1.xml"), drawing);
+        assert_eq!(
+            zip_part(&saved, "xl/drawings/_rels/drawing1.xml.rels"),
+            drawing_rels
+        );
+    }
+
+    #[test]
+    fn eager_open_preserves_parse_failed_drawing_and_relationships() {
+        let base = workbook_with_chart_buffer();
+        let drawing = b"<xdr:wsDr><broken></xdr:wsDr>".to_vec();
+        let drawing_rels = b"<Relationships><broken></Relationships>".to_vec();
+        let input = rewrite_zip_parts(
+            &base,
+            &[
+                ("xl/drawings/drawing1.xml", Some(drawing.clone())),
+                (
+                    "xl/drawings/_rels/drawing1.xml.rels",
+                    Some(drawing_rels.clone()),
+                ),
+            ],
+        );
+
+        let options = OpenOptions::new()
+            .read_mode(ReadMode::Eager)
+            .aux_parts(AuxParts::EagerLoad);
+        let mut workbook = Workbook::open_from_buffer_with_options(&input, &options).unwrap();
+        workbook
+            .set_cell_value("Sheet1", "A20", "unrelated edit")
+            .unwrap();
+        let saved = workbook.save_to_buffer().unwrap();
+
+        assert_eq!(zip_part(&saved, "xl/drawings/drawing1.xml"), drawing);
+        assert_eq!(
+            zip_part(&saved, "xl/drawings/_rels/drawing1.xml.rels"),
+            drawing_rels
+        );
+    }
+
+    #[test]
+    fn eager_open_preserves_unsupported_chart_and_drawing_nodes() {
+        let (input, chart, drawing) = unsupported_graph_buffer();
+        let options = OpenOptions::new()
+            .read_mode(ReadMode::Eager)
+            .aux_parts(AuxParts::EagerLoad);
+        let mut workbook = Workbook::open_from_buffer_with_options(&input, &options).unwrap();
+
+        workbook
+            .set_cell_value("Sheet1", "A20", "unrelated edit")
+            .unwrap();
+        let saved = workbook.save_to_buffer().unwrap();
+
+        assert_eq!(zip_part(&saved, "xl/charts/chart1.xml"), chart);
+        assert_eq!(zip_part(&saved, "xl/drawings/drawing1.xml"), drawing);
+    }
+
+    #[test]
+    fn mutating_drawing_keeps_existing_chart_raw_xml_clean() {
+        use crate::chart::{ChartConfig, ChartSeries, ChartType};
+
+        let (input, chart, drawing, _) = opaque_graph_buffer();
+        let options = OpenOptions::new()
+            .read_mode(ReadMode::Eager)
+            .aux_parts(AuxParts::EagerLoad);
+        let mut workbook = Workbook::open_from_buffer_with_options(&input, &options).unwrap();
+        workbook
+            .add_chart(
+                "Sheet1",
+                "E20",
+                "L30",
+                &ChartConfig {
+                    chart_type: ChartType::Line,
+                    title: None,
+                    series: vec![ChartSeries {
+                        name: "New values".to_string(),
+                        categories: "Sheet1!$A$1:$A$3".to_string(),
+                        values: "Sheet1!$C$1:$C$3".to_string(),
+                        x_values: None,
+                        bubble_sizes: None,
+                    }],
+                    show_legend: false,
+                    view_3d: None,
+                },
+            )
+            .unwrap();
+        assert!(!workbook.dirty_graph_parts.contains("xl/charts/chart1.xml"));
+        assert!(workbook.dirty_graph_parts.contains("xl/charts/chart2.xml"));
+        assert!(workbook
+            .dirty_graph_parts
+            .contains("xl/drawings/drawing1.xml"));
+        assert!(workbook
+            .dirty_graph_parts
+            .contains("xl/drawings/_rels/drawing1.xml.rels"));
+
+        let saved = workbook.save_to_buffer().unwrap();
+        assert_eq!(zip_part(&saved, "xl/charts/chart1.xml"), chart);
+        assert_ne!(zip_part(&saved, "xl/drawings/drawing1.xml"), drawing);
+        assert!(zip_entry_count(&saved, "xl/charts/chart2.xml") == 1);
+    }
+
+    #[test]
+    fn graph_relationship_mutations_reject_unparseable_raw_rels_atomically() {
+        use crate::chart::{ChartConfig, ChartSeries, ChartType};
+        use crate::image::{ImageConfig, ImageFormat};
+
+        let base = workbook_with_chart_buffer();
+        let input = rewrite_zip_parts(
+            &base,
+            &[(
+                "xl/drawings/_rels/drawing1.xml.rels",
+                Some(b"<Relationships><opaque></Relationships>".to_vec()),
+            )],
+        );
+        let options = OpenOptions::new()
+            .read_mode(ReadMode::Eager)
+            .aux_parts(AuxParts::EagerLoad);
+        let mut workbook = Workbook::open_from_buffer_with_options(&input, &options).unwrap();
+        assert_eq!(workbook.drawings.len(), 1);
+        assert!(!workbook.drawing_rels.contains_key(&0));
+        let before = workbook.save_to_buffer().unwrap();
+
+        let chart_error = workbook
+            .add_chart(
+                "Sheet1",
+                "E20",
+                "L30",
+                &ChartConfig {
+                    chart_type: ChartType::Line,
+                    title: None,
+                    series: vec![ChartSeries {
+                        name: "New values".to_string(),
+                        categories: "Sheet1!$A$1:$A$3".to_string(),
+                        values: "Sheet1!$C$1:$C$3".to_string(),
+                        x_values: None,
+                        bubble_sizes: None,
+                    }],
+                    show_legend: false,
+                    view_3d: None,
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(chart_error, Error::InvalidArgument(_)));
+        assert_eq!(workbook.save_to_buffer().unwrap(), before);
+
+        let image_error = workbook
+            .add_image(
+                "Sheet1",
+                &ImageConfig {
+                    data: vec![0x89, 0x50, 0x4e, 0x47],
+                    format: ImageFormat::Png,
+                    from_cell: "A20".to_string(),
+                    width_px: 10,
+                    height_px: 10,
+                },
+            )
+            .unwrap_err();
+        assert!(matches!(image_error, Error::InvalidArgument(_)));
+        assert_eq!(workbook.save_to_buffer().unwrap(), before);
+    }
+
+    #[test]
+    fn delete_sheet_rejects_owned_unparseable_raw_drawing_atomically() {
+        let base = workbook_with_chart_buffer();
+        let opaque_drawing = b"<xdr:wsDr><opaque></xdr:wsDr>".to_vec();
+        let input = rewrite_zip_parts(
+            &base,
+            &[("xl/drawings/drawing1.xml", Some(opaque_drawing.clone()))],
+        );
+        let options = OpenOptions::new()
+            .read_mode(ReadMode::Eager)
+            .aux_parts(AuxParts::EagerLoad);
+        let mut workbook = Workbook::open_from_buffer_with_options(&input, &options).unwrap();
+        assert!(!workbook.worksheet_drawings.contains_key(&0));
+        let before = workbook.save_to_buffer().unwrap();
+
+        let error = workbook.delete_sheet("Sheet1").unwrap_err();
+        assert!(matches!(error, Error::InvalidArgument(_)));
+        assert_eq!(workbook.sheet_names(), vec!["Sheet1", "Sheet2"]);
+        let after = workbook.save_to_buffer().unwrap();
+        assert_eq!(after, before);
+        assert_eq!(zip_part(&after, "xl/drawings/drawing1.xml"), opaque_drawing);
+        assert_eq!(zip_entry_count(&after, "xl/drawings/drawing1.xml"), 1);
+    }
+
+    #[test]
+    fn eager_edit_preserves_untouched_worksheet_bytes_with_extensions() {
+        let mut workbook = Workbook::new();
+        workbook.new_sheet("Untouched").unwrap();
+        let base = workbook.save_to_buffer().unwrap();
+        let sheet_path = "xl/worksheets/sheet2.xml";
+        let raw_sheet = String::from_utf8(zip_part(&base, sheet_path)).unwrap();
+        let raw_sheet = raw_sheet.replacen(
+            "</worksheet>",
+            concat!(
+                "<colBreaks count=\"1\" manualBreakCount=\"1\">",
+                "<brk id=\"3\" min=\"0\" max=\"1048575\" man=\"true\"/>",
+                "</colBreaks>",
+                "<extLst><ext uri=\"{opaque-sheet-extension}\">",
+                "<opaque:payload xmlns:opaque=\"urn:sheetkit:test\" value=\"keep\"/>",
+                "</ext></extLst></worksheet>"
+            ),
+            1,
+        );
+        let raw_sheet = raw_sheet.into_bytes();
+        let input = rewrite_zip_parts(&base, &[(sheet_path, Some(raw_sheet.clone()))]);
+        let options = OpenOptions::new()
+            .read_mode(ReadMode::Eager)
+            .aux_parts(AuxParts::EagerLoad);
+        let mut opened = Workbook::open_from_buffer_with_options(&input, &options).unwrap();
+
+        assert!(!opened.is_sheet_dirty(0));
+        assert!(!opened.is_sheet_dirty(1));
+        opened.set_cell_value("Sheet1", "A1", "changed").unwrap();
+        let saved = opened.save_to_buffer().unwrap();
+
+        assert_eq!(zip_part(&saved, sheet_path), raw_sheet);
+        assert_eq!(zip_entry_count(&saved, sheet_path), 1);
+        let saved_sheet = String::from_utf8(zip_part(&saved, sheet_path)).unwrap();
+        assert_eq!(saved_sheet.matches("<extLst>").count(), 1);
+    }
+
+    #[test]
+    fn eager_sparkline_removal_does_not_reuse_stale_raw_sheet_xml() {
+        let mut workbook = Workbook::new();
+        workbook
+            .add_sparkline(
+                "Sheet1",
+                &crate::sparkline::SparklineConfig::new("Sheet1!A1:A3", "B1"),
+            )
+            .unwrap();
+        let base = workbook.save_to_buffer().unwrap();
+        assert!(
+            String::from_utf8(zip_part(&base, "xl/worksheets/sheet1.xml"))
+                .unwrap()
+                .contains("sparklineGroups")
+        );
+
+        let options = OpenOptions::new()
+            .read_mode(ReadMode::Eager)
+            .aux_parts(AuxParts::EagerLoad);
+        let mut opened = Workbook::open_from_buffer_with_options(&base, &options).unwrap();
+        opened.remove_sparkline("Sheet1", "B1").unwrap();
+        let saved = opened.save_to_buffer().unwrap();
+        let saved_sheet = String::from_utf8(zip_part(&saved, "xl/worksheets/sheet1.xml")).unwrap();
+
+        assert!(!saved_sheet.contains("sparklineGroups"));
+        assert!(!saved_sheet.contains("<extLst>"));
+        assert_eq!(zip_entry_count(&saved, "xl/worksheets/sheet1.xml"), 1);
+    }
+
+    #[test]
+    fn dirty_sheet_extras_follow_worksheet_schema_order() {
+        let mut workbook = Workbook::new();
+        workbook
+            .add_table(
+                "Sheet1",
+                &crate::table::TableConfig {
+                    name: "Table1".to_string(),
+                    display_name: "Table1".to_string(),
+                    range: "A1:B3".to_string(),
+                    columns: vec![
+                        crate::table::TableColumn {
+                            name: "Name".to_string(),
+                            totals_row_function: None,
+                            totals_row_label: None,
+                        },
+                        crate::table::TableColumn {
+                            name: "Value".to_string(),
+                            totals_row_function: None,
+                            totals_row_label: None,
+                        },
+                    ],
+                    ..crate::table::TableConfig::default()
+                },
+            )
+            .unwrap();
+        workbook
+            .add_comment(
+                "Sheet1",
+                &crate::comment::CommentConfig {
+                    cell: "A1".to_string(),
+                    author: "Author".to_string(),
+                    text: "Comment".to_string(),
+                },
+            )
+            .unwrap();
+        workbook
+            .add_sparkline(
+                "Sheet1",
+                &crate::sparkline::SparklineConfig::new("Sheet1!B1:B3", "C1"),
+            )
+            .unwrap();
+
+        let saved = workbook.save_to_buffer().unwrap();
+        let sheet = String::from_utf8(zip_part(&saved, "xl/worksheets/sheet1.xml")).unwrap();
+        let legacy = sheet.find("<legacyDrawing ").unwrap();
+        let tables = sheet.find("<tableParts ").unwrap();
+        let extensions = sheet.find("<extLst>").unwrap();
+        let closing = sheet.rfind("</worksheet>").unwrap();
+
+        assert!(legacy < tables, "legacyDrawing must precede tableParts");
+        assert!(tables < extensions, "tableParts must precede extLst");
+        assert!(
+            extensions < closing,
+            "extLst must be the final worksheet child"
+        );
+    }
+
+    #[test]
+    fn workbook_xml_uses_raw_bytes_until_its_typed_owner_changes() {
+        let base = Workbook::new().save_to_buffer().unwrap();
+        let raw_workbook = String::from_utf8(zip_part(&base, "xl/workbook.xml")).unwrap();
+        let raw_workbook = raw_workbook
+            .replacen(
+                "<workbookPr",
+                concat!(
+                    "<fileSharing readOnlyRecommended=\"true\" userName=\"owner\"/>",
+                    "<workbookPr"
+                ),
+                1,
+            )
+            .replacen(
+                "</sheets>",
+                concat!(
+                    "</sheets><externalReferences>",
+                    "<externalReference r:id=\"rIdExternal\"/>",
+                    "</externalReferences>"
+                ),
+                1,
+            )
+            .replacen(
+                "</workbook>",
+                concat!(
+                    "<oleSize ref=\"A1:C3\"/>",
+                    "<extLst><ext uri=\"{opaque-workbook-extension}\">",
+                    "<opaque:payload xmlns:opaque=\"urn:sheetkit:test\" value=\"keep\"/>",
+                    "</ext></extLst></workbook>"
+                ),
+                1,
+            );
+        assert!(raw_workbook.contains("fileSharing"));
+        let raw_workbook = raw_workbook.into_bytes();
+        let input = rewrite_zip_parts(&base, &[("xl/workbook.xml", Some(raw_workbook.clone()))]);
+        let options = OpenOptions::new()
+            .read_mode(ReadMode::Eager)
+            .aux_parts(AuxParts::EagerLoad);
+
+        let mut cell_edit = Workbook::open_from_buffer_with_options(&input, &options).unwrap();
+        assert_eq!(
+            cell_edit
+                .workbook_xml
+                .file_sharing
+                .as_ref()
+                .and_then(|sharing| sharing.user_name.as_deref()),
+            Some("owner")
+        );
+        assert_eq!(
+            cell_edit
+                .workbook_xml
+                .ole_size
+                .as_ref()
+                .map(|size| size.reference.as_str()),
+            Some("A1:C3")
+        );
+        assert_eq!(
+            cell_edit
+                .workbook_xml
+                .external_references
+                .as_ref()
+                .and_then(|references| references.references.first())
+                .map(|reference| reference.r_id.as_str()),
+            Some("rIdExternal")
+        );
+        cell_edit.set_cell_value("Sheet1", "A1", "changed").unwrap();
+        let cell_saved = cell_edit.save_to_buffer().unwrap();
+        assert_eq!(zip_part(&cell_saved, "xl/workbook.xml"), raw_workbook);
+        assert_eq!(zip_entry_count(&cell_saved, "xl/workbook.xml"), 1);
+
+        let mut owner_edit = Workbook::open_from_buffer_with_options(&input, &options).unwrap();
+        owner_edit.new_sheet("Added").unwrap();
+        let owner_saved = owner_edit.save_to_buffer().unwrap();
+        let owner_xml = zip_part(&owner_saved, "xl/workbook.xml");
+        assert_ne!(owner_xml, raw_workbook);
+        let owner_xml = String::from_utf8(owner_xml).unwrap();
+        assert!(owner_xml.contains("name=\"Added\""));
+        assert!(owner_xml.contains("r:id=\"rIdExternal\""));
+        assert_eq!(zip_entry_count(&owner_saved, "xl/workbook.xml"), 1);
+    }
+
+    fn opaque_doc_props_buffer() -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>) {
+        let mut workbook = Workbook::new();
+        workbook.set_doc_props(crate::doc_props::DocProperties {
+            title: Some("Original".to_string()),
+            ..Default::default()
+        });
+        workbook.set_app_props(crate::doc_props::AppProperties {
+            application: Some("Original app".to_string()),
+            ..Default::default()
+        });
+        workbook.set_custom_property(
+            "Original",
+            crate::doc_props::CustomPropertyValue::String("value".to_string()),
+        );
+        let base = workbook.save_to_buffer().unwrap();
+        let core = b"<cp:coreProperties xmlns:cp=\"http://schemas.openxmlformats.org/package/2006/metadata/core-properties\"><broken></cp:coreProperties>".to_vec();
+        let app = b"<Properties xmlns=\"http://schemas.openxmlformats.org/officeDocument/2006/extended-properties\"><broken></Properties>".to_vec();
+        let custom = concat!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>",
+            "<Properties xmlns=\"http://schemas.openxmlformats.org/officeDocument/2006/custom-properties\" ",
+            "xmlns:vt=\"http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes\">",
+            "<property fmtid=\"{D5CDD505-2E9C-101B-9397-08002B2CF9AE}\" pid=\"2\" name=\"Empty\">",
+            "<vt:empty/></property></Properties>"
+        )
+        .as_bytes()
+        .to_vec();
+        let input = rewrite_zip_parts(
+            &base,
+            &[
+                ("docProps/core.xml", Some(core.clone())),
+                ("docProps/app.xml", Some(app.clone())),
+                ("docProps/custom.xml", Some(custom.clone())),
+            ],
+        );
+        (input, core, app, custom)
+    }
+
+    fn doc_props_options(read_mode: ReadMode) -> OpenOptions {
+        let options = OpenOptions::new().read_mode(read_mode);
+        if read_mode == ReadMode::Eager {
+            options.aux_parts(AuxParts::EagerLoad)
+        } else {
+            options
+        }
+    }
+
+    #[test]
+    fn eager_and_lazy_noop_preserve_each_opaque_doc_props_part() {
+        let (input, core, app, custom) = opaque_doc_props_buffer();
+        for read_mode in [ReadMode::Eager, ReadMode::Lazy] {
+            let opened =
+                Workbook::open_from_buffer_with_options(&input, &doc_props_options(read_mode))
+                    .unwrap();
+            let saved = opened.save_to_buffer().unwrap();
+
+            for (path, expected) in [
+                ("docProps/core.xml", core.as_slice()),
+                ("docProps/app.xml", app.as_slice()),
+                ("docProps/custom.xml", custom.as_slice()),
+            ] {
+                assert_eq!(zip_part(&saved, path), expected, "{read_mode:?}: {path}");
+                assert_eq!(zip_entry_count(&saved, path), 1, "{read_mode:?}: {path}");
+            }
+        }
+    }
+
+    #[test]
+    fn eager_and_lazy_doc_props_mutations_only_rewrite_the_target_part() {
+        let (input, core, app, custom) = opaque_doc_props_buffer();
+        for read_mode in [ReadMode::Eager, ReadMode::Lazy] {
+            let options = doc_props_options(read_mode);
+
+            let mut core_edit = Workbook::open_from_buffer_with_options(&input, &options).unwrap();
+            core_edit.set_doc_props(crate::doc_props::DocProperties {
+                title: Some("Updated".to_string()),
+                ..Default::default()
+            });
+            let saved = core_edit.save_to_buffer().unwrap();
+            assert_ne!(zip_part(&saved, "docProps/core.xml"), core);
+            assert_eq!(zip_part(&saved, "docProps/app.xml"), app);
+            assert_eq!(zip_part(&saved, "docProps/custom.xml"), custom);
+
+            let mut app_edit = Workbook::open_from_buffer_with_options(&input, &options).unwrap();
+            app_edit.set_app_props(crate::doc_props::AppProperties {
+                application: Some("Updated app".to_string()),
+                ..Default::default()
+            });
+            let saved = app_edit.save_to_buffer().unwrap();
+            assert_eq!(zip_part(&saved, "docProps/core.xml"), core);
+            assert_ne!(zip_part(&saved, "docProps/app.xml"), app);
+            assert_eq!(zip_part(&saved, "docProps/custom.xml"), custom);
+
+            let mut custom_edit =
+                Workbook::open_from_buffer_with_options(&input, &options).unwrap();
+            custom_edit
+                .set_custom_property("Updated", crate::doc_props::CustomPropertyValue::Bool(true));
+            let saved = custom_edit.save_to_buffer().unwrap();
+            assert_eq!(zip_part(&saved, "docProps/core.xml"), core);
+            assert_eq!(zip_part(&saved, "docProps/app.xml"), app);
+            assert_ne!(zip_part(&saved, "docProps/custom.xml"), custom);
+            for path in [
+                "docProps/core.xml",
+                "docProps/app.xml",
+                "docProps/custom.xml",
+            ] {
+                assert_eq!(zip_entry_count(&saved, path), 1, "{read_mode:?}: {path}");
+            }
+        }
     }
 }

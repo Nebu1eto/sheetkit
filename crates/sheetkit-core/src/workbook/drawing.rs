@@ -13,7 +13,6 @@ impl Workbook {
         to_cell: &str,
         config: &ChartConfig,
     ) -> Result<()> {
-        self.hydrate_drawings();
         let sheet_idx =
             crate::sheet::find_sheet_index(&self.worksheets, sheet).ok_or_else(|| {
                 Error::SheetNotFound {
@@ -24,6 +23,9 @@ impl Workbook {
         // Parse cell references to marker coordinates (0-based).
         let (from_col, from_row) = cell_name_to_coordinates(from_cell)?;
         let (to_col, to_row) = cell_name_to_coordinates(to_cell)?;
+        self.ensure_drawing_relationships_hydratable(sheet_idx)?;
+        self.hydrate_drawings();
+        let existing_drawing_idx = self.ensure_drawing_relationships_editable(sheet_idx)?;
 
         let from_marker = MarkerType {
             col: from_col - 1,
@@ -42,9 +44,11 @@ impl Workbook {
         let chart_path = self.next_available_part_path("xl/charts/chart", ".xml");
         let chart_space = crate::chart::build_chart_xml(config);
         self.charts.push((chart_path.clone(), chart_space));
+        self.mark_graph_part_dirty(&chart_path);
 
         // Get or create drawing for this sheet.
-        let drawing_idx = self.ensure_drawing_for_sheet(sheet_idx);
+        let drawing_idx =
+            existing_drawing_idx.unwrap_or_else(|| self.ensure_drawing_for_sheet(sheet_idx));
 
         // Add chart reference to the drawing's relationships.
         let chart_rid = self.next_drawing_rid(drawing_idx);
@@ -71,6 +75,8 @@ impl Workbook {
         let drawing = &mut self.drawings[drawing_idx].1;
         let anchor = crate::chart::build_drawing_with_chart(&chart_rid, from_marker, to_marker);
         drawing.two_cell_anchors.extend(anchor.two_cell_anchors);
+        self.mark_drawing_dirty(drawing_idx);
+        self.mark_drawing_relationships_dirty(drawing_idx);
 
         // Add content type for the chart.
         self.content_types.overrides.push(ContentTypeOverride {
@@ -87,21 +93,25 @@ impl Workbook {
     /// charts and images, shapes do not reference external parts and therefore
     /// do not need a relationship entry.
     pub fn add_shape(&mut self, sheet: &str, config: &crate::shape::ShapeConfig) -> Result<()> {
-        self.hydrate_drawings();
         let sheet_idx =
             crate::sheet::find_sheet_index(&self.worksheets, sheet).ok_or_else(|| {
                 Error::SheetNotFound {
                     name: sheet.to_string(),
                 }
             })?;
+        self.ensure_owned_drawing_hydratable(sheet_idx)?;
+        self.hydrate_drawings();
+        let existing_drawing_idx = self.ensure_owned_drawing_parsed(sheet_idx)?;
 
-        let drawing_idx = self.ensure_drawing_for_sheet(sheet_idx);
+        let drawing_idx =
+            existing_drawing_idx.unwrap_or_else(|| self.ensure_drawing_for_sheet(sheet_idx));
 
         let drawing = &mut self.drawings[drawing_idx].1;
         let shape_id = (drawing.one_cell_anchors.len() + drawing.two_cell_anchors.len() + 2) as u32;
 
         let anchor = crate::shape::build_shape_anchor(config, shape_id)?;
         drawing.two_cell_anchors.push(anchor);
+        self.mark_drawing_dirty(drawing_idx);
 
         Ok(())
     }
@@ -112,7 +122,6 @@ impl Workbook {
     /// Dimensions are specified in pixels via `config.width_px` and
     /// `config.height_px`.
     pub fn add_image(&mut self, sheet: &str, config: &ImageConfig) -> Result<()> {
-        self.hydrate_drawings();
         crate::image::validate_image_config(config)?;
 
         let sheet_idx =
@@ -121,6 +130,9 @@ impl Workbook {
                     name: sheet.to_string(),
                 }
             })?;
+        self.ensure_drawing_relationships_hydratable(sheet_idx)?;
+        self.hydrate_drawings();
+        let existing_drawing_idx = self.ensure_drawing_relationships_editable(sheet_idx)?;
 
         // Allocate image media part.
         let image_path = self
@@ -142,7 +154,8 @@ impl Workbook {
         }
 
         // Get or create drawing for this sheet.
-        let drawing_idx = self.ensure_drawing_for_sheet(sheet_idx);
+        let drawing_idx =
+            existing_drawing_idx.unwrap_or_else(|| self.ensure_drawing_for_sheet(sheet_idx));
 
         // Add image reference to the drawing's relationships.
         let image_rid = self.next_drawing_rid(drawing_idx);
@@ -171,6 +184,8 @@ impl Workbook {
 
         // Add image anchor to the drawing.
         crate::image::add_image_to_drawing(drawing, &image_rid, config, pic_id)?;
+        self.mark_drawing_dirty(drawing_idx);
+        self.mark_drawing_relationships_dirty(drawing_idx);
 
         Ok(())
     }
@@ -180,19 +195,19 @@ impl Workbook {
     /// Removes the drawing anchor, chart data, relationship entry, and content
     /// type override for the chart at `cell` on `sheet`.
     pub fn delete_chart(&mut self, sheet: &str, cell: &str) -> Result<()> {
-        self.hydrate_drawings();
         let sheet_idx = self.sheet_index(sheet)?;
         let (col, row) = cell_name_to_coordinates(cell)?;
+        self.ensure_drawing_relationships_hydratable(sheet_idx)?;
+        self.hydrate_drawings();
         let target_col = col - 1;
         let target_row = row - 1;
 
-        let &drawing_idx =
-            self.worksheet_drawings
-                .get(&sheet_idx)
-                .ok_or_else(|| Error::ChartNotFound {
-                    sheet: sheet.to_string(),
-                    cell: cell.to_string(),
-                })?;
+        let drawing_idx = self
+            .ensure_drawing_relationships_editable(sheet_idx)?
+            .ok_or_else(|| Error::ChartNotFound {
+                sheet: sheet.to_string(),
+                cell: cell.to_string(),
+            })?;
 
         let drawing = &self.drawings[drawing_idx].1;
         let anchor_pos = drawing
@@ -250,6 +265,7 @@ impl Workbook {
 
         self.charts.retain(|(path, _)| path != &chart_path);
         self.raw_charts.retain(|(path, _)| path != &chart_path);
+        self.remove_graph_part(&chart_path);
 
         if let Some(rels) = self.drawing_rels.get_mut(&drawing_idx) {
             rels.relationships.retain(|r| r.id != chart_rid);
@@ -259,6 +275,8 @@ impl Workbook {
             .1
             .two_cell_anchors
             .remove(anchor_pos);
+        self.mark_drawing_dirty(drawing_idx);
+        self.mark_drawing_relationships_dirty(drawing_idx);
 
         let ct_part_name = format!("/{}", chart_path);
         self.content_types
@@ -274,19 +292,19 @@ impl Workbook {
     /// type for the picture at `cell` on `sheet`. Searches both one-cell and
     /// two-cell anchors.
     pub fn delete_picture(&mut self, sheet: &str, cell: &str) -> Result<()> {
-        self.hydrate_drawings();
         let sheet_idx = self.sheet_index(sheet)?;
         let (col, row) = cell_name_to_coordinates(cell)?;
+        self.ensure_drawing_relationships_hydratable(sheet_idx)?;
+        self.hydrate_drawings();
         let target_col = col - 1;
         let target_row = row - 1;
 
-        let &drawing_idx =
-            self.worksheet_drawings
-                .get(&sheet_idx)
-                .ok_or_else(|| Error::PictureNotFound {
-                    sheet: sheet.to_string(),
-                    cell: cell.to_string(),
-                })?;
+        let drawing_idx = self
+            .ensure_drawing_relationships_editable(sheet_idx)?
+            .ok_or_else(|| Error::PictureNotFound {
+                sheet: sheet.to_string(),
+                cell: cell.to_string(),
+            })?;
 
         let drawing = &self.drawings[drawing_idx].1;
 
@@ -307,6 +325,8 @@ impl Workbook {
 
             self.remove_picture_data(drawing_idx, &image_rid);
             self.drawings[drawing_idx].1.one_cell_anchors.remove(pos);
+            self.mark_drawing_dirty(drawing_idx);
+            self.mark_drawing_relationships_dirty(drawing_idx);
             return Ok(());
         }
 
@@ -327,6 +347,8 @@ impl Workbook {
 
             self.remove_picture_data(drawing_idx, &image_rid);
             self.drawings[drawing_idx].1.two_cell_anchors.remove(pos);
+            self.mark_drawing_dirty(drawing_idx);
+            self.mark_drawing_relationships_dirty(drawing_idx);
             return Ok(());
         }
 

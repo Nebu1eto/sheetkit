@@ -377,8 +377,9 @@ impl Workbook {
                 "cannot delete a sheet with pivot or slicer relationships safely".into(),
             ));
         }
-        self.hydrate_lifecycle_parts_for_delete()?;
-        let deleted_drawing_idx = self.worksheet_drawings.get(&idx).copied();
+        self.ensure_drawing_relationships_hydratable(idx)?;
+        self.hydrate_lifecycle_parts_for_delete(idx)?;
+        let deleted_drawing_idx = self.ensure_owned_drawing_parsed(idx)?;
         let deleted_sheet_path = self.sheet_part_path(idx);
         let deleted_direct_targets: Vec<String> = self
             .worksheet_rels
@@ -506,7 +507,7 @@ impl Workbook {
         }
     }
 
-    fn hydrate_lifecycle_parts_for_delete(&mut self) -> Result<()> {
+    fn hydrate_lifecycle_parts_for_delete(&mut self, deleted_sheet_idx: usize) -> Result<()> {
         use crate::workbook::aux::AuxCategory;
 
         let parse_entries = |category, validate: &dyn Fn(&str) -> bool| -> Result<()> {
@@ -535,12 +536,40 @@ impl Workbook {
         parse_entries(AuxCategory::PersonList, &|xml| {
             quick_xml::de::from_str::<sheetkit_xml::threaded_comment::PersonList>(xml).is_ok()
         })?;
-        parse_entries(AuxCategory::Drawings, &|xml| {
-            quick_xml::de::from_str::<WsDr>(xml).is_ok()
-        })?;
-        parse_entries(AuxCategory::DrawingRels, &|xml| {
-            quick_xml::de::from_str::<Relationships>(xml).is_ok()
-        })?;
+        let owned_drawing = self.owned_drawing_path(deleted_sheet_idx);
+        if let Some(drawing_path) = owned_drawing.as_deref() {
+            let drawing_rels_path = relationship_part_path(drawing_path);
+            for (path, bytes) in self
+                .deferred_parts
+                .entries(AuxCategory::Drawings)
+                .into_iter()
+                .flatten()
+                .filter(|(path, _)| path == drawing_path)
+            {
+                let xml = std::str::from_utf8(bytes)
+                    .map_err(|error| Error::XmlParse(format!("{path}: {error}")))?;
+                quick_xml::de::from_str::<WsDr>(xml).map_err(|error| {
+                    Error::XmlDeserialize(format!(
+                        "cannot hydrate lifecycle part '{path}': {error}"
+                    ))
+                })?;
+            }
+            for (path, bytes) in self
+                .deferred_parts
+                .entries(AuxCategory::DrawingRels)
+                .into_iter()
+                .flatten()
+                .filter(|(path, _)| path == &drawing_rels_path)
+            {
+                let xml = std::str::from_utf8(bytes)
+                    .map_err(|error| Error::XmlParse(format!("{path}: {error}")))?;
+                quick_xml::de::from_str::<Relationships>(xml).map_err(|error| {
+                    Error::XmlDeserialize(format!(
+                        "cannot hydrate lifecycle part '{path}': {error}"
+                    ))
+                })?;
+            }
+        }
 
         let comment_entries = self.deferred_parts.take(AuxCategory::Comments);
         for (path, bytes) in comment_entries {
@@ -627,6 +656,8 @@ impl Workbook {
 
         self.drawings.remove(drawing_idx);
         self.drawing_rels.remove(&drawing_idx);
+        self.remove_graph_part(&drawing_path);
+        self.remove_graph_part(&relationship_part_path(&drawing_path));
         self.drawing_rels = self
             .drawing_rels
             .drain()
@@ -661,6 +692,7 @@ impl Workbook {
             if !still_referenced {
                 self.charts.retain(|(path, _)| path != &chart_path);
                 self.raw_charts.retain(|(path, _)| path != &chart_path);
+                self.remove_graph_part(&chart_path);
                 self.content_types
                     .overrides
                     .retain(|entry| entry.part_name != format!("/{chart_path}"));
@@ -1146,8 +1178,10 @@ impl Workbook {
                 }
             }
             self.drawings.push((drawing_path.clone(), drawing));
+            self.mark_graph_part_dirty(&drawing_path);
             self.worksheet_drawings.insert(idx, drawing_idx);
             self.drawing_rels.insert(drawing_idx, drawing_rels);
+            self.mark_drawing_relationships_dirty(drawing_idx);
             self.content_types.overrides.push(ContentTypeOverride {
                 part_name: format!("/{drawing_path}"),
                 content_type: mime_types::DRAWING.to_string(),
@@ -1158,8 +1192,10 @@ impl Workbook {
                     content_type: mime_types::CHART.to_string(),
                 });
                 if let Some(chart) = typed {
+                    self.mark_graph_part_dirty(&path);
                     self.charts.push((path, chart));
                 } else if let Some(bytes) = raw {
+                    self.mark_graph_part_dirty(&path);
                     self.raw_charts.push((path, bytes));
                 }
             }
@@ -1572,6 +1608,7 @@ impl Workbook {
                 "cannot structurally edit a workbook with raw charts".into(),
             ));
         }
+        self.ensure_drawing_relationships_hydratable(target_sheet_idx)?;
 
         // Validate deferred XML without consuming passthrough bytes. A failed
         // edit must not turn an untouched lazy workbook into a dirty one.
@@ -1582,6 +1619,7 @@ impl Workbook {
         }
         self.hydrate_drawings();
         self.hydrate_tables();
+        self.validate_typed_chart_ownership()?;
         Ok(())
     }
 
@@ -1644,21 +1682,86 @@ impl Workbook {
             }
         }
         if let Some(entries) = self.deferred_parts.entries(AuxCategory::Charts) {
-            for (_, bytes) in entries {
+            for (path, bytes) in entries {
+                let owner_sheet_idx = self.deferred_chart_owner_sheet_idx(path)?;
                 let mut chart =
                     quick_xml::de::from_str::<ChartSpace>(&String::from_utf8_lossy(bytes))
                         .map_err(|error| Error::XmlDeserialize(error.to_string()))?;
-                // A deferred chart's drawing relationship is not yet hydrated.
-                // Treat unqualified formulas as target-owned during dry-run so
-                // overflow cannot escape validation; qualified formulas retain
-                // their exact sheet selection.
-                visit_chart_references(&mut chart, |formula| validate(formula, target_sheet_idx))?;
+                visit_chart_references(&mut chart, |formula| validate(formula, owner_sheet_idx))?;
             }
         }
         Ok(())
     }
 
-    fn chart_owner_sheet_idx(&self, chart_path: &str) -> usize {
+    fn deferred_chart_owner_sheet_idx(&self, chart_path: &str) -> Result<usize> {
+        self.worksheet_rels
+            .iter()
+            .find_map(|(sheet_idx, worksheet_rels)| {
+                worksheet_rels.relationships.iter().find_map(|relationship| {
+                    (relationship.rel_type == rel_types::DRAWING).then(|| {
+                        let drawing_path = resolve_relationship_target(
+                            &self.sheet_part_path(*sheet_idx),
+                            &relationship.target,
+                        );
+                        let has_drawing = self
+                            .drawings
+                            .iter()
+                            .any(|(path, _)| path == &drawing_path)
+                            || self
+                                .deferred_parts
+                                .get_path(
+                                    crate::workbook::aux::AuxCategory::Drawings,
+                                    &drawing_path,
+                                )
+                                .is_some();
+                        if !has_drawing {
+                            return None;
+                        }
+                        let drawing_rels_path = relationship_part_path(&drawing_path);
+                        let rels = self
+                            .drawing_rels
+                            .iter()
+                            .find_map(|(drawing_idx, rels)| {
+                                (self.drawings.get(*drawing_idx).is_some_and(|(path, _)| {
+                                    path == &drawing_path
+                                }))
+                                .then_some(rels)
+                            })
+                            .cloned()
+                            .or_else(|| {
+                                self.deferred_parts
+                                    .get_path(
+                                        crate::workbook::aux::AuxCategory::DrawingRels,
+                                        &drawing_rels_path,
+                                    )
+                                    .and_then(|bytes| {
+                                        quick_xml::de::from_reader::<_, Relationships>(bytes).ok()
+                                    })
+                            });
+                        rels.and_then(|rels| {
+                            rels.relationships
+                                .iter()
+                                .any(|relationship| {
+                                    relationship.rel_type == rel_types::CHART
+                                        && resolve_relationship_target(
+                                            &drawing_path,
+                                            &relationship.target,
+                                        ) == chart_path
+                                })
+                                .then_some(*sheet_idx)
+                        })
+                    })
+                    .flatten()
+                })
+            })
+            .ok_or_else(|| {
+                Error::InvalidArgument(format!(
+                    "cannot structurally edit a workbook with an unresolved chart owner '{chart_path}'"
+                ))
+            })
+    }
+
+    fn chart_owner_sheet_idx(&self, chart_path: &str) -> Result<usize> {
         self.worksheet_drawings
             .iter()
             .find_map(|(sheet_idx, drawing_idx)| {
@@ -1675,7 +1778,18 @@ impl Workbook {
                         })
                     })
             })
-            .unwrap_or(0)
+            .ok_or_else(|| {
+                Error::InvalidArgument(format!(
+                    "cannot structurally edit a workbook with an unresolved chart owner '{chart_path}'"
+                ))
+            })
+    }
+
+    fn validate_typed_chart_ownership(&self) -> Result<()> {
+        for (path, _) in &self.charts {
+            self.chart_owner_sheet_idx(path)?;
+        }
+        Ok(())
     }
 
     fn validate_reference_shift<F>(&self, target_sheet_idx: usize, shift_cell: F) -> Result<()>
@@ -1694,19 +1808,8 @@ impl Workbook {
             .map(|_| ())
         };
 
-        for (owner_sheet_idx, (_, worksheet)) in self.worksheets.iter().enumerate() {
-            let deferred;
-            let ws = if let Some(ws) = worksheet.get() {
-                ws
-            } else {
-                let bytes = self.raw_sheet_xml[owner_sheet_idx]
-                    .as_deref()
-                    .ok_or_else(|| {
-                        Error::Internal("worksheet has no materialized or deferred data".into())
-                    })?;
-                deferred = io::deserialize_worksheet_xml(bytes)?;
-                &deferred
-            };
+        for owner_sheet_idx in 0..self.worksheets.len() {
+            let ws = self.preflight_worksheet(owner_sheet_idx)?;
             for row in &ws.sheet_data.rows {
                 for cell in &row.cells {
                     if let Some(formula) = &cell.f {
@@ -1799,7 +1902,7 @@ impl Workbook {
             }
         }
         for (path, chart) in &self.charts {
-            let owner_sheet_idx = self.chart_owner_sheet_idx(path);
+            let owner_sheet_idx = self.chart_owner_sheet_idx(path)?;
             let mut chart = chart.clone();
             visit_chart_references(&mut chart, |formula| validate(formula, owner_sheet_idx))?;
         }
@@ -1849,6 +1952,15 @@ impl Workbook {
         Ok(())
     }
 
+    fn preflight_worksheet(&self, sheet_idx: usize) -> Result<WorksheetXml> {
+        if !self.sheet_dirty.get(sheet_idx).copied().unwrap_or(true) {
+            if let Some(bytes) = self.raw_sheet_xml.get(sheet_idx).and_then(Option::as_deref) {
+                return io::deserialize_worksheet_xml(bytes);
+            }
+        }
+        Ok(self.worksheet_ref_by_index(sheet_idx)?.clone())
+    }
+
     fn preflight_structural_target<F>(&self, sheet_idx: usize, edit: F) -> Result<()>
     where
         F: FnOnce(&mut WorksheetXml) -> Result<()>,
@@ -1863,12 +1975,12 @@ impl Workbook {
                 "cannot structurally edit a workbook containing streamed sheets".into(),
             ));
         }
-        let mut worksheet = self.worksheet_ref_by_index(sheet_idx)?.clone();
+        let mut worksheet = self.preflight_worksheet(sheet_idx)?;
         edit(&mut worksheet)
     }
 
     fn preflight_duplicate_formula_copy(&self, sheet_idx: usize, row: u32) -> Result<()> {
-        let worksheet = self.worksheet_ref_by_index(sheet_idx)?;
+        let worksheet = self.preflight_worksheet(sheet_idx)?;
         let source = worksheet
             .sheet_data
             .rows
@@ -1939,142 +2051,80 @@ impl Workbook {
     {
         let target_sheet_name_lowercase = self.worksheets[sheet_idx].0.to_lowercase();
         for owner_sheet_idx in 0..self.worksheets.len() {
-            let ws = self.worksheet_mut_by_index(owner_sheet_idx)?;
+            let changed = {
+                let ws = self.worksheets[owner_sheet_idx]
+                    .1
+                    .get_mut()
+                    .ok_or_else(|| {
+                        Error::Internal(
+                            "worksheet must be hydrated before shifting references".into(),
+                        )
+                    })?;
+                let before = ws.clone();
 
-            for row in &mut ws.sheet_data.rows {
-                for cell in &mut row.cells {
-                    if let Some(formula) = &mut cell.f {
-                        if let Some(expr) = &mut formula.value {
-                            *expr = shift_references_for_owner(
-                                expr,
-                                owner_sheet_idx,
-                                sheet_idx,
-                                &target_sheet_name_lowercase,
-                                shift_cell,
-                            )?;
-                        }
-                        if let Some(reference) = &mut formula.reference {
-                            *reference = shift_references_for_owner(
-                                reference,
-                                owner_sheet_idx,
-                                sheet_idx,
-                                &target_sheet_name_lowercase,
-                                shift_cell,
-                            )?;
+                for row in &mut ws.sheet_data.rows {
+                    for cell in &mut row.cells {
+                        if let Some(formula) = &mut cell.f {
+                            if let Some(expr) = &mut formula.value {
+                                *expr = shift_references_for_owner(
+                                    expr,
+                                    owner_sheet_idx,
+                                    sheet_idx,
+                                    &target_sheet_name_lowercase,
+                                    shift_cell,
+                                )?;
+                            }
+                            if let Some(reference) = &mut formula.reference {
+                                *reference = shift_references_for_owner(
+                                    reference,
+                                    owner_sheet_idx,
+                                    sheet_idx,
+                                    &target_sheet_name_lowercase,
+                                    shift_cell,
+                                )?;
+                            }
                         }
                     }
                 }
-            }
 
-            if let Some(merges) = &mut ws.merge_cells {
-                for merge in &mut merges.merge_cells {
-                    merge.reference = shift_references_for_owner(
-                        &merge.reference,
-                        owner_sheet_idx,
-                        sheet_idx,
-                        &target_sheet_name_lowercase,
-                        shift_cell,
-                    )?;
-                }
-                merges.cached_coords.clear();
-            }
-
-            if let Some(auto_filter) = &mut ws.auto_filter {
-                auto_filter.reference = shift_references_for_owner(
-                    &auto_filter.reference,
-                    owner_sheet_idx,
-                    sheet_idx,
-                    &target_sheet_name_lowercase,
-                    shift_cell,
-                )?;
-            }
-
-            if let Some(validations) = &mut ws.data_validations {
-                for validation in &mut validations.data_validations {
-                    validation.sqref = shift_references_for_owner(
-                        &validation.sqref,
-                        owner_sheet_idx,
-                        sheet_idx,
-                        &target_sheet_name_lowercase,
-                        shift_cell,
-                    )?;
-                    for formula in [&mut validation.formula1, &mut validation.formula2]
-                        .into_iter()
-                        .flatten()
-                    {
-                        *formula = shift_references_for_owner(
-                            formula,
+                if let Some(merges) = &mut ws.merge_cells {
+                    for merge in &mut merges.merge_cells {
+                        merge.reference = shift_references_for_owner(
+                            &merge.reference,
                             owner_sheet_idx,
                             sheet_idx,
                             &target_sheet_name_lowercase,
                             shift_cell,
                         )?;
                     }
+                    merges.cached_coords.clear();
                 }
-            }
 
-            for formatting in &mut ws.conditional_formatting {
-                formatting.sqref = shift_references_for_owner(
-                    &formatting.sqref,
-                    owner_sheet_idx,
-                    sheet_idx,
-                    &target_sheet_name_lowercase,
-                    shift_cell,
-                )?;
-                for rule in &mut formatting.cf_rules {
-                    for formula in &mut rule.formulas {
-                        *formula = shift_references_for_owner(
-                            formula,
-                            owner_sheet_idx,
-                            sheet_idx,
-                            &target_sheet_name_lowercase,
-                            shift_cell,
-                        )?;
-                    }
-                }
-            }
-
-            if let Some(hyperlinks) = &mut ws.hyperlinks {
-                for hyperlink in &mut hyperlinks.hyperlinks {
-                    hyperlink.reference = shift_references_for_owner(
-                        &hyperlink.reference,
+                if let Some(auto_filter) = &mut ws.auto_filter {
+                    auto_filter.reference = shift_references_for_owner(
+                        &auto_filter.reference,
                         owner_sheet_idx,
                         sheet_idx,
                         &target_sheet_name_lowercase,
                         shift_cell,
                     )?;
-                    if let Some(location) = &mut hyperlink.location {
-                        *location = shift_references_for_owner(
-                            location,
+                }
+
+                if let Some(validations) = &mut ws.data_validations {
+                    for validation in &mut validations.data_validations {
+                        validation.sqref = shift_references_for_owner(
+                            &validation.sqref,
                             owner_sheet_idx,
                             sheet_idx,
                             &target_sheet_name_lowercase,
                             shift_cell,
                         )?;
-                    }
-                }
-            }
-
-            if let Some(views) = &mut ws.sheet_views {
-                for view in &mut views.sheet_views {
-                    if let Some(pane) = &mut view.pane {
-                        if let Some(top_left) = &mut pane.top_left_cell {
-                            *top_left = shift_references_for_owner(
-                                top_left,
-                                owner_sheet_idx,
-                                sheet_idx,
-                                &target_sheet_name_lowercase,
-                                shift_cell,
-                            )?;
-                        }
-                    }
-                    for selection in &mut view.selection {
-                        for reference in [&mut selection.active_cell, &mut selection.sqref]
+                        for formula in [&mut validation.formula1, &mut validation.formula2]
                             .into_iter()
                             .flatten()
                         {
-                            *reference = shift_references_for_owner(
-                                reference,
+                            *formula = shift_references_for_owner(
+                                formula,
                                 owner_sheet_idx,
                                 sheet_idx,
                                 &target_sheet_name_lowercase,
@@ -2083,6 +2133,83 @@ impl Workbook {
                         }
                     }
                 }
+
+                for formatting in &mut ws.conditional_formatting {
+                    formatting.sqref = shift_references_for_owner(
+                        &formatting.sqref,
+                        owner_sheet_idx,
+                        sheet_idx,
+                        &target_sheet_name_lowercase,
+                        shift_cell,
+                    )?;
+                    for rule in &mut formatting.cf_rules {
+                        for formula in &mut rule.formulas {
+                            *formula = shift_references_for_owner(
+                                formula,
+                                owner_sheet_idx,
+                                sheet_idx,
+                                &target_sheet_name_lowercase,
+                                shift_cell,
+                            )?;
+                        }
+                    }
+                }
+
+                if let Some(hyperlinks) = &mut ws.hyperlinks {
+                    for hyperlink in &mut hyperlinks.hyperlinks {
+                        hyperlink.reference = shift_references_for_owner(
+                            &hyperlink.reference,
+                            owner_sheet_idx,
+                            sheet_idx,
+                            &target_sheet_name_lowercase,
+                            shift_cell,
+                        )?;
+                        if let Some(location) = &mut hyperlink.location {
+                            *location = shift_references_for_owner(
+                                location,
+                                owner_sheet_idx,
+                                sheet_idx,
+                                &target_sheet_name_lowercase,
+                                shift_cell,
+                            )?;
+                        }
+                    }
+                }
+
+                if let Some(views) = &mut ws.sheet_views {
+                    for view in &mut views.sheet_views {
+                        if let Some(pane) = &mut view.pane {
+                            if let Some(top_left) = &mut pane.top_left_cell {
+                                *top_left = shift_references_for_owner(
+                                    top_left,
+                                    owner_sheet_idx,
+                                    sheet_idx,
+                                    &target_sheet_name_lowercase,
+                                    shift_cell,
+                                )?;
+                            }
+                        }
+                        for selection in &mut view.selection {
+                            for reference in [&mut selection.active_cell, &mut selection.sqref]
+                                .into_iter()
+                                .flatten()
+                            {
+                                *reference = shift_references_for_owner(
+                                    reference,
+                                    owner_sheet_idx,
+                                    sheet_idx,
+                                    &target_sheet_name_lowercase,
+                                    shift_cell,
+                                )?;
+                            }
+                        }
+                    }
+                }
+
+                *ws != before
+            };
+            if changed {
+                self.mark_sheet_dirty(owner_sheet_idx);
             }
         }
 
@@ -2148,37 +2275,58 @@ impl Workbook {
                 .mark_dirty(crate::workbook::aux::AuxCategory::Tables);
         }
 
+        let mut dirty_chart_paths = Vec::new();
         for chart_idx in 0..self.charts.len() {
-            let owner_sheet_idx = self.chart_owner_sheet_idx(&self.charts[chart_idx].0);
-            let chart = &mut self.charts[chart_idx].1;
-            visit_chart_references(chart, |formula| {
-                *formula = shift_references_for_owner(
-                    formula,
-                    owner_sheet_idx,
-                    sheet_idx,
-                    &target_sheet_name_lowercase,
-                    shift_cell,
-                )?;
-                Ok(())
-            })?;
+            let mut changed = false;
+            let owner_sheet_idx = self.chart_owner_sheet_idx(&self.charts[chart_idx].0)?;
+            {
+                let chart = &mut self.charts[chart_idx].1;
+                visit_chart_references(chart, |formula| {
+                    let shifted = shift_references_for_owner(
+                        formula,
+                        owner_sheet_idx,
+                        sheet_idx,
+                        &target_sheet_name_lowercase,
+                        shift_cell,
+                    )?;
+                    if shifted != *formula {
+                        changed = true;
+                        *formula = shifted;
+                    }
+                    Ok(())
+                })?;
+            }
+            if changed {
+                dirty_chart_paths.push(self.charts[chart_idx].0.clone());
+            }
+        }
+        for path in dirty_chart_paths {
+            self.mark_graph_part_dirty(&path);
         }
 
         // Drawing anchors attached to this sheet.
         if let Some(&drawing_idx) = self.worksheet_drawings.get(&sheet_idx) {
+            let mut changed = false;
             if let Some((_, drawing)) = self.drawings.get_mut(drawing_idx) {
                 for anchor in &mut drawing.one_cell_anchors {
                     let (new_col, new_row) = shift_cell(anchor.from.col + 1, anchor.from.row + 1);
+                    changed |= new_col != anchor.from.col + 1 || new_row != anchor.from.row + 1;
                     anchor.from.col = new_col - 1;
                     anchor.from.row = new_row - 1;
                 }
                 for anchor in &mut drawing.two_cell_anchors {
                     let (from_col, from_row) = shift_cell(anchor.from.col + 1, anchor.from.row + 1);
+                    changed |= from_col != anchor.from.col + 1 || from_row != anchor.from.row + 1;
                     anchor.from.col = from_col - 1;
                     anchor.from.row = from_row - 1;
                     let (to_col, to_row) = shift_cell(anchor.to.col + 1, anchor.to.row + 1);
+                    changed |= to_col != anchor.to.col + 1 || to_row != anchor.to.row + 1;
                     anchor.to.col = to_col - 1;
                     anchor.to.row = to_row - 1;
                 }
+            }
+            if changed {
+                self.mark_drawing_dirty(drawing_idx);
             }
         }
 
@@ -2195,6 +2343,7 @@ impl Workbook {
         let idx = self.drawings.len();
         let drawing_path = self.next_available_part_path("xl/drawings/drawing", ".xml");
         self.drawings.push((drawing_path.clone(), WsDr::default()));
+        self.mark_graph_part_dirty(&drawing_path);
         self.worksheet_drawings.insert(sheet_idx, idx);
 
         // Add drawing reference to the worksheet.
@@ -2248,6 +2397,7 @@ impl Workbook {
         paths.extend(self.charts.iter().map(|(path, _)| path.clone()));
         paths.extend(self.raw_charts.iter().map(|(path, _)| path.clone()));
         paths.extend(self.drawings.iter().map(|(path, _)| path.clone()));
+        paths.extend(self.raw_graph_parts.keys().cloned());
         paths.extend(self.images.iter().map(|(path, _)| path.clone()));
         paths.extend(self.tables.iter().map(|(path, _, _)| path.clone()));
         paths.extend(self.pivot_tables.iter().map(|(path, _)| path.clone()));
@@ -2298,8 +2448,27 @@ impl Workbook {
 #[allow(clippy::approx_constant)]
 mod tests {
     use super::*;
+    use crate::workbook::aux::AuxCategory;
     use std::io::Read;
     use tempfile::TempDir;
+
+    fn zip_part(buffer: &[u8], name: &str) -> Vec<u8> {
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(buffer)).unwrap();
+        let mut bytes = Vec::new();
+        archive
+            .by_name(name)
+            .unwrap()
+            .read_to_end(&mut bytes)
+            .unwrap();
+        bytes
+    }
+
+    fn zip_entry_count(buffer: &[u8], name: &str) -> usize {
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(buffer)).unwrap();
+        (0..archive.len())
+            .filter(|index| archive.by_index(*index).unwrap().name() == name)
+            .count()
+    }
 
     fn assert_package_integrity(bytes: &[u8]) {
         let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
@@ -3728,6 +3897,389 @@ mod tests {
             reopened.get_cell_value("Sheet1", "A1").unwrap(),
             CellValue::String("unchanged".into())
         );
+    }
+
+    #[test]
+    fn test_structural_edit_rejects_lazy_orphan_chart_before_mutation() {
+        let mut workbook = Workbook::new();
+        workbook.new_sheet("Sheet2").unwrap();
+        workbook
+            .add_chart(
+                "Sheet1",
+                "D1",
+                "K10",
+                &ChartConfig {
+                    chart_type: crate::chart::ChartType::Col,
+                    title: None,
+                    series: vec![crate::chart::ChartSeries {
+                        name: "Sheet1!$A$1".into(),
+                        categories: "Sheet1!$A$1:$A$2".into(),
+                        values: "Sheet1!$B$1:$B$2".into(),
+                        x_values: None,
+                        bubble_sizes: None,
+                    }],
+                    show_legend: false,
+                    view_3d: None,
+                },
+            )
+            .unwrap();
+        let chart_path = workbook.charts[0].0.clone();
+        let parseable_chart = concat!(
+            r#"<chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" "#,
+            r#"xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" "#,
+            r#"xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">"#,
+            "<chart><plotArea/></chart></chartSpace>"
+        )
+        .as_bytes()
+        .to_vec();
+        let original = workbook.save_to_buffer().unwrap();
+        let options = OpenOptions::new().read_mode(ReadMode::Lazy);
+        let mut lazy = Workbook::open_from_buffer_with_options(&original, &options).unwrap();
+        lazy.deferred_parts
+            .remove_path(AuxCategory::Charts, &chart_path);
+        assert!(lazy
+            .deferred_parts
+            .insert(chart_path.clone(), parseable_chart.clone()));
+        let drawing_path = lazy
+            .worksheet_rels
+            .get(&0)
+            .unwrap()
+            .relationships
+            .iter()
+            .find(|relationship| relationship.rel_type == rel_types::DRAWING)
+            .map(|relationship| {
+                resolve_relationship_target(&lazy.sheet_part_path(0), &relationship.target)
+            })
+            .unwrap();
+        let drawing_rels_path = relationship_part_path(&drawing_path);
+        let raw_drawing_rels = lazy
+            .deferred_parts
+            .get_path(AuxCategory::DrawingRels, &drawing_rels_path)
+            .unwrap()
+            .to_vec();
+        assert!(lazy
+            .deferred_parts
+            .remove_path(AuxCategory::Drawings, &drawing_path)
+            .is_some());
+        let before = lazy.save_to_buffer().unwrap();
+
+        let error = lazy.insert_rows("Sheet2", 1, 1).unwrap_err();
+
+        assert!(
+            matches!(&error, Error::InvalidArgument(message) if message.contains("unresolved chart owner")),
+            "{error:?}"
+        );
+        assert!(lazy.charts.is_empty());
+        assert!(lazy.raw_graph_parts.is_empty());
+        assert_eq!(
+            lazy.deferred_parts
+                .get_path(AuxCategory::Charts, &chart_path),
+            Some(parseable_chart.as_slice())
+        );
+        assert_eq!(
+            lazy.deferred_parts
+                .get_path(AuxCategory::DrawingRels, &drawing_rels_path),
+            Some(raw_drawing_rels.as_slice())
+        );
+        assert!(lazy
+            .deferred_parts
+            .get_path(AuxCategory::Drawings, &drawing_path)
+            .is_none());
+        assert!(!lazy.is_sheet_dirty(0));
+        assert!(!lazy.is_sheet_dirty(1));
+        assert_eq!(lazy.save_to_buffer().unwrap(), before);
+    }
+
+    #[test]
+    fn test_duplicate_row_hydrates_filtered_target_from_raw_xml() {
+        let mut workbook = Workbook::new();
+        workbook.new_sheet("Selected").unwrap();
+        workbook.set_cell_value("Sheet1", "A1", "source").unwrap();
+        let original = workbook.save_to_buffer().unwrap();
+        let options = OpenOptions::new()
+            .read_mode(ReadMode::Eager)
+            .sheets(vec!["Selected".to_string()]);
+        let mut opened = Workbook::open_from_buffer_with_options(&original, &options).unwrap();
+        let selected_raw = zip_part(&original, "xl/worksheets/sheet2.xml");
+
+        opened.duplicate_row("Sheet1", 1).unwrap();
+        let saved = opened.save_to_buffer().unwrap();
+
+        let duplicated = opened
+            .worksheet_ref("Sheet1")
+            .unwrap()
+            .sheet_data
+            .rows
+            .iter()
+            .find(|row| row.r == 2)
+            .unwrap();
+        assert_eq!(duplicated.cells[0].r, "A2");
+        assert!(!opened.is_sheet_dirty(1));
+        assert_eq!(zip_part(&saved, "xl/worksheets/sheet2.xml"), selected_raw);
+    }
+
+    #[test]
+    fn test_structural_edit_preserves_untouched_sheet_raw_bytes() {
+        let mut workbook = Workbook::new();
+        workbook.new_sheet("Untouched").unwrap();
+        let base = workbook.save_to_buffer().unwrap();
+        let mut workbook = Workbook::open_from_buffer(&base).unwrap();
+        let sheet_path = "xl/worksheets/sheet2.xml";
+        let raw_sheet = String::from_utf8(zip_part(&base, sheet_path))
+            .unwrap()
+            .replacen(
+                "</worksheet>",
+                "<extLst><ext uri=\"{opaque}\"><opaque:payload xmlns:opaque=\"urn:test\"/></ext></extLst></worksheet>",
+                1,
+            )
+            .into_bytes();
+        workbook.raw_sheet_xml[1] = Some(raw_sheet.clone());
+
+        workbook.insert_rows("Sheet1", 1, 1).unwrap();
+        let saved = workbook.save_to_buffer().unwrap();
+
+        assert!(!workbook.is_sheet_dirty(1));
+        assert_eq!(zip_part(&saved, sheet_path), raw_sheet);
+    }
+
+    #[test]
+    fn test_structural_edit_rejects_unparsed_eager_drawing_relationships_atomically() {
+        let mut workbook = Workbook::new();
+        workbook
+            .add_image(
+                "Sheet1",
+                &crate::image::ImageConfig {
+                    data: vec![0x89, 0x50, 0x4e, 0x47],
+                    format: crate::image::ImageFormat::Png,
+                    from_cell: "A1".to_string(),
+                    width_px: 1,
+                    height_px: 1,
+                },
+            )
+            .unwrap();
+        let base = workbook.save_to_buffer().unwrap();
+        let options = OpenOptions::new()
+            .read_mode(ReadMode::Eager)
+            .aux_parts(AuxParts::EagerLoad);
+        let mut opened = Workbook::open_from_buffer_with_options(&base, &options).unwrap();
+        let drawing_idx = opened.worksheet_drawings[&0];
+        let drawing_path = opened.drawings[drawing_idx].0.clone();
+        let rels_path = relationship_part_path(&drawing_path);
+        opened.drawing_rels.remove(&drawing_idx);
+        opened
+            .raw_graph_parts
+            .insert(rels_path.clone(), b"<Relationships><Relationship".to_vec());
+        let before = opened.save_to_buffer().unwrap();
+
+        let error = opened.insert_rows("Sheet1", 1, 1).unwrap_err();
+
+        assert!(matches!(error, Error::InvalidArgument(_)));
+        assert_eq!(opened.save_to_buffer().unwrap(), before);
+        assert_eq!(
+            zip_part(&before, &rels_path),
+            b"<Relationships><Relationship"
+        );
+        assert!(!opened.is_sheet_dirty(0));
+    }
+
+    #[test]
+    fn test_structural_edit_rejects_unresolved_chart_owner_on_other_sheet() {
+        let mut workbook = Workbook::new();
+        workbook.new_sheet("Other").unwrap();
+        workbook
+            .add_chart(
+                "Other",
+                "D1",
+                "K10",
+                &ChartConfig {
+                    chart_type: crate::chart::ChartType::Col,
+                    title: None,
+                    series: vec![crate::chart::ChartSeries {
+                        name: "Other!$A$1".into(),
+                        categories: "Other!$A$1:$A$2".into(),
+                        values: "Other!$B$1:$B$2".into(),
+                        x_values: None,
+                        bubble_sizes: None,
+                    }],
+                    show_legend: false,
+                    view_3d: None,
+                },
+            )
+            .unwrap();
+        let base = workbook.save_to_buffer().unwrap();
+        let options = OpenOptions::new()
+            .read_mode(ReadMode::Eager)
+            .aux_parts(AuxParts::EagerLoad);
+        let mut opened = Workbook::open_from_buffer_with_options(&base, &options).unwrap();
+        let drawing_idx = opened.worksheet_drawings[&1];
+        let drawing_path = opened.drawings[drawing_idx].0.clone();
+        let rels_path = relationship_part_path(&drawing_path);
+        opened.drawing_rels.remove(&drawing_idx);
+        opened
+            .raw_graph_parts
+            .insert(rels_path.clone(), b"<Relationships><Relationship".to_vec());
+        let before = opened.save_to_buffer().unwrap();
+
+        let error = opened.insert_rows("Sheet1", 1, 1).unwrap_err();
+
+        assert!(matches!(error, Error::InvalidArgument(_)));
+        assert_eq!(opened.save_to_buffer().unwrap(), before);
+        assert_eq!(
+            zip_part(&before, &rels_path),
+            b"<Relationships><Relationship"
+        );
+        assert!(!opened.is_sheet_dirty(0));
+        assert!(!opened.is_sheet_dirty(1));
+    }
+
+    #[test]
+    fn test_structural_edit_rejects_filtered_sheet_reference_overflow_atomically() {
+        let mut workbook = Workbook::new();
+        workbook.new_sheet("Filtered").unwrap();
+        workbook
+            .set_cell_formula("Filtered", "A1", "Sheet1!XFD1")
+            .unwrap();
+        let original = workbook.save_to_buffer().unwrap();
+        let options = OpenOptions::new()
+            .read_mode(ReadMode::Eager)
+            .sheets(vec!["Sheet1".to_string()]);
+        let mut opened = Workbook::open_from_buffer_with_options(&original, &options).unwrap();
+        let before = opened.save_to_buffer().unwrap();
+
+        let error = opened.insert_cols("Sheet1", "A", 1).unwrap_err();
+
+        assert!(matches!(error, Error::InvalidColumnNumber(_)));
+        assert_eq!(opened.save_to_buffer().unwrap(), before);
+        assert!(!opened.is_sheet_dirty(0));
+        assert!(!opened.is_sheet_dirty(1));
+    }
+
+    #[test]
+    fn test_delete_sheet_rejects_unparsed_eager_drawing_relationships_atomically() {
+        let mut workbook = Workbook::new();
+        workbook.new_sheet("Survivor").unwrap();
+        workbook
+            .add_image(
+                "Sheet1",
+                &crate::image::ImageConfig {
+                    data: vec![0x89, 0x50, 0x4e, 0x47],
+                    format: crate::image::ImageFormat::Png,
+                    from_cell: "A1".to_string(),
+                    width_px: 1,
+                    height_px: 1,
+                },
+            )
+            .unwrap();
+        let base = workbook.save_to_buffer().unwrap();
+        let options = OpenOptions::new()
+            .read_mode(ReadMode::Eager)
+            .aux_parts(AuxParts::EagerLoad);
+        let mut opened = Workbook::open_from_buffer_with_options(&base, &options).unwrap();
+        let drawing_idx = opened.worksheet_drawings[&0];
+        let drawing_path = opened.drawings[drawing_idx].0.clone();
+        let rels_path = relationship_part_path(&drawing_path);
+        opened.drawing_rels.remove(&drawing_idx);
+        opened
+            .raw_graph_parts
+            .insert(rels_path.clone(), b"<Relationships><Relationship".to_vec());
+        let before = opened.save_to_buffer().unwrap();
+
+        let error = opened.delete_sheet("Sheet1").unwrap_err();
+
+        assert!(matches!(error, Error::InvalidArgument(_)));
+        assert_eq!(opened.sheet_names(), vec!["Sheet1", "Survivor"]);
+        assert_eq!(opened.save_to_buffer().unwrap(), before);
+        assert_eq!(
+            zip_part(&before, &rels_path),
+            b"<Relationships><Relationship"
+        );
+    }
+
+    #[test]
+    fn test_delete_graph_free_sheet_ignores_unrelated_deferred_drawing() {
+        let mut workbook = Workbook::new();
+        workbook.new_sheet("Survivor").unwrap();
+        let original = workbook.save_to_buffer().unwrap();
+        let options = OpenOptions::new().read_mode(ReadMode::Lazy);
+        let mut lazy = Workbook::open_from_buffer_with_options(&original, &options).unwrap();
+        let drawing_path = "xl/drawings/drawing99.xml";
+        let raw_drawing = b"<xdr:wsDr><opaque></xdr:wsDr>".to_vec();
+        assert!(lazy
+            .deferred_parts
+            .insert(drawing_path.to_string(), raw_drawing.clone()));
+
+        lazy.delete_sheet("Sheet1").unwrap();
+        let saved = lazy.save_to_buffer().unwrap();
+
+        assert_eq!(lazy.sheet_names(), vec!["Survivor"]);
+        assert_eq!(zip_part(&saved, drawing_path), raw_drawing);
+    }
+
+    #[test]
+    fn test_delete_graph_free_sheet_preserves_opaque_survivor_graph_closure() {
+        let mut workbook = Workbook::new();
+        workbook.new_sheet("Survivor").unwrap();
+        workbook
+            .add_image(
+                "Survivor",
+                &crate::image::ImageConfig {
+                    data: vec![0x89, 0x50, 0x4e, 0x47],
+                    format: crate::image::ImageFormat::Png,
+                    from_cell: "A1".to_string(),
+                    width_px: 1,
+                    height_px: 1,
+                },
+            )
+            .unwrap();
+        let original = workbook.save_to_buffer().unwrap();
+        let options = OpenOptions::new().read_mode(ReadMode::Lazy);
+        let mut lazy = Workbook::open_from_buffer_with_options(&original, &options).unwrap();
+        let sheet_path = lazy.sheet_part_path(1);
+        let drawing_path = lazy
+            .worksheet_rels
+            .get(&1)
+            .unwrap()
+            .relationships
+            .iter()
+            .find(|relationship| relationship.rel_type == rel_types::DRAWING)
+            .map(|relationship| resolve_relationship_target(&sheet_path, &relationship.target))
+            .unwrap();
+        let drawing_rels_path = relationship_part_path(&drawing_path);
+        let drawing_rels = quick_xml::de::from_reader::<_, Relationships>(
+            lazy.deferred_parts
+                .get_path(AuxCategory::DrawingRels, &drawing_rels_path)
+                .unwrap(),
+        )
+        .unwrap();
+        let image_path = drawing_rels
+            .relationships
+            .iter()
+            .find(|relationship| relationship.rel_type == rel_types::IMAGE)
+            .map(|relationship| resolve_relationship_target(&drawing_path, &relationship.target))
+            .unwrap();
+        let raw_drawing = b"<xdr:wsDr><opaque></xdr:wsDr>".to_vec();
+        lazy.deferred_parts
+            .remove_path(AuxCategory::Drawings, &drawing_path);
+        assert!(lazy
+            .deferred_parts
+            .insert(drawing_path.clone(), raw_drawing.clone()));
+        let raw_sheet_rels = zip_part(&original, &relationship_part_path(&sheet_path));
+        let raw_drawing_rels = zip_part(&original, &drawing_rels_path);
+        let raw_image = zip_part(&original, &image_path);
+
+        lazy.delete_sheet("Sheet1").unwrap();
+        let saved = lazy.save_to_buffer().unwrap();
+
+        assert_eq!(lazy.sheet_names(), vec!["Survivor"]);
+        assert_eq!(zip_part(&saved, &drawing_path), raw_drawing);
+        assert_eq!(zip_part(&saved, &drawing_rels_path), raw_drawing_rels);
+        assert_eq!(zip_part(&saved, &image_path), raw_image);
+        assert_eq!(
+            zip_part(&saved, "xl/worksheets/_rels/sheet2.xml.rels"),
+            raw_sheet_rels
+        );
+        assert_eq!(zip_entry_count(&saved, &drawing_path), 1);
+        assert_package_integrity(&saved);
     }
 
     #[test]

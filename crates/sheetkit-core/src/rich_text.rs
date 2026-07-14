@@ -30,6 +30,8 @@ pub fn run_to_xml(run: &RichTextRun) -> R {
 
     let r_pr = if has_formatting {
         Some(RPr {
+            r_font: run.font.as_ref().map(|val| FontName { val: val.clone() }),
+            family: None,
             b: if run.bold {
                 Some(BoolVal { val: None })
             } else {
@@ -40,14 +42,15 @@ pub fn run_to_xml(run: &RichTextRun) -> R {
             } else {
                 None
             },
-            sz: run.size.map(|val| FontSize { val }),
+            strike: None,
             color: run.color.as_ref().map(|rgb| Color {
                 rgb: Some(rgb.clone()),
                 theme: None,
                 tint: None,
             }),
-            r_font: run.font.as_ref().map(|val| FontName { val: val.clone() }),
-            family: None,
+            sz: run.size.map(|val| FontSize { val }),
+            u: None,
+            vert_align: None,
             scheme: None,
         })
     } else {

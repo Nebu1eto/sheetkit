@@ -67,23 +67,32 @@ pub struct R {
 /// Run properties (text formatting within a rich text run).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RPr {
+    #[serde(rename = "rFont", skip_serializing_if = "Option::is_none")]
+    pub r_font: Option<FontName>,
+
+    #[serde(rename = "family", skip_serializing_if = "Option::is_none")]
+    pub family: Option<FontFamily>,
+
     #[serde(rename = "b", skip_serializing_if = "Option::is_none")]
     pub b: Option<BoolVal>,
 
     #[serde(rename = "i", skip_serializing_if = "Option::is_none")]
     pub i: Option<BoolVal>,
 
-    #[serde(rename = "sz", skip_serializing_if = "Option::is_none")]
-    pub sz: Option<FontSize>,
+    #[serde(rename = "strike", skip_serializing_if = "Option::is_none")]
+    pub strike: Option<BoolVal>,
 
     #[serde(rename = "color", skip_serializing_if = "Option::is_none")]
     pub color: Option<Color>,
 
-    #[serde(rename = "rFont", skip_serializing_if = "Option::is_none")]
-    pub r_font: Option<FontName>,
+    #[serde(rename = "sz", skip_serializing_if = "Option::is_none")]
+    pub sz: Option<FontSize>,
 
-    #[serde(rename = "family", skip_serializing_if = "Option::is_none")]
-    pub family: Option<FontFamily>,
+    #[serde(rename = "u", skip_serializing_if = "Option::is_none")]
+    pub u: Option<Underline>,
+
+    #[serde(rename = "vertAlign", skip_serializing_if = "Option::is_none")]
+    pub vert_align: Option<VertAlign>,
 
     #[serde(rename = "scheme", skip_serializing_if = "Option::is_none")]
     pub scheme: Option<FontScheme>,
@@ -94,6 +103,20 @@ pub struct RPr {
 pub struct BoolVal {
     #[serde(rename = "@val", skip_serializing_if = "Option::is_none")]
     pub val: Option<bool>,
+}
+
+/// Underline style.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Underline {
+    #[serde(rename = "@val", skip_serializing_if = "Option::is_none")]
+    pub val: Option<String>,
+}
+
+/// Vertical text alignment.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VertAlign {
+    #[serde(rename = "@val")]
+    pub val: String,
 }
 
 /// Font size.
@@ -151,6 +174,27 @@ impl Default for Sst {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_rich_text_properties_preserve_values_and_schema_order() {
+        let xml = r#"<rPr><rFont val="Calibri"/><family val="2"/><b val="true"/><i val="false"/><strike val="true"/><color rgb="FF112233"/><sz val="11"/><u val="singleAccounting"/><vertAlign val="superscript"/><scheme val="minor"/></rPr>"#;
+
+        let properties: RPr = quick_xml::de::from_str(xml).unwrap();
+        assert_eq!(properties.strike.as_ref().unwrap().val, Some(true));
+        assert_eq!(
+            properties.u.as_ref().unwrap().val,
+            Some("singleAccounting".to_string())
+        );
+        assert_eq!(properties.vert_align.as_ref().unwrap().val, "superscript");
+
+        let serialized = quick_xml::se::to_string(&properties).unwrap();
+        assert!(serialized.find("<rFont").unwrap() < serialized.find("<family").unwrap());
+        assert!(serialized.find("<strike").unwrap() < serialized.find("<color").unwrap());
+        assert!(serialized.find("<sz").unwrap() < serialized.find("<u ").unwrap());
+        assert!(serialized.find("<u ").unwrap() < serialized.find("<vertAlign").unwrap());
+        let reparsed: RPr = quick_xml::de::from_str(&serialized).unwrap();
+        assert_eq!(properties, reparsed);
+    }
 
     // NOTE: quick-xml's serde Deserializer trims leading whitespace from text
     // events by default (via internal StartTrimmer). This means text like " text"
@@ -240,14 +284,17 @@ mod tests {
                 r: vec![
                     R {
                         r_pr: Some(RPr {
-                            b: Some(BoolVal { val: None }),
-                            i: None,
-                            sz: Some(FontSize { val: 11.0 }),
-                            color: None,
                             r_font: Some(FontName {
                                 val: "Calibri".to_string(),
                             }),
                             family: None,
+                            b: Some(BoolVal { val: None }),
+                            i: None,
+                            strike: None,
+                            color: None,
+                            sz: Some(FontSize { val: 11.0 }),
+                            u: None,
+                            vert_align: None,
                             scheme: None,
                         }),
                         t: T {

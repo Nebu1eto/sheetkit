@@ -331,6 +331,7 @@ impl Workbook {
                 ))
             })?;
         sparklines.remove(pos);
+        self.mark_sheet_dirty(idx);
         Ok(())
     }
 
@@ -542,6 +543,7 @@ impl Workbook {
     pub fn set_doc_props(&mut self, props: crate::doc_props::DocProperties) {
         self.hydrate_doc_props();
         self.core_properties = Some(props.to_core_properties());
+        self.mark_doc_prop_dirty("docProps/core.xml");
         self.ensure_doc_props_content_types();
     }
 
@@ -568,6 +570,7 @@ impl Workbook {
     pub fn set_app_props(&mut self, props: crate::doc_props::AppProperties) {
         self.hydrate_doc_props();
         self.app_properties = Some(props.to_extended_properties());
+        self.mark_doc_prop_dirty("docProps/app.xml");
         self.ensure_doc_props_content_types();
     }
 
@@ -603,6 +606,7 @@ impl Workbook {
             .custom_properties
             .get_or_insert_with(sheetkit_xml::doc_props::CustomProperties::default);
         crate::doc_props::set_custom_property(props, name, value);
+        self.mark_doc_prop_dirty("docProps/custom.xml");
         self.ensure_custom_props_content_types();
     }
 
@@ -629,7 +633,11 @@ impl Workbook {
     pub fn delete_custom_property(&mut self, name: &str) -> bool {
         self.hydrate_doc_props();
         if let Some(ref mut props) = self.custom_properties {
-            crate::doc_props::delete_custom_property(props, name)
+            let deleted = crate::doc_props::delete_custom_property(props, name);
+            if deleted {
+                self.mark_doc_prop_dirty("docProps/custom.xml");
+            }
+            deleted
         } else {
             false
         }

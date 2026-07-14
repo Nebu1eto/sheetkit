@@ -241,45 +241,35 @@ impl Workbook {
             return;
         }
 
-        if let Some(bytes) = self
-            .deferred_parts
-            .remove_path(AuxCategory::DocProperties, "docProps/core.xml")
-        {
-            let xml_str = String::from_utf8_lossy(&bytes);
-            if let Ok(parsed) = sheetkit_xml::doc_props::deserialize_core_properties(&xml_str) {
-                if self.core_properties.is_none() {
-                    self.core_properties = Some(parsed);
+        for (path, bytes) in self.deferred_parts.take(AuxCategory::DocProperties) {
+            match path.as_str() {
+                "docProps/core.xml" => {
+                    let xml = String::from_utf8_lossy(&bytes);
+                    if self.core_properties.is_none() {
+                        self.core_properties =
+                            sheetkit_xml::doc_props::deserialize_core_properties(&xml).ok();
+                    }
                 }
-            }
-        }
-
-        if let Some(bytes) = self
-            .deferred_parts
-            .remove_path(AuxCategory::DocProperties, "docProps/app.xml")
-        {
-            let xml_str = String::from_utf8_lossy(&bytes);
-            if let Ok(parsed) =
-                quick_xml::de::from_str::<sheetkit_xml::doc_props::ExtendedProperties>(&xml_str)
-            {
-                if self.app_properties.is_none() {
-                    self.app_properties = Some(parsed);
+                "docProps/app.xml" => {
+                    let xml = String::from_utf8_lossy(&bytes);
+                    if self.app_properties.is_none() {
+                        self.app_properties = quick_xml::de::from_str::<
+                            sheetkit_xml::doc_props::ExtendedProperties,
+                        >(&xml)
+                        .ok();
+                    }
                 }
-            }
-        }
-
-        if let Some(bytes) = self
-            .deferred_parts
-            .remove_path(AuxCategory::DocProperties, "docProps/custom.xml")
-        {
-            let xml_str = String::from_utf8_lossy(&bytes);
-            if let Ok(parsed) = sheetkit_xml::doc_props::deserialize_custom_properties(&xml_str) {
-                if self.custom_properties.is_none() {
-                    self.custom_properties = Some(parsed);
+                "docProps/custom.xml" => {
+                    let xml = String::from_utf8_lossy(&bytes);
+                    if self.custom_properties.is_none() {
+                        self.custom_properties =
+                            sheetkit_xml::doc_props::deserialize_custom_properties(&xml).ok();
+                    }
                 }
+                _ => {}
             }
+            self.remember_raw_doc_prop(path, bytes);
         }
-
-        self.deferred_parts.mark_dirty(AuxCategory::DocProperties);
     }
 
     /// Hydrate deferred table parts into `self.tables`.
@@ -458,7 +448,9 @@ impl Workbook {
             let drawing_entries = self.deferred_parts.take(AuxCategory::Drawings);
             for (path, bytes) in drawing_entries {
                 let xml_str = String::from_utf8_lossy(&bytes);
-                if let Ok(drawing) = quick_xml::de::from_str::<WsDr>(&xml_str) {
+                let parsed = quick_xml::de::from_str::<WsDr>(&xml_str);
+                self.remember_raw_graph_part(path.clone(), bytes);
+                if let Ok(drawing) = parsed {
                     let idx = self.drawings.len();
                     self.drawings.push((path.clone(), drawing));
 
@@ -482,7 +474,9 @@ impl Workbook {
             let rels_entries = self.deferred_parts.take(AuxCategory::DrawingRels);
             for (path, bytes) in rels_entries {
                 let xml_str = String::from_utf8_lossy(&bytes);
-                if let Ok(rels) = quick_xml::de::from_str::<Relationships>(&xml_str) {
+                let parsed = quick_xml::de::from_str::<Relationships>(&xml_str);
+                self.remember_raw_graph_part(path.clone(), bytes);
+                if let Ok(rels) = parsed {
                     // Find the drawing index this .rels file belongs to.
                     let drawing_path = rels_path_to_owner(&path);
                     if let Some(idx) = self.drawings.iter().position(|(p, _)| *p == drawing_path) {
@@ -498,6 +492,7 @@ impl Workbook {
                 let xml_str = String::from_utf8_lossy(&bytes);
                 match quick_xml::de::from_str::<ChartSpace>(&xml_str) {
                     Ok(chart) => {
+                        self.remember_raw_graph_part(path.clone(), bytes);
                         self.charts.push((path, chart));
                     }
                     Err(_) => {
@@ -513,11 +508,6 @@ impl Workbook {
                 self.images.push((path, bytes));
             }
         }
-
-        self.deferred_parts.mark_dirty(AuxCategory::Drawings);
-        self.deferred_parts.mark_dirty(AuxCategory::DrawingRels);
-        self.deferred_parts.mark_dirty(AuxCategory::Charts);
-        self.deferred_parts.mark_dirty(AuxCategory::Images);
     }
 
     /// Find the sheet index that references a given table path via worksheet rels.

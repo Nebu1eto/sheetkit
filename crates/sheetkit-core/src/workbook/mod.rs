@@ -131,12 +131,16 @@ pub struct Workbook {
     content_types: ContentTypes,
     package_rels: Relationships,
     workbook_xml: WorkbookXml,
+    /// Original `xl/workbook.xml` bytes retained for clean-owner passthrough.
+    raw_workbook_xml: Option<Vec<u8>>,
+    /// Typed state parsed from `raw_workbook_xml`, used for save-time dirty detection.
+    workbook_xml_baseline: Option<WorkbookXml>,
     workbook_rels: Relationships,
     /// Per-sheet worksheet XML, stored as `(name, OnceLock<WorksheetXml>)`.
     /// When a sheet is eagerly parsed, the `OnceLock` is initialized at open
-    /// time. When a sheet is deferred (lazy mode or filtered out), the lock
-    /// is empty and `raw_sheet_xml[i]` holds the raw bytes; the first call
-    /// to [`worksheet_ref`] or [`worksheet_mut`] hydrates the lock on demand.
+    /// time. When a sheet is deferred in lazy mode, the lock is empty and the
+    /// first call to [`worksheet_ref`] or [`worksheet_mut`] hydrates it on
+    /// demand. Original bytes are retained in `raw_sheet_xml` in either case.
     worksheets: Vec<(String, OnceLock<WorksheetXml>)>,
     stylesheet: StyleSheet,
     sst_runtime: SharedStringTable,
@@ -148,6 +152,11 @@ pub struct Workbook {
     raw_charts: Vec<(String, Vec<u8>)>,
     /// Drawing parts: (zip path like "xl/drawings/drawing1.xml", WsDr data).
     drawings: Vec<(String, WsDr)>,
+    /// Original bytes for chart, drawing, and drawing relationship parts.
+    /// Clean entries take precedence over typed serialization on save.
+    raw_graph_parts: HashMap<String, Vec<u8>>,
+    /// Graph part paths whose typed owner was mutated after opening.
+    dirty_graph_parts: HashSet<String>,
     /// Image parts: (zip path like "xl/media/image1.png", raw bytes).
     images: Vec<(String, Vec<u8>)>,
     /// Maps sheet index -> drawing index in `drawings`.
@@ -163,6 +172,10 @@ pub struct Workbook {
     app_properties: Option<sheetkit_xml::doc_props::ExtendedProperties>,
     /// Custom properties (docProps/custom.xml).
     custom_properties: Option<sheetkit_xml::doc_props::CustomProperties>,
+    /// Original document-property bytes keyed independently by ZIP path.
+    raw_doc_props: HashMap<String, Vec<u8>>,
+    /// Document-property paths whose typed owner was mutated after opening.
+    dirty_doc_props: HashSet<String>,
     /// Pivot table parts: (zip path, PivotTableDefinition data).
     pivot_tables: Vec<(String, sheetkit_xml::pivot_table::PivotTableDefinition)>,
     /// Pivot cache definition parts: (zip path, PivotCacheDefinition data).
@@ -190,11 +203,9 @@ pub struct Workbook {
     vba_blob: Option<Vec<u8>>,
     /// Table parts: (zip path like "xl/tables/table1.xml", TableXml data, sheet_index).
     tables: Vec<(String, sheetkit_xml::table::TableXml, usize)>,
-    /// Raw XML bytes for sheets that were not parsed during open.
-    /// Parallel to `worksheets`. `Some(bytes)` means the sheet XML has not
-    /// been deserialized: either filtered out by the `sheets` option, or
-    /// deferred in Lazy/Stream mode. The bytes are written directly on save
-    /// if the corresponding `OnceLock` in `worksheets` was never initialized.
+    /// Original sheet XML bytes, parallel to `worksheets`.
+    /// Opened sheets retain `Some(bytes)` for exact clean-owner passthrough,
+    /// whether parsed eagerly, filtered out, or deferred in Lazy/Stream mode.
     raw_sheet_xml: Vec<Option<Vec<u8>>>,
     /// Per-sheet dirty flag, parallel to `worksheets`. A sheet is marked
     /// dirty when it is mutated (via `worksheet_mut`, `set_cell_value`, etc.).
@@ -267,6 +278,55 @@ impl Workbook {
     pub(crate) fn mark_sheet_dirty(&mut self, idx: usize) {
         if idx < self.sheet_dirty.len() {
             self.sheet_dirty[idx] = true;
+        }
+    }
+
+    pub(crate) fn remember_raw_graph_part(&mut self, path: String, bytes: Vec<u8>) {
+        self.raw_graph_parts.insert(path, bytes);
+    }
+
+    pub(crate) fn mark_graph_part_dirty(&mut self, path: &str) {
+        self.dirty_graph_parts.insert(path.to_string());
+    }
+
+    pub(crate) fn mark_drawing_dirty(&mut self, drawing_idx: usize) {
+        if let Some((path, _)) = self.drawings.get(drawing_idx) {
+            self.dirty_graph_parts.insert(path.clone());
+        }
+    }
+
+    pub(crate) fn mark_drawing_relationships_dirty(&mut self, drawing_idx: usize) {
+        if let Some((path, _)) = self.drawings.get(drawing_idx) {
+            self.dirty_graph_parts.insert(relationship_part_path(path));
+        }
+    }
+
+    pub(crate) fn remove_graph_part(&mut self, path: &str) {
+        self.raw_graph_parts.remove(path);
+        self.dirty_graph_parts.remove(path);
+    }
+
+    fn clean_raw_graph_part(&self, path: &str) -> Option<&[u8]> {
+        if self.dirty_graph_parts.contains(path) {
+            None
+        } else {
+            self.raw_graph_parts.get(path).map(Vec::as_slice)
+        }
+    }
+
+    pub(crate) fn remember_raw_doc_prop(&mut self, path: String, bytes: Vec<u8>) {
+        self.raw_doc_props.insert(path, bytes);
+    }
+
+    pub(crate) fn mark_doc_prop_dirty(&mut self, path: &str) {
+        self.dirty_doc_props.insert(path.to_string());
+    }
+
+    fn clean_raw_doc_prop(&self, path: &str) -> Option<&[u8]> {
+        if self.dirty_doc_props.contains(path) {
+            None
+        } else {
+            self.raw_doc_props.get(path).map(Vec::as_slice)
         }
     }
 
@@ -345,13 +405,14 @@ impl Workbook {
             // OnceLock is set. If raw bytes are still present, this is a
             // placeholder (filtered-out sheet with WorksheetXml::default()).
             // Replace the placeholder with properly parsed data.
-            if let Some(Some(bytes)) = self.raw_sheet_xml.get(idx) {
-                let mut ws = io::deserialize_worksheet_xml(bytes)?;
-                if let Some(max_rows) = self.sheet_rows_limit {
-                    ws.sheet_data.rows.truncate(max_rows as usize);
+            if !self.sheet_dirty.get(idx).copied().unwrap_or(false) {
+                if let Some(Some(bytes)) = self.raw_sheet_xml.get(idx) {
+                    let mut ws = io::deserialize_worksheet_xml(bytes)?;
+                    if let Some(max_rows) = self.sheet_rows_limit {
+                        ws.sheet_data.rows.truncate(max_rows as usize);
+                    }
+                    *self.worksheets[idx].1.get_mut().unwrap() = ws;
                 }
-                *self.worksheets[idx].1.get_mut().unwrap() = ws;
-                self.raw_sheet_xml[idx] = None;
             }
             return Ok(());
         }
@@ -361,7 +422,6 @@ impl Workbook {
                 ws.sheet_data.rows.truncate(max_rows as usize);
             }
             let _ = self.worksheets[idx].1.set(ws);
-            self.raw_sheet_xml[idx] = None;
             Ok(())
         } else {
             Err(Error::Internal(format!(
@@ -393,6 +453,118 @@ impl Workbook {
             }
         }
         format!("xl/worksheets/sheet{}.xml", sheet_idx + 1)
+    }
+
+    fn owned_drawing_path(&self, sheet_idx: usize) -> Option<String> {
+        let sheet_path = self.sheet_part_path(sheet_idx);
+        self.worksheet_rels
+            .get(&sheet_idx)?
+            .relationships
+            .iter()
+            .find(|relationship| relationship.rel_type == rel_types::DRAWING)
+            .map(|relationship| resolve_relationship_target(&sheet_path, &relationship.target))
+    }
+
+    fn ensure_owned_drawing_hydratable(&self, sheet_idx: usize) -> Result<()> {
+        let Some(owned_path) = self.owned_drawing_path(sheet_idx) else {
+            return Ok(());
+        };
+        if self
+            .worksheet_drawings
+            .get(&sheet_idx)
+            .and_then(|drawing_idx| self.drawings.get(*drawing_idx))
+            .is_some_and(|(path, _)| *path == owned_path)
+        {
+            return Ok(());
+        }
+        if let Some(bytes) = self
+            .deferred_parts
+            .get_path(aux::AuxCategory::Drawings, &owned_path)
+        {
+            return quick_xml::de::from_reader::<_, WsDr>(bytes)
+                .map(|_| ())
+                .map_err(|_| {
+                    Error::InvalidArgument(format!(
+                        "cannot modify worksheet drawing '{owned_path}' because it is not parsed"
+                    ))
+                });
+        }
+        Err(Error::InvalidArgument(format!(
+            "cannot modify worksheet drawing '{owned_path}' because it is not parsed"
+        )))
+    }
+
+    fn ensure_drawing_relationships_hydratable(&self, sheet_idx: usize) -> Result<()> {
+        self.ensure_owned_drawing_hydratable(sheet_idx)?;
+        let Some(drawing_path) = self.owned_drawing_path(sheet_idx) else {
+            return Ok(());
+        };
+        let rels_path = relationship_part_path(&drawing_path);
+        if self
+            .worksheet_drawings
+            .get(&sheet_idx)
+            .is_some_and(|drawing_idx| self.drawing_rels.contains_key(drawing_idx))
+        {
+            return Ok(());
+        }
+        if let Some(bytes) = self
+            .deferred_parts
+            .get_path(aux::AuxCategory::DrawingRels, &rels_path)
+        {
+            return quick_xml::de::from_reader::<_, Relationships>(bytes)
+                .map(|_| ())
+                .map_err(|_| {
+                    Error::InvalidArgument(format!(
+                        "cannot modify drawing relationships '{rels_path}' because they are not parsed"
+                    ))
+                });
+        }
+        if self.clean_raw_graph_part(&rels_path).is_some() {
+            return Err(Error::InvalidArgument(format!(
+                "cannot modify drawing relationships '{rels_path}' because they are not parsed"
+            )));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn ensure_owned_drawing_parsed(&self, sheet_idx: usize) -> Result<Option<usize>> {
+        let Some(owned_path) = self.owned_drawing_path(sheet_idx) else {
+            return Ok(None);
+        };
+        let drawing_idx = self
+            .worksheet_drawings
+            .get(&sheet_idx)
+            .copied()
+            .filter(|drawing_idx| {
+                self.drawings
+                    .get(*drawing_idx)
+                    .is_some_and(|(path, _)| *path == owned_path)
+            })
+            .ok_or_else(|| {
+                Error::InvalidArgument(format!(
+                    "cannot modify worksheet drawing '{owned_path}' because it is not parsed"
+                ))
+            })?;
+        Ok(Some(drawing_idx))
+    }
+
+    pub(crate) fn ensure_drawing_relationships_editable(
+        &self,
+        sheet_idx: usize,
+    ) -> Result<Option<usize>> {
+        let Some(drawing_idx) = self.ensure_owned_drawing_parsed(sheet_idx)? else {
+            return Ok(None);
+        };
+        let drawing_path = &self.drawings[drawing_idx].0;
+        let rels_path = relationship_part_path(drawing_path);
+        if self.clean_raw_graph_part(&rels_path).is_some()
+            && !self.drawing_rels.contains_key(&drawing_idx)
+        {
+            return Err(Error::InvalidArgument(format!(
+                "cannot modify drawing relationships '{rels_path}' because they are not parsed"
+            )));
+        }
+        Ok(Some(drawing_idx))
     }
 
     /// Create a forward-only streaming reader for the named sheet.

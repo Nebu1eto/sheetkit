@@ -75,6 +75,9 @@ pub struct WorksheetXml {
     #[serde(rename = "rowBreaks", skip_serializing_if = "Option::is_none")]
     pub row_breaks: Option<RowBreaks>,
 
+    #[serde(rename = "colBreaks", skip_serializing_if = "Option::is_none")]
+    pub col_breaks: Option<RowBreaks>,
+
     #[serde(rename = "drawing", skip_serializing_if = "Option::is_none")]
     pub drawing: Option<DrawingRef>,
 
@@ -1070,6 +1073,7 @@ impl Default for WorksheetXml {
             page_setup: None,
             header_footer: None,
             row_breaks: None,
+            col_breaks: None,
             drawing: None,
             legacy_drawing: None,
             table_parts: None,
@@ -1080,6 +1084,19 @@ impl Default for WorksheetXml {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_column_breaks_roundtrip_after_row_breaks() {
+        let xml = r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheetData/><rowBreaks count="1"><brk id="5" max="16383" man="true"/></rowBreaks><colBreaks count="1" manualBreakCount="1"><brk id="3" max="1048575" man="true"/></colBreaks></worksheet>"#;
+
+        let worksheet: WorksheetXml = quick_xml::de::from_str(xml).unwrap();
+        assert_eq!(worksheet.col_breaks.as_ref().unwrap().brk[0].id, 3);
+
+        let serialized = quick_xml::se::to_string(&worksheet).unwrap();
+        assert!(serialized.find("rowBreaks").unwrap() < serialized.find("colBreaks").unwrap());
+        let reparsed: WorksheetXml = quick_xml::de::from_str(&serialized).unwrap();
+        assert_eq!(worksheet, reparsed);
+    }
 
     #[test]
     fn test_worksheet_default() {
