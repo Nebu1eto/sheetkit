@@ -93,6 +93,7 @@ impl Workbook {
             theme_colors: crate::theme::default_theme_colors(),
             sheet_name_index,
             sheet_sparklines: vec![vec![]],
+            sheet_sparklines_hydrated: vec![true],
             sheet_vml: vec![None],
             unknown_parts: vec![],
             deferred_parts: crate::workbook::aux::DeferredAuxParts::new(),
@@ -334,6 +335,7 @@ impl Workbook {
         let mut person_list = sheetkit_xml::threaded_comment::PersonList::default();
         let mut sheet_sparklines: Vec<Vec<crate::sparkline::SparklineConfig>> =
             vec![vec![]; worksheets.len()];
+        let sheet_sparklines_hydrated = vec![!skip_aux; worksheets.len()];
         let mut vba_blob: Option<Vec<u8>> = None;
         let mut tables: Vec<(String, sheetkit_xml::table::TableXml, usize)> = Vec::new();
 
@@ -756,6 +758,7 @@ impl Workbook {
             theme_colors,
             sheet_name_index,
             sheet_sparklines,
+            sheet_sparklines_hydrated,
             sheet_vml,
             unknown_parts,
             deferred_parts,

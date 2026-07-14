@@ -19,13 +19,6 @@ fn unescape_xml(value: &str) -> String {
         .unwrap_or_else(|_| value.to_string())
 }
 
-fn is_xml_char(ch: char) -> bool {
-    matches!(ch, '\u{9}' | '\u{A}' | '\u{D}')
-        || ('\u{20}'..='\u{D7FF}').contains(&ch)
-        || ('\u{E000}'..='\u{FFFD}').contains(&ch)
-        || ('\u{10000}'..='\u{10FFFF}').contains(&ch)
-}
-
 /// Form control types.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FormControlType {
@@ -207,7 +200,7 @@ impl FormControlConfig {
             ("text", self.text.as_deref()),
             ("macro_name", self.macro_name.as_deref()),
         ] {
-            if value.is_some_and(|value| !value.chars().all(is_xml_char)) {
+            if value.is_some_and(|value| !value.chars().all(crate::utils::is_xml_char)) {
                 return Err(Error::InvalidArgument(format!(
                     "{field} contains a character that is not valid in XML 1.0"
                 )));

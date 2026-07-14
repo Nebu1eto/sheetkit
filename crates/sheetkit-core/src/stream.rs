@@ -737,7 +737,7 @@ fn build_row_xml(
 /// Escape XML special characters into an existing string buffer.
 fn xml_escape_into(buf: &mut String, s: &str) {
     for ch in s.chars() {
-        if !is_xml_char(ch) {
+        if !crate::utils::is_xml_char(ch) {
             continue;
         }
         match ch {
@@ -749,13 +749,6 @@ fn xml_escape_into(buf: &mut String, s: &str) {
             _ => buf.push(ch),
         }
     }
-}
-
-/// XML 1.0 permits tab, LF, and CR control whitespace; other controls are
-/// removed deterministically before text is escaped.
-fn is_xml_char(ch: char) -> bool {
-    matches!(ch, '\t' | '\n' | '\r')
-        || matches!(ch as u32, 0x20..=0xD7FF | 0xE000..=0xFFFD | 0x10000..=0x10FFFF)
 }
 
 fn validate_stream_values(values: &[CellValue]) -> Result<()> {

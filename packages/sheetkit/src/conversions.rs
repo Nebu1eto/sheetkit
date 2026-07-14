@@ -382,6 +382,32 @@ pub(crate) fn parse_vertical_align(s: &str) -> VerticalAlign {
     }
 }
 
+fn js_border_to_core(border: &JsBorderStyle) -> BorderStyle {
+    let side = |side: &JsBorderSideStyle| match side.style.as_deref() {
+        Some(style) => parse_border_line_style(style).map(|style| BorderSideStyle {
+            style,
+            color: side
+                .color
+                .as_ref()
+                .and_then(|color| parse_style_color(color)),
+        }),
+        None => Some(BorderSideStyle {
+            style: BorderLineStyle::Thin,
+            color: side
+                .color
+                .as_ref()
+                .and_then(|color| parse_style_color(color)),
+        }),
+    };
+    BorderStyle {
+        left: border.left.as_ref().and_then(side),
+        right: border.right.as_ref().and_then(side),
+        top: border.top.as_ref().and_then(side),
+        bottom: border.bottom.as_ref().and_then(side),
+        diagonal: border.diagonal.as_ref().and_then(side),
+    }
+}
+
 pub(crate) fn js_style_to_core(js: &JsStyle) -> Style {
     Style {
         font: js.font.as_ref().map(|f| FontStyle {
@@ -403,25 +429,7 @@ pub(crate) fn js_style_to_core(js: &JsStyle) -> Style {
             bg_color: f.bg_color.as_ref().and_then(|s| parse_style_color(s)),
             gradient: None,
         }),
-        border: js.border.as_ref().map(|b| {
-            let side = |s: &JsBorderSideStyle| match s.style.as_deref() {
-                Some(style) => parse_border_line_style(style).map(|style| BorderSideStyle {
-                    style,
-                    color: s.color.as_ref().and_then(|s| parse_style_color(s)),
-                }),
-                None => Some(BorderSideStyle {
-                    style: BorderLineStyle::Thin,
-                    color: s.color.as_ref().and_then(|s| parse_style_color(s)),
-                }),
-            };
-            BorderStyle {
-                left: b.left.as_ref().and_then(side),
-                right: b.right.as_ref().and_then(side),
-                top: b.top.as_ref().and_then(side),
-                bottom: b.bottom.as_ref().and_then(side),
-                diagonal: b.diagonal.as_ref().and_then(side),
-            }
-        }),
+        border: js.border.as_ref().map(js_border_to_core),
         alignment: js.alignment.as_ref().map(|a| AlignmentStyle {
             horizontal: a.horizontal.as_ref().map(|s| parse_horizontal_align(s)),
             vertical: a.vertical.as_ref().map(|s| parse_vertical_align(s)),
@@ -733,25 +741,7 @@ pub(crate) fn js_conditional_style_to_core(js: &JsConditionalStyle) -> Condition
             bg_color: f.bg_color.as_ref().and_then(|s| parse_style_color(s)),
             gradient: None,
         }),
-        border: js.border.as_ref().map(|b| {
-            let side = |s: &JsBorderSideStyle| match s.style.as_deref() {
-                Some(style) => parse_border_line_style(style).map(|style| BorderSideStyle {
-                    style,
-                    color: s.color.as_ref().and_then(|s| parse_style_color(s)),
-                }),
-                None => Some(BorderSideStyle {
-                    style: BorderLineStyle::Thin,
-                    color: s.color.as_ref().and_then(|s| parse_style_color(s)),
-                }),
-            };
-            BorderStyle {
-                left: b.left.as_ref().and_then(side),
-                right: b.right.as_ref().and_then(side),
-                top: b.top.as_ref().and_then(side),
-                bottom: b.bottom.as_ref().and_then(side),
-                diagonal: b.diagonal.as_ref().and_then(side),
-            }
-        }),
+        border: js.border.as_ref().map(js_border_to_core),
         num_fmt: js
             .custom_num_fmt
             .as_ref()

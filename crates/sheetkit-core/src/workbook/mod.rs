@@ -188,6 +188,8 @@ pub struct Workbook {
     theme_colors: sheetkit_xml::theme::ThemeColors,
     /// Per-sheet sparkline configurations, parallel to the `worksheets` vector.
     sheet_sparklines: Vec<Vec<crate::sparkline::SparklineConfig>>,
+    /// Whether each sheet's sparkline configuration has been materialized.
+    sheet_sparklines_hydrated: Vec<bool>,
     /// Per-sheet VML drawing bytes (for legacy comment rendering), parallel to `worksheets`.
     /// `None` means no VML part exists for that sheet.
     sheet_vml: Vec<Option<Vec<u8>>>,

@@ -1,9 +1,5 @@
 use super::*;
 
-fn sheet_name_matches(sheet_name: &str, target_sheet_name_lowercase: &str) -> bool {
-    sheet_name.to_lowercase() == target_sheet_name_lowercase
-}
-
 fn validate_anchor_shift<F>(col: u32, row: u32, shift_cell: F) -> Result<()>
 where
     F: Fn(u32, u32) -> (u32, u32),
@@ -33,7 +29,7 @@ where
     crate::cell_ref_shift::shift_cell_references_with_abs_and_scope(
         text,
         owner_sheet_idx == target_sheet_idx,
-        |sheet_name| sheet_name_matches(sheet_name, target_sheet_name_lowercase),
+        |sheet_name| crate::sheet::sheet_names_equal(sheet_name, target_sheet_name_lowercase),
         |col, row, _, _| shift_cell(col, row),
     )
 }
@@ -314,6 +310,7 @@ impl Workbook {
         }
         if self.sheet_sparklines.len() < self.worksheets.len() {
             self.sheet_sparklines.push(vec![]);
+            self.sheet_sparklines_hydrated.push(true);
         }
         if self.sheet_vml.len() < self.worksheets.len() {
             self.sheet_vml.push(None);
@@ -435,6 +432,7 @@ impl Workbook {
         // vectors must follow.
         self.sheet_comments.remove(idx);
         self.sheet_sparklines.remove(idx);
+        self.sheet_sparklines_hydrated.remove(idx);
         self.sheet_vml.remove(idx);
         self.raw_sheet_xml.remove(idx);
         self.sheet_dirty.remove(idx);
@@ -726,6 +724,11 @@ impl Workbook {
         let n = self.worksheets.len();
         debug_assert_eq!(self.sheet_comments.len(), n, "sheet_comments desync");
         debug_assert_eq!(self.sheet_sparklines.len(), n, "sheet_sparklines desync");
+        debug_assert_eq!(
+            self.sheet_sparklines_hydrated.len(),
+            n,
+            "sheet_sparklines_hydrated desync"
+        );
         debug_assert_eq!(self.sheet_vml.len(), n, "sheet_vml desync");
         debug_assert_eq!(self.raw_sheet_xml.len(), n, "raw_sheet_xml desync");
         debug_assert_eq!(self.sheet_dirty.len(), n, "sheet_dirty desync");
@@ -767,6 +770,7 @@ impl Workbook {
                 name: target.to_string(),
             });
         }
+        self.hydrate_sparklines_for_sheet(src_idx);
 
         let cloned_streamed = self
             .streamed_sheets
@@ -1146,6 +1150,7 @@ impl Workbook {
             .push(self.sheet_comments[src_idx].clone());
         self.sheet_sparklines
             .push(self.sheet_sparklines[src_idx].clone());
+        self.sheet_sparklines_hydrated.push(true);
         self.sheet_vml.push(self.sheet_vml[src_idx].clone());
         self.raw_sheet_xml.push(None);
         self.sheet_dirty.push(true);
@@ -1619,6 +1624,9 @@ impl Workbook {
             ));
         }
         self.ensure_drawing_relationships_hydratable(target_sheet_idx)?;
+        for sheet_idx in 0..self.worksheets.len() {
+            self.hydrate_sparklines_for_sheet(sheet_idx);
+        }
 
         // Validate deferred XML without consuming passthrough bytes. A failed
         // edit must not turn an untouched lazy workbook into a dirty one.
@@ -1890,7 +1898,7 @@ impl Workbook {
                 crate::cell_ref_shift::shift_cell_references_with_abs_and_scope(
                     &defined_name.value,
                     defined_name.local_sheet_id == Some(target_sheet_idx as u32),
-                    |name| sheet_name_matches(name, &target_sheet_name_lowercase),
+                    |name| crate::sheet::sheet_names_equal(name, &target_sheet_name_lowercase),
                     |col, row, _, _| shift_cell(col, row),
                 )?;
             }
@@ -2230,7 +2238,7 @@ impl Workbook {
                     crate::cell_ref_shift::shift_cell_references_with_abs_and_scope(
                         &defined_name.value,
                         owner == Some(sheet_idx),
-                        |name| sheet_name_matches(name, &target_sheet_name_lowercase),
+                        |name| crate::sheet::sheet_names_equal(name, &target_sheet_name_lowercase),
                         |col, row, _, _| shift_cell(col, row),
                     )?;
             }
@@ -2262,22 +2270,25 @@ impl Workbook {
             if *owner_sheet_idx != sheet_idx {
                 continue;
             }
-            shifted_table = true;
-            table.reference = shift_references_for_owner(
+            let shifted_reference = shift_references_for_owner(
                 &table.reference,
                 sheet_idx,
                 sheet_idx,
                 &target_sheet_name_lowercase,
                 shift_cell,
             )?;
+            shifted_table |= shifted_reference != table.reference;
+            table.reference = shifted_reference;
             if let Some(auto_filter) = &mut table.auto_filter {
-                auto_filter.reference = shift_references_for_owner(
+                let shifted_reference = shift_references_for_owner(
                     &auto_filter.reference,
                     sheet_idx,
                     sheet_idx,
                     &target_sheet_name_lowercase,
                     shift_cell,
                 )?;
+                shifted_table |= shifted_reference != auto_filter.reference;
+                auto_filter.reference = shifted_reference;
             }
         }
         if shifted_table {
@@ -3783,6 +3794,30 @@ mod tests {
             wb.tables[0].1.auto_filter.as_ref().unwrap().reference,
             "A3:B5"
         );
+    }
+
+    #[test]
+    fn lazy_sparklines_are_materialized_for_copy_and_structural_edits() {
+        let mut source = Workbook::new();
+        source
+            .add_sparkline(
+                "Sheet1",
+                &crate::sparkline::SparklineConfig::new("Sheet1!A2:A3", "B2"),
+            )
+            .unwrap();
+        let bytes = source.save_to_buffer().unwrap();
+        let mut workbook = Workbook::open_from_buffer(&bytes).unwrap();
+
+        workbook.copy_sheet("Sheet1", "Copy").unwrap();
+        assert_eq!(workbook.get_sparklines("Copy").unwrap().len(), 1);
+
+        workbook.insert_rows("Sheet1", 2, 1).unwrap();
+        let original = workbook.get_sparklines("Sheet1").unwrap();
+        assert_eq!(original[0].data_range, "Sheet1!A3:A4");
+        assert_eq!(original[0].location, "B3");
+        let copied = workbook.get_sparklines("Copy").unwrap();
+        assert_eq!(copied[0].data_range, "Sheet1!A3:A4");
+        assert_eq!(copied[0].location, "B2");
     }
 
     #[test]

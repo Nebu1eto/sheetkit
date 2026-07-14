@@ -403,6 +403,7 @@ impl Workbook {
         self.hydrate_sparklines_for_sheet(idx);
         while self.sheet_sparklines.len() <= idx {
             self.sheet_sparklines.push(vec![]);
+            self.sheet_sparklines_hydrated.push(true);
         }
         self.sheet_sparklines[idx].push(config.clone());
         self.mark_sheet_dirty(idx);
@@ -438,10 +439,17 @@ impl Workbook {
 
     /// Return sparklines from typed data or a read-only parse of lazy sheet XML.
     fn sparklines_for_sheet(&self, sheet_idx: usize) -> Vec<crate::sparkline::SparklineConfig> {
-        if let Some(sparklines) = self.sheet_sparklines.get(sheet_idx) {
-            if !sparklines.is_empty() {
-                return sparklines.clone();
-            }
+        if self
+            .sheet_sparklines_hydrated
+            .get(sheet_idx)
+            .copied()
+            .unwrap_or(false)
+        {
+            return self
+                .sheet_sparklines
+                .get(sheet_idx)
+                .cloned()
+                .unwrap_or_default();
         }
         self.raw_sheet_xml
             .get(sheet_idx)
@@ -453,12 +461,22 @@ impl Workbook {
     }
 
     /// Materialize lazy sparkline data before mutating it.
-    fn hydrate_sparklines_for_sheet(&mut self, sheet_idx: usize) {
+    pub(super) fn hydrate_sparklines_for_sheet(&mut self, sheet_idx: usize) {
+        if self
+            .sheet_sparklines_hydrated
+            .get(sheet_idx)
+            .copied()
+            .unwrap_or(false)
+        {
+            return;
+        }
         let sparklines = self.sparklines_for_sheet(sheet_idx);
         while self.sheet_sparklines.len() <= sheet_idx {
             self.sheet_sparklines.push(vec![]);
+            self.sheet_sparklines_hydrated.push(false);
         }
         self.sheet_sparklines[sheet_idx] = sparklines;
+        self.sheet_sparklines_hydrated[sheet_idx] = true;
     }
 
     /// Evaluate a single formula string in the context of `sheet`.
@@ -2762,6 +2780,7 @@ mod tests {
 
         let mut lazy = Workbook::open_from_buffer(&bytes).unwrap();
         lazy.remove_sparkline("Sheet1", "B1").unwrap();
+        assert!(lazy.get_sparklines("Sheet1").unwrap().is_empty());
         let reopened = Workbook::open_from_buffer(&lazy.save_to_buffer().unwrap()).unwrap();
         assert!(reopened.get_sparklines("Sheet1").unwrap().is_empty());
     }

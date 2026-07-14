@@ -282,7 +282,7 @@ pub fn rename_sheet(
     Ok(())
 }
 
-fn sheet_names_equal(left: &str, right: &str) -> bool {
+pub(crate) fn sheet_names_equal(left: &str, right: &str) -> bool {
     left.to_lowercase() == right.to_lowercase()
 }
 
