@@ -83,7 +83,6 @@ use zip::write::SimpleFileOptions;
 use zip::CompressionMethod;
 
 use crate::cell::CellValue;
-use crate::cell_ref_shift::shift_cell_references_in_text;
 use crate::chart::ChartConfig;
 use crate::comment::CommentConfig;
 use crate::conditional::ConditionalFormatRule;

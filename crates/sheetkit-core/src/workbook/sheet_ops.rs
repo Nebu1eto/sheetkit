@@ -1,5 +1,180 @@
 use super::*;
 
+fn sheet_name_matches(sheet_name: &str, target_sheet_name_lowercase: &str) -> bool {
+    sheet_name.to_lowercase() == target_sheet_name_lowercase
+}
+
+fn validate_anchor_shift<F>(col: u32, row: u32, shift_cell: F) -> Result<()>
+where
+    F: Fn(u32, u32) -> (u32, u32),
+{
+    let col = col.checked_add(1).ok_or(Error::InvalidColumnNumber(col))?;
+    let row = row.checked_add(1).ok_or(Error::InvalidRowNumber(row))?;
+    let (col, row) = shift_cell(col, row);
+    if !(1..=crate::utils::constants::MAX_COLUMNS).contains(&col) {
+        return Err(Error::InvalidColumnNumber(col));
+    }
+    if !(1..=crate::utils::constants::MAX_ROWS).contains(&row) {
+        return Err(Error::InvalidRowNumber(row));
+    }
+    Ok(())
+}
+
+fn shift_references_for_owner<F>(
+    text: &str,
+    owner_sheet_idx: usize,
+    target_sheet_idx: usize,
+    target_sheet_name_lowercase: &str,
+    shift_cell: F,
+) -> Result<String>
+where
+    F: Fn(u32, u32) -> (u32, u32) + Copy,
+{
+    crate::cell_ref_shift::shift_cell_references_with_abs_and_scope(
+        text,
+        owner_sheet_idx == target_sheet_idx,
+        |sheet_name| sheet_name_matches(sheet_name, target_sheet_name_lowercase),
+        |col, row, _, _| shift_cell(col, row),
+    )
+}
+
+fn shift_duplicated_row_formula(formula: &str) -> Result<String> {
+    crate::cell_ref_shift::shift_cell_references_with_abs_and_scope(
+        formula,
+        true,
+        |_| true,
+        |col, row, _abs_col, abs_row| (col, if abs_row { row } else { row.saturating_add(1) }),
+    )
+}
+
+fn visit_series_references<F>(
+    series: &mut sheetkit_xml::chart::Series,
+    visitor: &mut F,
+) -> Result<()>
+where
+    F: FnMut(&mut String) -> Result<()>,
+{
+    if let Some(text) = &mut series.tx {
+        if let Some(reference) = &mut text.str_ref {
+            visitor(&mut reference.f)?;
+        }
+    }
+    if let Some(category) = &mut series.cat {
+        if let Some(reference) = &mut category.str_ref {
+            visitor(&mut reference.f)?;
+        }
+        if let Some(reference) = &mut category.num_ref {
+            visitor(&mut reference.f)?;
+        }
+    }
+    if let Some(value) = &mut series.val {
+        if let Some(reference) = &mut value.num_ref {
+            visitor(&mut reference.f)?;
+        }
+    }
+    Ok(())
+}
+
+fn visit_scatter_references<F>(
+    series: &mut sheetkit_xml::chart::ScatterSeries,
+    visitor: &mut F,
+) -> Result<()>
+where
+    F: FnMut(&mut String) -> Result<()>,
+{
+    if let Some(text) = &mut series.tx {
+        if let Some(reference) = &mut text.str_ref {
+            visitor(&mut reference.f)?;
+        }
+    }
+    if let Some(category) = &mut series.x_val {
+        if let Some(reference) = &mut category.str_ref {
+            visitor(&mut reference.f)?;
+        }
+        if let Some(reference) = &mut category.num_ref {
+            visitor(&mut reference.f)?;
+        }
+    }
+    if let Some(value) = &mut series.y_val {
+        if let Some(reference) = &mut value.num_ref {
+            visitor(&mut reference.f)?;
+        }
+    }
+    Ok(())
+}
+
+fn visit_bubble_references<F>(
+    series: &mut sheetkit_xml::chart::BubbleSeries,
+    visitor: &mut F,
+) -> Result<()>
+where
+    F: FnMut(&mut String) -> Result<()>,
+{
+    if let Some(text) = &mut series.tx {
+        if let Some(reference) = &mut text.str_ref {
+            visitor(&mut reference.f)?;
+        }
+    }
+    if let Some(category) = &mut series.x_val {
+        if let Some(reference) = &mut category.str_ref {
+            visitor(&mut reference.f)?;
+        }
+        if let Some(reference) = &mut category.num_ref {
+            visitor(&mut reference.f)?;
+        }
+    }
+    for value in [&mut series.y_val, &mut series.bubble_size]
+        .into_iter()
+        .flatten()
+    {
+        if let Some(reference) = &mut value.num_ref {
+            visitor(&mut reference.f)?;
+        }
+    }
+    Ok(())
+}
+
+fn visit_chart_references<F>(chart: &mut ChartSpace, mut visitor: F) -> Result<()>
+where
+    F: FnMut(&mut String) -> Result<()>,
+{
+    macro_rules! visit_series_chart {
+        ($chart:expr) => {
+            if let Some(chart) = &mut $chart {
+                for series in &mut chart.series {
+                    visit_series_references(series, &mut visitor)?;
+                }
+            }
+        };
+    }
+    let plot_area = &mut chart.chart.plot_area;
+    visit_series_chart!(plot_area.bar_chart);
+    visit_series_chart!(plot_area.bar_3d_chart);
+    visit_series_chart!(plot_area.line_chart);
+    visit_series_chart!(plot_area.line_3d_chart);
+    visit_series_chart!(plot_area.pie_chart);
+    visit_series_chart!(plot_area.pie_3d_chart);
+    visit_series_chart!(plot_area.doughnut_chart);
+    visit_series_chart!(plot_area.area_chart);
+    visit_series_chart!(plot_area.area_3d_chart);
+    visit_series_chart!(plot_area.radar_chart);
+    visit_series_chart!(plot_area.stock_chart);
+    visit_series_chart!(plot_area.surface_chart);
+    visit_series_chart!(plot_area.surface_3d_chart);
+    visit_series_chart!(plot_area.of_pie_chart);
+    if let Some(chart) = &mut plot_area.scatter_chart {
+        for series in &mut chart.series {
+            visit_scatter_references(series, &mut visitor)?;
+        }
+    }
+    if let Some(chart) = &mut plot_area.bubble_chart {
+        for series in &mut chart.series {
+            visit_bubble_references(series, &mut visitor)?;
+        }
+    }
+    Ok(())
+}
+
 impl Workbook {
     /// Return the names of all sheets in workbook order.
     pub fn sheet_names(&self) -> Vec<&str> {
@@ -271,13 +446,26 @@ impl Workbook {
     /// Insert `count` empty rows starting at `start_row` in the named sheet.
     pub fn insert_rows(&mut self, sheet: &str, start_row: u32, count: u32) -> Result<()> {
         let sheet_idx = self.sheet_index(sheet)?;
+        if count == 0 {
+            return Ok(());
+        }
+        self.preflight_structural_target(sheet_idx, |ws| {
+            crate::row::insert_rows(ws, start_row, count)
+        })?;
+        self.prepare_reference_shift(sheet_idx, |col, row| {
+            if row >= start_row {
+                (col, row.saturating_add(count))
+            } else {
+                (col, row)
+            }
+        })?;
         {
             let ws = self.worksheet_mut_by_index(sheet_idx)?;
             crate::row::insert_rows(ws, start_row, count)?;
         }
         self.apply_reference_shift_for_sheet(sheet_idx, |col, row| {
             if row >= start_row {
-                (col, row + count)
+                (col, row.saturating_add(count))
             } else {
                 (col, row)
             }
@@ -287,6 +475,14 @@ impl Workbook {
     /// Remove a single row from the named sheet, shifting rows below it up.
     pub fn remove_row(&mut self, sheet: &str, row: u32) -> Result<()> {
         let sheet_idx = self.sheet_index(sheet)?;
+        self.preflight_structural_target(sheet_idx, |ws| crate::row::remove_row(ws, row))?;
+        self.prepare_reference_shift(sheet_idx, |col, referenced_row| {
+            if referenced_row > row {
+                (col, referenced_row - 1)
+            } else {
+                (col, referenced_row)
+            }
+        })?;
         {
             let ws = self.worksheet_mut_by_index(sheet_idx)?;
             crate::row::remove_row(ws, row)?;
@@ -302,8 +498,30 @@ impl Workbook {
 
     /// Duplicate a row, inserting the copy directly below.
     pub fn duplicate_row(&mut self, sheet: &str, row: u32) -> Result<()> {
-        let ws = self.worksheet_mut(sheet)?;
-        crate::row::duplicate_row(ws, row)
+        let sheet_idx = self.sheet_index(sheet)?;
+        let target_row = row.checked_add(1).ok_or(Error::InvalidRowNumber(row))?;
+        self.preflight_structural_target(sheet_idx, |ws| crate::row::duplicate_row(ws, row))?;
+        self.preflight_duplicate_formula_copy(sheet_idx, row)?;
+        self.prepare_reference_shift(sheet_idx, |col, referenced_row| {
+            if referenced_row >= target_row {
+                (col, referenced_row.saturating_add(1))
+            } else {
+                (col, referenced_row)
+            }
+        })?;
+        {
+            let ws = self.worksheet_mut_by_index(sheet_idx)?;
+            crate::row::duplicate_row(ws, row)?;
+        }
+        let duplicated_formulas = self.take_duplicated_row_formulas(sheet_idx, target_row)?;
+        self.apply_reference_shift_for_sheet(sheet_idx, |col, r| {
+            if r >= target_row {
+                (col, r.saturating_add(1))
+            } else {
+                (col, r)
+            }
+        })?;
+        self.restore_duplicated_row_formulas(sheet_idx, target_row, duplicated_formulas)
     }
 
     /// Set the height of a row in points.
@@ -439,13 +657,24 @@ impl Workbook {
     pub fn insert_cols(&mut self, sheet: &str, col: &str, count: u32) -> Result<()> {
         let sheet_idx = self.sheet_index(sheet)?;
         let start_col = column_name_to_number(col)?;
+        if count == 0 {
+            return Ok(());
+        }
+        self.preflight_structural_target(sheet_idx, |ws| crate::col::insert_cols(ws, col, count))?;
+        self.prepare_reference_shift(sheet_idx, |c, row| {
+            if c >= start_col {
+                (c.saturating_add(count), row)
+            } else {
+                (c, row)
+            }
+        })?;
         {
             let ws = self.worksheet_mut_by_index(sheet_idx)?;
             crate::col::insert_cols(ws, col, count)?;
         }
         self.apply_reference_shift_for_sheet(sheet_idx, |c, row| {
             if c >= start_col {
-                (c + count, row)
+                (c.saturating_add(count), row)
             } else {
                 (c, row)
             }
@@ -456,6 +685,17 @@ impl Workbook {
     pub fn remove_col(&mut self, sheet: &str, col: &str) -> Result<()> {
         let sheet_idx = self.sheet_index(sheet)?;
         let col_num = column_name_to_number(col)?;
+        self.preflight_structural_target(sheet_idx, |ws| crate::col::remove_col(ws, col))?;
+        self.prepare_reference_shift(
+            sheet_idx,
+            |c, row| {
+                if c > col_num {
+                    (c - 1, row)
+                } else {
+                    (c, row)
+                }
+            },
+        )?;
         {
             let ws = self.worksheet_mut_by_index(sheet_idx)?;
             crate::col::remove_col(ws, col)?;
@@ -500,6 +740,385 @@ impl Workbook {
             .collect();
     }
 
+    /// Prepare every reference-bearing worksheet part before a structural edit.
+    ///
+    /// A row-limited or streamed workbook cannot safely update references
+    /// outside the materialized window, so reject it before any mutation.
+    fn prepare_reference_shift<F>(&mut self, target_sheet_idx: usize, shift_cell: F) -> Result<()>
+    where
+        F: Fn(u32, u32) -> (u32, u32) + Copy,
+    {
+        if self.sheet_rows_limit.is_some() {
+            return Err(Error::InvalidArgument(
+                "cannot structurally edit a workbook opened with sheet_rows".into(),
+            ));
+        }
+        if !self.streamed_sheets.is_empty() {
+            return Err(Error::InvalidArgument(
+                "cannot structurally edit a workbook containing streamed sheets".into(),
+            ));
+        }
+        if !self.raw_charts.is_empty() {
+            return Err(Error::InvalidArgument(
+                "cannot structurally edit a workbook with raw charts".into(),
+            ));
+        }
+
+        // Validate deferred XML without consuming passthrough bytes. A failed
+        // edit must not turn an untouched lazy workbook into a dirty one.
+        self.validate_deferred_drawing_and_chart_parts(target_sheet_idx, shift_cell)?;
+        self.validate_reference_shift(target_sheet_idx, shift_cell)?;
+        for idx in 0..self.worksheets.len() {
+            self.ensure_hydrated(idx)?;
+        }
+        self.hydrate_drawings();
+        self.hydrate_tables();
+        Ok(())
+    }
+
+    fn validate_deferred_drawing_and_chart_parts<F>(
+        &self,
+        target_sheet_idx: usize,
+        shift_cell: F,
+    ) -> Result<()>
+    where
+        F: Fn(u32, u32) -> (u32, u32) + Copy,
+    {
+        use crate::workbook::aux::AuxCategory;
+
+        let target_sheet_name_lowercase = self.worksheets[target_sheet_idx].0.to_lowercase();
+        let validate = |text: &str, owner_sheet_idx: usize| {
+            shift_references_for_owner(
+                text,
+                owner_sheet_idx,
+                target_sheet_idx,
+                &target_sheet_name_lowercase,
+                shift_cell,
+            )
+            .map(|_| ())
+        };
+        if let Some(entries) = self.deferred_parts.entries(AuxCategory::DrawingRels) {
+            for (_, bytes) in entries {
+                quick_xml::de::from_str::<Relationships>(&String::from_utf8_lossy(bytes))
+                    .map_err(|error| Error::XmlDeserialize(error.to_string()))?;
+            }
+        }
+        if let Some(entries) = self.deferred_parts.entries(AuxCategory::Drawings) {
+            for (path, bytes) in entries {
+                let drawing = quick_xml::de::from_str::<WsDr>(&String::from_utf8_lossy(bytes))
+                    .map_err(|error| Error::XmlDeserialize(error.to_string()))?;
+                let owner = self
+                    .worksheet_rels
+                    .iter()
+                    .find_map(|(sheet_idx, relationships)| {
+                        relationships
+                            .relationships
+                            .iter()
+                            .any(|relationship| {
+                                relationship.rel_type == rel_types::DRAWING
+                                    && resolve_relationship_target(
+                                        &self.sheet_part_path(*sheet_idx),
+                                        &relationship.target,
+                                    ) == *path
+                            })
+                            .then_some(*sheet_idx)
+                    });
+                if owner == Some(target_sheet_idx) {
+                    for anchor in &drawing.one_cell_anchors {
+                        validate_anchor_shift(anchor.from.col, anchor.from.row, shift_cell)?;
+                    }
+                    for anchor in &drawing.two_cell_anchors {
+                        validate_anchor_shift(anchor.from.col, anchor.from.row, shift_cell)?;
+                        validate_anchor_shift(anchor.to.col, anchor.to.row, shift_cell)?;
+                    }
+                }
+            }
+        }
+        if let Some(entries) = self.deferred_parts.entries(AuxCategory::Charts) {
+            for (_, bytes) in entries {
+                let mut chart =
+                    quick_xml::de::from_str::<ChartSpace>(&String::from_utf8_lossy(bytes))
+                        .map_err(|error| Error::XmlDeserialize(error.to_string()))?;
+                // A deferred chart's drawing relationship is not yet hydrated.
+                // Treat unqualified formulas as target-owned during dry-run so
+                // overflow cannot escape validation; qualified formulas retain
+                // their exact sheet selection.
+                visit_chart_references(&mut chart, |formula| validate(formula, target_sheet_idx))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn chart_owner_sheet_idx(&self, chart_path: &str) -> usize {
+        self.worksheet_drawings
+            .iter()
+            .find_map(|(sheet_idx, drawing_idx)| {
+                self.drawing_rels
+                    .get(drawing_idx)
+                    .and_then(|relationships| {
+                        relationships.relationships.iter().find_map(|relationship| {
+                            (relationship.rel_type == rel_types::CHART
+                                && resolve_relationship_target(
+                                    &self.drawings[*drawing_idx].0,
+                                    &relationship.target,
+                                ) == chart_path)
+                                .then_some(*sheet_idx)
+                        })
+                    })
+            })
+            .unwrap_or(0)
+    }
+
+    fn validate_reference_shift<F>(&self, target_sheet_idx: usize, shift_cell: F) -> Result<()>
+    where
+        F: Fn(u32, u32) -> (u32, u32) + Copy,
+    {
+        let target_sheet_name_lowercase = self.worksheets[target_sheet_idx].0.to_lowercase();
+        let validate = |text: &str, owner_sheet_idx: usize| {
+            shift_references_for_owner(
+                text,
+                owner_sheet_idx,
+                target_sheet_idx,
+                &target_sheet_name_lowercase,
+                shift_cell,
+            )
+            .map(|_| ())
+        };
+
+        for (owner_sheet_idx, (_, worksheet)) in self.worksheets.iter().enumerate() {
+            let deferred;
+            let ws = if let Some(ws) = worksheet.get() {
+                ws
+            } else {
+                let bytes = self.raw_sheet_xml[owner_sheet_idx]
+                    .as_deref()
+                    .ok_or_else(|| {
+                        Error::Internal("worksheet has no materialized or deferred data".into())
+                    })?;
+                deferred = io::deserialize_worksheet_xml(bytes)?;
+                &deferred
+            };
+            for row in &ws.sheet_data.rows {
+                for cell in &row.cells {
+                    if let Some(formula) = &cell.f {
+                        if let Some(expr) = &formula.value {
+                            validate(expr, owner_sheet_idx)?;
+                        }
+                        if let Some(reference) = &formula.reference {
+                            validate(reference, owner_sheet_idx)?;
+                        }
+                    }
+                }
+            }
+            if let Some(merges) = &ws.merge_cells {
+                for merge in &merges.merge_cells {
+                    validate(&merge.reference, owner_sheet_idx)?;
+                }
+            }
+            if let Some(auto_filter) = &ws.auto_filter {
+                validate(&auto_filter.reference, owner_sheet_idx)?;
+            }
+            if let Some(validations) = &ws.data_validations {
+                for validation in &validations.data_validations {
+                    validate(&validation.sqref, owner_sheet_idx)?;
+                    if let Some(formula) = &validation.formula1 {
+                        validate(formula, owner_sheet_idx)?;
+                    }
+                    if let Some(formula) = &validation.formula2 {
+                        validate(formula, owner_sheet_idx)?;
+                    }
+                }
+            }
+            for formatting in &ws.conditional_formatting {
+                validate(&formatting.sqref, owner_sheet_idx)?;
+                for rule in &formatting.cf_rules {
+                    for formula in &rule.formulas {
+                        validate(formula, owner_sheet_idx)?;
+                    }
+                }
+            }
+            if let Some(hyperlinks) = &ws.hyperlinks {
+                for hyperlink in &hyperlinks.hyperlinks {
+                    validate(&hyperlink.reference, owner_sheet_idx)?;
+                    if let Some(location) = &hyperlink.location {
+                        validate(location, owner_sheet_idx)?;
+                    }
+                }
+            }
+            if let Some(views) = &ws.sheet_views {
+                for view in &views.sheet_views {
+                    if let Some(pane) = &view.pane {
+                        if let Some(top_left) = &pane.top_left_cell {
+                            validate(top_left, owner_sheet_idx)?;
+                        }
+                    }
+                    for selection in &view.selection {
+                        if let Some(active_cell) = &selection.active_cell {
+                            validate(active_cell, owner_sheet_idx)?;
+                        }
+                        if let Some(sqref) = &selection.sqref {
+                            validate(sqref, owner_sheet_idx)?;
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(defined_names) = &self.workbook_xml.defined_names {
+            for defined_name in &defined_names.defined_names {
+                crate::cell_ref_shift::shift_cell_references_with_abs_and_scope(
+                    &defined_name.value,
+                    defined_name.local_sheet_id == Some(target_sheet_idx as u32),
+                    |name| sheet_name_matches(name, &target_sheet_name_lowercase),
+                    |col, row, _, _| shift_cell(col, row),
+                )?;
+            }
+        }
+        for (owner_sheet_idx, sparklines) in self.sheet_sparklines.iter().enumerate() {
+            for sparkline in sparklines {
+                validate(&sparkline.data_range, owner_sheet_idx)?;
+                if owner_sheet_idx == target_sheet_idx {
+                    validate(&sparkline.location, owner_sheet_idx)?;
+                }
+            }
+        }
+        for (_, table, owner_sheet_idx) in &self.tables {
+            if *owner_sheet_idx == target_sheet_idx {
+                validate(&table.reference, target_sheet_idx)?;
+                if let Some(auto_filter) = &table.auto_filter {
+                    validate(&auto_filter.reference, target_sheet_idx)?;
+                }
+            }
+        }
+        for (path, chart) in &self.charts {
+            let owner_sheet_idx = self.chart_owner_sheet_idx(path);
+            let mut chart = chart.clone();
+            visit_chart_references(&mut chart, |formula| validate(formula, owner_sheet_idx))?;
+        }
+        if let Some(&drawing_idx) = self.worksheet_drawings.get(&target_sheet_idx) {
+            if let Some((_, drawing)) = self.drawings.get(drawing_idx) {
+                for anchor in &drawing.one_cell_anchors {
+                    validate_anchor_shift(anchor.from.col, anchor.from.row, shift_cell)?;
+                }
+                for anchor in &drawing.two_cell_anchors {
+                    validate_anchor_shift(anchor.from.col, anchor.from.row, shift_cell)?;
+                    validate_anchor_shift(anchor.to.col, anchor.to.row, shift_cell)?;
+                }
+            }
+        }
+        if let Some(entries) = self
+            .deferred_parts
+            .entries(crate::workbook::aux::AuxCategory::Tables)
+        {
+            for (path, bytes) in entries {
+                let table = quick_xml::de::from_str::<sheetkit_xml::table::TableXml>(
+                    &String::from_utf8_lossy(bytes),
+                )
+                .map_err(|error| Error::XmlDeserialize(error.to_string()))?;
+                let owner_sheet_idx = self
+                    .worksheet_rels
+                    .iter()
+                    .find_map(|(sheet_idx, rels)| {
+                        rels.relationships.iter().find_map(|rel| {
+                            (rel.rel_type == rel_types::TABLE
+                                && resolve_relationship_target(
+                                    &self.sheet_part_path(*sheet_idx),
+                                    &rel.target,
+                                ) == *path)
+                                .then_some(*sheet_idx)
+                        })
+                    })
+                    .unwrap_or(0);
+                if owner_sheet_idx != target_sheet_idx {
+                    continue;
+                }
+                validate(&table.reference, target_sheet_idx)?;
+                if let Some(auto_filter) = &table.auto_filter {
+                    validate(&auto_filter.reference, target_sheet_idx)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn preflight_structural_target<F>(&self, sheet_idx: usize, edit: F) -> Result<()>
+    where
+        F: FnOnce(&mut WorksheetXml) -> Result<()>,
+    {
+        if self.sheet_rows_limit.is_some() {
+            return Err(Error::InvalidArgument(
+                "cannot structurally edit a workbook opened with sheet_rows".into(),
+            ));
+        }
+        if !self.streamed_sheets.is_empty() {
+            return Err(Error::InvalidArgument(
+                "cannot structurally edit a workbook containing streamed sheets".into(),
+            ));
+        }
+        let mut worksheet = self.worksheet_ref_by_index(sheet_idx)?.clone();
+        edit(&mut worksheet)
+    }
+
+    fn preflight_duplicate_formula_copy(&self, sheet_idx: usize, row: u32) -> Result<()> {
+        let worksheet = self.worksheet_ref_by_index(sheet_idx)?;
+        let source = worksheet
+            .sheet_data
+            .rows
+            .iter()
+            .find(|candidate| candidate.r == row)
+            .ok_or(Error::InvalidRowNumber(row))?;
+        for cell in &source.cells {
+            let Some(formula) = cell.f.as_ref().and_then(|formula| formula.value.as_deref()) else {
+                continue;
+            };
+            shift_duplicated_row_formula(formula)?;
+        }
+        Ok(())
+    }
+
+    fn take_duplicated_row_formulas(
+        &mut self,
+        sheet_idx: usize,
+        row: u32,
+    ) -> Result<Vec<Option<String>>> {
+        let ws = self.worksheet_mut_by_index(sheet_idx)?;
+        let Some(duplicated) = ws
+            .sheet_data
+            .rows
+            .iter_mut()
+            .find(|candidate| candidate.r == row)
+        else {
+            return Ok(Vec::new());
+        };
+        Ok(duplicated
+            .cells
+            .iter_mut()
+            .map(|cell| cell.f.as_mut().and_then(|formula| formula.value.take()))
+            .collect())
+    }
+
+    fn restore_duplicated_row_formulas(
+        &mut self,
+        sheet_idx: usize,
+        row: u32,
+        formulas: Vec<Option<String>>,
+    ) -> Result<()> {
+        let ws = self.worksheet_mut_by_index(sheet_idx)?;
+        let Some(duplicated) = ws
+            .sheet_data
+            .rows
+            .iter_mut()
+            .find(|candidate| candidate.r == row)
+        else {
+            return Ok(());
+        };
+        for (cell, formula) in duplicated.cells.iter_mut().zip(formulas) {
+            if let (Some(cell_formula), Some(formula)) = (&mut cell.f, formula) {
+                cell_formula.value = Some(shift_duplicated_row_formula(&formula)?);
+            }
+        }
+        Ok(())
+    }
+
     /// Apply a cell-reference shift transformation to sheet-scoped structures.
     pub(crate) fn apply_reference_shift_for_sheet<F>(
         &mut self,
@@ -509,85 +1128,230 @@ impl Workbook {
     where
         F: Fn(u32, u32) -> (u32, u32) + Copy,
     {
-        {
-            let ws = self.worksheet_mut_by_index(sheet_idx)?;
+        let target_sheet_name_lowercase = self.worksheets[sheet_idx].0.to_lowercase();
+        for owner_sheet_idx in 0..self.worksheets.len() {
+            let ws = self.worksheet_mut_by_index(owner_sheet_idx)?;
 
-            // Cell formulas.
             for row in &mut ws.sheet_data.rows {
                 for cell in &mut row.cells {
-                    if let Some(ref mut f) = cell.f {
-                        if let Some(ref mut expr) = f.value {
-                            *expr = shift_cell_references_in_text(expr, shift_cell)?;
+                    if let Some(formula) = &mut cell.f {
+                        if let Some(expr) = &mut formula.value {
+                            *expr = shift_references_for_owner(
+                                expr,
+                                owner_sheet_idx,
+                                sheet_idx,
+                                &target_sheet_name_lowercase,
+                                shift_cell,
+                            )?;
+                        }
+                        if let Some(reference) = &mut formula.reference {
+                            *reference = shift_references_for_owner(
+                                reference,
+                                owner_sheet_idx,
+                                sheet_idx,
+                                &target_sheet_name_lowercase,
+                                shift_cell,
+                            )?;
                         }
                     }
                 }
             }
 
-            // Merged ranges.
-            if let Some(ref mut merges) = ws.merge_cells {
-                for mc in &mut merges.merge_cells {
-                    mc.reference = shift_cell_references_in_text(&mc.reference, shift_cell)?;
+            if let Some(merges) = &mut ws.merge_cells {
+                for merge in &mut merges.merge_cells {
+                    merge.reference = shift_references_for_owner(
+                        &merge.reference,
+                        owner_sheet_idx,
+                        sheet_idx,
+                        &target_sheet_name_lowercase,
+                        shift_cell,
+                    )?;
                 }
-                // Invalidate the coordinate cache since references changed.
                 merges.cached_coords.clear();
             }
 
-            // Auto-filter.
-            if let Some(ref mut af) = ws.auto_filter {
-                af.reference = shift_cell_references_in_text(&af.reference, shift_cell)?;
+            if let Some(auto_filter) = &mut ws.auto_filter {
+                auto_filter.reference = shift_references_for_owner(
+                    &auto_filter.reference,
+                    owner_sheet_idx,
+                    sheet_idx,
+                    &target_sheet_name_lowercase,
+                    shift_cell,
+                )?;
             }
 
-            // Data validations.
-            if let Some(ref mut dvs) = ws.data_validations {
-                for dv in &mut dvs.data_validations {
-                    dv.sqref = shift_cell_references_in_text(&dv.sqref, shift_cell)?;
-                    if let Some(ref mut f1) = dv.formula1 {
-                        *f1 = shift_cell_references_in_text(f1, shift_cell)?;
-                    }
-                    if let Some(ref mut f2) = dv.formula2 {
-                        *f2 = shift_cell_references_in_text(f2, shift_cell)?;
-                    }
-                }
-            }
-
-            // Conditional formatting ranges/formulas.
-            for cf in &mut ws.conditional_formatting {
-                cf.sqref = shift_cell_references_in_text(&cf.sqref, shift_cell)?;
-                for rule in &mut cf.cf_rules {
-                    for f in &mut rule.formulas {
-                        *f = shift_cell_references_in_text(f, shift_cell)?;
-                    }
-                }
-            }
-
-            // Hyperlinks.
-            if let Some(ref mut hyperlinks) = ws.hyperlinks {
-                for hl in &mut hyperlinks.hyperlinks {
-                    hl.reference = shift_cell_references_in_text(&hl.reference, shift_cell)?;
-                    if let Some(ref mut loc) = hl.location {
-                        *loc = shift_cell_references_in_text(loc, shift_cell)?;
+            if let Some(validations) = &mut ws.data_validations {
+                for validation in &mut validations.data_validations {
+                    validation.sqref = shift_references_for_owner(
+                        &validation.sqref,
+                        owner_sheet_idx,
+                        sheet_idx,
+                        &target_sheet_name_lowercase,
+                        shift_cell,
+                    )?;
+                    for formula in [&mut validation.formula1, &mut validation.formula2]
+                        .into_iter()
+                        .flatten()
+                    {
+                        *formula = shift_references_for_owner(
+                            formula,
+                            owner_sheet_idx,
+                            sheet_idx,
+                            &target_sheet_name_lowercase,
+                            shift_cell,
+                        )?;
                     }
                 }
             }
 
-            // Pane/selection references.
-            if let Some(ref mut views) = ws.sheet_views {
+            for formatting in &mut ws.conditional_formatting {
+                formatting.sqref = shift_references_for_owner(
+                    &formatting.sqref,
+                    owner_sheet_idx,
+                    sheet_idx,
+                    &target_sheet_name_lowercase,
+                    shift_cell,
+                )?;
+                for rule in &mut formatting.cf_rules {
+                    for formula in &mut rule.formulas {
+                        *formula = shift_references_for_owner(
+                            formula,
+                            owner_sheet_idx,
+                            sheet_idx,
+                            &target_sheet_name_lowercase,
+                            shift_cell,
+                        )?;
+                    }
+                }
+            }
+
+            if let Some(hyperlinks) = &mut ws.hyperlinks {
+                for hyperlink in &mut hyperlinks.hyperlinks {
+                    hyperlink.reference = shift_references_for_owner(
+                        &hyperlink.reference,
+                        owner_sheet_idx,
+                        sheet_idx,
+                        &target_sheet_name_lowercase,
+                        shift_cell,
+                    )?;
+                    if let Some(location) = &mut hyperlink.location {
+                        *location = shift_references_for_owner(
+                            location,
+                            owner_sheet_idx,
+                            sheet_idx,
+                            &target_sheet_name_lowercase,
+                            shift_cell,
+                        )?;
+                    }
+                }
+            }
+
+            if let Some(views) = &mut ws.sheet_views {
                 for view in &mut views.sheet_views {
-                    if let Some(ref mut pane) = view.pane {
-                        if let Some(ref mut top_left) = pane.top_left_cell {
-                            *top_left = shift_cell_references_in_text(top_left, shift_cell)?;
+                    if let Some(pane) = &mut view.pane {
+                        if let Some(top_left) = &mut pane.top_left_cell {
+                            *top_left = shift_references_for_owner(
+                                top_left,
+                                owner_sheet_idx,
+                                sheet_idx,
+                                &target_sheet_name_lowercase,
+                                shift_cell,
+                            )?;
                         }
                     }
-                    for sel in &mut view.selection {
-                        if let Some(ref mut ac) = sel.active_cell {
-                            *ac = shift_cell_references_in_text(ac, shift_cell)?;
-                        }
-                        if let Some(ref mut sqref) = sel.sqref {
-                            *sqref = shift_cell_references_in_text(sqref, shift_cell)?;
+                    for selection in &mut view.selection {
+                        for reference in [&mut selection.active_cell, &mut selection.sqref]
+                            .into_iter()
+                            .flatten()
+                        {
+                            *reference = shift_references_for_owner(
+                                reference,
+                                owner_sheet_idx,
+                                sheet_idx,
+                                &target_sheet_name_lowercase,
+                                shift_cell,
+                            )?;
                         }
                     }
                 }
             }
+        }
+
+        if let Some(defined_names) = &mut self.workbook_xml.defined_names {
+            for defined_name in &mut defined_names.defined_names {
+                let owner = defined_name.local_sheet_id.map(|id| id as usize);
+                defined_name.value =
+                    crate::cell_ref_shift::shift_cell_references_with_abs_and_scope(
+                        &defined_name.value,
+                        owner == Some(sheet_idx),
+                        |name| sheet_name_matches(name, &target_sheet_name_lowercase),
+                        |col, row, _, _| shift_cell(col, row),
+                    )?;
+            }
+        }
+
+        for (owner_sheet_idx, sparklines) in self.sheet_sparklines.iter_mut().enumerate() {
+            for sparkline in sparklines {
+                sparkline.data_range = shift_references_for_owner(
+                    &sparkline.data_range,
+                    owner_sheet_idx,
+                    sheet_idx,
+                    &target_sheet_name_lowercase,
+                    shift_cell,
+                )?;
+                if owner_sheet_idx == sheet_idx {
+                    sparkline.location = shift_references_for_owner(
+                        &sparkline.location,
+                        owner_sheet_idx,
+                        sheet_idx,
+                        &target_sheet_name_lowercase,
+                        shift_cell,
+                    )?;
+                }
+            }
+        }
+
+        let mut shifted_table = false;
+        for (_, table, owner_sheet_idx) in &mut self.tables {
+            if *owner_sheet_idx != sheet_idx {
+                continue;
+            }
+            shifted_table = true;
+            table.reference = shift_references_for_owner(
+                &table.reference,
+                sheet_idx,
+                sheet_idx,
+                &target_sheet_name_lowercase,
+                shift_cell,
+            )?;
+            if let Some(auto_filter) = &mut table.auto_filter {
+                auto_filter.reference = shift_references_for_owner(
+                    &auto_filter.reference,
+                    sheet_idx,
+                    sheet_idx,
+                    &target_sheet_name_lowercase,
+                    shift_cell,
+                )?;
+            }
+        }
+        if shifted_table {
+            self.deferred_parts
+                .mark_dirty(crate::workbook::aux::AuxCategory::Tables);
+        }
+
+        for chart_idx in 0..self.charts.len() {
+            let owner_sheet_idx = self.chart_owner_sheet_idx(&self.charts[chart_idx].0);
+            let chart = &mut self.charts[chart_idx].1;
+            visit_chart_references(chart, |formula| {
+                *formula = shift_references_for_owner(
+                    formula,
+                    owner_sheet_idx,
+                    sheet_idx,
+                    &target_sheet_name_lowercase,
+                    shift_cell,
+                )?;
+                Ok(())
+            })?;
         }
 
         // Drawing anchors attached to this sheet.
@@ -872,6 +1636,21 @@ mod tests {
     }
 
     #[test]
+    fn test_zero_count_structural_edits_leave_lazy_sheet_clean() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("zero_count_structural_edit.xlsx");
+        Workbook::new().save(&path).unwrap();
+
+        let mut wb = Workbook::open(&path).unwrap();
+        assert!(!wb.is_sheet_dirty(0));
+
+        wb.insert_rows("Sheet1", 1, 0).unwrap();
+        wb.insert_cols("Sheet1", "A", 0).unwrap();
+
+        assert!(!wb.is_sheet_dirty(0));
+    }
+
+    #[test]
     fn test_workbook_insert_rows_updates_formula_and_ranges() {
         let mut wb = Workbook::new();
         wb.set_cell_value(
@@ -907,6 +1686,253 @@ mod tests {
 
         let ws = wb.worksheet_ref("Sheet1").unwrap();
         assert_eq!(ws.auto_filter.as_ref().unwrap().reference, "A3:B11");
+    }
+
+    #[test]
+    fn test_structural_edit_updates_target_references_workbook_wide() {
+        let mut wb = Workbook::new();
+        wb.new_sheet("Other").unwrap();
+        wb.new_sheet("다른 시트").unwrap();
+        wb.set_cell_formula(
+            "Other",
+            "C1",
+            "sheet1!A2+'다른 시트'!A2+A2+\"A2\"+LOG10(A2)",
+        )
+        .unwrap();
+        wb.set_defined_name("BookRange", "Sheet1!$A$2:$A$3", None, None)
+            .unwrap();
+        wb.set_defined_name("LocalRange", "$A$2:$A$3", Some("Sheet1"), None)
+            .unwrap();
+        wb.set_defined_name("OtherRange", "$A$2:$A$3+Sheet1!A2", Some("Other"), None)
+            .unwrap();
+        wb.add_sparkline(
+            "Other",
+            &crate::sparkline::SparklineConfig::new("Sheet1!A2:A3", "B2"),
+        )
+        .unwrap();
+        wb.add_table(
+            "Sheet1",
+            &crate::table::TableConfig {
+                name: "ShiftedTable".into(),
+                display_name: "ShiftedTable".into(),
+                range: "A2:B4".into(),
+                columns: vec![
+                    crate::table::TableColumn {
+                        name: "First".into(),
+                        totals_row_function: None,
+                        totals_row_label: None,
+                    },
+                    crate::table::TableColumn {
+                        name: "Second".into(),
+                        totals_row_function: None,
+                        totals_row_label: None,
+                    },
+                ],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        wb.set_cell_formula("Sheet1", "A2", "A2").unwrap();
+
+        {
+            let ws = wb.worksheet_mut("Sheet1").unwrap();
+            let formula = ws.sheet_data.rows[0].cells[0].f.as_mut().unwrap();
+            formula.t = Some("shared".into());
+            formula.reference = Some("A2:B2".into());
+            formula.si = Some(0);
+        }
+
+        wb.insert_rows("Sheet1", 2, 1).unwrap();
+
+        match wb.get_cell_value("Other", "C1").unwrap() {
+            CellValue::Formula { expr, .. } => {
+                assert_eq!(expr, "sheet1!A3+'다른 시트'!A2+A2+\"A2\"+LOG10(A2)");
+            }
+            value => panic!("expected formula, got {value:?}"),
+        }
+        assert_eq!(
+            wb.get_defined_name("BookRange", None)
+                .unwrap()
+                .unwrap()
+                .value,
+            "Sheet1!$A$3:$A$4"
+        );
+        assert_eq!(
+            wb.get_defined_name("LocalRange", Some("Sheet1"))
+                .unwrap()
+                .unwrap()
+                .value,
+            "$A$3:$A$4"
+        );
+        assert_eq!(
+            wb.get_defined_name("OtherRange", Some("Other"))
+                .unwrap()
+                .unwrap()
+                .value,
+            "$A$2:$A$3+Sheet1!A3"
+        );
+        assert_eq!(
+            wb.get_sparklines("Other").unwrap()[0].data_range,
+            "Sheet1!A3:A4"
+        );
+        assert_eq!(wb.get_sparklines("Other").unwrap()[0].location, "B2");
+        let shared = wb.worksheet_ref("Sheet1").unwrap().sheet_data.rows[0].cells[0]
+            .f
+            .as_ref()
+            .unwrap();
+        assert_eq!(shared.reference.as_deref(), Some("A3:B3"));
+        assert_eq!(wb.get_tables("Sheet1").unwrap()[0].range, "A3:B5");
+        assert_eq!(
+            wb.tables[0].1.auto_filter.as_ref().unwrap().reference,
+            "A3:B5"
+        );
+    }
+
+    #[test]
+    fn test_structural_edit_rejects_streamed_workbook_before_mutation() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", "unchanged").unwrap();
+        let writer = wb.new_stream_writer("Streamed").unwrap();
+        wb.apply_stream_writer(writer).unwrap();
+
+        let error = wb.insert_rows("Sheet1", 1, 1).unwrap_err();
+        assert!(matches!(error, Error::InvalidArgument(_)));
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("unchanged".into())
+        );
+    }
+
+    #[test]
+    fn test_structural_edit_rejects_sheet_rows_limit_before_mutation() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", "unchanged").unwrap();
+        wb.sheet_rows_limit = Some(1);
+
+        let error = wb.insert_rows("Sheet1", 1, 1).unwrap_err();
+        assert!(matches!(error, Error::InvalidArgument(_)));
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("unchanged".into())
+        );
+    }
+
+    #[test]
+    fn test_structural_edit_updates_typed_chart_series_references() {
+        let mut wb = Workbook::new();
+        wb.add_chart(
+            "Sheet1",
+            "D1",
+            "K10",
+            &ChartConfig {
+                chart_type: crate::chart::ChartType::Col,
+                title: None,
+                series: vec![crate::chart::ChartSeries {
+                    name: "sheet1!$A$2".into(),
+                    categories: "Sheet1!$A$2:$A$4".into(),
+                    values: "Sheet1!$B$2:$B$4".into(),
+                    x_values: None,
+                    bubble_sizes: None,
+                }],
+                show_legend: false,
+                view_3d: None,
+            },
+        )
+        .unwrap();
+
+        wb.insert_rows("Sheet1", 2, 1).unwrap();
+
+        let series = &wb.charts[0]
+            .1
+            .chart
+            .plot_area
+            .bar_chart
+            .as_ref()
+            .unwrap()
+            .series[0];
+        assert_eq!(
+            series.tx.as_ref().unwrap().str_ref.as_ref().unwrap().f,
+            "sheet1!$A$3"
+        );
+        assert_eq!(
+            series.cat.as_ref().unwrap().str_ref.as_ref().unwrap().f,
+            "Sheet1!$A$3:$A$5"
+        );
+        assert_eq!(
+            series.val.as_ref().unwrap().num_ref.as_ref().unwrap().f,
+            "Sheet1!$B$3:$B$5"
+        );
+    }
+
+    #[test]
+    fn test_structural_edit_rejects_unparseable_deferred_chart_without_mutation() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lazy_chart.xlsx");
+        let mut wb = Workbook::new();
+        wb.add_chart(
+            "Sheet1",
+            "D1",
+            "K10",
+            &ChartConfig {
+                chart_type: crate::chart::ChartType::Col,
+                title: None,
+                series: vec![crate::chart::ChartSeries {
+                    name: "Sheet1!$A$2".into(),
+                    categories: "Sheet1!$A$2:$A$4".into(),
+                    values: "Sheet1!$B$2:$B$4".into(),
+                    x_values: None,
+                    bubble_sizes: None,
+                }],
+                show_legend: false,
+                view_3d: None,
+            },
+        )
+        .unwrap();
+        wb.set_cell_value("Sheet1", "A1", "unchanged").unwrap();
+        wb.save(&path).unwrap();
+
+        let mut lazy = Workbook::open(&path).unwrap();
+        let error = lazy.insert_rows("Sheet1", 2, 1).unwrap_err();
+        assert!(matches!(error, Error::XmlDeserialize(_)));
+        assert!(lazy.raw_charts.is_empty());
+        assert!(lazy.charts.is_empty());
+        assert!(lazy
+            .deferred_parts
+            .has_category(crate::workbook::aux::AuxCategory::Charts));
+        assert_eq!(
+            lazy.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("unchanged".into())
+        );
+        assert!(!lazy.is_sheet_dirty(0));
+        lazy.save(&path).unwrap();
+        let reopened = Workbook::open(&path).unwrap();
+        assert_eq!(
+            reopened.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("unchanged".into())
+        );
+    }
+
+    #[test]
+    fn test_structural_edit_reference_overflow_leaves_workbook_unchanged() {
+        let mut wb = Workbook::new();
+        wb.set_cell_formula("Sheet1", "A1", "XFD1").unwrap();
+        wb.set_auto_filter("Sheet1", "A1:XFD1").unwrap();
+
+        let error = wb.insert_cols("Sheet1", "A", 1).unwrap_err();
+        assert!(matches!(error, Error::InvalidColumnNumber(_)));
+        match wb.get_cell_value("Sheet1", "A1").unwrap() {
+            CellValue::Formula { expr, .. } => assert_eq!(expr, "XFD1"),
+            value => panic!("expected formula, got {value:?}"),
+        }
+        assert_eq!(
+            wb.worksheet_ref("Sheet1")
+                .unwrap()
+                .auto_filter
+                .as_ref()
+                .unwrap()
+                .reference,
+            "A1:XFD1"
+        );
     }
 
     #[test]
@@ -956,6 +1982,63 @@ mod tests {
             wb.get_cell_value("Sheet1", "A2").unwrap(),
             CellValue::String("original".to_string())
         );
+    }
+
+    #[test]
+    fn test_duplicate_row_adjusts_only_relative_formula_rows() {
+        let mut wb = Workbook::new();
+        wb.new_sheet("Other").unwrap();
+        wb.set_cell_formula("Sheet1", "B1", "A1+$A$1+Other!A1+Other!A2+Other!$A$1")
+            .unwrap();
+
+        wb.duplicate_row("Sheet1", 1).unwrap();
+
+        match wb.get_cell_value("Sheet1", "B2").unwrap() {
+            CellValue::Formula { expr, .. } => {
+                assert_eq!(expr, "A2+$A$1+Other!A2+Other!A3+Other!$A$1");
+            }
+            value => panic!("expected formula, got {value:?}"),
+        }
+    }
+
+    #[test]
+    fn test_duplicate_row_shifts_existing_merge_and_hyperlink_once() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", "source").unwrap();
+        wb.merge_cells("Sheet1", "C3", "D3").unwrap();
+        wb.set_cell_hyperlink(
+            "Sheet1",
+            "A3",
+            crate::hyperlink::HyperlinkType::Internal("Sheet1!B3".into()),
+            None,
+            None,
+        )
+        .unwrap();
+
+        wb.duplicate_row("Sheet1", 1).unwrap();
+
+        assert_eq!(wb.get_merge_cells("Sheet1").unwrap(), vec!["C4:D4"]);
+        let hyperlink = wb.get_cell_hyperlink("Sheet1", "A4").unwrap().unwrap();
+        assert_eq!(
+            hyperlink.link_type,
+            crate::hyperlink::HyperlinkType::Internal("Sheet1!B4".into())
+        );
+    }
+
+    #[test]
+    fn test_duplicate_row_formula_overflow_leaves_workbook_unchanged() {
+        let mut wb = Workbook::new();
+        wb.new_sheet("Other").unwrap();
+        wb.set_cell_formula("Sheet1", "A1", "Other!A1048576")
+            .unwrap();
+
+        let error = wb.duplicate_row("Sheet1", 1).unwrap_err();
+        assert!(matches!(error, Error::InvalidRowNumber(1_048_577)));
+        match wb.get_cell_value("Sheet1", "A1").unwrap() {
+            CellValue::Formula { expr, .. } => assert_eq!(expr, "Other!A1048576"),
+            value => panic!("expected formula, got {value:?}"),
+        }
+        assert_eq!(wb.get_cell_value("Sheet1", "A2").unwrap(), CellValue::Empty);
     }
 
     #[test]
