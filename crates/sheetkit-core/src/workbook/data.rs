@@ -351,7 +351,9 @@ impl Workbook {
     /// computed result back into each cell. Uses a dependency graph and
     /// topological sort so formulas are evaluated after their dependencies.
     pub fn calculate_all(&mut self) -> Result<()> {
-        use crate::formula::eval::{build_dependency_graph, topological_sort, CellCoord};
+        use crate::formula::eval::{
+            build_dependency_graph_from_parsed, topological_sort, CellCoord,
+        };
 
         let sheet_names: Vec<String> = self.sheet_names().iter().map(|s| s.to_string()).collect();
 
@@ -365,16 +367,15 @@ impl Workbook {
                     if let Some(ref f) = cell.f {
                         let formula_str = f.value.clone().unwrap_or_default();
                         if !formula_str.is_empty() {
-                            if let Ok((c, r)) = cell_name_to_coordinates(cell.r.as_str()) {
-                                formula_cells.push((
-                                    CellCoord {
-                                        sheet: sn.clone(),
-                                        col: c,
-                                        row: r,
-                                    },
-                                    formula_str,
-                                ));
-                            }
+                            let (c, r) = cell_name_to_coordinates(cell.r.as_str())?;
+                            formula_cells.push((
+                                CellCoord {
+                                    sheet: sn.clone(),
+                                    col: c,
+                                    row: r,
+                                },
+                                formula_str,
+                            ));
                         }
                     }
                 }
@@ -385,13 +386,35 @@ impl Workbook {
             return Ok(());
         }
 
-        // Build dependency graph and determine evaluation order.
-        let deps = build_dependency_graph(&formula_cells)?;
-        let coords: Vec<CellCoord> = formula_cells.iter().map(|(c, _)| c.clone()).collect();
-        let eval_order = topological_sort(&coords, &deps)?;
+        // Parse each formula once. Parse failures are formula-level errors, so
+        // retain them for cached error results while ordering valid formulas.
+        let mut parsed_cells = Vec::new();
+        let mut results = Vec::new();
+        for (coord, formula_str) in formula_cells {
+            match crate::formula::parser::parse_formula(&formula_str) {
+                Ok(expr) => parsed_cells.push((coord, formula_str, expr)),
+                Err(_) => results.push((coord, CellValue::Error("#VALUE!".to_string()))),
+            }
+        }
 
-        // Build a lookup from coord to formula string.
-        let formula_map: HashMap<CellCoord, String> = formula_cells.into_iter().collect();
+        // Build the graph only from valid expressions. Invalid formulas are
+        // written to the progressive snapshot before dependent expressions run.
+        let parsed_coords: Vec<CellCoord> = parsed_cells
+            .iter()
+            .map(|(coord, _, _)| coord.clone())
+            .collect();
+        let graph_cells: Vec<(CellCoord, crate::formula::ast::Expr)> = parsed_cells
+            .iter()
+            .map(|(coord, _, expr)| (coord.clone(), expr.clone()))
+            .collect();
+        let deps = build_dependency_graph_from_parsed(&graph_cells);
+        let eval_order = topological_sort(&parsed_coords, &deps)?;
+
+        // Build a lookup from coord to its already-parsed formula expression.
+        let formula_map: HashMap<CellCoord, crate::formula::ast::Expr> = parsed_cells
+            .into_iter()
+            .map(|(coord, _, expr)| (coord, expr))
+            .collect();
 
         // Build a snapshot of all cell data.
         let first_sheet = sheet_names.first().cloned().unwrap_or_default();
@@ -399,15 +422,20 @@ impl Workbook {
 
         // Evaluate in dependency order, updating the snapshot progressively
         // so later formulas see already-computed results.
-        let mut results: Vec<(CellCoord, String, CellValue)> = Vec::new();
+        for (coord, result) in &results {
+            snapshot.set_cell(&coord.sheet, coord.col, coord.row, result.clone());
+        }
+
         for coord in &eval_order {
-            if let Some(formula_str) = formula_map.get(coord) {
+            if let Some(parsed) = formula_map.get(coord) {
                 snapshot.set_current_sheet(&coord.sheet);
-                let parsed = crate::formula::parser::parse_formula(formula_str)?;
                 let mut evaluator = crate::formula::eval::Evaluator::new(&snapshot);
-                let result = evaluator.eval_expr(&parsed)?;
+                let result = match evaluator.eval_expr(parsed) {
+                    Ok(result) => result,
+                    Err(error) => formula_error_to_cached_value(&error).ok_or(error)?,
+                };
                 snapshot.set_cell(&coord.sheet, coord.col, coord.row, result.clone());
-                results.push((coord.clone(), formula_str.clone(), result));
+                results.push((coord.clone(), result));
             }
         }
 
@@ -419,35 +447,49 @@ impl Workbook {
             .map(|(idx, name)| (name.clone(), idx))
             .collect();
 
-        for (coord, _formula_str, result) in results {
+        for (coord, result) in results {
             let cell_ref = crate::utils::cell_ref::coordinates_to_cell_name(coord.col, coord.row)?;
-            let Some(&sheet_idx) = sheet_name_to_idx.get(&coord.sheet) else {
-                continue;
+            let sheet_idx = *sheet_name_to_idx.get(&coord.sheet).ok_or_else(|| {
+                Error::Internal(format!("formula result sheet '{}' is missing", coord.sheet))
+            })?;
+            let ws = self.worksheets[sheet_idx].1.get_mut().ok_or_else(|| {
+                Error::Internal(format!(
+                    "formula result sheet '{}' is not hydrated",
+                    coord.sheet
+                ))
+            })?;
+            let row = ws
+                .sheet_data
+                .rows
+                .iter_mut()
+                .find(|r| r.r == coord.row)
+                .ok_or_else(|| {
+                    Error::Internal(format!("formula result row {} is missing", coord.row))
+                })?;
+            let cell = row
+                .cells
+                .iter_mut()
+                .find(|c| c.r == *cell_ref)
+                .ok_or_else(|| {
+                    Error::Internal(format!("formula result cell {cell_ref} is missing"))
+                })?;
+            let (new_v, new_t) = match &result {
+                CellValue::Number(n) => (Some(n.to_string()), CellTypeTag::None),
+                CellValue::String(s) => (Some(s.clone()), CellTypeTag::FormulaString),
+                CellValue::Bool(b) => (
+                    Some(if *b { "1".to_string() } else { "0".to_string() }),
+                    CellTypeTag::Boolean,
+                ),
+                CellValue::Error(e) => (Some(e.clone()), CellTypeTag::Error),
+                CellValue::Date(n) => (Some(n.to_string()), CellTypeTag::None),
+                _ => continue,
             };
-            let Some(ws) = self.worksheets[sheet_idx].1.get_mut() else {
-                continue;
-            };
-            if let Some(row) = ws.sheet_data.rows.iter_mut().find(|r| r.r == coord.row) {
-                if let Some(cell) = row.cells.iter_mut().find(|c| c.r == *cell_ref) {
-                    let (new_v, new_t) = match &result {
-                        CellValue::Number(n) => (Some(n.to_string()), CellTypeTag::None),
-                        CellValue::String(s) => (Some(s.clone()), CellTypeTag::FormulaString),
-                        CellValue::Bool(b) => (
-                            Some(if *b { "1".to_string() } else { "0".to_string() }),
-                            CellTypeTag::Boolean,
-                        ),
-                        CellValue::Error(e) => (Some(e.clone()), CellTypeTag::Error),
-                        CellValue::Date(n) => (Some(n.to_string()), CellTypeTag::None),
-                        _ => continue,
-                    };
 
-                    let changed = cell.v != new_v || cell.t != new_t;
-                    if changed {
-                        cell.v = new_v;
-                        cell.t = new_t;
-                        self.mark_sheet_dirty(sheet_idx);
-                    }
-                }
+            let changed = cell.v != new_v || cell.t != new_t;
+            if changed {
+                cell.v = new_v;
+                cell.t = new_t;
+                self.mark_sheet_dirty(sheet_idx);
             }
         }
 
@@ -1084,6 +1126,23 @@ impl Workbook {
     }
 }
 
+fn formula_error_to_cached_value(error: &Error) -> Option<CellValue> {
+    match error {
+        Error::UnknownFunction { .. } => Some(CellValue::Error("#NAME?".to_string())),
+        Error::WrongArgCount { .. } => Some(CellValue::Error("#VALUE!".to_string())),
+        Error::FormulaError(message) => {
+            let code = match message.as_str() {
+                "#DIV/0!" | "#N/A" | "#NAME?" | "#NULL!" | "#NUM!" | "#REF!" | "#VALUE!" => {
+                    message.as_str()
+                }
+                _ => "#VALUE!",
+            };
+            Some(CellValue::Error(code.to_string()))
+        }
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1680,6 +1739,48 @@ mod tests {
             }
             _ => panic!("A3 should be a formula cell"),
         }
+    }
+
+    #[test]
+    fn test_calculate_all_isolates_formula_errors() {
+        let mut wb = Workbook::new();
+        for (cell, expr) in [
+            ("A1", "1+1"),
+            ("B1", "1+\"abc\""),
+            ("C1", "NONEXISTENT(1)"),
+            ("D1", "SUM(A:A)"),
+            ("E1", "A1+3"),
+            ("F1", "B1+1"),
+            ("G1", "#N/A+1"),
+        ] {
+            wb.set_cell_value(
+                "Sheet1",
+                cell,
+                CellValue::Formula {
+                    expr: expr.to_string(),
+                    result: None,
+                },
+            )
+            .unwrap();
+        }
+
+        wb.calculate_all().unwrap();
+
+        let cached = |cell: &str| match wb.get_cell_value("Sheet1", cell).unwrap() {
+            CellValue::Formula {
+                result: Some(result),
+                ..
+            } => *result,
+            value => panic!("{cell} should have a cached formula result, got {value:?}"),
+        };
+
+        assert_eq!(cached("A1"), CellValue::Number(2.0));
+        assert_eq!(cached("B1"), CellValue::Error("#VALUE!".to_string()));
+        assert_eq!(cached("C1"), CellValue::Error("#NAME?".to_string()));
+        assert_eq!(cached("D1"), CellValue::Error("#VALUE!".to_string()));
+        assert_eq!(cached("E1"), CellValue::Number(5.0));
+        assert_eq!(cached("F1"), CellValue::Error("#VALUE!".to_string()));
+        assert_eq!(cached("G1"), CellValue::Error("#N/A".to_string()));
     }
 
     #[test]

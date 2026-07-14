@@ -14,10 +14,10 @@
 use nom::{
     branch::alt,
     bytes::complete::{tag, tag_no_case, take_while1},
-    character::complete::{alpha1, char, multispace0},
+    character::complete::{alpha1, char, multispace0, one_of},
     combinator::{map, opt, recognize, value},
-    multi::{many0, separated_list0},
-    sequence::{delimited, pair, preceded, terminated},
+    multi::many0,
+    sequence::{delimited, pair, preceded, terminated, tuple},
     IResult,
 };
 
@@ -158,18 +158,25 @@ fn parse_primary(input: &str) -> IResult<&str, Expr> {
         parse_paren_expr,
         parse_string_literal,
         parse_error_literal,
-        parse_bool_literal,
         parse_function_call,
+        parse_bool_literal,
         parse_cell_ref_or_range,
         parse_number_literal,
     ))(input)
 }
 
-/// Parse a numeric literal (integer or decimal).
+/// Parse a numeric literal (integer, decimal, or scientific notation).
 fn parse_number_literal(input: &str) -> IResult<&str, Expr> {
     let (input, num_str) = recognize(pair(
         take_while1(|c: char| c.is_ascii_digit()),
-        opt(pair(tag("."), take_while1(|c: char| c.is_ascii_digit()))),
+        pair(
+            opt(pair(tag("."), take_while1(|c: char| c.is_ascii_digit()))),
+            opt(tuple((
+                one_of("eE"),
+                opt(one_of("+-")),
+                take_while1(|c: char| c.is_ascii_digit()),
+            ))),
+        ),
     ))(input)?;
     let n: f64 = num_str.parse().map_err(|_| {
         nom::Err::Error(nom::error::Error::new(input, nom::error::ErrorKind::Float))
@@ -360,10 +367,48 @@ fn parse_function_call(input: &str) -> IResult<&str, Expr> {
     ))(input)?;
     // Must be followed by '('
     let (input, _) = preceded(multispace0, char('('))(input)?;
-    let (input, _) = multispace0(input)?;
-    // Parse arguments separated by commas
-    let (input, args) = separated_list0(ws(char(',')), parse_expr)(input)?;
-    let (input, _) = preceded(multispace0, char(')'))(input)?;
+    let (mut input, _) = multispace0(input)?;
+    if let Ok((remaining, _)) = char::<&str, nom::error::Error<&str>>(')')(input) {
+        return Ok((
+            remaining,
+            Expr::Function {
+                name: name.to_uppercase(),
+                args: vec![],
+            },
+        ));
+    }
+
+    let mut args = Vec::new();
+    let mut expecting_arg = true;
+    loop {
+        input = input.trim_start();
+        if let Ok((remaining, _)) = char::<&str, nom::error::Error<&str>>(')')(input) {
+            if expecting_arg {
+                args.push(Expr::Missing);
+            }
+            input = remaining;
+            break;
+        }
+
+        if let Ok((remaining, _)) = char::<&str, nom::error::Error<&str>>(',')(input) {
+            args.push(Expr::Missing);
+            input = remaining;
+            expecting_arg = true;
+            continue;
+        }
+
+        let (remaining, arg) = parse_expr(input)?;
+        args.push(arg);
+        input = remaining.trim_start();
+        if let Ok((remaining, _)) = char::<&str, nom::error::Error<&str>>(',')(input) {
+            input = remaining;
+            expecting_arg = true;
+        } else {
+            let (remaining, _) = char(')')(input)?;
+            input = remaining;
+            break;
+        }
+    }
     Ok((
         input,
         Expr::Function {
@@ -407,6 +452,25 @@ mod tests {
     fn test_parse_decimal() {
         let result = parse_formula("3.15").unwrap();
         assert_eq!(result, Expr::Number(3.15));
+    }
+
+    #[test]
+    fn test_parse_scientific_number_literals() {
+        for (formula, expected) in [
+            ("1E5", 100_000.0),
+            ("1e5", 100_000.0),
+            ("1.5E+2", 150.0),
+            ("2E-3", 0.002),
+        ] {
+            assert_eq!(parse_formula(formula).unwrap(), Expr::Number(expected));
+        }
+    }
+
+    #[test]
+    fn test_reject_incomplete_scientific_number_literals() {
+        for formula in ["1E", "1E+", "1E-"] {
+            assert!(parse_formula(formula).is_err(), "{formula} should fail");
+        }
     }
 
     #[test]
@@ -627,6 +691,24 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_boolean_function_no_args() {
+        assert_eq!(
+            parse_formula("TRUE()").unwrap(),
+            Expr::Function {
+                name: "TRUE".to_string(),
+                args: vec![],
+            }
+        );
+        assert_eq!(
+            parse_formula("FALSE()").unwrap(),
+            Expr::Function {
+                name: "FALSE".to_string(),
+                args: vec![],
+            }
+        );
+    }
+
+    #[test]
     fn test_parse_function_one_arg() {
         let result = parse_formula("ABS(-5)").unwrap();
         assert_eq!(
@@ -651,6 +733,52 @@ mod tests {
                 args: vec![Expr::Number(1.0), Expr::Number(2.0), Expr::Number(3.0),],
             }
         );
+    }
+
+    #[test]
+    fn test_parse_omitted_function_args() {
+        for (formula, args) in [
+            (
+                "IF(A1,,1)",
+                vec![
+                    Expr::CellRef(CellReference {
+                        col: "A".to_string(),
+                        row: 1,
+                        abs_col: false,
+                        abs_row: false,
+                        sheet: None,
+                    }),
+                    Expr::Missing,
+                    Expr::Number(1.0),
+                ],
+            ),
+            (
+                "IF(,1,2)",
+                vec![Expr::Missing, Expr::Number(1.0), Expr::Number(2.0)],
+            ),
+            (
+                "IF(A1,1,)",
+                vec![
+                    Expr::CellRef(CellReference {
+                        col: "A".to_string(),
+                        row: 1,
+                        abs_col: false,
+                        abs_row: false,
+                        sheet: None,
+                    }),
+                    Expr::Number(1.0),
+                    Expr::Missing,
+                ],
+            ),
+        ] {
+            assert_eq!(
+                parse_formula(formula).unwrap(),
+                Expr::Function {
+                    name: "IF".to_string(),
+                    args,
+                }
+            );
+        }
     }
 
     #[test]

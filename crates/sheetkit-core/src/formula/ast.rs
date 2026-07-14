@@ -11,6 +11,8 @@ pub enum Expr {
     Bool(bool),
     /// Error literal (#N/A, #VALUE!, #REF!, #DIV/0!, #NUM!, #NAME?, #NULL!)
     Error(String),
+    /// Omitted function argument (e.g., the second argument in `IF(A1,,1)`)
+    Missing,
     /// Cell reference (e.g., A1, $B$2)
     CellRef(CellReference),
     /// Range reference (e.g., A1:B10)

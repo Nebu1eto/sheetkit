@@ -189,6 +189,7 @@ impl<'a> Evaluator<'a> {
             Expr::String(s) => Ok(CellValue::String(s.clone())),
             Expr::Bool(b) => Ok(CellValue::Bool(*b)),
             Expr::Error(e) => Ok(CellValue::Error(e.clone())),
+            Expr::Missing => Ok(CellValue::Empty),
             Expr::CellRef(cell_ref) => self.eval_cell_ref(cell_ref),
             Expr::Range { start, end } => {
                 // When a range appears in a scalar context, return the first cell.
@@ -469,13 +470,26 @@ pub struct CellCoord {
 pub fn build_dependency_graph(
     formula_cells: &[(CellCoord, String)],
 ) -> Result<HashMap<CellCoord, Vec<CellCoord>>> {
+    let parsed_cells = formula_cells
+        .iter()
+        .map(|(coord, formula_str)| {
+            crate::formula::parser::parse_formula(formula_str).map(|expr| (coord.clone(), expr))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(build_dependency_graph_from_parsed(&parsed_cells))
+}
+
+/// Build a dependency graph from formula cells that have already been parsed.
+/// Returns a map from each formula cell to the cells it depends on.
+pub fn build_dependency_graph_from_parsed(
+    formula_cells: &[(CellCoord, Expr)],
+) -> HashMap<CellCoord, Vec<CellCoord>> {
     let mut deps: HashMap<CellCoord, Vec<CellCoord>> = HashMap::new();
-    for (coord, formula_str) in formula_cells {
-        let expr = crate::formula::parser::parse_formula(formula_str)?;
-        let refs = extract_cell_refs(&expr, &coord.sheet);
+    for (coord, expr) in formula_cells {
+        let refs = extract_cell_refs(expr, &coord.sheet);
         deps.insert(coord.clone(), refs);
     }
-    Ok(deps)
+    deps
 }
 
 /// Extract all cell references from a parsed expression.
@@ -650,6 +664,13 @@ mod tests {
         let snap = make_snapshot();
         let result = evaluate(&Expr::Error("#N/A".to_string()), &snap).unwrap();
         assert_eq!(result, CellValue::Error("#N/A".to_string()));
+    }
+
+    #[test]
+    fn eval_missing_argument_as_empty() {
+        let snap = make_snapshot();
+        let expr = parse_formula("IF(TRUE,,1)").unwrap();
+        assert_eq!(evaluate(&expr, &snap).unwrap(), CellValue::Empty);
     }
 
     // -- Binary operations --
