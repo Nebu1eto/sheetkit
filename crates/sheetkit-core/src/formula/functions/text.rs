@@ -27,12 +27,15 @@ pub fn fn_find(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     } else {
         1
     };
-    if start_num < 1 || start_num > within_text.len() + 1 {
+    let char_count = within_text.chars().count();
+    if start_num < 1 || start_num > char_count + 1 {
         return Ok(CellValue::Error("#VALUE!".to_string()));
     }
-    let search_in = &within_text[(start_num - 1)..];
+    let search_in = &within_text[character_position_to_byte_offset(&within_text, start_num)..];
     match search_in.find(&find_text) {
-        Some(pos) => Ok(CellValue::Number((pos + start_num) as f64)),
+        Some(pos) => Ok(CellValue::Number(
+            (start_num + search_in[..pos].chars().count()) as f64,
+        )),
         None => Ok(CellValue::Error("#VALUE!".to_string())),
     }
 }
@@ -47,24 +50,37 @@ pub fn fn_search(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     } else {
         1
     };
-    if start_num < 1 || start_num > within_text.len() + 1 {
+    let char_count = within_text.chars().count();
+    if start_num < 1 || start_num > char_count + 1 {
         return Ok(CellValue::Error("#VALUE!".to_string()));
     }
-    let search_in = &within_text[(start_num - 1)..];
+    let search_in = &within_text[character_position_to_byte_offset(&within_text, start_num)..];
     if find_text.contains('*') || find_text.contains('?') {
-        for i in 0..=search_in.len() {
-            let substring = &search_in[i..];
+        let positions = search_in
+            .char_indices()
+            .map(|(byte_offset, _)| byte_offset)
+            .chain(std::iter::once(search_in.len()));
+        for (char_offset, byte_offset) in positions.enumerate() {
+            let substring = &search_in[byte_offset..];
             if wildcard_match_prefix(&find_text, substring) {
-                return Ok(CellValue::Number((i + start_num) as f64));
+                return Ok(CellValue::Number((char_offset + start_num) as f64));
             }
         }
         Ok(CellValue::Error("#VALUE!".to_string()))
     } else {
         match search_in.find(&find_text) {
-            Some(pos) => Ok(CellValue::Number((pos + start_num) as f64)),
+            Some(pos) => Ok(CellValue::Number(
+                (start_num + search_in[..pos].chars().count()) as f64,
+            )),
             None => Ok(CellValue::Error("#VALUE!".to_string())),
         }
     }
+}
+
+fn character_position_to_byte_offset(text: &str, position: usize) -> usize {
+    text.char_indices()
+        .nth(position - 1)
+        .map_or(text.len(), |(byte_offset, _)| byte_offset)
 }
 
 /// Wildcard match where the pattern must be fully consumed but the text may have trailing chars.
@@ -161,6 +177,14 @@ pub fn fn_rept(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("REPT", args, 2, 2)?;
     let text = coerce_to_string(&ctx.eval_expr(&args[0])?);
     let times = coerce_to_number(&ctx.eval_expr(&args[1])?)? as usize;
+    if text
+        .chars()
+        .count()
+        .checked_mul(times)
+        .is_none_or(|length| length > 32_767)
+    {
+        return Ok(CellValue::Error("#VALUE!".to_string()));
+    }
     Ok(CellValue::String(text.repeat(times)))
 }
 
@@ -235,6 +259,11 @@ mod tests {
     }
 
     #[test]
+    fn test_find_uses_character_positions_for_multibyte_text() {
+        assert_eq!(eval(r#"FIND("나","가나다",2)"#), CellValue::Number(2.0));
+    }
+
+    #[test]
     fn test_find_not_found() {
         assert_eq!(
             eval(r#"FIND("Z","ABCABC")"#),
@@ -250,6 +279,12 @@ mod tests {
     #[test]
     fn test_search_wildcard() {
         assert_eq!(eval(r#"SEARCH("A*C","ABCABC")"#), CellValue::Number(1.0));
+        assert_eq!(eval(r#"SEARCH("*","ABC",4)"#), CellValue::Number(4.0));
+    }
+
+    #[test]
+    fn test_search_uses_character_positions_for_multibyte_text() {
+        assert_eq!(eval(r#"SEARCH("나","가나다",2)"#), CellValue::Number(2.0));
     }
 
     #[test]
@@ -281,6 +316,14 @@ mod tests {
         assert_eq!(
             eval(r#"REPT("AB",3)"#),
             CellValue::String("ABABAB".to_string())
+        );
+    }
+
+    #[test]
+    fn test_rept_rejects_results_over_excel_character_limit() {
+        assert_eq!(
+            eval(r#"REPT("AB",16384)"#),
+            CellValue::Error("#VALUE!".to_string())
         );
     }
 

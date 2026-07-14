@@ -97,7 +97,10 @@ fn read_row_index(buf: &[u8], row_count: u32) -> Result<Vec<(u32, u32)>> {
 
 /// Read the string table. Returns (strings, byte position after string table).
 fn read_string_table(buf: &[u8], offset: usize) -> Result<(Vec<String>, usize)> {
-    if buf.len() < offset + 8 {
+    let header_end = offset.checked_add(8).ok_or_else(|| {
+        Error::Internal("string table header offset overflows buffer bounds".to_string())
+    })?;
+    if buf.len() < header_end {
         return Err(Error::Internal(
             "buffer too short for string table header".to_string(),
         ));
@@ -105,10 +108,18 @@ fn read_string_table(buf: &[u8], offset: usize) -> Result<(Vec<String>, usize)> 
     let count = u32::from_le_bytes(buf[offset..offset + 4].try_into().unwrap()) as usize;
     let blob_size = u32::from_le_bytes(buf[offset + 4..offset + 8].try_into().unwrap()) as usize;
 
-    let offsets_start = offset + 8;
-    let offsets_end = offsets_start + count * 4;
+    let offsets_start = header_end;
+    let offsets_end = offsets_start
+        .checked_add(count.checked_mul(4).ok_or_else(|| {
+            Error::Internal("string table offsets exceed addressable buffer size".to_string())
+        })?)
+        .ok_or_else(|| {
+            Error::Internal("string table offsets exceed addressable buffer size".to_string())
+        })?;
     let blob_start = offsets_end;
-    let blob_end = blob_start + blob_size;
+    let blob_end = blob_start.checked_add(blob_size).ok_or_else(|| {
+        Error::Internal("string table blob exceeds addressable buffer size".to_string())
+    })?;
 
     if buf.len() < blob_end {
         return Err(Error::Internal(format!(
@@ -126,16 +137,26 @@ fn read_string_table(buf: &[u8], offset: usize) -> Result<(Vec<String>, usize)> 
     }
 
     let mut strings = Vec::with_capacity(count);
+    let mut previous_offset = 0;
     for i in 0..count {
-        let start = blob_start + string_offsets[i];
-        let end = if i + 1 < count {
-            blob_start + string_offsets[i + 1]
-        } else {
-            blob_end
-        };
+        let offset = string_offsets[i];
+        if offset > blob_size || offset < previous_offset {
+            return Err(Error::Internal(
+                "string table offsets must be monotonic and within the blob".to_string(),
+            ));
+        }
+        let next_offset = string_offsets.get(i + 1).copied().unwrap_or(blob_size);
+        if next_offset > blob_size || next_offset < offset {
+            return Err(Error::Internal(
+                "string table offsets must be monotonic and within the blob".to_string(),
+            ));
+        }
+        let start = blob_start + offset;
+        let end = blob_start + next_offset;
         let s = std::str::from_utf8(&buf[start..end])
             .map_err(|e| Error::Internal(format!("invalid UTF-8 in string table: {e}")))?;
         strings.push(s.to_string());
+        previous_offset = offset;
     }
 
     Ok((strings, blob_end))
@@ -585,6 +606,35 @@ mod tests {
             result[0].1[0].1,
             CellValue::String("hello world".to_string())
         );
+    }
+
+    #[test]
+    fn test_rejects_non_monotonic_string_offsets() {
+        let rows = vec![(
+            (1),
+            vec![
+                (1, CellValue::String("first".to_string())),
+                (2, CellValue::String("second".to_string())),
+            ],
+        )];
+        let mut buf = cells_to_raw_buffer(&rows).unwrap();
+        let string_table = HEADER_SIZE + ROW_INDEX_ENTRY_SIZE;
+        let offsets = string_table + 8;
+        buf[offsets..offsets + 4].copy_from_slice(&4u32.to_le_bytes());
+        buf[offsets + 4..offsets + 8].copy_from_slice(&0u32.to_le_bytes());
+
+        assert!(raw_buffer_to_cells(&buf).is_err());
+    }
+
+    #[test]
+    fn test_rejects_string_offset_past_blob() {
+        let rows = vec![(1, vec![(1, CellValue::String("value".to_string()))])];
+        let mut buf = cells_to_raw_buffer(&rows).unwrap();
+        let string_table = HEADER_SIZE + ROW_INDEX_ENTRY_SIZE;
+        let offsets = string_table + 8;
+        buf[offsets..offsets + 4].copy_from_slice(&u32::MAX.to_le_bytes());
+
+        assert!(raw_buffer_to_cells(&buf).is_err());
     }
 
     #[test]

@@ -99,7 +99,7 @@ impl StreamedSheetData {
 /// regardless of the number of rows.
 pub struct StreamWriter {
     sheet_name: String,
-    writer: BufWriter<tempfile::NamedTempFile>,
+    writer: Option<BufWriter<tempfile::NamedTempFile>>,
     bytes_written: u64,
     last_row: u32,
     started: bool,
@@ -131,10 +131,9 @@ impl std::fmt::Debug for StreamWriter {
 impl StreamWriter {
     /// Create a new StreamWriter for the given sheet name.
     pub fn new(sheet_name: &str) -> Self {
-        let temp = tempfile::NamedTempFile::new().expect("failed to create temp file");
         Self {
             sheet_name: sheet_name.to_string(),
-            writer: BufWriter::new(temp),
+            writer: None,
             bytes_written: 0,
             last_row: 0,
             started: false,
@@ -144,6 +143,22 @@ impl StreamWriter {
             merge_cells: Vec::new(),
             freeze_pane: None,
         }
+    }
+
+    /// Create a new StreamWriter and initialize its temporary file eagerly.
+    pub fn try_new(sheet_name: &str) -> Result<Self> {
+        let mut writer = Self::new(sheet_name);
+        writer.ensure_temp_file()?;
+        Ok(writer)
+    }
+
+    fn ensure_temp_file(&mut self) -> Result<&mut BufWriter<tempfile::NamedTempFile>> {
+        if self.writer.is_none() {
+            self.writer = Some(BufWriter::new(tempfile::NamedTempFile::new()?));
+        }
+        self.writer
+            .as_mut()
+            .ok_or_else(|| Error::Internal("stream writer initialization failed".to_string()))
     }
 
     /// Get the sheet name.
@@ -305,11 +320,11 @@ impl StreamWriter {
         let sheet_name = self.sheet_name.clone();
 
         // Flush the writer and recover the temp file.
-        self.writer.flush()?;
-        let temp_file = self
+        let mut writer = self
             .writer
-            .into_inner()
-            .map_err(|e| Error::Io(e.into_error()))?;
+            .map_or_else(|| tempfile::NamedTempFile::new().map(BufWriter::new), Ok)?;
+        writer.flush()?;
+        let temp_file = writer.into_inner().map_err(|e| Error::Io(e.into_error()))?;
 
         let data = StreamedSheetData {
             temp_file,
@@ -489,13 +504,12 @@ impl StreamWriter {
             }
         }
 
-        self.started = true;
-        self.last_row = row;
-
         // Build row XML directly and write to temp file.
         let xml = build_row_xml(row, values, cell_style_id, options);
         let bytes = xml.as_bytes();
-        self.writer.write_all(bytes)?;
+        self.ensure_temp_file()?.write_all(bytes)?;
+        self.started = true;
+        self.last_row = row;
         self.bytes_written += bytes.len() as u64;
 
         Ok(())
@@ -757,6 +771,20 @@ mod tests {
         file.read_to_string(&mut row_data).unwrap();
 
         format!("{header}{row_data}{footer}")
+    }
+
+    #[test]
+    fn test_new_defers_temp_file_creation() {
+        let sw = StreamWriter::new("Sheet1");
+
+        assert!(sw.writer.is_none());
+    }
+
+    #[test]
+    fn test_try_new_initializes_temp_file_fallibly() {
+        let sw = StreamWriter::try_new("Sheet1").unwrap();
+
+        assert!(sw.writer.is_some());
     }
 
     #[test]

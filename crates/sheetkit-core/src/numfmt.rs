@@ -598,13 +598,18 @@ fn format_date_time(value: f64, format: &str) -> String {
             if i > 0 && chars[i - 1] == '[' {
                 // Elapsed hours: total hours from the serial number
                 let serial_days = value.floor() as i64;
-                let elapsed_h = (serial_days as u64) * 24 + total_seconds / 3600;
+                let elapsed_h = serial_days
+                    .saturating_mul(24)
+                    .saturating_add((total_seconds / 3600) as i64);
                 // Find the closing bracket after the 'h' tokens
                 let mut end = i + count;
                 if end < len && chars[end] == ']' {
                     end += 1; // skip the ']'
                 }
-                result.push_str(&format!("{}", elapsed_h));
+                if elapsed_h < 0 {
+                    result.push('-');
+                }
+                result.push_str(&elapsed_h.unsigned_abs().to_string());
                 i = end;
                 continue;
             }
@@ -873,6 +878,7 @@ fn format_numeric(value: f64, format: &str) -> String {
 
         if ch == '.' && !number_placed {
             // This dot is part of the numeric pattern, handle together
+            i += 1;
             continue;
         }
 
@@ -1331,6 +1337,16 @@ mod tests {
         assert_eq!(format_number(3.14159, "0.00"), "3.14");
         assert_eq!(format_number(3.0, "0.00"), "3.00");
         assert_eq!(format_number(0.5, "0.00"), "0.50");
+    }
+
+    #[test]
+    fn test_format_decimal_without_integer_placeholder() {
+        assert_eq!(format_number(0.5, ".00"), "0.50");
+    }
+
+    #[test]
+    fn test_format_negative_elapsed_hours() {
+        assert_eq!(format_number(-1.5, "[h]:mm"), "[-36:00");
     }
 
     #[test]

@@ -160,8 +160,13 @@ pub fn fn_randbetween(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .subsec_nanos() as i64;
-    let range = top - bottom + 1;
-    let result = bottom + (t.abs() % range);
+    let Some(range) = top
+        .checked_sub(bottom)
+        .and_then(|width| width.checked_add(1))
+    else {
+        return Ok(CellValue::Error("#NUM!".to_string()));
+    };
+    let result = bottom + (t % range);
     Ok(CellValue::Number(result as f64))
 }
 
@@ -589,6 +594,14 @@ mod tests {
     fn randbetween_invalid_range() {
         assert_eq!(
             eval("RANDBETWEEN(10,1)"),
+            CellValue::Error("#NUM!".to_string())
+        );
+    }
+
+    #[test]
+    fn randbetween_rejects_ranges_that_overflow_i64() {
+        assert_eq!(
+            eval("RANDBETWEEN(-9223372036854775808,9223372036854775807)"),
             CellValue::Error("#NUM!".to_string())
         );
     }

@@ -166,7 +166,7 @@ pub fn insert_rows(ws: &mut WorksheetXml, start_row: u32, count: u32) -> Result<
     let max_existing = ws.sheet_data.rows.iter().map(|r| r.r).max().unwrap_or(0);
     let furthest = max_existing.max(start_row);
     if furthest.checked_add(count).is_none_or(|v| v > MAX_ROWS) {
-        return Err(Error::InvalidRowNumber(furthest + count));
+        return Err(Error::InvalidRowNumber(furthest.saturating_add(count)));
     }
 
     // Shift rows that are >= start_row downward by `count`.
@@ -542,6 +542,17 @@ mod tests {
         });
         let result = insert_rows(&mut ws, 1, 1);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_insert_rows_u32_overflow_returns_error_without_mutation() {
+        let mut ws = sample_ws();
+        let before = ws.clone();
+
+        let result = insert_rows(&mut ws, 1, u32::MAX);
+
+        assert!(matches!(result, Err(Error::InvalidRowNumber(u32::MAX))));
+        assert_eq!(ws, before);
     }
 
     #[test]

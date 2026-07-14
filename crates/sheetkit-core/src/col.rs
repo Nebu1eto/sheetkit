@@ -165,7 +165,7 @@ pub fn insert_cols(ws: &mut WorksheetXml, col: &str, count: u32) -> Result<()> {
         .unwrap_or(0);
     let furthest = max_existing.max(start_col);
     if furthest.checked_add(count).is_none_or(|v| v > MAX_COLUMNS) {
-        return Err(Error::InvalidColumnNumber(furthest + count));
+        return Err(Error::InvalidColumnNumber(furthest.saturating_add(count)));
     }
 
     // Shift cell references.
@@ -513,6 +513,17 @@ mod tests {
         let mut ws = WorksheetXml::default();
         insert_cols(&mut ws, "A", 5).unwrap();
         assert!(ws.sheet_data.rows.is_empty());
+    }
+
+    #[test]
+    fn test_insert_cols_u32_overflow_returns_error_without_mutation() {
+        let mut ws = sample_ws();
+        let before = ws.clone();
+
+        let result = insert_cols(&mut ws, "A", u32::MAX);
+
+        assert!(matches!(result, Err(Error::InvalidColumnNumber(u32::MAX))));
+        assert_eq!(ws, before);
     }
 
     #[test]

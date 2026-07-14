@@ -184,7 +184,8 @@ impl Workbook {
         self.worksheets
             .get(idx)
             .map(|(n, _)| n.as_str())
-            .unwrap_or_else(|| self.worksheets[0].0.as_str())
+            .or_else(|| self.worksheets.first().map(|(n, _)| n.as_str()))
+            .unwrap_or("")
     }
 
     /// Set the active sheet by name.
@@ -811,6 +812,14 @@ mod tests {
     fn test_get_active_sheet_default() {
         let wb = Workbook::new();
         assert_eq!(wb.get_active_sheet(), "Sheet1");
+    }
+
+    #[test]
+    fn test_get_active_sheet_is_safe_for_empty_workbook() {
+        let mut wb = Workbook::new();
+        wb.worksheets.clear();
+
+        assert_eq!(wb.get_active_sheet(), "");
     }
 
     #[test]
