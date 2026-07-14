@@ -96,7 +96,7 @@ pub struct Run {
 }
 
 /// Plot area containing chart type definitions and axes.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Default)]
 pub struct PlotArea {
     #[serde(rename = "c:layout", skip_serializing_if = "Option::is_none")]
     pub layout: Option<Layout>,
@@ -155,8 +155,85 @@ pub struct PlotArea {
     #[serde(rename = "c:valAx", skip_serializing_if = "Option::is_none")]
     pub val_ax: Option<ValAx>,
 
+    #[serde(rename = "c:valAx", default, skip_serializing_if = "Vec::is_empty")]
+    pub additional_val_axes: Vec<ValAx>,
+
     #[serde(rename = "c:serAx", skip_serializing_if = "Option::is_none")]
     pub ser_ax: Option<SerAx>,
+}
+
+#[derive(Deserialize)]
+struct PlotAreaDe {
+    #[serde(rename = "c:layout")]
+    layout: Option<Layout>,
+    #[serde(rename = "c:barChart")]
+    bar_chart: Option<BarChart>,
+    #[serde(rename = "c:bar3DChart")]
+    bar_3d_chart: Option<Bar3DChart>,
+    #[serde(rename = "c:lineChart")]
+    line_chart: Option<LineChart>,
+    #[serde(rename = "c:line3DChart")]
+    line_3d_chart: Option<Line3DChart>,
+    #[serde(rename = "c:pieChart")]
+    pie_chart: Option<PieChart>,
+    #[serde(rename = "c:pie3DChart")]
+    pie_3d_chart: Option<Pie3DChart>,
+    #[serde(rename = "c:doughnutChart")]
+    doughnut_chart: Option<DoughnutChart>,
+    #[serde(rename = "c:areaChart")]
+    area_chart: Option<AreaChart>,
+    #[serde(rename = "c:area3DChart")]
+    area_3d_chart: Option<Area3DChart>,
+    #[serde(rename = "c:scatterChart")]
+    scatter_chart: Option<ScatterChart>,
+    #[serde(rename = "c:bubbleChart")]
+    bubble_chart: Option<BubbleChart>,
+    #[serde(rename = "c:radarChart")]
+    radar_chart: Option<RadarChart>,
+    #[serde(rename = "c:stockChart")]
+    stock_chart: Option<StockChart>,
+    #[serde(rename = "c:surfaceChart")]
+    surface_chart: Option<SurfaceChart>,
+    #[serde(rename = "c:surface3DChart")]
+    surface_3d_chart: Option<Surface3DChart>,
+    #[serde(rename = "c:ofPieChart")]
+    of_pie_chart: Option<OfPieChart>,
+    #[serde(rename = "c:catAx")]
+    cat_ax: Option<CatAx>,
+    #[serde(rename = "c:valAx", alias = "valAx", default)]
+    val_axes: Vec<ValAx>,
+    #[serde(rename = "c:serAx")]
+    ser_ax: Option<SerAx>,
+}
+
+impl<'de> Deserialize<'de> for PlotArea {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let parsed = PlotAreaDe::deserialize(deserializer)?;
+        let mut val_axes = parsed.val_axes.into_iter();
+        Ok(Self {
+            layout: parsed.layout,
+            bar_chart: parsed.bar_chart,
+            bar_3d_chart: parsed.bar_3d_chart,
+            line_chart: parsed.line_chart,
+            line_3d_chart: parsed.line_3d_chart,
+            pie_chart: parsed.pie_chart,
+            pie_3d_chart: parsed.pie_3d_chart,
+            doughnut_chart: parsed.doughnut_chart,
+            area_chart: parsed.area_chart,
+            area_3d_chart: parsed.area_3d_chart,
+            scatter_chart: parsed.scatter_chart,
+            bubble_chart: parsed.bubble_chart,
+            radar_chart: parsed.radar_chart,
+            stock_chart: parsed.stock_chart,
+            surface_chart: parsed.surface_chart,
+            surface_3d_chart: parsed.surface_3d_chart,
+            of_pie_chart: parsed.of_pie_chart,
+            cat_ax: parsed.cat_ax,
+            val_ax: val_axes.next(),
+            additional_val_axes: val_axes.collect(),
+            ser_ax: parsed.ser_ax,
+        })
+    }
 }
 
 /// Layout (empty, uses automatic layout).
@@ -360,9 +437,23 @@ pub struct StockChart {
     #[serde(rename = "c:ser", default)]
     pub series: Vec<Series>,
 
+    #[serde(rename = "c:hiLowLines", skip_serializing_if = "Option::is_none")]
+    pub hi_low_lines: Option<HighLowLines>,
+
+    #[serde(rename = "c:upDownBars", skip_serializing_if = "Option::is_none")]
+    pub up_down_bars: Option<UpDownBars>,
+
     #[serde(rename = "c:axId", default)]
     pub ax_ids: Vec<UintVal>,
 }
+
+/// High-low lines for stock charts.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HighLowLines {}
+
+/// Up/down bars for open-high-low-close stock charts.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UpDownBars {}
 
 /// Surface chart definition.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -496,19 +587,19 @@ pub struct CatAx {
 /// Value axis.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ValAx {
-    #[serde(rename = "c:axId")]
+    #[serde(rename = "c:axId", alias = "axId")]
     pub ax_id: UintVal,
 
-    #[serde(rename = "c:scaling")]
+    #[serde(rename = "c:scaling", alias = "scaling")]
     pub scaling: Scaling,
 
-    #[serde(rename = "c:delete")]
+    #[serde(rename = "c:delete", alias = "delete")]
     pub delete: BoolVal,
 
-    #[serde(rename = "c:axPos")]
+    #[serde(rename = "c:axPos", alias = "axPos")]
     pub ax_pos: StringVal,
 
-    #[serde(rename = "c:crossAx")]
+    #[serde(rename = "c:crossAx", alias = "crossAx")]
     pub cross_ax: UintVal,
 }
 
@@ -553,7 +644,7 @@ pub struct View3D {
 /// Axis scaling (orientation).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Scaling {
-    #[serde(rename = "c:orientation")]
+    #[serde(rename = "c:orientation", alias = "orientation")]
     pub orientation: StringVal,
 }
 
@@ -810,6 +901,41 @@ mod tests {
         let xml = quick_xml::se::to_string(&ser_ax).unwrap();
         assert!(xml.contains("val=\"3\""));
         assert!(xml.contains("minMax"));
+    }
+
+    #[test]
+    fn test_plot_area_roundtrips_multiple_value_axes() {
+        let axis = |id: u32, position: &str| ValAx {
+            ax_id: UintVal { val: id },
+            scaling: Scaling {
+                orientation: StringVal {
+                    val: "minMax".to_string(),
+                },
+            },
+            delete: BoolVal { val: false },
+            ax_pos: StringVal {
+                val: position.to_string(),
+            },
+            cross_ax: UintVal { val: 1 },
+        };
+        let plot_area = PlotArea {
+            val_ax: Some(axis(2, "l")),
+            additional_val_axes: vec![axis(3, "r")],
+            ..PlotArea::default()
+        };
+
+        let xml = quick_xml::se::to_string(&plot_area).unwrap();
+        assert_eq!(xml.matches("valAx").count(), 4);
+        let inner = xml
+            .strip_prefix("<PlotArea>")
+            .and_then(|xml| xml.strip_suffix("</PlotArea>"))
+            .unwrap();
+        let xml = format!(
+            "<c:plotArea xmlns:c=\"http://schemas.openxmlformats.org/drawingml/2006/chart\">{inner}</c:plotArea>"
+        );
+        let parsed: PlotArea = quick_xml::de::from_str(&xml).unwrap();
+        assert_eq!(parsed.val_ax.as_ref().map(|axis| axis.ax_id.val), Some(2));
+        assert_eq!(parsed.additional_val_axes[0].ax_id.val, 3);
     }
 
     #[test]

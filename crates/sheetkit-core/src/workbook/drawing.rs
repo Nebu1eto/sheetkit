@@ -1,6 +1,6 @@
 use super::*;
 
-fn next_drawing_object_id(drawing: &WsDr) -> u32 {
+fn next_drawing_object_id(drawing: &WsDr) -> Result<u32> {
     drawing
         .two_cell_anchors
         .iter()
@@ -42,7 +42,8 @@ fn next_drawing_object_id(drawing: &WsDr) -> u32 {
         }))
         .max()
         .unwrap_or(1)
-        + 1
+        .checked_add(1)
+        .ok_or_else(|| Error::InvalidArgument("drawing object ID overflow".to_string()))
 }
 
 impl Workbook {
@@ -71,12 +72,14 @@ impl Workbook {
                 line_color: Some("A6A6A6".to_string()),
                 line_width: Some(0.75),
             },
-            next_drawing_object_id(&self.drawings[drawing_idx].1),
+            next_drawing_object_id(&self.drawings[drawing_idx].1)?,
         )?
         .shape
         .expect("shape builder always creates a fallback shape");
         let fallback_id = fallback.nv_sp_pr.c_nv_pr.id;
-        let frame_id = fallback_id + 1;
+        let frame_id = fallback_id
+            .checked_add(1)
+            .ok_or_else(|| Error::InvalidArgument("drawing object ID overflow".to_string()))?;
         self.drawings[drawing_idx]
             .1
             .one_cell_anchors
@@ -155,9 +158,27 @@ impl Workbook {
         // Parse cell references to marker coordinates (0-based).
         let (from_col, from_row) = cell_name_to_coordinates(from_cell)?;
         let (to_col, to_row) = cell_name_to_coordinates(to_cell)?;
+        let required_series = match config.chart_type {
+            crate::chart::ChartType::StockHLC => Some(3),
+            crate::chart::ChartType::StockOHLC | crate::chart::ChartType::StockVHLC => Some(4),
+            crate::chart::ChartType::StockVOHLC => Some(5),
+            _ => None,
+        };
+        if let Some(required) = required_series {
+            if config.series.len() != required {
+                return Err(Error::InvalidArgument(format!(
+                    "{:?} charts require exactly {required} series",
+                    config.chart_type
+                )));
+            }
+        }
         self.ensure_drawing_relationships_hydratable(sheet_idx)?;
         self.hydrate_drawings();
         let existing_drawing_idx = self.ensure_drawing_relationships_editable(sheet_idx)?;
+        let object_id = existing_drawing_idx
+            .map(|drawing_idx| next_drawing_object_id(&self.drawings[drawing_idx].1))
+            .transpose()?
+            .unwrap_or(2);
 
         let from_marker = MarkerType {
             col: from_col - 1,
@@ -205,7 +226,12 @@ impl Workbook {
 
         // Build the chart anchor and add it to the drawing.
         let drawing = &mut self.drawings[drawing_idx].1;
-        let anchor = crate::chart::build_drawing_with_chart(&chart_rid, from_marker, to_marker);
+        let anchor = crate::chart::build_drawing_with_chart_id(
+            &chart_rid,
+            from_marker,
+            to_marker,
+            object_id,
+        );
         drawing.two_cell_anchors.extend(anchor.two_cell_anchors);
         self.mark_drawing_dirty(drawing_idx);
         self.mark_drawing_relationships_dirty(drawing_idx);
@@ -239,7 +265,7 @@ impl Workbook {
             existing_drawing_idx.unwrap_or_else(|| self.ensure_drawing_for_sheet(sheet_idx));
 
         let drawing = &mut self.drawings[drawing_idx].1;
-        let shape_id = (drawing.one_cell_anchors.len() + drawing.two_cell_anchors.len() + 2) as u32;
+        let shape_id = next_drawing_object_id(drawing)?;
 
         let anchor = crate::shape::build_shape_anchor(config, shape_id)?;
         drawing.two_cell_anchors.push(anchor);
@@ -310,9 +336,8 @@ impl Workbook {
             target_mode: None,
         });
 
-        // Count existing objects in the drawing to assign a unique ID.
         let drawing = &mut self.drawings[drawing_idx].1;
-        let pic_id = (drawing.one_cell_anchors.len() + drawing.two_cell_anchors.len() + 2) as u32;
+        let pic_id = next_drawing_object_id(drawing)?;
 
         // Add image anchor to the drawing.
         crate::image::add_image_to_drawing(drawing, &image_rid, config, pic_id)?;

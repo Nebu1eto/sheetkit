@@ -5,11 +5,11 @@
 
 use sheetkit_xml::chart::{
     Area3DChart, AreaChart, Bar3DChart, BarChart, BodyPr, BoolVal, BubbleChart, BubbleSeries,
-    CatAx, CategoryRef, Chart, ChartSpace, ChartTitle, DoughnutChart, IntVal, Layout, Legend,
-    Line3DChart, LineChart, NumRef, OfPieChart, Paragraph, Pie3DChart, PieChart, PlotArea,
+    CatAx, CategoryRef, Chart, ChartSpace, ChartTitle, DoughnutChart, HighLowLines, IntVal, Layout,
+    Legend, Line3DChart, LineChart, NumRef, OfPieChart, Paragraph, Pie3DChart, PieChart, PlotArea,
     RadarChart, RichText, Run, Scaling, ScatterChart, ScatterSeries, SerAx, SerLines, Series,
     SeriesText, StockChart, StrRef, StringVal, Surface3DChart, SurfaceChart, TitleTx, UintVal,
-    ValAx, ValueRef, View3D,
+    UpDownBars, ValAx, ValueRef, View3D,
 };
 use sheetkit_xml::drawing::{
     AExt, CNvGraphicFramePr, CNvPr, ChartRef, ClientData, Graphic, GraphicData, GraphicFrame,
@@ -210,11 +210,22 @@ pub fn build_chart_xml(config: &ChartConfig) -> ChartSpace {
 
 /// Build a drawing XML structure containing a chart reference.
 pub fn build_drawing_with_chart(chart_ref_id: &str, from: MarkerType, to: MarkerType) -> WsDr {
+    build_drawing_with_chart_id(chart_ref_id, from, to, 2)
+}
+
+/// Build a drawing XML structure containing a chart reference with a unique
+/// non-visual drawing ID.
+pub fn build_drawing_with_chart_id(
+    chart_ref_id: &str,
+    from: MarkerType,
+    to: MarkerType,
+    object_id: u32,
+) -> WsDr {
     let graphic_frame = GraphicFrame {
         nv_graphic_frame_pr: NvGraphicFramePr {
             c_nv_pr: CNvPr {
-                id: 2,
-                name: "Chart 1".to_string(),
+                id: object_id,
+                name: format!("Chart {}", object_id.saturating_sub(1)),
             },
             c_nv_graphic_frame_pr: CNvGraphicFramePr {},
         },
@@ -507,6 +518,26 @@ fn standard_ax_ids() -> Vec<UintVal> {
     vec![UintVal { val: 1 }, UintVal { val: 2 }]
 }
 
+fn volume_ax_ids() -> Vec<UintVal> {
+    vec![UintVal { val: 1 }, UintVal { val: 3 }]
+}
+
+fn build_volume_val_ax() -> ValAx {
+    ValAx {
+        ax_id: UintVal { val: 3 },
+        scaling: Scaling {
+            orientation: StringVal {
+                val: "minMax".to_string(),
+            },
+        },
+        delete: BoolVal { val: false },
+        ax_pos: StringVal {
+            val: "r".to_string(),
+        },
+        cross_ax: UintVal { val: 1 },
+    }
+}
+
 fn surface_ax_ids() -> Vec<UintVal> {
     vec![UintVal { val: 1 }, UintVal { val: 2 }, UintVal { val: 3 }]
 }
@@ -559,6 +590,7 @@ fn build_plot_area(config: &ChartConfig) -> PlotArea {
         of_pie_chart: None,
         cat_ax,
         val_ax,
+        additional_val_axes: vec![],
         ser_ax,
     };
 
@@ -879,12 +911,40 @@ fn build_plot_area(config: &ChartConfig) -> PlotArea {
                 ax_ids,
             });
         }
-        ChartType::StockHLC
-        | ChartType::StockOHLC
-        | ChartType::StockVHLC
-        | ChartType::StockVOHLC => {
+        ChartType::StockHLC => {
             plot_area.stock_chart = Some(StockChart {
                 series: xml_series,
+                hi_low_lines: Some(HighLowLines {}),
+                up_down_bars: None,
+                ax_ids,
+            });
+        }
+        ChartType::StockOHLC => {
+            plot_area.stock_chart = Some(StockChart {
+                series: xml_series,
+                hi_low_lines: Some(HighLowLines {}),
+                up_down_bars: Some(UpDownBars {}),
+                ax_ids,
+            });
+        }
+        ChartType::StockVHLC | ChartType::StockVOHLC => {
+            let (volume_series, stock_series) = match xml_series.split_first() {
+                Some((volume, stock)) => (vec![volume.clone()], stock.to_vec()),
+                None => (vec![], vec![]),
+            };
+            plot_area.bar_chart = Some(BarChart {
+                bar_dir: StringVal { val: "col".into() },
+                grouping: StringVal {
+                    val: "clustered".into(),
+                },
+                series: volume_series,
+                ax_ids: volume_ax_ids(),
+            });
+            plot_area.additional_val_axes.push(build_volume_val_ax());
+            plot_area.stock_chart = Some(StockChart {
+                series: stock_series,
+                hi_low_lines: Some(HighLowLines {}),
+                up_down_bars: matches!(ct, ChartType::StockVOHLC).then_some(UpDownBars {}),
                 ax_ids,
             });
         }

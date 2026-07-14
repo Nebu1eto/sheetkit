@@ -2559,7 +2559,8 @@ pub(crate) fn build_sparkline_ext_xml(sparklines: &[crate::sparkline::SparklineC
             let _ = write!(
                 xml,
                 "<x14:sparkline><xm:f>{}</xm:f><xm:sqref>{}</xm:sqref></x14:sparkline>",
-                sp.formula, sp.sqref
+                quick_xml::escape::escape(&sp.formula),
+                quick_xml::escape::escape(&sp.sqref)
             );
         }
         let _ = write!(xml, "</x14:sparklines></x14:sparklineGroup>");
@@ -2677,7 +2678,10 @@ pub(crate) fn extract_xml_element(xml: &str, tag: &str) -> Option<String> {
     let start = xml.find(&open)?;
     let content_start = start + open.len();
     let end = xml[content_start..].find(&close)?;
-    Some(xml[content_start..content_start + end].to_string())
+    let value = &xml[content_start..content_start + end];
+    quick_xml::escape::unescape(value)
+        .map(|value| value.into_owned())
+        .ok()
 }
 
 /// Serialize a value to XML and write it as a ZIP entry.
