@@ -641,6 +641,12 @@ impl Workbook {
         crate::style::compute_style_is_date(&self.stylesheet)
     }
 
+    /// Date-style lookup for read-only transfer encoders.
+    #[doc(hidden)]
+    pub fn transfer_date_style_lookup(&self) -> Vec<bool> {
+        self.computed_style_is_date()
+    }
+
     /// Get the raw XML bytes for a sheet by index.
     ///
     /// When the OnceLock is uninitialised (Lazy/Stream deferred), raw bytes

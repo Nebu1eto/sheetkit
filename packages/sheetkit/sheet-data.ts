@@ -2,7 +2,7 @@ import assert from 'node:assert';
 
 /** An Excel date value represented by its serial number. */
 export interface DateValue {
-  kind: 'date';
+  type: 'date';
   serial: number;
   iso: string | null;
 }
@@ -27,6 +27,22 @@ const SPARSE_ENTRY_SIZE = 11;
 const EMPTY_ROW_OFFSET = 0xffffffff;
 
 const decoder = new TextDecoder();
+const EXCEL_EPOCH_UTC = Date.UTC(1899, 11, 31);
+const MILLISECONDS_PER_DAY = 86_400_000;
+
+function excelSerialToIso(serial: number): string | null {
+  if (!Number.isFinite(serial)) return null;
+  const serialDay = Math.floor(serial);
+  if (serialDay < 1) return null;
+  const adjustedDay = serialDay >= 60 ? serialDay - 1 : serialDay;
+  const seconds = Math.round(Math.abs(serial - serialDay) * 86_400);
+  if (seconds >= 86_400) return null;
+  const timestamp = EXCEL_EPOCH_UTC + adjustedDay * MILLISECONDS_PER_DAY + seconds * 1_000;
+  const date = new Date(timestamp);
+  if (!Number.isFinite(date.getTime())) return null;
+  const iso = date.toISOString();
+  return serial % 1 === 0 ? iso.slice(0, 10) : iso.slice(0, 19);
+}
 
 const TYPE_NAMES: CellTypeName[] = [
   'empty',
@@ -160,8 +176,10 @@ export class SheetData {
     switch (type) {
       case TYPE_NUMBER:
         return this.#view.getFloat64(payloadOffset, true);
-      case TYPE_DATE:
-        return { kind: 'date', serial: this.#view.getFloat64(payloadOffset, true), iso: null };
+      case TYPE_DATE: {
+        const serial = this.#view.getFloat64(payloadOffset, true);
+        return { type: 'date', serial, iso: excelSerialToIso(serial) };
+      }
       case TYPE_STRING:
       case TYPE_RICH_STRING: {
         const idx = this.#view.getUint32(payloadOffset, true);
@@ -193,8 +211,10 @@ export class SheetData {
     switch (type) {
       case TYPE_NUMBER:
         return this.#view.getFloat64(payloadOffset, true);
-      case TYPE_DATE:
-        return { kind: 'date', serial: this.#view.getFloat64(payloadOffset, true), iso: null };
+      case TYPE_DATE: {
+        const serial = this.#view.getFloat64(payloadOffset, true);
+        return { type: 'date', serial, iso: excelSerialToIso(serial) };
+      }
       case TYPE_STRING:
       case TYPE_RICH_STRING:
         return this.#readInlineString(payloadOffset).value;

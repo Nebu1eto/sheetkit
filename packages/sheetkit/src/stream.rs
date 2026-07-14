@@ -58,7 +58,7 @@ impl JsStreamWriter {
         let cell_values = values
             .into_iter()
             .map(js_value_to_cell_value)
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>>>()?;
         writer
             .write_row(row, &cell_values)
             .map_err(|e| Error::from_reason(e.to_string()))
@@ -76,7 +76,7 @@ impl JsStreamWriter {
         let cell_rows = rows
             .into_iter()
             .map(|row| row.into_iter().map(js_value_to_cell_value).collect())
-            .collect::<Vec<Vec<_>>>();
+            .collect::<Result<Vec<Vec<_>>>>()?;
         writer
             .write_rows(start_row, &cell_rows)
             .map_err(|e| Error::from_reason(e.to_string()))
@@ -97,7 +97,7 @@ impl JsStreamWriter {
         let cell_values = values
             .into_iter()
             .map(js_value_to_cell_value)
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>>>()?;
         writer
             .write_row_with_style(row, &cell_values, style_id)
             .map_err(|e| Error::from_reason(e.to_string()))

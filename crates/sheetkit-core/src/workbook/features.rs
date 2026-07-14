@@ -934,17 +934,10 @@ impl Workbook {
         }
         if let Some(Some(vml_bytes)) = self.sheet_vml.get(idx) {
             let vml_str = String::from_utf8_lossy(vml_bytes);
-            let parsed = crate::control::parse_form_controls(&vml_str);
+            let parsed = crate::control::parse_form_control_configs(&vml_str);
             if !parsed.is_empty() {
-                self.sheet_form_controls[idx] =
-                    parsed.iter().map(|info| info.to_config()).collect();
+                self.sheet_form_controls[idx] = parsed;
             }
-        }
-    }
-
-    fn prepare_form_control_mutation(&mut self, idx: usize) {
-        if let Some(Some(vml_bytes)) = self.sheet_vml.get(idx) {
-            self.sheet_vml[idx] = crate::control::strip_form_control_shapes_from_vml(vml_bytes);
         }
     }
 
@@ -962,7 +955,6 @@ impl Workbook {
         config.validate()?;
         self.hydrate_comments(idx);
         self.hydrate_form_controls(idx);
-        self.prepare_form_control_mutation(idx);
         self.sheet_form_controls[idx].push(config);
         self.sheet_controls_dirty[idx] = true;
         self.mark_sheet_dirty(idx);
@@ -995,15 +987,16 @@ impl Workbook {
         let idx = self.sheet_index(sheet)?;
         self.hydrate_comments(idx);
         self.hydrate_form_controls(idx);
-        self.prepare_form_control_mutation(idx);
-        let controls = &mut self.sheet_form_controls[idx];
-        if index >= controls.len() {
+        if index >= self.sheet_form_controls[idx].len() {
             return Err(Error::InvalidArgument(format!(
                 "form control index {index} out of bounds (sheet has {} controls)",
-                controls.len()
+                self.sheet_form_controls[idx].len()
             )));
         }
-        controls.remove(index);
+        if let Some(Some(vml_bytes)) = self.sheet_vml.get(idx) {
+            self.sheet_vml[idx] = crate::control::remove_form_control_shape(vml_bytes, index);
+        }
+        self.sheet_form_controls[idx].remove(index);
         self.sheet_controls_dirty[idx] = true;
         self.mark_sheet_dirty(idx);
         Ok(())
@@ -1424,6 +1417,70 @@ mod tests {
         let mut reopened = Workbook::open_from_buffer_with_options(&saved, &options).unwrap();
         assert_eq!(reopened.get_comments("Sheet1").unwrap().len(), 2);
         assert_eq!(reopened.get_form_controls("Sheet1").unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_lazy_form_control_mutation_preserves_custom_dimensions_and_style() {
+        use crate::workbook::aux::AuxCategory;
+
+        let mut original = Workbook::new();
+        let mut button = crate::control::FormControlConfig::button("B2", "Custom");
+        button.width = Some(200.0);
+        button.height = Some(40.0);
+        button.three_d = Some(false);
+        original.add_form_control("Sheet1", button).unwrap();
+        let source = original.save_to_buffer().unwrap();
+
+        let options = OpenOptions::new().read_mode(ReadMode::Lazy);
+        let mut opened = Workbook::open_from_buffer_with_options(&source, &options).unwrap();
+        let vml_path = "xl/drawings/vmlDrawing1.vml";
+        let vml = opened
+            .deferred_parts
+            .remove_path(AuxCategory::Vml, vml_path)
+            .unwrap();
+        let vml = String::from_utf8(vml)
+            .unwrap()
+            .replace(
+                "<x:Anchor>1, 15, 1, 10, 5, 186, 3, 181</x:Anchor>",
+                "<x:Anchor>1, 100, 1, 50, 5, 200, 3, 200</x:Anchor>",
+            )
+            .replace(
+                "<v:fill color2=\"buttonFace\" o:detectmouseclick=\"t\"/>",
+                "<v:fill color2=\"buttonFace\" o:detectmouseclick=\"t\" opacity=\"50%\"/>",
+            );
+        assert!(opened
+            .deferred_parts
+            .insert(vml_path.to_string(), vml.into_bytes()));
+        let (_, control_property) = opened
+            .unknown_parts
+            .iter_mut()
+            .find(|(path, _)| path.starts_with("xl/ctrlProps/ctrlProp"))
+            .unwrap();
+        *control_property = String::from_utf8(control_property.clone())
+            .unwrap()
+            .replace(
+                "<x14:formControlPr ",
+                "<x14:formControlPr customFlag=\"keep\" ",
+            )
+            .into_bytes();
+        opened
+            .add_form_control(
+                "Sheet1",
+                crate::control::FormControlConfig::checkbox("D2", "Added"),
+            )
+            .unwrap();
+        let saved = opened.save_to_buffer().unwrap();
+        let vml = String::from_utf8(zip_part(&saved, vml_path)).unwrap();
+        let controls = crate::control::parse_form_control_configs(&vml);
+
+        assert_eq!(controls.len(), 2);
+        assert!(vml.contains("<x:Anchor>1, 100, 1, 50, 5, 200, 3, 200</x:Anchor>"));
+        assert!(vml.contains("opacity=\"50%\""));
+        assert_eq!(controls[0].three_d, Some(false));
+        assert!(vml.contains("<x:NoThreeD/>"));
+        let control_property =
+            String::from_utf8(zip_part(&saved, "xl/ctrlProps/ctrlProp1.xml")).unwrap();
+        assert!(control_property.contains("customFlag=\"keep\""));
     }
 
     #[test]

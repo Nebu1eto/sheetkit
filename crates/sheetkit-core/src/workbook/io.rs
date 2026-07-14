@@ -982,8 +982,11 @@ impl Workbook {
         let mut legacy_drawing_rids: HashMap<usize, String> = HashMap::new();
         // Per-sheet controls paired with their VML shape IDs and ctrlProp rIds.
         let mut worksheet_controls: HashMap<usize, Vec<(usize, String, String)>> = HashMap::new();
+        let mut comment_parts_to_write: Vec<(usize, String)> = Vec::new();
         let mut control_parts_to_write: Vec<(String, String)> = Vec::new();
         let mut allocated_control_paths = self.occupied_part_paths();
+        let mut allocated_comment_paths = self.occupied_part_paths();
+        let mut allocated_vml_paths = self.occupied_part_paths();
         let mut removed_control_paths: HashSet<String> = HashSet::new();
 
         // Ensure the vml extension default content type is present if any VML exists.
@@ -1009,6 +1012,28 @@ impl Workbook {
         // synchronization. The original relationships and content types are already
         // correct, and deferred_parts will supply the raw bytes on save.
         for sheet_idx in 0..self.worksheets.len() {
+            let sheet_path = self.sheet_part_path(sheet_idx);
+            let original_comment_paths: Vec<String> = worksheet_rels
+                .get(&sheet_idx)
+                .into_iter()
+                .flat_map(|relationships| &relationships.relationships)
+                .filter(|relationship| relationship.rel_type == rel_types::COMMENTS)
+                .map(|relationship| resolve_relationship_target(&sheet_path, &relationship.target))
+                .collect();
+            let original_vml_paths: Vec<String> = worksheet_rels
+                .get(&sheet_idx)
+                .into_iter()
+                .flat_map(|relationships| &relationships.relationships)
+                .filter(|relationship| relationship.rel_type == rel_types::VML_DRAWING)
+                .map(|relationship| resolve_relationship_target(&sheet_path, &relationship.target))
+                .collect();
+            let original_control_entries = self
+                .raw_sheet_xml
+                .get(sheet_idx)
+                .and_then(|raw| raw.as_deref())
+                .and_then(|raw| std::str::from_utf8(raw).ok())
+                .map(parse_worksheet_control_entries)
+                .unwrap_or_default();
             let has_comments = self
                 .sheet_comments
                 .get(sheet_idx)
@@ -1042,35 +1067,72 @@ impl Workbook {
                 continue;
             }
 
+            content_types.overrides.retain(|entry| {
+                let path = entry.part_name.trim_start_matches('/');
+                !original_comment_paths
+                    .iter()
+                    .any(|original| original == path)
+                    && !original_vml_paths.iter().any(|original| original == path)
+            });
+
+            let raw_control_shape_ids = self
+                .sheet_vml
+                .get(sheet_idx)
+                .and_then(|vml| vml.as_deref())
+                .map(crate::control::form_control_shape_ids)
+                .unwrap_or_default();
+            let mut retained_control_entries = if controls_dirty {
+                original_control_entries
+                    .iter()
+                    .filter(|(shape_id, _, _)| raw_control_shape_ids.contains(shape_id))
+                    .cloned()
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
+            let removed_control_rids: HashSet<&str> = if controls_dirty {
+                original_control_entries
+                    .iter()
+                    .filter(|(shape_id, _, _)| !raw_control_shape_ids.contains(shape_id))
+                    .map(|(_, rid, _)| rid.as_str())
+                    .collect()
+            } else {
+                HashSet::new()
+            };
+
             if let Some(rels) = worksheet_rels.get_mut(&sheet_idx) {
                 rels.relationships
                     .retain(|r| r.rel_type != rel_types::COMMENTS);
                 rels.relationships
                     .retain(|r| r.rel_type != rel_types::VML_DRAWING);
-                if controls_dirty {
-                    let sheet_path = self.sheet_part_path(sheet_idx);
-                    removed_control_paths.extend(
-                        rels.relationships
-                            .iter()
-                            .filter(|relationship| {
-                                relationship.rel_type == rel_types::CONTROL_PROPERTIES
-                            })
-                            .map(|relationship| {
-                                resolve_relationship_target(&sheet_path, &relationship.target)
-                            }),
-                    );
-                    rels.relationships
-                        .retain(|r| r.rel_type != rel_types::CONTROL_PROPERTIES);
+                if !removed_control_rids.is_empty() {
+                    for relationship in &rels.relationships {
+                        if removed_control_rids.contains(relationship.id.as_str()) {
+                            removed_control_paths.insert(resolve_relationship_target(
+                                &sheet_path,
+                                &relationship.target,
+                            ));
+                        }
+                    }
+                    rels.relationships.retain(|relationship| {
+                        !removed_control_rids.contains(relationship.id.as_str())
+                    });
                 }
             }
 
             let needs_vml = has_comments || has_form_controls || has_preserved_vml;
             if !needs_vml && !has_comments {
+                if controls_dirty {
+                    worksheet_controls.insert(sheet_idx, Vec::new());
+                }
                 continue;
             }
 
             if has_comments {
-                let comment_path = format!("xl/comments{}.xml", sheet_idx + 1);
+                let comment_path = original_comment_paths.first().cloned().unwrap_or_else(|| {
+                    next_numbered_package_path(&allocated_comment_paths, "xl/comments", ".xml")
+                });
+                allocated_comment_paths.insert(comment_path.clone());
                 let part_name = format!("/{}", comment_path);
                 if !content_types
                     .overrides
@@ -1083,7 +1145,6 @@ impl Workbook {
                     });
                 }
 
-                let sheet_path = self.sheet_part_path(sheet_idx);
                 let target = relative_relationship_target(&sheet_path, &comment_path);
                 let rels = worksheet_rels
                     .entry(sheet_idx)
@@ -1095,6 +1156,7 @@ impl Workbook {
                     target,
                     target_mode: None,
                 });
+                comment_parts_to_write.push((sheet_idx, comment_path));
             }
 
             if !needs_vml {
@@ -1102,7 +1164,10 @@ impl Workbook {
             }
 
             // Regenerate only owned shapes while preserving unrelated VML.
-            let vml_path = format!("xl/drawings/vmlDrawing{}.vml", sheet_idx + 1);
+            let vml_path = original_vml_paths.first().cloned().unwrap_or_else(|| {
+                next_numbered_package_path(&allocated_vml_paths, "xl/drawings/vmlDrawing", ".vml")
+            });
+            allocated_vml_paths.insert(vml_path.clone());
             let mut vml_bytes = self
                 .sheet_vml
                 .get(sheet_idx)
@@ -1132,33 +1197,63 @@ impl Workbook {
 
             if controls_dirty && has_form_controls {
                 let controls = &self.sheet_form_controls[sheet_idx];
+                if raw_control_shape_ids.len() > controls.len() {
+                    return Err(Error::InvalidArgument(
+                        "cannot safely preserve existing form controls".to_string(),
+                    ));
+                }
+                let new_controls = &controls[raw_control_shape_ids.len()..];
                 let start_id = vml_bytes
                     .as_deref()
                     .map(crate::control::next_vml_shape_id)
                     .unwrap_or(1025);
                 let last_shape_id = start_id
-                    .checked_add(controls.len().saturating_sub(1))
+                    .checked_add(new_controls.len().saturating_sub(1))
                     .ok_or_else(|| {
                         Error::InvalidArgument("form control shape ID overflow".to_string())
                     })?;
-                if last_shape_id > 67_098_623 {
+                if (!new_controls.is_empty() && last_shape_id > 67_098_623)
+                    || raw_control_shape_ids
+                        .iter()
+                        .any(|shape_id| *shape_id > 67_098_623)
+                {
                     return Err(Error::InvalidArgument(
                         "form control shape IDs exceed Excel's supported range".to_string(),
                     ));
                 }
-                vml_bytes = Some(match vml_bytes {
-                    Some(existing) => {
-                        crate::control::merge_vml_controls(&existing, controls, start_id)
-                    }
-                    None => crate::control::build_form_control_vml(controls, 1025).into_bytes(),
-                });
+                if !new_controls.is_empty() {
+                    vml_bytes = Some(match vml_bytes {
+                        Some(existing) => {
+                            crate::control::merge_vml_controls(&existing, new_controls, start_id)
+                        }
+                        None => {
+                            crate::control::build_form_control_vml(new_controls, 1025).into_bytes()
+                        }
+                    });
+                }
 
-                let sheet_path = self.sheet_part_path(sheet_idx);
+                let mut shape_ids = raw_control_shape_ids.clone();
+                shape_ids.extend((0..new_controls.len()).map(|offset| start_id + offset));
+
                 let rels = worksheet_rels
                     .entry(sheet_idx)
                     .or_insert_with(default_relationships);
+                let preserved_by_shape: HashMap<usize, (String, String)> = retained_control_entries
+                    .drain(..)
+                    .map(|(shape_id, rid, name)| (shape_id, (rid, name)))
+                    .collect();
                 let mut control_entries = Vec::with_capacity(controls.len());
-                for (offset, control) in controls.iter().enumerate() {
+                for (offset, (shape_id, control)) in shape_ids.into_iter().zip(controls).enumerate()
+                {
+                    if let Some((rid, name)) = preserved_by_shape.get(&shape_id) {
+                        if rels.relationships.iter().any(|relationship| {
+                            relationship.id == *rid
+                                && relationship.rel_type == rel_types::CONTROL_PROPERTIES
+                        }) {
+                            control_entries.push((shape_id, rid.clone(), name.clone()));
+                            continue;
+                        }
+                    }
                     let control_path = next_control_property_path(&allocated_control_paths);
                     allocated_control_paths.insert(control_path.clone());
                     let rid = crate::sheet::next_rid(&rels.relationships);
@@ -1177,7 +1272,7 @@ impl Workbook {
                         crate::control::build_control_property_xml(control),
                     ));
                     control_entries.push((
-                        start_id + offset,
+                        shape_id,
                         rid,
                         format!("{} {}", control.control_type.object_type(), offset + 1),
                     ));
@@ -1201,7 +1296,6 @@ impl Workbook {
                 });
             }
 
-            let sheet_path = self.sheet_part_path(sheet_idx);
             let rels = worksheet_rels
                 .entry(sheet_idx)
                 .or_insert_with(default_relationships);
@@ -1630,11 +1724,10 @@ impl Workbook {
         let sst_xml = self.sst_runtime.to_sst();
         write_xml_part(zip, "xl/sharedStrings.xml", &sst_xml, options)?;
 
-        // xl/comments{N}.xml -- write per-sheet comments
-        for (i, comments) in self.sheet_comments.iter().enumerate() {
-            if let Some(ref c) = comments {
-                let entry_name = format!("xl/comments{}.xml", i + 1);
-                write_xml_part(zip, &entry_name, c, options)?;
+        // Write hydrated comments at their retained or newly allocated paths.
+        for (sheet_idx, path) in &comment_parts_to_write {
+            if let Some(comments) = self.sheet_comments[*sheet_idx].as_ref() {
+                write_xml_part(zip, path, comments, options)?;
             }
         }
 
@@ -2110,23 +2203,27 @@ fn read_shared_strings_part<R: std::io::Read + std::io::Seek>(
     archive: &mut zip::ZipArchive<R>,
     name: &str,
 ) -> Result<Option<Sst>> {
-    let mut entry = match archive.by_name(name) {
+    let entry = match archive.by_name(name) {
         Ok(entry) => entry,
         Err(zip::result::ZipError::FileNotFound) => return Ok(None),
         Err(error) => return Err(Error::Zip(error.to_string())),
     };
-    let mut bytes = Vec::with_capacity(entry.size() as usize);
-    entry.read_to_end(&mut bytes)?;
-    deserialize_shared_strings(&bytes).map(Some)
+    let sst =
+        deserialize_shared_strings(std::io::BufReader::with_capacity(LARGE_BUF_CAPACITY, entry))?;
+
+    let entry = archive
+        .by_name(name)
+        .map_err(|error| Error::Zip(error.to_string()))?;
+    let raw_items =
+        scan_shared_string_text(std::io::BufReader::with_capacity(LARGE_BUF_CAPACITY, entry))?;
+    restore_shared_string_text(sst, raw_items).map(Some)
 }
 
-fn deserialize_shared_strings(bytes: &[u8]) -> Result<Sst> {
-    let reader =
-        std::io::BufReader::with_capacity(bytes.len().clamp(8192, LARGE_BUF_CAPACITY), bytes);
-    let mut sst: Sst =
-        quick_xml::de::from_reader(reader).map_err(|e| Error::XmlDeserialize(e.to_string()))?;
-    let raw_items = scan_shared_string_text(bytes)?;
+fn deserialize_shared_strings<R: std::io::BufRead>(reader: R) -> Result<Sst> {
+    quick_xml::de::from_reader(reader).map_err(|e| Error::XmlDeserialize(e.to_string()))
+}
 
+fn restore_shared_string_text(mut sst: Sst, raw_items: Vec<RawSharedStringText>) -> Result<Sst> {
     if raw_items.len() != sst.items.len() {
         return Err(Error::XmlDeserialize(format!(
             "shared string item count mismatch: parsed {}, scanned {}",
@@ -2160,19 +2257,27 @@ fn deserialize_shared_strings(bytes: &[u8]) -> Result<Sst> {
     Ok(sst)
 }
 
-fn scan_shared_string_text(bytes: &[u8]) -> Result<Vec<RawSharedStringText>> {
+#[cfg(test)]
+fn deserialize_shared_strings_from_bytes(bytes: &[u8]) -> Result<Sst> {
+    let sst = deserialize_shared_strings(std::io::BufReader::new(bytes))?;
+    let raw_items = scan_shared_string_text(std::io::BufReader::new(bytes))?;
+    restore_shared_string_text(sst, raw_items)
+}
+
+fn scan_shared_string_text<R: std::io::BufRead>(reader: R) -> Result<Vec<RawSharedStringText>> {
     use quick_xml::events::Event;
 
-    let mut reader = quick_xml::Reader::from_reader(bytes);
+    let mut reader = quick_xml::Reader::from_reader(reader);
     reader.config_mut().trim_text(false);
     let mut stack: Vec<Vec<u8>> = Vec::new();
     let mut items = Vec::new();
     let mut current_item: Option<RawSharedStringText> = None;
     let mut text_target: Option<SharedStringTextTarget> = None;
     let mut text_value = String::new();
+    let mut buf = Vec::new();
 
     loop {
-        match reader.read_event() {
+        match reader.read_event_into(&mut buf) {
             Ok(Event::Start(start)) => {
                 let name = start.local_name().as_ref().to_vec();
                 let parent = stack.last().map(Vec::as_slice);
@@ -2250,6 +2355,7 @@ fn scan_shared_string_text(bytes: &[u8]) -> Result<Vec<RawSharedStringText>> {
             Ok(_) => {}
             Err(error) => return Err(Error::XmlParse(error.to_string())),
         }
+        buf.clear();
     }
 
     if current_item.is_some() || text_target.is_some() {
@@ -2374,6 +2480,25 @@ fn serialize_worksheet_with_slicer_extras(
         xml = replace_worksheet_controls(xml, controls)?;
     }
     if slicer_rids.is_empty() {
+        // Sparkline groups carry a broad set of optional style, color, and
+        // axis children which the public configuration does not model. When
+        // a structural edit has patched the retained worksheet XML, prefer
+        // that original extension list over rebuilding a reduced group.
+        if let Some(raw_xml) = raw_sheet.and_then(|bytes| std::str::from_utf8(bytes).ok()) {
+            let raw_sparklines = parse_sparklines_from_xml(raw_xml);
+            if raw_sparklines.as_slice() == sparklines {
+                if let Some(raw_ext) = ext_list_contents(raw_xml)
+                    .filter(|contents| contents.contains("sparklineGroups"))
+                {
+                    xml = remove_extension_list(xml);
+                    let closing = "</worksheet>";
+                    let position = xml.rfind(closing).ok_or_else(|| {
+                        Error::XmlParse("worksheet closing tag missing".to_string())
+                    })?;
+                    xml.insert_str(position, &format!("<extLst>{raw_ext}</extLst>"));
+                }
+            }
+        }
         return Ok(xml);
     }
     let generated_entries = ext_list_contents(&xml).unwrap_or_default();
@@ -2442,10 +2567,49 @@ fn replace_worksheet_controls(
     Ok(xml)
 }
 
+fn parse_worksheet_control_entries(xml: &str) -> Vec<(usize, String, String)> {
+    let mut entries = Vec::new();
+    let mut search_from = 0;
+    while let Some(relative_start) = xml[search_from..].find("<control ") {
+        let start = search_from + relative_start;
+        let Some(relative_end) = xml[start..].find("/>") else {
+            break;
+        };
+        let end = start + relative_end + 2;
+        let element = &xml[start..end];
+        let attribute = |name: &str| {
+            let marker = format!("{name}=\"");
+            let value_start = element.find(&marker)? + marker.len();
+            let value_end = element[value_start..].find('"')? + value_start;
+            Some(element[value_start..value_end].to_string())
+        };
+        if let (Some(shape_id), Some(rid), Some(name)) =
+            (attribute("shapeId"), attribute("r:id"), attribute("name"))
+        {
+            if let Ok(shape_id) = shape_id.parse() {
+                entries.push((shape_id, rid, name));
+            }
+        }
+        search_from = end;
+    }
+    entries
+}
+
 fn next_control_property_path(existing: &HashSet<String>) -> String {
     let mut number = 1usize;
     loop {
         let candidate = format!("xl/ctrlProps/ctrlProp{number}.xml");
+        if !existing.contains(&candidate) {
+            return candidate;
+        }
+        number += 1;
+    }
+}
+
+fn next_numbered_package_path(existing: &HashSet<String>, prefix: &str, suffix: &str) -> String {
+    let mut number = 1usize;
+    loop {
+        let candidate = format!("{prefix}{number}{suffix}");
         if !existing.contains(&candidate) {
             return candidate;
         }
@@ -2871,6 +3035,81 @@ mod tests {
         (0..archive.len())
             .filter(|index| archive.by_index(*index).unwrap().name() == name)
             .count()
+    }
+
+    fn assert_all_package_targets_exist(buffer: &[u8]) {
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(buffer)).unwrap();
+        let names: HashSet<String> = (0..archive.len())
+            .map(|index| archive.by_index(index).unwrap().name().to_string())
+            .collect();
+        let content_types: ContentTypes = {
+            let mut xml = String::new();
+            archive
+                .by_name("[Content_Types].xml")
+                .unwrap()
+                .read_to_string(&mut xml)
+                .unwrap();
+            quick_xml::de::from_str(&xml).unwrap()
+        };
+        for entry in content_types.overrides {
+            let path = entry.part_name.trim_start_matches('/');
+            if matches!(
+                path,
+                "docProps/core.xml" | "docProps/app.xml" | "docProps/custom.xml"
+            ) && !names.contains(path)
+            {
+                continue;
+            }
+            assert!(
+                names.contains(path),
+                "content type target missing: {}",
+                entry.part_name
+            );
+        }
+
+        let relationship_paths: Vec<String> = names
+            .iter()
+            .filter(|name| name.ends_with(".rels"))
+            .cloned()
+            .collect();
+        for relationship_path in relationship_paths {
+            let relationships: Relationships = {
+                let mut xml = String::new();
+                archive
+                    .by_name(&relationship_path)
+                    .unwrap()
+                    .read_to_string(&mut xml)
+                    .unwrap();
+                quick_xml::de::from_str(&xml).unwrap()
+            };
+            let owner = if relationship_path == "_rels/.rels" {
+                String::new()
+            } else {
+                let (directory, filename) = relationship_path.rsplit_once("/_rels/").unwrap();
+                format!("{directory}/{}", filename.trim_end_matches(".rels"))
+            };
+            for relationship in relationships.relationships {
+                if relationship.target_mode.as_deref() == Some("External") {
+                    continue;
+                }
+                let target = resolve_relationship_target(&owner, &relationship.target);
+                if relationship_path == "_rels/.rels"
+                    && matches!(
+                        relationship.rel_type.as_str(),
+                        rel_types::CORE_PROPERTIES
+                            | rel_types::EXTENDED_PROPERTIES
+                            | rel_types::CUSTOM_PROPERTIES
+                    )
+                    && !names.contains(&target)
+                {
+                    continue;
+                }
+                assert!(
+                    names.contains(&target),
+                    "relationship target missing: {relationship_path} -> {target}"
+                );
+            }
+        }
     }
 
     fn rewrite_zip_parts(buffer: &[u8], replacements: &[(&str, Option<Vec<u8>>)]) -> Vec<u8> {
@@ -3326,13 +3565,76 @@ mod tests {
   <si><t xml:space="preserve"> direct </t><r><rPr><b/></rPr><t xml:space="preserve"> rich </t></r><r><t><![CDATA[tail  ]]></t></r></si>
   <si><t>entity &lt;value&gt;</t></si>
 </sst>"#;
-        let sst = deserialize_shared_strings(xml).unwrap();
+        let sst = deserialize_shared_strings_from_bytes(xml).unwrap();
         assert_eq!(sst.items[0].t.as_ref().unwrap().value, "  plain\tline\n&  ");
         assert_eq!(sst.items[1].t.as_ref().unwrap().value, " direct ");
         assert_eq!(sst.items[1].r[0].t.value, " rich ");
         assert_eq!(sst.items[1].r[1].t.value, "tail  ");
         assert!(sst.items[1].r[0].r_pr.as_ref().unwrap().b.is_some());
         assert_eq!(sst.items[2].t.as_ref().unwrap().value, "entity <value>");
+    }
+
+    #[test]
+    fn scan_shared_string_text_reads_from_buffered_stream() {
+        struct ChunkedReader {
+            bytes: Vec<u8>,
+            offset: usize,
+        }
+
+        impl std::io::Read for ChunkedReader {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                if self.offset == self.bytes.len() {
+                    return Ok(0);
+                }
+                let len = (self.bytes.len() - self.offset).min(buf.len()).min(3);
+                buf[..len].copy_from_slice(&self.bytes[self.offset..self.offset + len]);
+                self.offset += len;
+                Ok(len)
+            }
+        }
+
+        let reader = std::io::BufReader::with_capacity(
+            5,
+            ChunkedReader {
+                bytes: b"<sst><si><t>  spaced  </t></si></sst>".to_vec(),
+                offset: 0,
+            },
+        );
+        let items = scan_shared_string_text(reader).unwrap();
+        assert_eq!(items[0].plain.as_deref(), Some("  spaced  "));
+    }
+
+    #[test]
+    fn read_shared_strings_part_preserves_highly_compressible_whitespace() {
+        use std::io::Write;
+
+        let padding = " ".repeat(1024 * 1024);
+        let xml = format!(
+            "<sst xmlns=\"{}\"><si><t xml:space=\"preserve\">{padding}value{padding}</t></si></sst>",
+            sheetkit_xml::namespaces::SPREADSHEET_ML
+        );
+        let mut zip_bytes = Vec::new();
+        {
+            let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut zip_bytes));
+            writer
+                .start_file(
+                    "xl/sharedStrings.xml",
+                    SimpleFileOptions::default().compression_method(CompressionMethod::Deflated),
+                )
+                .unwrap();
+            writer.write_all(xml.as_bytes()).unwrap();
+            writer.finish().unwrap();
+        }
+        assert!(zip_bytes.len() < xml.len() / 100);
+
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(zip_bytes)).unwrap();
+        let sst = read_shared_strings_part(&mut archive, "xl/sharedStrings.xml")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            sst.items[0].t.as_ref().unwrap().value,
+            format!("{padding}value{padding}")
+        );
     }
 
     #[test]
@@ -5436,6 +5738,94 @@ mod tests {
         let mut wb3 = Workbook::open_from_buffer(&saved).unwrap();
         let comments = wb3.get_comments("Sheet1").unwrap();
         assert_eq!(comments.len(), 2);
+    }
+
+    #[test]
+    fn test_lazy_sparse_comment_paths_remain_package_consistent_after_mutation() {
+        use crate::workbook::aux::AuxCategory;
+
+        let mut workbook = Workbook::new();
+        workbook.new_sheet("Sheet2").unwrap();
+        for (sheet, cell) in [("Sheet1", "A1"), ("Sheet2", "B2")] {
+            workbook
+                .add_comment(
+                    sheet,
+                    &crate::comment::CommentConfig {
+                        cell: cell.to_string(),
+                        author: "Author".to_string(),
+                        text: format!("Comment on {sheet}"),
+                    },
+                )
+                .unwrap();
+        }
+        let options = OpenOptions::new().read_mode(ReadMode::Lazy);
+        let base = workbook.save_to_buffer().unwrap();
+        let mut sparse = Workbook::open_from_buffer_with_options(&base, &options).unwrap();
+
+        for (sheet_idx, old_number, new_number) in [(0, 1, 7), (1, 2, 9)] {
+            let sheet_path = sparse.sheet_part_path(sheet_idx);
+            for (category, old_path, new_path) in [
+                (
+                    AuxCategory::Comments,
+                    format!("xl/comments{old_number}.xml"),
+                    format!("xl/comments{new_number}.xml"),
+                ),
+                (
+                    AuxCategory::Vml,
+                    format!("xl/drawings/vmlDrawing{old_number}.vml"),
+                    format!("xl/drawings/vmlDrawing{new_number}.vml"),
+                ),
+            ] {
+                let bytes = sparse
+                    .deferred_parts
+                    .remove_path(category, &old_path)
+                    .unwrap();
+                assert!(sparse.deferred_parts.insert(new_path.clone(), bytes));
+                for entry in &mut sparse.content_types.overrides {
+                    if entry.part_name == format!("/{old_path}") {
+                        entry.part_name = format!("/{new_path}");
+                    }
+                }
+                for relationship in &mut sparse
+                    .worksheet_rels
+                    .get_mut(&sheet_idx)
+                    .unwrap()
+                    .relationships
+                {
+                    if resolve_relationship_target(&sheet_path, &relationship.target) == old_path {
+                        relationship.target = relative_relationship_target(&sheet_path, &new_path);
+                    }
+                }
+            }
+        }
+        let sparse_package = sparse.save_to_buffer().unwrap();
+        let mut opened =
+            Workbook::open_from_buffer_with_options(&sparse_package, &options).unwrap();
+        opened
+            .add_comment(
+                "Sheet1",
+                &crate::comment::CommentConfig {
+                    cell: "C3".to_string(),
+                    author: "Author".to_string(),
+                    text: "Added comment".to_string(),
+                },
+            )
+            .unwrap();
+
+        let saved = opened.save_to_buffer().unwrap();
+        assert_all_package_targets_exist(&saved);
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&saved)).unwrap();
+        for path in [
+            "xl/comments7.xml",
+            "xl/comments9.xml",
+            "xl/drawings/vmlDrawing7.vml",
+            "xl/drawings/vmlDrawing9.vml",
+        ] {
+            assert!(
+                archive.by_name(path).is_ok(),
+                "missing retained part: {path}"
+            );
+        }
     }
 
     #[test]

@@ -58,6 +58,111 @@ fn next_numbered_part_path(
     }
 }
 
+fn replace_raw_text_once(raw: &[u8], old: &str, new: &str, path: &str) -> Result<Vec<u8>> {
+    let raw =
+        std::str::from_utf8(raw).map_err(|error| Error::XmlParse(format!("{path}: {error}")))?;
+    let count = raw.matches(old).count();
+    if count != 1 {
+        return Err(Error::InvalidArgument(format!(
+            "cannot safely patch retained raw XML for '{path}'"
+        )));
+    }
+    Ok(raw.replacen(old, new, 1).into_bytes())
+}
+
+fn replace_raw_element_texts(
+    raw: &[u8],
+    replacements: impl IntoIterator<Item = (String, String, String)>,
+    path: &str,
+) -> Result<Vec<u8>> {
+    let raw =
+        std::str::from_utf8(raw).map_err(|error| Error::XmlParse(format!("{path}: {error}")))?;
+    let replacements: std::collections::BTreeSet<_> = replacements.into_iter().collect();
+    let mut patched = raw.to_string();
+    let mut tokens = Vec::new();
+    for (index, (tag, old, new)) in replacements.into_iter().enumerate() {
+        if old == new {
+            continue;
+        }
+        let old = quick_xml::escape::escape(&old);
+        let needle = format!("<{tag}>{old}</{tag}>");
+        let token = format!("__sheetkit_element_{index}__");
+        if !patched.contains(&needle) || patched.contains(&token) {
+            return Err(Error::InvalidArgument(format!(
+                "cannot safely patch retained raw XML for '{path}'"
+            )));
+        }
+        patched = patched.replace(&needle, &format!("<{tag}>{token}</{tag}>"));
+        tokens.push((tag, token, new));
+    }
+    for (tag, token, new) in tokens {
+        let new = quick_xml::escape::escape(&new);
+        patched = patched.replace(
+            &format!("<{tag}>{token}</{tag}>"),
+            &format!("<{tag}>{new}</{tag}>"),
+        );
+    }
+    Ok(patched.into_bytes())
+}
+
+fn patch_raw_drawing_coordinates<F>(
+    raw: &[u8],
+    drawing: &WsDr,
+    shift_cell: F,
+    path: &str,
+) -> Result<Vec<u8>>
+where
+    F: Fn(u32, u32) -> (u32, u32) + Copy,
+{
+    let raw =
+        std::str::from_utf8(raw).map_err(|error| Error::XmlParse(format!("{path}: {error}")))?;
+    let mut values = std::collections::BTreeMap::new();
+    for anchor in &drawing.one_cell_anchors {
+        values.insert(
+            ("col", anchor.from.col),
+            shift_cell(anchor.from.col + 1, anchor.from.row + 1).0 - 1,
+        );
+        values.insert(
+            ("row", anchor.from.row),
+            shift_cell(anchor.from.col + 1, anchor.from.row + 1).1 - 1,
+        );
+    }
+    for anchor in &drawing.two_cell_anchors {
+        for marker in [&anchor.from, &anchor.to] {
+            let (col, row) = shift_cell(marker.col + 1, marker.row + 1);
+            values.insert(("col", marker.col), col - 1);
+            values.insert(("row", marker.row), row - 1);
+        }
+    }
+    // DrawingML markers use distinct col/row elements. Patch through temporary
+    // tokens so a 0->1 shift cannot be shifted a second time as 1->2.
+    let mut patched = raw.to_string();
+    for ((tag, old), new) in &values {
+        if old == new {
+            continue;
+        }
+        let needle = format!("<xdr:{tag}>{old}</xdr:{tag}>");
+        if !patched.contains(&needle) {
+            return Err(Error::InvalidArgument(format!(
+                "cannot safely patch retained raw XML for '{path}'"
+            )));
+        }
+        patched = patched.replace(
+            &needle,
+            &format!("<xdr:{tag}>__sheetkit_{tag}_{old}__</xdr:{tag}>"),
+        );
+    }
+    for ((tag, old), new) in values {
+        if old != new {
+            patched = patched.replace(
+                &format!("<xdr:{tag}>__sheetkit_{tag}_{old}__</xdr:{tag}>"),
+                &format!("<xdr:{tag}>{new}</xdr:{tag}>"),
+            );
+        }
+    }
+    Ok(patched.into_bytes())
+}
+
 fn validate_drawing_relationship_ids(drawing: &WsDr, relationships: &Relationships) -> Result<()> {
     let mut required = Vec::new();
     for anchor in &drawing.two_cell_anchors {
@@ -617,6 +722,180 @@ impl Workbook {
         })
     }
 
+    /// Materialize only the deferred closure owned by a sheet being copied.
+    ///
+    /// This deliberately does not use the broad lazy loaders: a workbook can
+    /// contain unrelated malformed or opaque deferred parts which must remain
+    /// byte-for-byte pass-through when copying a different sheet.
+    fn hydrate_owned_parts_for_copy(&mut self, sheet_idx: usize) -> Result<()> {
+        use crate::workbook::aux::AuxCategory;
+
+        let sheet_path = self.sheet_part_path(sheet_idx);
+        let rels = self
+            .worksheet_rels
+            .get(&sheet_idx)
+            .cloned()
+            .unwrap_or_else(crate::workbook_paths::default_relationships);
+        let target = |kind: &str| {
+            rels.relationships
+                .iter()
+                .filter(move |rel| rel.rel_type == kind)
+                .map(|rel| resolve_relationship_target(&sheet_path, &rel.target))
+                .collect::<Vec<_>>()
+        };
+
+        // Validate every fallible parse before changing any workbook state.
+        let comments = target(rel_types::COMMENTS);
+        let vml = target(rel_types::VML_DRAWING);
+        let tables = target(rel_types::TABLE);
+        let threaded = target(sheetkit_xml::threaded_comment::REL_TYPE_THREADED_COMMENT);
+        let drawings = target(rel_types::DRAWING);
+        for (paths, category, parse) in [
+            (&comments, AuxCategory::Comments, 0u8),
+            (&tables, AuxCategory::Tables, 1),
+            (&threaded, AuxCategory::ThreadedComments, 2),
+            (&drawings, AuxCategory::Drawings, 3),
+        ] {
+            for path in paths {
+                let Some(bytes) = self.deferred_parts.get_path(category, path) else {
+                    continue;
+                };
+                let xml = std::str::from_utf8(bytes)
+                    .map_err(|error| Error::XmlParse(format!("{path}: {error}")))?;
+                let valid =
+                    match parse {
+                        0 => quick_xml::de::from_str::<Comments>(xml).is_ok(),
+                        1 => quick_xml::de::from_str::<sheetkit_xml::table::TableXml>(xml).is_ok(),
+                        2 => quick_xml::de::from_str::<
+                            sheetkit_xml::threaded_comment::ThreadedComments,
+                        >(xml)
+                        .is_ok(),
+                        _ => quick_xml::de::from_str::<WsDr>(xml).is_ok(),
+                    };
+                if !valid {
+                    return Err(Error::XmlDeserialize(format!(
+                        "cannot hydrate copied sheet part '{path}'"
+                    )));
+                }
+            }
+        }
+        let mut drawing_rels = Vec::new();
+        for drawing in &drawings {
+            let path = relationship_part_path(drawing);
+            if let Some(bytes) = self
+                .deferred_parts
+                .get_path(AuxCategory::DrawingRels, &path)
+            {
+                let xml = std::str::from_utf8(bytes)
+                    .map_err(|error| Error::XmlParse(format!("{path}: {error}")))?;
+                let parsed = quick_xml::de::from_str::<Relationships>(xml)
+                    .map_err(|error| Error::XmlDeserialize(format!("{path}: {error}")))?;
+                drawing_rels.push((drawing.clone(), path, parsed));
+            }
+        }
+
+        for path in comments {
+            if let Some(bytes) = self
+                .deferred_parts
+                .remove_path(AuxCategory::Comments, &path)
+            {
+                let xml = std::str::from_utf8(&bytes)
+                    .map_err(|error| Error::XmlParse(error.to_string()))?;
+                self.sheet_comments[sheet_idx] = Some(
+                    quick_xml::de::from_str(xml)
+                        .map_err(|error| Error::XmlDeserialize(error.to_string()))?,
+                );
+            }
+        }
+        for path in tables {
+            if let Some(bytes) = self.deferred_parts.remove_path(AuxCategory::Tables, &path) {
+                let xml = std::str::from_utf8(&bytes)
+                    .map_err(|error| Error::XmlParse(error.to_string()))?;
+                self.tables.push((
+                    path,
+                    quick_xml::de::from_str(xml)
+                        .map_err(|error| Error::XmlDeserialize(error.to_string()))?,
+                    sheet_idx,
+                ));
+            }
+        }
+        for path in threaded {
+            if let Some(bytes) = self
+                .deferred_parts
+                .remove_path(AuxCategory::ThreadedComments, &path)
+            {
+                let xml = std::str::from_utf8(&bytes)
+                    .map_err(|error| Error::XmlParse(error.to_string()))?;
+                self.sheet_threaded_comments[sheet_idx] = Some(
+                    quick_xml::de::from_str(xml)
+                        .map_err(|error| Error::XmlDeserialize(error.to_string()))?,
+                );
+            }
+        }
+        for path in vml {
+            if let Some(bytes) = self.deferred_parts.remove_path(AuxCategory::Vml, &path) {
+                let controls =
+                    crate::control::parse_form_control_configs(&String::from_utf8_lossy(&bytes));
+                self.sheet_vml[sheet_idx] = Some(bytes);
+                if self.sheet_form_controls[sheet_idx].is_empty() && !controls.is_empty() {
+                    self.sheet_form_controls[sheet_idx] = controls;
+                }
+            }
+        }
+        for drawing_path in drawings {
+            if let Some(bytes) = self
+                .deferred_parts
+                .remove_path(AuxCategory::Drawings, &drawing_path)
+            {
+                let xml = std::str::from_utf8(&bytes)
+                    .map_err(|error| Error::XmlParse(error.to_string()))?;
+                let drawing = quick_xml::de::from_str(xml)
+                    .map_err(|error| Error::XmlDeserialize(error.to_string()))?;
+                self.remember_raw_graph_part(drawing_path.clone(), bytes);
+                let idx = self.drawings.len();
+                self.drawings.push((drawing_path.clone(), drawing));
+                self.worksheet_drawings.insert(sheet_idx, idx);
+            }
+        }
+        for (drawing_path, rels_path, rels) in drawing_rels {
+            if self
+                .deferred_parts
+                .remove_path(AuxCategory::DrawingRels, &rels_path)
+                .is_some()
+            {
+                if let Some(idx) = self
+                    .drawings
+                    .iter()
+                    .position(|(path, _)| path == &drawing_path)
+                {
+                    self.drawing_rels.insert(idx, rels.clone());
+                    for relationship in &rels.relationships {
+                        let path = resolve_relationship_target(&drawing_path, &relationship.target);
+                        if relationship.rel_type == rel_types::IMAGE {
+                            if let Some(bytes) =
+                                self.deferred_parts.remove_path(AuxCategory::Images, &path)
+                            {
+                                self.images.push((path, bytes));
+                            }
+                        } else if relationship.rel_type == rel_types::CHART {
+                            if let Some(bytes) =
+                                self.deferred_parts.remove_path(AuxCategory::Charts, &path)
+                            {
+                                self.remember_raw_graph_part(path.clone(), bytes.clone());
+                                match quick_xml::de::from_reader::<_, ChartSpace>(bytes.as_slice())
+                                {
+                                    Ok(chart) => self.charts.push((path, chart)),
+                                    Err(_) => self.raw_charts.push((path, bytes)),
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn remove_unreferenced_drawing(&mut self, drawing_idx: usize) {
         if self
             .worksheet_drawings
@@ -770,6 +1049,10 @@ impl Workbook {
                 name: target.to_string(),
             });
         }
+        // Resolve only this sheet's owned deferred closure. This keeps lazy
+        // siblings untouched while making the normal copy validation below
+        // operate on complete source state.
+        self.hydrate_owned_parts_for_copy(src_idx)?;
         self.hydrate_sparklines_for_sheet(src_idx);
 
         let cloned_streamed = self
@@ -788,7 +1071,6 @@ impl Workbook {
             WorksheetXml::default()
         };
 
-        use crate::workbook::aux::AuxCategory;
         let source_rels = self
             .worksheet_rels
             .get(&src_idx)
@@ -804,37 +1086,17 @@ impl Workbook {
         let source_has_drawing = has_rel_type(rel_types::DRAWING);
         let source_has_comments = has_rel_type(rel_types::COMMENTS);
         let source_has_vml = has_rel_type(rel_types::VML_DRAWING);
+        let source_has_controls = has_rel_type(rel_types::CONTROL_PROPERTIES);
         let source_has_tables = has_rel_type(rel_types::TABLE);
         let source_has_threaded =
             has_rel_type(sheetkit_xml::threaded_comment::REL_TYPE_THREADED_COMMENT);
         let occupied_aux_paths = self.occupied_part_paths();
-        let deferred_source_data = (source_has_drawing
-            && [
-                AuxCategory::Drawings,
-                AuxCategory::DrawingRels,
-                AuxCategory::Charts,
-                AuxCategory::Images,
-            ]
-            .into_iter()
-            .any(|category| self.deferred_parts.has_category(category)))
-            || (source_has_comments && self.deferred_parts.has_category(AuxCategory::Comments))
-            || (source_has_vml && self.deferred_parts.has_category(AuxCategory::Vml))
-            || (source_has_tables && self.deferred_parts.has_category(AuxCategory::Tables))
-            || (source_has_threaded
-                && self
-                    .deferred_parts
-                    .has_category(AuxCategory::ThreadedComments));
-        if deferred_source_data {
-            return Err(Error::InvalidArgument(
-                "cannot copy a sheet with deferred relationship parts; hydrate them first".into(),
-            ));
-        }
-
         for relationship in &source_rels.relationships {
             let supported = relationship.rel_type == rel_types::HYPERLINK
                 || relationship.rel_type == rel_types::DRAWING
                 || relationship.rel_type == rel_types::COMMENTS
                 || relationship.rel_type == rel_types::VML_DRAWING
+                || relationship.rel_type == rel_types::CONTROL_PROPERTIES
                 || relationship.rel_type == rel_types::TABLE
                 || relationship.rel_type
                     == sheetkit_xml::threaded_comment::REL_TYPE_THREADED_COMMENT;
@@ -905,6 +1167,30 @@ impl Workbook {
             {
                 return Err(Error::InvalidArgument(
                     "worksheet VML relationship is unresolved".into(),
+                ));
+            }
+        }
+        if source_has_controls {
+            let control_relationships: Vec<&Relationship> = source_rels
+                .relationships
+                .iter()
+                .filter(|relationship| relationship.rel_type == rel_types::CONTROL_PROPERTIES)
+                .collect();
+            let all_resolved = control_relationships.iter().all(|relationship| {
+                let path = crate::workbook_paths::resolve_relationship_target(
+                    &source_sheet_path,
+                    &relationship.target,
+                );
+                self.unknown_parts
+                    .iter()
+                    .any(|(unknown_path, _)| unknown_path == &path)
+                    && content_type_matches(&path, mime_types::CONTROL_PROPERTIES)
+            });
+            if !all_resolved
+                || control_relationships.len() != self.sheet_form_controls[src_idx].len()
+            {
+                return Err(Error::InvalidArgument(
+                    "worksheet form-control relationships are unresolved".into(),
                 ));
             }
         }
@@ -1151,7 +1437,11 @@ impl Workbook {
         self.sheet_sparklines
             .push(self.sheet_sparklines[src_idx].clone());
         self.sheet_sparklines_hydrated.push(true);
-        self.sheet_vml.push(self.sheet_vml[src_idx].clone());
+        self.sheet_vml.push(
+            self.sheet_vml[src_idx]
+                .as_deref()
+                .and_then(crate::control::strip_form_control_shapes_from_vml),
+        );
         self.raw_sheet_xml.push(None);
         self.sheet_dirty.push(true);
         let mut occupied_thread_ids: std::collections::HashSet<String> = self
@@ -1638,6 +1928,91 @@ impl Workbook {
         self.hydrate_drawings();
         self.hydrate_tables();
         self.validate_typed_chart_ownership()?;
+        self.validate_retained_raw_graph_patches(target_sheet_idx, shift_cell)?;
+        Ok(())
+    }
+
+    fn validate_retained_raw_graph_patches<F>(
+        &self,
+        target_sheet_idx: usize,
+        shift_cell: F,
+    ) -> Result<()>
+    where
+        F: Fn(u32, u32) -> (u32, u32) + Copy,
+    {
+        let target_sheet_name_lowercase = self.worksheets[target_sheet_idx].0.to_lowercase();
+        for (path, chart) in &self.charts {
+            let Some(raw) = self.raw_graph_parts.get(path) else {
+                continue;
+            };
+            let owner = self.chart_owner_sheet_idx(path)?;
+            let mut shifted = chart.clone();
+            let mut replacements = Vec::new();
+            visit_chart_references(&mut shifted, |formula| {
+                let next = shift_references_for_owner(
+                    formula,
+                    owner,
+                    target_sheet_idx,
+                    &target_sheet_name_lowercase,
+                    shift_cell,
+                )?;
+                if next != *formula {
+                    replacements.push((formula.clone(), next.clone()));
+                    *formula = next;
+                }
+                Ok(())
+            })?;
+            let mut patched = raw.clone();
+            for (old, new) in replacements {
+                patched = replace_raw_text_once(&patched, &old, &new, path)?;
+            }
+        }
+        if let Some(&drawing_idx) = self.worksheet_drawings.get(&target_sheet_idx) {
+            if let Some((path, drawing)) = self.drawings.get(drawing_idx) {
+                if let Some(raw) = self.raw_graph_parts.get(path) {
+                    patch_raw_drawing_coordinates(raw, drawing, shift_cell, path)?;
+                }
+            }
+        }
+        for (owner_sheet_idx, sparklines) in self.sheet_sparklines.iter().enumerate() {
+            let Some(Some(raw)) = self.raw_sheet_xml.get(owner_sheet_idx) else {
+                continue;
+            };
+            let mut replacements = Vec::new();
+            for sparkline in sparklines {
+                let data_range = shift_references_for_owner(
+                    &sparkline.data_range,
+                    owner_sheet_idx,
+                    target_sheet_idx,
+                    &target_sheet_name_lowercase,
+                    shift_cell,
+                )?;
+                if data_range != sparkline.data_range {
+                    replacements.push((
+                        "xm:f".to_string(),
+                        sparkline.data_range.clone(),
+                        data_range,
+                    ));
+                }
+                if owner_sheet_idx == target_sheet_idx {
+                    let location = shift_references_for_owner(
+                        &sparkline.location,
+                        owner_sheet_idx,
+                        target_sheet_idx,
+                        &target_sheet_name_lowercase,
+                        shift_cell,
+                    )?;
+                    if location != sparkline.location {
+                        replacements.push((
+                            "xm:sqref".to_string(),
+                            sparkline.location.clone(),
+                            location,
+                        ));
+                    }
+                }
+            }
+            replace_raw_element_texts(raw, replacements, &self.sheet_part_path(owner_sheet_idx))?;
+        }
         Ok(())
     }
 
@@ -2244,25 +2619,65 @@ impl Workbook {
             }
         }
 
+        let mut sparkline_raw_replacements: Vec<(usize, &'static str, String, String)> = Vec::new();
         for (owner_sheet_idx, sparklines) in self.sheet_sparklines.iter_mut().enumerate() {
             for sparkline in sparklines {
-                sparkline.data_range = shift_references_for_owner(
+                let data_range = shift_references_for_owner(
                     &sparkline.data_range,
                     owner_sheet_idx,
                     sheet_idx,
                     &target_sheet_name_lowercase,
                     shift_cell,
                 )?;
+                if data_range != sparkline.data_range {
+                    sparkline_raw_replacements.push((
+                        owner_sheet_idx,
+                        "xm:f",
+                        sparkline.data_range.clone(),
+                        data_range.clone(),
+                    ));
+                    sparkline.data_range = data_range;
+                }
                 if owner_sheet_idx == sheet_idx {
-                    sparkline.location = shift_references_for_owner(
+                    let location = shift_references_for_owner(
                         &sparkline.location,
                         owner_sheet_idx,
                         sheet_idx,
                         &target_sheet_name_lowercase,
                         shift_cell,
                     )?;
+                    if location != sparkline.location {
+                        sparkline_raw_replacements.push((
+                            owner_sheet_idx,
+                            "xm:sqref",
+                            sparkline.location.clone(),
+                            location.clone(),
+                        ));
+                        sparkline.location = location;
+                    }
                 }
             }
+        }
+        let mut replacements_by_owner: std::collections::BTreeMap<
+            usize,
+            Vec<(String, String, String)>,
+        > = std::collections::BTreeMap::new();
+        for (owner_sheet_idx, tag, old, new) in sparkline_raw_replacements {
+            replacements_by_owner
+                .entry(owner_sheet_idx)
+                .or_default()
+                .push((tag.to_string(), old, new));
+        }
+        for (owner_sheet_idx, replacements) in replacements_by_owner {
+            let Some(Some(raw)) = self.raw_sheet_xml.get(owner_sheet_idx) else {
+                continue;
+            };
+            let patched = replace_raw_element_texts(
+                raw,
+                replacements,
+                &self.sheet_part_path(owner_sheet_idx),
+            )?;
+            self.raw_sheet_xml[owner_sheet_idx] = Some(patched);
         }
 
         let mut shifted_table = false;
@@ -2299,6 +2714,7 @@ impl Workbook {
         let mut dirty_chart_paths = Vec::new();
         for chart_idx in 0..self.charts.len() {
             let mut changed = false;
+            let mut replacements = Vec::new();
             let owner_sheet_idx = self.chart_owner_sheet_idx(&self.charts[chart_idx].0)?;
             {
                 let chart = &mut self.charts[chart_idx].1;
@@ -2312,13 +2728,23 @@ impl Workbook {
                     )?;
                     if shifted != *formula {
                         changed = true;
+                        replacements.push((formula.clone(), shifted.clone()));
                         *formula = shifted;
                     }
                     Ok(())
                 })?;
             }
             if changed {
-                dirty_chart_paths.push(self.charts[chart_idx].0.clone());
+                let path = self.charts[chart_idx].0.clone();
+                if let Some(raw) = self.raw_graph_parts.get(&path) {
+                    let mut patched = raw.clone();
+                    for (old, new) in replacements {
+                        patched = replace_raw_text_once(&patched, &old, &new, &path)?;
+                    }
+                    self.raw_graph_parts.insert(path, patched);
+                } else {
+                    dirty_chart_paths.push(path);
+                }
             }
         }
         for path in dirty_chart_paths {
@@ -2328,6 +2754,11 @@ impl Workbook {
         // Drawing anchors attached to this sheet.
         if let Some(&drawing_idx) = self.worksheet_drawings.get(&sheet_idx) {
             let mut changed = false;
+            let raw_drawing = self.drawings.get(drawing_idx).and_then(|(path, drawing)| {
+                self.raw_graph_parts
+                    .get(path)
+                    .map(|raw| (path.clone(), drawing.clone(), raw.clone()))
+            });
             if let Some((_, drawing)) = self.drawings.get_mut(drawing_idx) {
                 for anchor in &mut drawing.one_cell_anchors {
                     let (new_col, new_row) = shift_cell(anchor.from.col + 1, anchor.from.row + 1);
@@ -2347,7 +2778,12 @@ impl Workbook {
                 }
             }
             if changed {
-                self.mark_drawing_dirty(drawing_idx);
+                if let Some((path, drawing, raw)) = raw_drawing {
+                    let patched = patch_raw_drawing_coordinates(&raw, &drawing, shift_cell, &path)?;
+                    self.raw_graph_parts.insert(path, patched);
+                } else {
+                    self.mark_drawing_dirty(drawing_idx);
+                }
             }
         }
 
@@ -2469,6 +2905,8 @@ impl Workbook {
 #[allow(clippy::approx_constant)]
 mod tests {
     use super::*;
+    use crate::chart::{ChartSeries, ChartType};
+    use crate::image::ImageFormat;
     use crate::workbook::aux::AuxCategory;
     use std::io::Read;
     use tempfile::TempDir;
@@ -2826,6 +3264,11 @@ mod tests {
             },
         )
         .unwrap();
+        wb.add_form_control(
+            "Sheet1",
+            crate::control::FormControlConfig::button("D4", "Copied control"),
+        )
+        .unwrap();
         wb.add_table(
             "Sheet1",
             &TableConfig {
@@ -2868,6 +3311,9 @@ mod tests {
         )
         .unwrap();
 
+        let source = wb.save_to_buffer().unwrap();
+        let mut wb = Workbook::open_from_buffer(&source).unwrap();
+
         wb.copy_sheet("Sheet1", "Copied").unwrap();
 
         let copied_link = wb.get_cell_hyperlink("Copied", "A1").unwrap().unwrap();
@@ -2877,11 +3323,12 @@ mod tests {
         );
         assert_eq!(wb.get_comments("Copied").unwrap().len(), 1);
         assert_eq!(wb.get_threaded_comments("Copied").unwrap().len(), 1);
+        assert_eq!(wb.get_form_controls("Copied").unwrap().len(), 1);
         let copied_tables = wb.get_tables("Copied").unwrap();
         assert_eq!(copied_tables.len(), 1);
         assert_ne!(copied_tables[0].name, "SourceTable");
         assert_eq!(wb.drawings.len(), 2);
-        assert_eq!(wb.charts.len(), 2);
+        assert_eq!(wb.charts.len() + wb.raw_charts.len(), 2);
 
         wb.delete_sheet("Sheet1").unwrap();
         let bytes = wb.save_to_buffer().unwrap();
@@ -2908,6 +3355,7 @@ mod tests {
             .is_some());
         assert_eq!(reopened.get_comments("Copied").unwrap().len(), 1);
         assert_eq!(reopened.get_threaded_comments("Copied").unwrap().len(), 1);
+        assert_eq!(reopened.get_form_controls("Copied").unwrap().len(), 1);
         assert_eq!(reopened.get_tables("Copied").unwrap().len(), 1);
     }
 
@@ -3818,6 +4266,219 @@ mod tests {
         let copied = workbook.get_sparklines("Copy").unwrap();
         assert_eq!(copied[0].data_range, "Sheet1!A3:A4");
         assert_eq!(copied[0].location, "B2");
+    }
+
+    #[test]
+    fn structural_edit_targets_sparkline_elements_not_matching_cell_references() {
+        let mut source = Workbook::new();
+        source.set_cell_value("Sheet1", "B2", 42).unwrap();
+        source
+            .add_sparkline(
+                "Sheet1",
+                &crate::sparkline::SparklineConfig::new("Sheet1!A2:A3", "B2"),
+            )
+            .unwrap();
+        let bytes = source.save_to_buffer().unwrap();
+        let mut workbook = Workbook::open_from_buffer(&bytes).unwrap();
+
+        workbook.insert_rows("Sheet1", 2, 1).unwrap();
+
+        assert_eq!(
+            workbook.get_cell_value("Sheet1", "B3").unwrap(),
+            CellValue::Number(42.0)
+        );
+        let sparklines = workbook.get_sparklines("Sheet1").unwrap();
+        assert_eq!(sparklines[0].data_range, "Sheet1!A3:A4");
+        assert_eq!(sparklines[0].location, "B3");
+    }
+
+    #[test]
+    fn structural_edit_shifts_sparklines_that_share_a_data_range() {
+        let mut source = Workbook::new();
+        for location in ["B2", "C2"] {
+            source
+                .add_sparkline(
+                    "Sheet1",
+                    &crate::sparkline::SparklineConfig::new("Sheet1!A2:A3", location),
+                )
+                .unwrap();
+        }
+        let bytes = source.save_to_buffer().unwrap();
+        let mut workbook = Workbook::open_from_buffer(&bytes).unwrap();
+
+        workbook.insert_rows("Sheet1", 2, 1).unwrap();
+
+        let sparklines = workbook.get_sparklines("Sheet1").unwrap();
+        assert_eq!(sparklines.len(), 2);
+        assert!(sparklines
+            .iter()
+            .all(|sparkline| sparkline.data_range == "Sheet1!A3:A4"));
+        assert_eq!(sparklines[0].location, "B3");
+        assert_eq!(sparklines[1].location, "C3");
+        let saved = workbook.save_to_buffer().unwrap();
+        let sheet = String::from_utf8(zip_part(&saved, "xl/worksheets/sheet1.xml")).unwrap();
+        assert_eq!(sheet.matches("<xm:f>Sheet1!A3:A4</xm:f>").count(), 2);
+    }
+
+    #[test]
+    fn structural_edit_rejects_unpatchable_sparkline_xml_atomically() {
+        let mut source = Workbook::new();
+        source.set_cell_value("Sheet1", "B2", 42).unwrap();
+        source
+            .add_sparkline(
+                "Sheet1",
+                &crate::sparkline::SparklineConfig::new("Sheet1!A2:A3", "B2"),
+            )
+            .unwrap();
+        let bytes = source.save_to_buffer().unwrap();
+        let mut workbook = Workbook::open_from_buffer(&bytes).unwrap();
+        workbook.hydrate_sparklines_for_sheet(0);
+        assert_eq!(workbook.sheet_sparklines[0][0].location, "B2");
+        let raw = String::from_utf8(workbook.raw_sheet_xml[0].clone().unwrap()).unwrap();
+        workbook.raw_sheet_xml[0] = Some(
+            raw.replace("<xm:sqref>B2</xm:sqref>", "<xm:sqref>B2:B2</xm:sqref>")
+                .into_bytes(),
+        );
+        let before = workbook.save_to_buffer().unwrap();
+
+        let error = workbook.insert_rows("Sheet1", 2, 1).unwrap_err();
+
+        assert!(matches!(error, Error::InvalidArgument(_)));
+        assert_eq!(workbook.save_to_buffer().unwrap(), before);
+        assert_eq!(
+            workbook.get_cell_value("Sheet1", "B2").unwrap(),
+            CellValue::Number(42.0)
+        );
+        assert!(!workbook.is_sheet_dirty(0));
+    }
+
+    #[test]
+    fn structural_edit_preserves_raw_sparkline_group_metadata() {
+        let mut source = Workbook::new();
+        source
+            .add_sparkline(
+                "Sheet1",
+                &crate::sparkline::SparklineConfig::new("Sheet1!A2:A3", "B2"),
+            )
+            .unwrap();
+        let bytes = source.save_to_buffer().unwrap();
+        let mut workbook = Workbook::open_from_buffer(&bytes).unwrap();
+        let raw = String::from_utf8(workbook.raw_sheet_xml[0].clone().unwrap()).unwrap();
+        workbook.raw_sheet_xml[0] = Some(
+            raw.replace(
+                "</x14:sparklineGroup>",
+                "<x14:colorSeries rgb=\"FF112233\"/><x14:colorAxis rgb=\"FF445566\"/><x14:displayEmptyCellsAs val=\"span\"/></x14:sparklineGroup>",
+            )
+            .into_bytes(),
+        );
+
+        workbook.insert_rows("Sheet1", 2, 1).unwrap();
+        let saved = workbook.save_to_buffer().unwrap();
+        let sheet = String::from_utf8(zip_part(&saved, "xl/worksheets/sheet1.xml")).unwrap();
+        assert!(sheet.contains("colorSeries rgb=\"FF112233\""));
+        assert!(sheet.contains("colorAxis rgb=\"FF445566\""));
+        assert!(sheet.contains("displayEmptyCellsAs val=\"span\""));
+        assert!(sheet.contains("Sheet1!A3:A4"));
+        assert!(sheet.contains("<xm:sqref>B3</xm:sqref>"));
+    }
+
+    #[test]
+    fn structural_edit_preserves_advanced_raw_chart_and_drawing_fragments() {
+        let mut source = Workbook::new();
+        source.set_cell_value("Sheet1", "A2", 1).unwrap();
+        source.set_cell_value("Sheet1", "B2", 2).unwrap();
+        source
+            .add_chart(
+                "Sheet1",
+                "D2",
+                "J12",
+                &ChartConfig {
+                    chart_type: ChartType::Line,
+                    title: None,
+                    series: vec![ChartSeries {
+                        name: "Series".into(),
+                        categories: "Sheet1!A2:A2".into(),
+                        values: "Sheet1!B2:B2".into(),
+                        x_values: None,
+                        bubble_sizes: None,
+                    }],
+                    show_legend: false,
+                    view_3d: None,
+                },
+            )
+            .unwrap();
+        source
+            .add_image(
+                "Sheet1",
+                &ImageConfig {
+                    data: vec![0x89, 0x50, 0x4e, 0x47],
+                    format: ImageFormat::Png,
+                    from_cell: "B2".into(),
+                    width_px: 8,
+                    height_px: 8,
+                },
+            )
+            .unwrap();
+        let bytes = source.save_to_buffer().unwrap();
+        let drawing_path = source.drawings[0].0.clone();
+        let chart_path = source.charts[0].0.clone();
+        let drawing = String::from_utf8(zip_part(&bytes, &drawing_path)).unwrap();
+        let chart = String::from_utf8(zip_part(&bytes, &chart_path)).unwrap();
+        source.raw_graph_parts.insert(
+            drawing_path.clone(),
+            drawing
+                .replace("</wsDr>", "<xdr:opaque><xdr:keep/></xdr:opaque></wsDr>")
+                .into_bytes(),
+        );
+        source.dirty_graph_parts.remove(&drawing_path);
+        source.raw_graph_parts.insert(
+            chart_path.clone(),
+            chart
+                .replace("</chartSpace>", "<c:extLst><c:ext uri=\"{opaque}\"><c:dLbls/><c:dateAx/><c:spPr/></c:ext></c:extLst></chartSpace>")
+                .into_bytes(),
+        );
+        source.dirty_graph_parts.remove(&chart_path);
+
+        source.insert_rows("Sheet1", 2, 1).unwrap();
+        let saved = source.save_to_buffer().unwrap();
+        let drawing = String::from_utf8(zip_part(&saved, &drawing_path)).unwrap();
+        let chart = String::from_utf8(zip_part(&saved, &chart_path)).unwrap();
+        assert!(drawing.contains("<xdr:opaque><xdr:keep/></xdr:opaque>"));
+        assert!(chart.contains("<c:dLbls/><c:dateAx/><c:spPr/>"));
+        assert!(chart.contains("Sheet1!A3:A3"));
+    }
+
+    #[test]
+    fn structural_edit_rejects_unpatchable_raw_drawing_before_mutation() {
+        let mut workbook = Workbook::new();
+        workbook
+            .set_cell_value("Sheet1", "A1", "unchanged")
+            .unwrap();
+        workbook
+            .add_image(
+                "Sheet1",
+                &ImageConfig {
+                    data: vec![0x89, 0x50, 0x4e, 0x47],
+                    format: ImageFormat::Png,
+                    from_cell: "B2".into(),
+                    width_px: 8,
+                    height_px: 8,
+                },
+            )
+            .unwrap();
+        let drawing_path = workbook.drawings[0].0.clone();
+        workbook
+            .raw_graph_parts
+            .insert(drawing_path, b"<xdr:wsDr/>".to_vec());
+
+        assert!(matches!(
+            workbook.insert_rows("Sheet1", 1, 1),
+            Err(Error::InvalidArgument(_))
+        ));
+        assert_eq!(
+            workbook.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("unchanged".into())
+        );
     }
 
     #[test]

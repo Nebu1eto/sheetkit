@@ -51,6 +51,7 @@ pub struct JsProtectionStyle {
 
 #[napi(object)]
 pub struct DateValue {
+    #[napi(js_name = "type")]
     pub kind: String,
     pub serial: f64,
     pub iso: Option<String>,

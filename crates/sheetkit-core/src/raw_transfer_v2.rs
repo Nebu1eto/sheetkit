@@ -118,6 +118,15 @@ impl RowEntriesV2 {
 /// string table. This enables incremental row-by-row decoding without eagerly
 /// decoding all strings.
 pub fn sheet_to_raw_buffer_v2(ws: &WorksheetXml, sst: &SharedStringTable) -> Result<Vec<u8>> {
+    sheet_to_raw_buffer_v2_with_date_styles(ws, sst, &[])
+}
+
+/// Serialize a worksheet while promoting numeric cells that use date styles.
+pub fn sheet_to_raw_buffer_v2_with_date_styles(
+    ws: &WorksheetXml,
+    sst: &SharedStringTable,
+    style_is_date: &[bool],
+) -> Result<Vec<u8>> {
     let rows = &ws.sheet_data.rows;
 
     if rows.is_empty() {
@@ -133,7 +142,7 @@ pub fn sheet_to_raw_buffer_v2(ws: &WorksheetXml, sst: &SharedStringTable) -> Res
     let row_count = (max_row - min_row + 1) as usize;
     let col_count = (max_col - min_col + 1) as usize;
 
-    let cell_entries = collect_cell_entries_v2(ws, sst, min_col)?;
+    let cell_entries = collect_cell_entries_v2(ws, sst, min_col, style_is_date)?;
 
     let flags: u32 = (min_col & 0xFFFF) << 16;
 
@@ -208,6 +217,7 @@ fn collect_cell_entries_v2(
     ws: &WorksheetXml,
     sst: &SharedStringTable,
     min_col: u32,
+    style_is_date: &[bool],
 ) -> Result<Vec<RowEntriesV2>> {
     let mut result = Vec::with_capacity(ws.sheet_data.rows.len());
     let shared_formulas = SharedFormulaResolver::new(ws)?;
@@ -221,7 +231,8 @@ fn collect_cell_entries_v2(
         for cell in &row.cells {
             let col = resolve_col(cell)?;
             let relative_col = (col - min_col) as u16;
-            let (type_tag, payload) = encode_cell_value_v2(cell, sst, &shared_formulas)?;
+            let (type_tag, payload) =
+                encode_cell_value_v2(cell, sst, &shared_formulas, style_is_date)?;
             cells.push(CellEntryV2 {
                 col: relative_col,
                 type_tag,
@@ -242,6 +253,7 @@ fn encode_cell_value_v2(
     cell: &sheetkit_xml::worksheet::Cell,
     sst: &SharedStringTable,
     shared_formulas: &SharedFormulaResolver,
+    style_is_date: &[bool],
 ) -> Result<(u8, CellPayload)> {
     if cell.f.is_some() {
         if let Some(formula_expr) = shared_formulas.formula_for(cell)? {
@@ -304,7 +316,14 @@ fn encode_cell_value_v2(
         CellTypeTag::None | CellTypeTag::Number => {
             if let Some(ref v) = cell.v {
                 if let Ok(n) = v.parse::<f64>() {
-                    return Ok((TYPE_NUMBER, CellPayload::Number(n)));
+                    let is_date = cell
+                        .s
+                        .and_then(|idx| style_is_date.get(idx as usize).copied())
+                        .unwrap_or(false);
+                    return Ok((
+                        if is_date { TYPE_DATE } else { TYPE_NUMBER },
+                        CellPayload::Number(n),
+                    ));
                 }
             }
             Ok((TYPE_EMPTY, CellPayload::Empty))

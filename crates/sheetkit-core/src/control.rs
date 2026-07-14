@@ -623,6 +623,33 @@ pub fn parse_form_controls(vml_xml: &str) -> Vec<FormControlInfo> {
     controls
 }
 
+/// Parse form controls into the complete configuration needed for regeneration.
+pub(crate) fn parse_form_control_configs(vml_xml: &str) -> Vec<FormControlConfig> {
+    let mut controls = Vec::new();
+    let mut search_from = 0;
+    while let Some(shape_start) = vml_xml[search_from..].find("<v:shape ") {
+        let abs_start = search_from + shape_start;
+        let shape_end = match vml_xml[abs_start..].find("</v:shape>") {
+            Some(pos) => abs_start + pos + "</v:shape>".len(),
+            None => break,
+        };
+        let shape_xml = &vml_xml[abs_start..shape_end];
+        if let Some(info) = parse_single_control(shape_xml) {
+            let mut config = info.to_config();
+            if let Some((width, height)) = extract_anchor_dimensions(shape_xml) {
+                config.width = Some(width);
+                config.height = Some(height);
+            }
+            if shape_xml.contains("<x:NoThreeD") {
+                config.three_d = Some(false);
+            }
+            controls.push(config);
+        }
+        search_from = shape_end;
+    }
+    controls
+}
+
 /// Parse a single v:shape element into a FormControlInfo, if it is a form control.
 fn parse_single_control(shape_xml: &str) -> Option<FormControlInfo> {
     // Find the ClientData element.
@@ -735,6 +762,28 @@ fn extract_anchor_cell(cd_xml: &str) -> Option<String> {
     crate::utils::cell_ref::coordinates_to_cell_name(col0 + 1, row0 + 1).ok()
 }
 
+fn extract_anchor_dimensions(shape_xml: &str) -> Option<(f64, f64)> {
+    let anchor_text = extract_element(shape_xml, "x:Anchor")?;
+    let parts = anchor_text
+        .split(',')
+        .map(str::trim)
+        .map(str::parse::<i64>)
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .ok()?;
+    if parts.len() != 8 {
+        return None;
+    }
+    let width_units = (parts[4] - parts[0]) * 1024 + parts[5] - parts[1];
+    let height_units = (parts[6] - parts[2]) * 256 + parts[7] - parts[3];
+    if width_units <= 0 || height_units <= 0 {
+        return None;
+    }
+    Some((
+        width_units as f64 * 48.0 / 1024.0,
+        height_units as f64 * 15.0 / 256.0,
+    ))
+}
+
 /// Merge new form control VML into existing VML bytes (for sheets that
 /// already have VML content from comments or other controls).
 ///
@@ -835,6 +884,63 @@ pub(crate) fn next_vml_shape_id(vml_bytes: &[u8]) -> usize {
         remaining = &digits[length..];
     }
     next
+}
+
+pub(crate) fn form_control_shape_ids(vml_bytes: &[u8]) -> Vec<usize> {
+    let text = String::from_utf8_lossy(vml_bytes);
+    let mut ids = Vec::new();
+    let mut search_from = 0;
+    while let Some(shape_start) = text[search_from..].find("<v:shape ") {
+        let abs_start = search_from + shape_start;
+        let Some(relative_end) = text[abs_start..].find("</v:shape>") else {
+            break;
+        };
+        let shape_end = abs_start + relative_end + "</v:shape>".len();
+        let shape = &text[abs_start..shape_end];
+        if parse_single_control(shape).is_some() {
+            if let Some(marker) = shape.find("id=\"_x0000_s") {
+                let digits = &shape[marker + "id=\"_x0000_s".len()..];
+                let length = digits.bytes().take_while(u8::is_ascii_digit).count();
+                if let Ok(id) = digits[..length].parse() {
+                    ids.push(id);
+                }
+            }
+        }
+        search_from = shape_end;
+    }
+    ids
+}
+
+pub(crate) fn remove_form_control_shape(vml_bytes: &[u8], control_index: usize) -> Option<Vec<u8>> {
+    let text = String::from_utf8_lossy(vml_bytes);
+    let mut current_control = 0usize;
+    let mut search_from = 0;
+    while let Some(shape_start) = text[search_from..].find("<v:shape ") {
+        let abs_start = search_from + shape_start;
+        let Some(relative_end) = text[abs_start..].find("</v:shape>") else {
+            break;
+        };
+        let shape_end = abs_start + relative_end + "</v:shape>".len();
+        let shape = &text[abs_start..shape_end];
+        if parse_single_control(shape).is_some() {
+            if current_control == control_index {
+                let mut result = String::with_capacity(text.len() - (shape_end - abs_start));
+                result.push_str(&text[..abs_start]);
+                result.push_str(&text[shape_end..]);
+                return if parse_form_controls(&result).is_empty()
+                    && !result.contains("ObjectType=\"Note\"")
+                    && !result.contains("<v:shape ")
+                {
+                    None
+                } else {
+                    Some(result.into_bytes())
+                };
+            }
+            current_control += 1;
+        }
+        search_from = shape_end;
+    }
+    Some(vml_bytes.to_vec())
 }
 
 /// Strip form control shapes from VML bytes, keeping non-control shapes.
@@ -1188,6 +1294,22 @@ mod tests {
         assert_eq!(controls.len(), 1);
         assert_eq!(controls[0].control_type, FormControlType::Button);
         assert_eq!(controls[0].text.as_deref(), Some("Click Me"));
+    }
+
+    #[test]
+    fn test_parse_form_control_configs_preserves_dimensions_and_flat_style() {
+        let mut config = FormControlConfig::button("B2", "Custom");
+        config.width = Some(200.0);
+        config.height = Some(40.0);
+        config.three_d = Some(false);
+        let vml = build_form_control_vml(&[config], 1025);
+
+        let parsed = parse_form_control_configs(&vml);
+
+        assert_eq!(parsed.len(), 1);
+        assert!((parsed[0].width.unwrap() - 200.0).abs() < 0.05);
+        assert!((parsed[0].height.unwrap() - 40.0).abs() < 0.05);
+        assert_eq!(parsed[0].three_d, Some(false));
     }
 
     #[test]
@@ -1756,6 +1878,29 @@ mod tests {
         assert_eq!(controls.len(), 2);
         assert_eq!(controls[0].control_type, FormControlType::Button);
         assert_eq!(controls[1].control_type, FormControlType::SpinButton);
+    }
+
+    #[test]
+    fn test_failed_delete_form_control_preserves_vml_after_save_reopen() {
+        use crate::workbook::Workbook;
+        use crate::workbook::{AuxParts, OpenOptions, ReadMode};
+
+        let mut wb = Workbook::new();
+        wb.add_form_control("Sheet1", FormControlConfig::button("A1", "Preserve"))
+            .unwrap();
+        let source = wb.save_to_buffer().unwrap();
+        let opts = OpenOptions::new()
+            .read_mode(ReadMode::Eager)
+            .aux_parts(AuxParts::EagerLoad);
+        let mut reopened = Workbook::open_from_buffer_with_options(&source, &opts).unwrap();
+
+        assert!(reopened.delete_form_control("Sheet1", 1).is_err());
+
+        let saved = reopened.save_to_buffer().unwrap();
+        let mut roundtripped = Workbook::open_from_buffer_with_options(&saved, &opts).unwrap();
+        let controls = roundtripped.get_form_controls("Sheet1").unwrap();
+        assert_eq!(controls.len(), 1);
+        assert_eq!(controls[0].text.as_deref(), Some("Preserve"));
     }
 
     #[test]

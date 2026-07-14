@@ -147,9 +147,12 @@ function validateBuffer(buf: Buffer, view: DataView, magic: number): void {
       }
       if (dataStart + rowCount * rowSize !== length)
         throw new Error('Invalid buffer: trailing data');
+      for (let offset = dataStart; offset < length; offset += CELL_STRIDE) {
+        validateV1Cell(view, offset, stringCount);
+      }
       return;
     }
-    validateSparseRows(view, length, entries, dataStart, false, colCount);
+    validateSparseRows(view, length, entries, dataStart, false, colCount, stringCount);
     return;
   }
   validateSparseRows(view, length, entries, cellDataStart, true, colCount);
@@ -162,6 +165,7 @@ function validateSparseRows(
   dataStart: number,
   isV2: boolean,
   colCount: number,
+  stringCount?: number,
 ): void {
   let cursor = dataStart;
   for (const entry of entries) {
@@ -184,14 +188,17 @@ function validateSparseRows(
       const type = view.getUint8(cursor + 2);
       if (type > TYPE_RICH_STRING) throw new Error(`Invalid buffer: unknown cell type ${type}`);
       if (!isV2) {
+        validateV1Cell(view, cursor + 2, stringCount ?? 0);
         cursor += SPARSE_ENTRY_SIZE;
         continue;
       }
       cursor += 3;
       let payloadSize = 0;
       if (type === TYPE_NUMBER || type === TYPE_DATE) payloadSize = 8;
-      else if (type === TYPE_BOOL) payloadSize = 1;
-      else if (type >= TYPE_STRING) {
+      else if (type === TYPE_BOOL) {
+        if (view.getUint8(cursor) > 1) throw new Error('Invalid buffer: boolean payload');
+        payloadSize = 1;
+      } else if (type >= TYPE_STRING) {
         requireRange(length, cursor, 4, 'v2 string length');
         payloadSize = 4 + view.getUint32(cursor, true);
       }
@@ -200,6 +207,24 @@ function validateSparseRows(
     }
   }
   if (cursor !== length) throw new Error('Invalid buffer: trailing data');
+}
+
+function validateV1Cell(view: DataView, offset: number, stringCount: number): void {
+  const type = view.getUint8(offset);
+  if (type > TYPE_RICH_STRING) throw new Error(`Invalid buffer: unknown cell type ${type}`);
+  const payloadOffset = offset + 1;
+  if (type === TYPE_BOOL && view.getUint8(payloadOffset) > 1) {
+    throw new Error('Invalid buffer: boolean payload');
+  }
+  if (
+    (type === TYPE_STRING ||
+      type === TYPE_ERROR ||
+      type === TYPE_FORMULA ||
+      type === TYPE_RICH_STRING) &&
+    view.getUint32(payloadOffset, true) >= stringCount
+  ) {
+    throw new Error('Invalid buffer: string index is out of range');
+  }
 }
 
 function readHeaderV1(view: DataView): BufferHeader {

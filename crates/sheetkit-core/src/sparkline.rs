@@ -36,7 +36,7 @@ impl SparklineType {
 }
 
 /// Configuration for creating a sparkline group.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SparklineConfig {
     /// Data source range (e.g., "Sheet1!A1:A10").
     pub data_range: String,

@@ -21,10 +21,10 @@ use sheetkit_core::validation::{
 use crate::types::*;
 
 pub(crate) type JsCellInputValue = Either6<String, f64, bool, DateValue, FormulaValue, Null>;
-pub(crate) type JsCellOutputValue = Either6<Null, bool, f64, String, DateValue, FormulaValue>;
+pub(crate) type JsCellOutputValue = Either5<Null, bool, f64, String, DateValue>;
 
-pub(crate) fn js_value_to_cell_value(v: JsCellInputValue) -> CellValue {
-    match v {
+pub(crate) fn js_value_to_cell_value(v: JsCellInputValue) -> Result<CellValue> {
+    Ok(match v {
         Either6::A(s) => CellValue::String(s),
         Either6::B(n) => CellValue::Number(n),
         Either6::C(b) => CellValue::Bool(b),
@@ -33,23 +33,41 @@ pub(crate) fn js_value_to_cell_value(v: JsCellInputValue) -> CellValue {
             expr: formula.formula,
             result: formula
                 .result
-                .map(|result| Box::new(formula_result_to_cell_value(result))),
+                .map(formula_result_to_cell_value)
+                .transpose()?
+                .map(Box::new),
         },
         Either6::F(_) => CellValue::Empty,
-    }
+    })
 }
 
-fn formula_result_to_cell_value(value: FormulaResultValue) -> CellValue {
+fn formula_result_to_cell_value(value: FormulaResultValue) -> Result<CellValue> {
     match value.value_type.as_str() {
-        "boolean" => CellValue::Bool(value.bool_value.unwrap_or(false)),
-        "number" => CellValue::Number(value.number_value.unwrap_or(0.0)),
+        "empty" => Ok(CellValue::Empty),
+        "boolean" => value
+            .bool_value
+            .map(CellValue::Bool)
+            .ok_or_else(|| Error::from_reason("formula boolean result requires boolValue")),
+        "number" => value
+            .number_value
+            .map(CellValue::Number)
+            .ok_or_else(|| Error::from_reason("formula number result requires numberValue")),
         "date" => value
             .date
             .map(|date| CellValue::Date(date.serial))
-            .unwrap_or_default(),
-        "error" => CellValue::Error(value.value.unwrap_or_default()),
-        "string" => CellValue::String(value.value.unwrap_or_default()),
-        _ => CellValue::Empty,
+            .ok_or_else(|| Error::from_reason("formula date result requires date")),
+        "error" => value
+            .value
+            .map(CellValue::Error)
+            .ok_or_else(|| Error::from_reason("formula error result requires value")),
+        "string" => value
+            .value
+            .map(CellValue::String)
+            .ok_or_else(|| Error::from_reason("formula string result requires value")),
+        "formula" => Err(Error::from_reason("formula results cannot be nested")),
+        other => Err(Error::from_reason(format!(
+            "unknown formula result type: {other}"
+        ))),
     }
 }
 
@@ -179,11 +197,11 @@ pub(crate) fn hyperlink_info_to_js(info: &HyperlinkInfo) -> JsHyperlinkInfo {
 
 pub(crate) fn cell_value_to_either(value: CellValue) -> Result<JsCellOutputValue> {
     Ok(match value {
-        CellValue::Empty => Either6::A(Null),
-        CellValue::Bool(b) => Either6::B(b),
-        CellValue::Number(n) => Either6::C(n),
-        CellValue::String(s) => Either6::D(s),
-        CellValue::Date(serial) => Either6::E(DateValue {
+        CellValue::Empty => Either5::A(Null),
+        CellValue::Bool(b) => Either5::B(b),
+        CellValue::Number(n) => Either5::C(n),
+        CellValue::String(s) => Either5::D(s),
+        CellValue::Date(serial) => Either5::E(DateValue {
             kind: "date".to_string(),
             serial,
             iso: sheetkit_core::cell::serial_to_datetime(serial).map(|dt| {
@@ -194,14 +212,10 @@ pub(crate) fn cell_value_to_either(value: CellValue) -> Result<JsCellOutputValue
                 }
             }),
         }),
-        CellValue::Formula { expr, result } => Either6::F(FormulaValue {
-            kind: "formula".to_string(),
-            formula: expr,
-            result: result.map(|result| cell_value_to_formula_result(&result)),
-        }),
-        CellValue::Error(e) => Either6::D(e),
+        CellValue::Formula { expr, .. } => Either5::D(expr),
+        CellValue::Error(e) => Either5::D(e),
         CellValue::RichString(runs) => {
-            Either6::D(sheetkit_core::rich_text::rich_text_to_plain(&runs))
+            Either5::D(sheetkit_core::rich_text::rich_text_to_plain(&runs))
         }
     })
 }
@@ -1255,23 +1269,25 @@ pub(crate) fn js_open_options_to_core(
     let Some(js) = js else {
         return sheetkit_core::workbook::OpenOptions::default();
     };
+    let defaults = sheetkit_core::workbook::OpenOptions::default();
     // Prefer read_mode; fall back to parse_mode for backward compatibility.
     let read_mode = if let Some(rm) = js.read_mode.as_deref() {
         match rm {
             "lazy" => sheetkit_core::workbook::ReadMode::Lazy,
             "stream" => sheetkit_core::workbook::ReadMode::Stream,
-            _ => sheetkit_core::workbook::ReadMode::Eager,
+            _ => defaults.read_mode,
         }
     } else {
         match js.parse_mode.as_deref() {
             Some("readfast") => sheetkit_core::workbook::ReadMode::Lazy,
             Some("full") => sheetkit_core::workbook::ReadMode::Eager,
-            _ => sheetkit_core::workbook::ReadMode::Eager,
+            _ => defaults.read_mode,
         }
     };
     let aux_parts = match js.aux_parts.as_deref() {
         Some("deferred") => sheetkit_core::workbook::AuxParts::Deferred,
-        _ => sheetkit_core::workbook::AuxParts::EagerLoad,
+        Some(_) => sheetkit_core::workbook::AuxParts::EagerLoad,
+        None => defaults.aux_parts,
     };
     let date_interpretation = match js.date_interpretation.as_deref() {
         Some("cellType") => sheetkit_core::workbook::DateInterpretation::CellType,
@@ -1457,26 +1473,44 @@ mod tests {
     }
 
     #[test]
-    fn napi_formula_output_preserves_cached_date() {
+    fn napi_formula_output_returns_expression_string() {
         let value = cell_value_to_either(CellValue::Formula {
             expr: "TODAY()".to_string(),
             result: Some(Box::new(CellValue::Date(45292.5))),
         })
         .expect("formula output");
 
-        let Either6::F(formula) = value else {
-            panic!("expected formula output");
+        let Either5::D(formula) = value else {
+            panic!("expected formula expression");
         };
-        assert_eq!(formula.formula, "TODAY()");
-        assert_eq!(
-            formula
-                .result
-                .expect("cached result")
-                .date
-                .expect("cached date")
-                .serial,
-            45292.5
-        );
+        assert_eq!(formula, "TODAY()");
+    }
+
+    #[test]
+    fn formula_result_requires_matching_payload() {
+        let value = FormulaResultValue {
+            value_type: "number".to_string(),
+            value: None,
+            number_value: None,
+            bool_value: None,
+            date: None,
+        };
+
+        assert!(formula_result_to_cell_value(value).is_err());
+    }
+
+    #[test]
+    fn formula_result_rejects_unknown_and_nested_types() {
+        for value_type in ["unknown", "formula"] {
+            let value = FormulaResultValue {
+                value_type: value_type.to_string(),
+                value: Some("A1+1".to_string()),
+                number_value: None,
+                bool_value: None,
+                date: None,
+            };
+            assert!(formula_result_to_cell_value(value).is_err());
+        }
     }
 
     #[test]
@@ -1512,11 +1546,11 @@ mod tests {
         let defaults = js_open_options_to_core(Some(&options(None)));
         assert!(matches!(
             defaults.read_mode,
-            sheetkit_core::workbook::ReadMode::Eager
+            sheetkit_core::workbook::ReadMode::Lazy
         ));
         assert!(matches!(
             defaults.aux_parts,
-            sheetkit_core::workbook::AuxParts::EagerLoad
+            sheetkit_core::workbook::AuxParts::Deferred
         ));
         let legacy = js_open_options_to_core(Some(&options(Some("readfast".to_string()))));
         assert!(matches!(

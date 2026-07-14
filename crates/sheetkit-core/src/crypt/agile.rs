@@ -1321,4 +1321,270 @@ mod tests {
             Err(Error::IncorrectPassword)
         ));
     }
+
+    fn deterministic_agile_vector(hash: HashAlgorithm) -> (Vec<u8>, AgileEncryptionInfo, Vec<u8>) {
+        let hash_size = hash.output_size() as u32;
+        let hash_algorithm = match hash {
+            HashAlgorithm::Sha1 => "SHA1",
+            HashAlgorithm::Sha256 => "SHA256",
+            HashAlgorithm::Sha384 => "SHA384",
+            HashAlgorithm::Sha512 => "SHA512",
+        };
+        let key_data = KeyData {
+            salt_size: 16,
+            block_size: 16,
+            key_bits: 128,
+            hash_size,
+            cipher_algorithm: "AES".into(),
+            cipher_chaining: "ChainingModeCBC".into(),
+            hash_algorithm: hash_algorithm.into(),
+            salt_value: (0x10..0x20).collect(),
+        };
+        let encryptor_salt: Vec<u8> = (0x20..0x30).collect();
+        let secret_key: Vec<u8> = (0x30..0x40).collect();
+        let verifier_input: Vec<u8> = (0x40..0x50).collect();
+        let password = "correct horse battery staple";
+        let spin_count = 3;
+
+        let encryptor = KeyEncryptor {
+            spin_count,
+            salt_size: 16,
+            block_size: 16,
+            key_bits: 128,
+            hash_size,
+            cipher_algorithm: "AES".into(),
+            cipher_chaining: "ChainingModeCBC".into(),
+            hash_algorithm: hash_algorithm.into(),
+            salt_value: encryptor_salt.clone(),
+            encrypted_verifier_hash_input: aes_cbc_encrypt(
+                &derive_key_agile(
+                    password,
+                    &encryptor_salt,
+                    spin_count,
+                    128,
+                    super::super::block_keys::VERIFIER_HASH_INPUT,
+                    hash,
+                )
+                .unwrap(),
+                &encryptor_salt,
+                &verifier_input,
+            )
+            .unwrap(),
+            encrypted_verifier_hash_value: aes_cbc_encrypt(
+                &derive_key_agile(
+                    password,
+                    &encryptor_salt,
+                    spin_count,
+                    128,
+                    super::super::block_keys::VERIFIER_HASH_VALUE,
+                    hash,
+                )
+                .unwrap(),
+                &encryptor_salt,
+                &hash.digest(&[&verifier_input]),
+            )
+            .unwrap(),
+            encrypted_key_value: aes_cbc_encrypt(
+                &derive_key_agile(
+                    password,
+                    &encryptor_salt,
+                    spin_count,
+                    128,
+                    super::super::block_keys::KEY_VALUE,
+                    hash,
+                )
+                .unwrap(),
+                &encryptor_salt,
+                &secret_key,
+            )
+            .unwrap(),
+        };
+        let mut plaintext = b"PK\x03\x04 deterministic agile package ".to_vec();
+        plaintext.extend(std::iter::repeat_n(b'x', SEGMENT_SIZE + 17));
+        let mut package = (plaintext.len() as u64).to_le_bytes().to_vec();
+        package.extend(encrypt_segments(&plaintext, &secret_key, &key_data).unwrap());
+
+        let hmac_key: Vec<u8> = (0x50..).take(hash.output_size()).collect();
+        let data_integrity = DataIntegrity {
+            encrypted_hmac_key: aes_cbc_encrypt(
+                &secret_key,
+                &generate_iv(
+                    &key_data.salt_value,
+                    super::super::block_keys::HMAC_KEY,
+                    key_data.block_size,
+                    hash,
+                )
+                .unwrap(),
+                &hmac_key,
+            )
+            .unwrap(),
+            encrypted_hmac_value: aes_cbc_encrypt(
+                &secret_key,
+                &generate_iv(
+                    &key_data.salt_value,
+                    super::super::block_keys::HMAC_VALUE,
+                    key_data.block_size,
+                    hash,
+                )
+                .unwrap(),
+                &hash.hmac(&hmac_key, &package).unwrap(),
+            )
+            .unwrap(),
+        };
+        (
+            package,
+            AgileEncryptionInfo {
+                key_data,
+                data_integrity,
+                key_encryptors: vec![encryptor],
+            },
+            plaintext,
+        )
+    }
+
+    #[test]
+    fn decrypts_and_authenticates_all_agile_hash_variants() {
+        for hash in [
+            HashAlgorithm::Sha1,
+            HashAlgorithm::Sha256,
+            HashAlgorithm::Sha384,
+            HashAlgorithm::Sha512,
+        ] {
+            let (package, info, plaintext) = deterministic_agile_vector(hash);
+            let encryptor = &info.key_encryptors[0];
+            let key = verify_password_agile("correct horse battery staple", encryptor).unwrap();
+            verify_data_integrity(&package, &key, &info.key_data, &info.data_integrity).unwrap();
+            assert_eq!(
+                decrypt_package_agile(&package, &key, &info.key_data).unwrap(),
+                plaintext
+            );
+            assert!(matches!(
+                verify_password_agile("wrong password", encryptor),
+                Err(Error::IncorrectPassword)
+            ));
+
+            let mut tampered_package = package.clone();
+            tampered_package[8] ^= 1;
+            assert!(verify_data_integrity(
+                &tampered_package,
+                &key,
+                &info.key_data,
+                &info.data_integrity
+            )
+            .is_err());
+
+            let mut tampered_integrity = info.data_integrity.clone();
+            tampered_integrity.encrypted_hmac_value[0] ^= 1;
+            assert!(
+                verify_data_integrity(&package, &key, &info.key_data, &tampered_integrity).is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn decrypts_independent_fixed_agile_hash_vectors() {
+        use base64::Engine;
+
+        struct Vector {
+            algorithm: &'static str,
+            hash_size: u32,
+            verifier_input: &'static str,
+            verifier_hash: &'static str,
+            encrypted_key: &'static str,
+            package: &'static str,
+            hmac_key: &'static str,
+            hmac_value: &'static str,
+        }
+
+        // Generated independently with Python hashlib/hmac and OpenSSL 3.6.3
+        // AES-CBC from the MS-OFFCRYPTO Agile derivation procedure.
+        let vectors = [
+            Vector {
+                algorithm: "SHA1",
+                hash_size: 20,
+                verifier_input: "LPesWa5gJXU6F36RRsb7pw==",
+                verifier_hash: "hbKym57nkI8B9Dt8FJ35uk0do1BHaebCSRCj9qOevkc=",
+                encrypted_key: "cVf73NcAwn8b8k0rD4MRaw==",
+                package: "HQAAAAAAAADcNX58VY7FvJ9zrMGJQSu3rC32zaBbMzaeZYoK2fW6lw==",
+                hmac_key: "cokst1GSTFV1I+36ijSQ58QEEaqwKaoG/p/8zEYg7W8=",
+                hmac_value: "Uaj+/hcqe51kUHfmeVdfT+D8KPr90xqjkRLtysvQSrc=",
+            },
+            Vector {
+                algorithm: "SHA256",
+                hash_size: 32,
+                verifier_input: "uf/wC2EyRwoIjsAZmyBHgA==",
+                verifier_hash: "WunyS6GevYmXymbYWklhwmE+X36XWv7uPAyt00+dQ/g=",
+                encrypted_key: "aOHFsocUbK6NB062FZFjRA==",
+                package: "HQAAAAAAAACzIQZDZGFqwswdpWy2G6UhMtteUlYG2LEB3Pri5jWbBQ==",
+                hmac_key: "ac8Gte/w4X+MHgFIw8Gr0POjFOMqweDdXZPrJ8H8ihM=",
+                hmac_value: "E2rvI36dITc56SBGgeryai6Qo8k8qZuDnrpS+xbN0HU=",
+            },
+            Vector {
+                algorithm: "SHA384",
+                hash_size: 48,
+                verifier_input: "hF46yNgIbarHOPPUIniAAA==",
+                verifier_hash: "P9dsL9URWSXVQJnibMc/2e9iltYeyV/YvZb9PcWfD36lkRY5bIh+db+EoLqug1+8",
+                encrypted_key: "iFmqheH2XB7i35xvShS/5A==",
+                package: "HQAAAAAAAABYeImSz8OdwUC1dJ94kU7hVrQB0SfLDdyT0jeLDYxpCQ==",
+                hmac_key: "uWHm9XgmWbp/vbWmylz3k4oK+PM6XbU7CEm+wG2VeNMHwGjIMsJ5kXlTUCVGgNyj",
+                hmac_value: "jFRsga1ZKMIQGs0XjXYzxso/Xz0WuaKwFHfK16jlOT8pmtdnqW5OBuvWP2B5mlOC",
+            },
+            Vector {
+                algorithm: "SHA512",
+                hash_size: 64,
+                verifier_input: "wdgPdXWpGqp2IYgK99NiGg==",
+                verifier_hash: "TYcmVMXS+7IK1J+jxPhuhGgD3OEM047slC+Y7MpRo5MWRft0/yfNQBo2EkMhYAa1TcPl9+6kHjZBUwMRh3wNlQ==",
+                encrypted_key: "b+6qEojktO/JlBKkc1zLLg==",
+                package: "HQAAAAAAAAByWleTxijyGj9rTxmTn10I6GtjBup1orC5hjWW7t2FSA==",
+                hmac_key: "qR5vt7/zXZExwHHYufqPBDPFEUzOMX5hEo3g/7ECx0x/VeHEcdc+W6A+iBw75iHsJqNo8bpOhA9FS+3XA9h7FA==",
+                hmac_value: "Eb6evYJYzw3sOb4xO7M5ofDIFWI7GmVZ/3Ve6P3b/a2SFhxyE3SDcnMO/eugqrMFhgJ2DKt1OEafR5JPH4EgSQ==",
+            },
+        ];
+        let decode = |value: &str| {
+            base64::engine::general_purpose::STANDARD
+                .decode(value)
+                .unwrap()
+        };
+        let plaintext = b"PK\x03\x04 independent agile vector";
+
+        for vector in vectors {
+            let key_data = KeyData {
+                salt_size: 16,
+                block_size: 16,
+                key_bits: 128,
+                hash_size: vector.hash_size,
+                cipher_algorithm: "AES".into(),
+                cipher_chaining: "ChainingModeCBC".into(),
+                hash_algorithm: vector.algorithm.into(),
+                salt_value: (0x10..0x20).collect(),
+            };
+            let encryptor = KeyEncryptor {
+                spin_count: 3,
+                salt_size: 16,
+                block_size: 16,
+                key_bits: 128,
+                hash_size: vector.hash_size,
+                cipher_algorithm: "AES".into(),
+                cipher_chaining: "ChainingModeCBC".into(),
+                hash_algorithm: vector.algorithm.into(),
+                salt_value: (0x20..0x30).collect(),
+                encrypted_verifier_hash_input: decode(vector.verifier_input),
+                encrypted_verifier_hash_value: decode(vector.verifier_hash),
+                encrypted_key_value: decode(vector.encrypted_key),
+            };
+            let package = decode(vector.package);
+            let integrity = DataIntegrity {
+                encrypted_hmac_key: decode(vector.hmac_key),
+                encrypted_hmac_value: decode(vector.hmac_value),
+            };
+
+            let key = verify_password_agile("correct horse battery staple", &encryptor).unwrap();
+            assert_eq!(key, (0x30..0x40).collect::<Vec<_>>());
+            verify_data_integrity(&package, &key, &key_data, &integrity).unwrap();
+            assert_eq!(
+                &decrypt_package_agile(&package, &key, &key_data).unwrap(),
+                plaintext
+            );
+        }
+    }
 }

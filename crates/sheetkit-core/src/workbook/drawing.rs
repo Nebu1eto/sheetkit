@@ -47,6 +47,20 @@ fn next_drawing_object_id(drawing: &WsDr) -> Result<u32> {
 }
 
 impl Workbook {
+    /// Validate that a slicer anchor can be allocated without mutating it.
+    pub(crate) fn validate_slicer_anchor(&mut self, sheet_idx: usize, cell: &str) -> Result<()> {
+        self.ensure_owned_drawing_hydratable(sheet_idx)?;
+        self.hydrate_drawings();
+        if let Some(drawing_idx) = self.ensure_owned_drawing_parsed(sheet_idx)? {
+            let fallback_id = next_drawing_object_id(&self.drawings[drawing_idx].1)?;
+            fallback_id
+                .checked_add(1)
+                .ok_or_else(|| Error::InvalidArgument("drawing object ID overflow".to_string()))?;
+        }
+        cell_name_to_coordinates(cell)?;
+        Ok(())
+    }
+
     /// Add the visible anchor used by a slicer.
     pub(crate) fn add_slicer_anchor(
         &mut self,

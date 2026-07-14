@@ -66,6 +66,15 @@ const SPARSE_CELL_STRIDE: usize = 11;
 /// string references via `sst`. The resulting buffer uses either dense or
 /// sparse layout depending on cell density relative to the bounding rectangle.
 pub fn sheet_to_raw_buffer(ws: &WorksheetXml, sst: &SharedStringTable) -> Result<Vec<u8>> {
+    sheet_to_raw_buffer_with_date_styles(ws, sst, &[])
+}
+
+/// Serialize a worksheet while promoting numeric cells that use date styles.
+pub fn sheet_to_raw_buffer_with_date_styles(
+    ws: &WorksheetXml,
+    sst: &SharedStringTable,
+    style_is_date: &[bool],
+) -> Result<Vec<u8>> {
     let rows = &ws.sheet_data.rows;
 
     if rows.is_empty() {
@@ -87,7 +96,7 @@ pub fn sheet_to_raw_buffer(ws: &WorksheetXml, sst: &SharedStringTable) -> Result
 
     let mut string_table = StringTableBuilder::from_sst(sst);
 
-    let cell_entries = collect_cell_entries(ws, sst, min_col, &mut string_table)?;
+    let cell_entries = collect_cell_entries(ws, sst, min_col, &mut string_table, style_is_date)?;
 
     let flags: u32 = (if sparse { FLAG_SPARSE } else { 0 }) | ((min_col & 0xFFFF) << 16);
 
@@ -265,6 +274,7 @@ fn collect_cell_entries(
     sst: &SharedStringTable,
     min_col: u32,
     string_table: &mut StringTableBuilder,
+    style_is_date: &[bool],
 ) -> Result<Vec<RowEntries>> {
     let mut result = Vec::with_capacity(ws.sheet_data.rows.len());
     let shared_formulas = SharedFormulaResolver::new(ws)?;
@@ -278,7 +288,8 @@ fn collect_cell_entries(
         for cell in &row.cells {
             let col = resolve_col(cell)?;
             let relative_col = col - min_col;
-            let (type_tag, payload) = encode_cell_value(cell, sst, string_table, &shared_formulas)?;
+            let (type_tag, payload) =
+                encode_cell_value(cell, sst, string_table, &shared_formulas, style_is_date)?;
             cells.push(CellEntry {
                 col: relative_col,
                 type_tag,
@@ -300,6 +311,7 @@ fn encode_cell_value(
     sst: &SharedStringTable,
     string_table: &mut StringTableBuilder,
     shared_formulas: &SharedFormulaResolver,
+    style_is_date: &[bool],
 ) -> Result<(u8, [u8; 8])> {
     let mut payload = [0u8; 8];
 
@@ -374,7 +386,11 @@ fn encode_cell_value(
             if let Some(ref v) = cell.v {
                 if let Ok(n) = v.parse::<f64>() {
                     payload.copy_from_slice(&n.to_le_bytes());
-                    return Ok((TYPE_NUMBER, payload));
+                    let is_date = cell
+                        .s
+                        .and_then(|idx| style_is_date.get(idx as usize).copied())
+                        .unwrap_or(false);
+                    return Ok((if is_date { TYPE_DATE } else { TYPE_NUMBER }, payload));
                 }
             }
             Ok((TYPE_EMPTY, payload))

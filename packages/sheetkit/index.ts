@@ -188,7 +188,7 @@ function toNativeCellValue(value: CellValueInput): NativeCellValueInput {
   if (typeof value !== 'object' || value === null) {
     return value as NativeCellValueInput;
   }
-  if ('kind' in value && value.kind === 'date') {
+  if ('type' in value && value.type === 'date') {
     return { ...value, iso: value.iso ?? undefined } as NativeCellValueInput;
   }
   if ('type' in value && value.type === 'formula' && value.result?.date) {
@@ -237,7 +237,7 @@ export interface FromJsonOptions {
 
 function cellValueToString(v: SheetDataCellValue): string {
   if (v === null || v === undefined) return '';
-  if (typeof v === 'object' && v.kind === 'date') return v.iso ?? String(v.serial);
+  if (typeof v === 'object' && v.type === 'date') return v.iso ?? String(v.serial);
   return String(v);
 }
 

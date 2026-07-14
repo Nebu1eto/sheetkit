@@ -235,7 +235,7 @@ impl Workbook {
         cell: String,
         value: crate::conversions::JsCellInputValue,
     ) -> Result<()> {
-        let cell_value = js_value_to_cell_value(value);
+        let cell_value = js_value_to_cell_value(value)?;
         self.inner
             .set_cell_value(&sheet, &cell, cell_value)
             .map_err(|e| Error::from_reason(e.to_string()))
@@ -247,8 +247,8 @@ impl Workbook {
     pub fn set_cell_values(&mut self, sheet: String, cells: Vec<JsCellEntry>) -> Result<()> {
         let entries: Vec<(String, CellValue)> = cells
             .into_iter()
-            .map(|entry| (entry.cell, js_value_to_cell_value(entry.value)))
-            .collect();
+            .map(|entry| Ok((entry.cell, js_value_to_cell_value(entry.value)?)))
+            .collect::<Result<_>>()?;
         self.inner
             .set_cell_values(&sheet, entries)
             .map_err(|e| Error::from_reason(e.to_string()))
@@ -266,7 +266,10 @@ impl Workbook {
         values: Vec<crate::conversions::JsCellInputValue>,
     ) -> Result<()> {
         let col_num = crate::conversions::parse_column_name(&start_col)?;
-        let cell_values: Vec<CellValue> = values.into_iter().map(js_value_to_cell_value).collect();
+        let cell_values: Vec<CellValue> = values
+            .into_iter()
+            .map(js_value_to_cell_value)
+            .collect::<Result<_>>()?;
         self.inner
             .set_row_values(&sheet, row, col_num, cell_values)
             .map_err(|e| Error::from_reason(e.to_string()))
@@ -292,7 +295,7 @@ impl Workbook {
         let cell_data: Vec<Vec<CellValue>> = data
             .into_iter()
             .map(|row| row.into_iter().map(js_value_to_cell_value).collect())
-            .collect();
+            .collect::<Result<_>>()?;
         self.inner
             .set_sheet_data(&sheet, cell_data, start_row, start_col)
             .map_err(|e| Error::from_reason(e.to_string()))
@@ -1343,8 +1346,13 @@ impl Workbook {
             .worksheet_xml_ref(&sheet)
             .map_err(|e| Error::from_reason(e.to_string()))?;
         let sst = self.inner.sst_ref();
-        let buf = sheetkit_core::raw_transfer::sheet_to_raw_buffer(ws, sst)
-            .map_err(|e| Error::from_reason(e.to_string()))?;
+        let style_is_date = self.inner.transfer_date_style_lookup();
+        let buf = sheetkit_core::raw_transfer::sheet_to_raw_buffer_with_date_styles(
+            ws,
+            sst,
+            &style_is_date,
+        )
+        .map_err(|e| Error::from_reason(e.to_string()))?;
         Ok(Buffer::from(buf))
     }
 
@@ -1358,8 +1366,13 @@ impl Workbook {
             .worksheet_xml_ref(&sheet)
             .map_err(|e| Error::from_reason(e.to_string()))?;
         let sst = self.inner.sst_ref();
-        let buf = sheetkit_core::raw_transfer_v2::sheet_to_raw_buffer_v2(ws, sst)
-            .map_err(|e| Error::from_reason(e.to_string()))?;
+        let style_is_date = self.inner.transfer_date_style_lookup();
+        let buf = sheetkit_core::raw_transfer_v2::sheet_to_raw_buffer_v2_with_date_styles(
+            ws,
+            sst,
+            &style_is_date,
+        )
+        .map_err(|e| Error::from_reason(e.to_string()))?;
         Ok(Buffer::from(buf))
     }
 

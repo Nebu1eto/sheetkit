@@ -433,7 +433,7 @@ export declare class Workbook {
 }
 
 export interface DateValue {
-  kind: string
+  type: string
   serial: number
   iso?: string
 }

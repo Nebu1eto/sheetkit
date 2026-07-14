@@ -1040,10 +1040,8 @@ impl Workbook {
             }),
         };
 
-        // Prove the drawing can be edited before committing any package state.
-        self.ensure_owned_drawing_hydratable(sheet_idx)?;
-        self.hydrate_drawings();
-        self.ensure_owned_drawing_parsed(sheet_idx)?;
+        // Prove the anchor can be allocated before committing package state.
+        self.validate_slicer_anchor(sheet_idx, &config.cell)?;
         crate::defined_names::set_defined_name(
             &mut self.workbook_xml,
             &cache_name,
@@ -1685,7 +1683,6 @@ mod tests {
         assert!(wb.workbook_xml.pivot_caches.is_none());
         assert!(!wb.raw_graph_parts.contains_key(&table_rels_path));
         assert!(!wb.raw_graph_parts.contains_key(&cache_rels_path));
-
         // Content type overrides for pivot parts should be gone.
         let pivot_overrides: Vec<_> = wb
             .content_types
@@ -1731,7 +1728,6 @@ mod tests {
         assert!(archive
             .by_name("xl/pivotCache/pivotCacheRecords1.xml")
             .is_ok());
-
         // Re-open and verify pivot table is parsed.
         let opts = OpenOptions::new()
             .read_mode(ReadMode::Eager)
@@ -2182,6 +2178,42 @@ mod tests {
             .collect();
         assert!(names.contains(&"PivotTable1"));
         assert!(names.contains(&"PT2"));
+    }
+
+    #[test]
+    fn test_add_slicer_drawing_id_overflow_is_atomic() {
+        let mut wb = make_slicer_workbook();
+        wb.add_shape(
+            "Sheet1",
+            &crate::shape::ShapeConfig {
+                shape_type: crate::shape::ShapeType::Rect,
+                from_cell: "J1".to_string(),
+                to_cell: "K2".to_string(),
+                text: None,
+                fill_color: None,
+                line_color: None,
+                line_width: None,
+            },
+        )
+        .unwrap();
+        wb.drawings[0].1.two_cell_anchors[0]
+            .shape
+            .as_mut()
+            .unwrap()
+            .nv_sp_pr
+            .c_nv_pr
+            .id = u32::MAX;
+        let before = wb.save_to_buffer().unwrap();
+
+        let result = wb.add_slicer("Sheet1", &make_slicer_config("S1", "Status"));
+
+        assert!(
+            matches!(result, Err(Error::InvalidArgument(message)) if message == "drawing object ID overflow")
+        );
+        assert!(wb.slicer_defs.is_empty());
+        assert!(wb.slicer_caches.is_empty());
+        assert!(wb.workbook_xml.defined_names.is_none());
+        assert_eq!(wb.save_to_buffer().unwrap(), before);
     }
 
     #[test]
