@@ -1,3 +1,4 @@
+use super::io::serialize_xml;
 use super::*;
 
 impl Workbook {
@@ -8,10 +9,7 @@ impl Workbook {
     /// starting at `config.target_cell`.
     pub fn add_pivot_table(&mut self, config: &PivotTableConfig) -> Result<()> {
         self.hydrate_pivot_tables();
-        // Validate source sheet exists.
-        let _src_idx = self.sheet_index(&config.source_sheet)?;
-
-        // Validate target sheet exists.
+        self.sheet_index(&config.source_sheet)?;
         let target_idx = self.sheet_index(&config.target_sheet)?;
 
         // Check for duplicate name.
@@ -25,51 +23,108 @@ impl Workbook {
             });
         }
 
-        // Read header row from the source data.
-        let field_names = self.read_header_row(&config.source_sheet, &config.source_range)?;
-        if field_names.is_empty() {
+        let (field_names, source_rows) =
+            self.read_pivot_source(&config.source_sheet, &config.source_range)?;
+        if field_names.is_empty() || field_names.iter().any(String::is_empty) {
             return Err(Error::InvalidSourceRange(
-                "source range header row is empty".to_string(),
+                "source range contains an empty header".to_string(),
             ));
         }
 
-        // Assign a cache ID (next available).
         let cache_id = self
             .pivot_tables
             .iter()
             .map(|(_, pt)| pt.cache_id)
+            .chain(
+                self.workbook_xml
+                    .pivot_caches
+                    .iter()
+                    .flat_map(|caches| caches.caches.iter().map(|cache| cache.cache_id)),
+            )
             .max()
             .map(|m| m + 1)
             .unwrap_or(0);
 
-        // Build XML structures.
-        let pt_def = crate::pivot::build_pivot_table_xml(config, cache_id, &field_names)?;
-        let pcd = crate::pivot::build_pivot_cache_definition(
+        let mut occupied_paths = self.occupied_part_paths();
+        let allocate_part =
+            |prefix: &str,
+             has_relationship_part: bool,
+             occupied: &mut std::collections::HashSet<String>| {
+                let mut number = 1usize;
+                loop {
+                    let path = format!("{prefix}{number}.xml");
+                    let rels_path = relationship_part_path(&path);
+                    if !occupied.contains(&path)
+                        && (!has_relationship_part || !occupied.contains(&rels_path))
+                    {
+                        occupied.insert(path.clone());
+                        if has_relationship_part {
+                            occupied.insert(rels_path);
+                        }
+                        break path;
+                    }
+                    number += 1;
+                }
+            };
+        let pt_path = allocate_part("xl/pivotTables/pivotTable", true, &mut occupied_paths);
+        let pcd_path = allocate_part(
+            "xl/pivotCache/pivotCacheDefinition",
+            true,
+            &mut occupied_paths,
+        );
+        let pcr_path = allocate_part(
+            "xl/pivotCache/pivotCacheRecords",
+            false,
+            &mut occupied_paths,
+        );
+
+        let cache_records_rid = "rId1".to_string();
+        let (pcd, pcr, item_counts) = crate::pivot::build_pivot_cache_parts(
             &config.source_sheet,
             &config.source_range,
             &field_names,
+            &source_rows,
+            cache_records_rid.clone(),
         );
-        let pcr = sheetkit_xml::pivot_cache::PivotCacheRecords {
-            xmlns: sheetkit_xml::namespaces::SPREADSHEET_ML.to_string(),
-            xmlns_r: sheetkit_xml::namespaces::RELATIONSHIPS.to_string(),
-            count: Some(0),
-            records: vec![],
+        let pt_def = crate::pivot::build_pivot_table_xml_with_items(
+            config,
+            cache_id,
+            &field_names,
+            &item_counts,
+        )?;
+
+        let cache_rels = Relationships {
+            xmlns: sheetkit_xml::namespaces::PACKAGE_RELATIONSHIPS.to_string(),
+            relationships: vec![Relationship {
+                id: cache_records_rid,
+                rel_type: rel_types::PIVOT_CACHE_RECORDS.to_string(),
+                target: relative_relationship_target(&pcd_path, &pcr_path),
+                target_mode: None,
+            }],
         };
+        let table_rels = Relationships {
+            xmlns: sheetkit_xml::namespaces::PACKAGE_RELATIONSHIPS.to_string(),
+            relationships: vec![Relationship {
+                id: "rId1".to_string(),
+                rel_type: rel_types::PIVOT_CACHE_DEF.to_string(),
+                target: relative_relationship_target(&pt_path, &pcd_path),
+                target_mode: None,
+            }],
+        };
+        let cache_rels_bytes = serialize_xml(&cache_rels)?.into_bytes();
+        let table_rels_bytes = serialize_xml(&table_rels)?.into_bytes();
 
-        // Determine part numbers.
-        let pt_num = self.pivot_tables.len() + 1;
-        let cache_num = self.pivot_cache_defs.len() + 1;
+        let wb_rid = crate::sheet::next_rid(&self.workbook_rels.relationships);
+        let ws_rid = self.next_worksheet_rid(target_idx);
 
-        let pt_path = format!("xl/pivotTables/pivotTable{}.xml", pt_num);
-        let pcd_path = format!("xl/pivotCache/pivotCacheDefinition{}.xml", cache_num);
-        let pcr_path = format!("xl/pivotCache/pivotCacheRecords{}.xml", cache_num);
-
-        // Store parts.
         self.pivot_tables.push((pt_path.clone(), pt_def));
         self.pivot_cache_defs.push((pcd_path.clone(), pcd));
         self.pivot_cache_records.push((pcr_path.clone(), pcr));
+        self.raw_graph_parts
+            .insert(relationship_part_path(&pt_path), table_rels_bytes);
+        self.raw_graph_parts
+            .insert(relationship_part_path(&pcd_path), cache_rels_bytes);
 
-        // Add content type overrides.
         self.content_types.overrides.push(ContentTypeOverride {
             part_name: format!("/{}", pt_path),
             content_type: mime_types::PIVOT_TABLE.to_string(),
@@ -83,12 +138,10 @@ impl Workbook {
             content_type: mime_types::PIVOT_CACHE_RECORDS.to_string(),
         });
 
-        // Add workbook relationship for pivot cache definition.
-        let wb_rid = crate::sheet::next_rid(&self.workbook_rels.relationships);
         self.workbook_rels.relationships.push(Relationship {
             id: wb_rid.clone(),
             rel_type: rel_types::PIVOT_CACHE_DEF.to_string(),
-            target: format!("pivotCache/pivotCacheDefinition{}.xml", cache_num),
+            target: relative_relationship_target("xl/workbook.xml", &pcd_path),
             target_mode: None,
         });
 
@@ -104,8 +157,7 @@ impl Workbook {
                 r_id: wb_rid,
             });
 
-        // Add worksheet relationship for pivot table on the target sheet.
-        let ws_rid = self.next_worksheet_rid(target_idx);
+        let ws_target = relative_relationship_target(&self.sheet_part_path(target_idx), &pt_path);
         let ws_rels = self
             .worksheet_rels
             .entry(target_idx)
@@ -116,7 +168,7 @@ impl Workbook {
         ws_rels.relationships.push(Relationship {
             id: ws_rid,
             rel_type: rel_types::PIVOT_TABLE.to_string(),
-            target: format!("../pivotTables/pivotTable{}.xml", pt_num),
+            target: ws_target,
             target_mode: None,
         });
 
@@ -166,19 +218,27 @@ impl Workbook {
         pivot_tables
             .iter()
             .map(|(path, pt)| {
-                // Find the matching cache definition by cache_id.
-                let (source_sheet, source_range) = pivot_cache_defs
-                    .iter()
-                    .enumerate()
-                    .find(|(i, _)| {
-                        self.workbook_xml
-                            .pivot_caches
-                            .as_ref()
-                            .and_then(|pc| pc.caches.iter().find(|e| e.cache_id == pt.cache_id))
-                            .is_some()
-                            || *i == pt.cache_id as usize
+                let cache_path = self.workbook_xml.pivot_caches.as_ref().and_then(|caches| {
+                    let entry = caches
+                        .caches
+                        .iter()
+                        .find(|entry| entry.cache_id == pt.cache_id)?;
+                    let relationship = self
+                        .workbook_rels
+                        .relationships
+                        .iter()
+                        .find(|relationship| relationship.id == entry.r_id)?;
+                    Some(resolve_relationship_target(
+                        "xl/workbook.xml",
+                        &relationship.target,
+                    ))
+                });
+                let (source_sheet, source_range) = cache_path
+                    .as_ref()
+                    .and_then(|cache_path| {
+                        pivot_cache_defs.iter().find(|(path, _)| path == cache_path)
                     })
-                    .and_then(|(_, (_, pcd))| {
+                    .and_then(|(_, pcd)| {
                         pcd.cache_source
                             .worksheet_source
                             .as_ref()
@@ -216,39 +276,78 @@ impl Workbook {
 
         let (pt_path, pt_def) = self.pivot_tables.remove(pt_idx);
         let cache_id = pt_def.cache_id;
+        let pt_rels_path = relationship_part_path(&pt_path);
+        self.raw_graph_parts.remove(&pt_rels_path);
+        self.dirty_graph_parts.remove(&pt_rels_path);
+        self.unknown_parts.retain(|(path, _)| path != &pt_rels_path);
 
-        // Remove the matching pivot cache definition and records.
-        // Find the workbook_xml pivot cache entry for this cache_id.
+        let cache_still_used = self
+            .pivot_tables
+            .iter()
+            .any(|(_, table)| table.cache_id == cache_id);
+
         let mut wb_cache_rid = None;
-        if let Some(ref mut pivot_caches) = self.workbook_xml.pivot_caches {
-            if let Some(pos) = pivot_caches
-                .caches
-                .iter()
-                .position(|e| e.cache_id == cache_id)
-            {
-                wb_cache_rid = Some(pivot_caches.caches[pos].r_id.clone());
-                pivot_caches.caches.remove(pos);
-            }
-            if pivot_caches.caches.is_empty() {
-                self.workbook_xml.pivot_caches = None;
+        if !cache_still_used {
+            if let Some(ref mut pivot_caches) = self.workbook_xml.pivot_caches {
+                if let Some(pos) = pivot_caches
+                    .caches
+                    .iter()
+                    .position(|e| e.cache_id == cache_id)
+                {
+                    wb_cache_rid = Some(pivot_caches.caches[pos].r_id.clone());
+                    pivot_caches.caches.remove(pos);
+                }
+                if pivot_caches.caches.is_empty() {
+                    self.workbook_xml.pivot_caches = None;
+                }
             }
         }
 
-        // Remove the workbook relationship for this cache.
         if let Some(ref rid) = wb_cache_rid {
-            // Find the target to determine which cache def to remove.
-            if let Some(rel) = self
+            let cache_path = self
                 .workbook_rels
                 .relationships
                 .iter()
                 .find(|r| r.id == *rid)
-            {
-                let target_path = format!("xl/{}", rel.target);
-                self.pivot_cache_defs.retain(|(p, _)| *p != target_path);
+                .map(|relationship| {
+                    resolve_relationship_target("xl/workbook.xml", &relationship.target)
+                });
+            if let Some(cache_path) = cache_path {
+                let cache_rels_path = relationship_part_path(&cache_path);
+                let relationship_bytes = self
+                    .raw_graph_parts
+                    .get(&cache_rels_path)
+                    .map(Vec::as_slice)
+                    .or_else(|| {
+                        self.unknown_parts
+                            .iter()
+                            .find(|(path, _)| path == &cache_rels_path)
+                            .map(|(_, bytes)| bytes.as_slice())
+                    });
+                let records_path = relationship_bytes
+                    .and_then(|bytes| quick_xml::de::from_reader::<_, Relationships>(bytes).ok())
+                    .and_then(|relationships| {
+                        relationships
+                            .relationships
+                            .into_iter()
+                            .find(|relationship| {
+                                relationship.rel_type == rel_types::PIVOT_CACHE_RECORDS
+                            })
+                    })
+                    .map(|relationship| {
+                        resolve_relationship_target(&cache_path, &relationship.target)
+                    });
 
-                // Remove matching cache records (same numbering).
-                let records_path = target_path.replace("pivotCacheDefinition", "pivotCacheRecords");
-                self.pivot_cache_records.retain(|(p, _)| *p != records_path);
+                self.pivot_cache_defs
+                    .retain(|(path, _)| path != &cache_path);
+                if let Some(records_path) = records_path {
+                    self.pivot_cache_records
+                        .retain(|(path, _)| path != &records_path);
+                }
+                self.raw_graph_parts.remove(&cache_rels_path);
+                self.dirty_graph_parts.remove(&cache_rels_path);
+                self.unknown_parts
+                    .retain(|(path, _)| path != &cache_rels_path);
             }
             self.workbook_rels.relationships.retain(|r| r.id != *rid);
         }
@@ -585,6 +684,35 @@ impl Workbook {
             headers.push(s);
         }
         Ok(headers)
+    }
+
+    fn read_pivot_source(
+        &self,
+        sheet: &str,
+        range: &str,
+    ) -> Result<(Vec<String>, Vec<Vec<CellValue>>)> {
+        let (start, end) = range
+            .split_once(':')
+            .ok_or_else(|| Error::InvalidSourceRange(range.to_string()))?;
+        let (start_col, start_row) = cell_name_to_coordinates(start)
+            .map_err(|_| Error::InvalidSourceRange(range.to_string()))?;
+        let (end_col, end_row) = cell_name_to_coordinates(end)
+            .map_err(|_| Error::InvalidSourceRange(range.to_string()))?;
+        if start_col > end_col || start_row > end_row {
+            return Err(Error::InvalidSourceRange(range.to_string()));
+        }
+
+        let field_names = self.read_header_row(sheet, range)?;
+        let mut rows = Vec::with_capacity(end_row.saturating_sub(start_row) as usize);
+        for row in start_row.saturating_add(1)..=end_row {
+            let mut values = Vec::with_capacity((end_col - start_col + 1) as usize);
+            for col in start_col..=end_col {
+                let cell = crate::utils::cell_ref::coordinates_to_cell_name(col, row)?;
+                values.push(self.get_cell_value(sheet, &cell)?);
+            }
+            rows.push(values);
+        }
+        Ok((field_names, rows))
     }
 
     /// Find the target sheet name for a pivot table by its part path.
@@ -1340,7 +1468,7 @@ mod tests {
         assert_eq!(pts[0].source_sheet, "Sheet1");
         assert_eq!(pts[0].source_range, "A1:C4");
         assert_eq!(pts[0].target_sheet, "Sheet1");
-        assert_eq!(pts[0].location, "E1");
+        assert_eq!(pts[0].location, "E1:F5");
     }
 
     #[test]
@@ -1364,6 +1492,8 @@ mod tests {
         let mut wb = make_pivot_workbook();
         let config = basic_pivot_config();
         wb.add_pivot_table(&config).unwrap();
+        let table_rels_path = relationship_part_path(&wb.pivot_tables[0].0);
+        let cache_rels_path = relationship_part_path(&wb.pivot_cache_defs[0].0);
         assert_eq!(wb.pivot_tables.len(), 1);
 
         wb.delete_pivot_table("PivotTable1").unwrap();
@@ -1371,6 +1501,8 @@ mod tests {
         assert!(wb.pivot_cache_defs.is_empty());
         assert!(wb.pivot_cache_records.is_empty());
         assert!(wb.workbook_xml.pivot_caches.is_none());
+        assert!(!wb.raw_graph_parts.contains_key(&table_rels_path));
+        assert!(!wb.raw_graph_parts.contains_key(&cache_rels_path));
 
         // Content type overrides for pivot parts should be gone.
         let pivot_overrides: Vec<_> = wb
@@ -1489,6 +1621,35 @@ mod tests {
                 && o.part_name == "/xl/pivotCache/pivotCacheRecords1.xml"
         });
         assert!(has_pcr_ct);
+    }
+
+    #[test]
+    fn test_add_pivot_table_avoids_existing_part_and_relationship_paths() {
+        let mut wb = make_pivot_workbook();
+        wb.unknown_parts.push((
+            "xl/pivotTables/_rels/pivotTable1.xml.rels".to_string(),
+            b"preserved".to_vec(),
+        ));
+        wb.unknown_parts.push((
+            "xl/pivotCache/pivotCacheDefinition1.xml".to_string(),
+            b"preserved".to_vec(),
+        ));
+        wb.unknown_parts.push((
+            "xl/pivotCache/pivotCacheRecords1.xml".to_string(),
+            b"preserved".to_vec(),
+        ));
+
+        wb.add_pivot_table(&basic_pivot_config()).unwrap();
+
+        assert_eq!(wb.pivot_tables[0].0, "xl/pivotTables/pivotTable2.xml");
+        assert_eq!(
+            wb.pivot_cache_defs[0].0,
+            "xl/pivotCache/pivotCacheDefinition2.xml"
+        );
+        assert_eq!(
+            wb.pivot_cache_records[0].0,
+            "xl/pivotCache/pivotCacheRecords2.xml"
+        );
     }
 
     #[test]
@@ -1620,6 +1781,14 @@ mod tests {
 
         assert_eq!(wb.pivot_tables.len(), 1);
         assert_eq!(wb.pivot_tables[0].1.name, "PivotTable2");
+        assert_eq!(wb.pivot_cache_defs.len(), 1);
+        assert_eq!(wb.pivot_cache_records.len(), 1);
+        assert!(wb
+            .raw_graph_parts
+            .contains_key(&relationship_part_path(&wb.pivot_tables[0].0)));
+        assert!(wb
+            .raw_graph_parts
+            .contains_key(&relationship_part_path(&wb.pivot_cache_defs[0].0)));
     }
 
     #[test]
@@ -1636,6 +1805,117 @@ mod tests {
         assert_eq!(pcd.cache_fields.fields[0].name, "Name");
         assert_eq!(pcd.cache_fields.fields[1].name, "Region");
         assert_eq!(pcd.cache_fields.fields[2].name, "Sales");
+    }
+
+    #[test]
+    fn test_pivot_table_populates_cache_records_and_shared_items() {
+        let mut wb = make_pivot_workbook();
+        wb.add_pivot_table(&basic_pivot_config()).unwrap();
+
+        let pcd = &wb.pivot_cache_defs[0].1;
+        assert_eq!(pcd.record_count, Some(3));
+        assert_eq!(pcd.refresh_on_load, Some(true));
+        assert_eq!(pcd.r_id.as_deref(), Some("rId1"));
+        assert_eq!(
+            pcd.cache_fields.fields[0]
+                .shared_items
+                .as_ref()
+                .unwrap()
+                .count,
+            Some(3)
+        );
+        assert_eq!(
+            pcd.cache_fields.fields[1]
+                .shared_items
+                .as_ref()
+                .unwrap()
+                .count,
+            Some(2)
+        );
+        assert_eq!(
+            pcd.cache_fields.fields[2]
+                .shared_items
+                .as_ref()
+                .unwrap()
+                .number_items
+                .len(),
+            3
+        );
+
+        let records = &wb.pivot_cache_records[0].1;
+        assert_eq!(records.count, Some(3));
+        assert_eq!(records.records.len(), 3);
+        assert!(records
+            .records
+            .iter()
+            .all(|record| { record.index_fields.len() == 2 && record.number_fields.len() == 1 }));
+    }
+
+    #[test]
+    fn test_pivot_table_builds_complete_part_relationship_graph() {
+        let mut wb = make_pivot_workbook();
+        wb.add_pivot_table(&basic_pivot_config()).unwrap();
+
+        let pt_path = &wb.pivot_tables[0].0;
+        let cache_path = &wb.pivot_cache_defs[0].0;
+        let pt_rels_path = relationship_part_path(pt_path);
+        let cache_rels_path = relationship_part_path(cache_path);
+        let pt_rels: Relationships =
+            quick_xml::de::from_reader(wb.raw_graph_parts.get(&pt_rels_path).unwrap().as_slice())
+                .unwrap();
+        let cache_rels: Relationships = quick_xml::de::from_reader(
+            wb.raw_graph_parts.get(&cache_rels_path).unwrap().as_slice(),
+        )
+        .unwrap();
+
+        assert_eq!(pt_rels.relationships.len(), 1);
+        assert_eq!(
+            pt_rels.relationships[0].rel_type,
+            rel_types::PIVOT_CACHE_DEF
+        );
+        assert_eq!(cache_rels.relationships.len(), 1);
+        assert_eq!(
+            cache_rels.relationships[0].rel_type,
+            rel_types::PIVOT_CACHE_RECORDS
+        );
+        assert_eq!(
+            wb.pivot_cache_defs[0].1.r_id.as_deref(),
+            Some(cache_rels.relationships[0].id.as_str())
+        );
+    }
+
+    #[test]
+    fn test_pivot_table_axis_items_and_output_location_range() {
+        let mut wb = make_pivot_workbook();
+        wb.add_pivot_table(&basic_pivot_config()).unwrap();
+
+        let pt = &wb.pivot_tables[0].1;
+        let row_items = pt.pivot_fields.fields[0].items.as_ref().unwrap();
+        assert_eq!(row_items.items.len(), 4);
+        assert_eq!(
+            row_items.items.last().unwrap().item_type.as_deref(),
+            Some("default")
+        );
+        assert_eq!(pt.location.reference, "E1:F5");
+    }
+
+    #[test]
+    fn test_get_pivot_tables_resolves_cache_through_workbook_relationship() {
+        let mut wb = make_pivot_workbook();
+        let first = basic_pivot_config();
+        wb.add_pivot_table(&first).unwrap();
+
+        let mut second = basic_pivot_config();
+        second.name = "PivotTable2".to_string();
+        second.source_range = "A1:B4".to_string();
+        second.target_cell = "H1".to_string();
+        second.data[0].name = "Region".to_string();
+        wb.add_pivot_table(&second).unwrap();
+
+        wb.pivot_cache_defs.swap(0, 1);
+        let infos = wb.get_pivot_tables();
+        assert_eq!(infos[0].source_range, "A1:C4");
+        assert_eq!(infos[1].source_range, "A1:B4");
     }
 
     #[test]

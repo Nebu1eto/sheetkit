@@ -1597,7 +1597,43 @@ impl Workbook {
 
         // xl/pivotCache/pivotCacheRecords{N}.xml
         for (path, pcr) in &self.pivot_cache_records {
-            write_xml_part(zip, path, pcr, options)?;
+            let cache_definition =
+                self.pivot_cache_defs
+                    .iter()
+                    .find_map(|(definition_path, definition)| {
+                        let rels_path = relationship_part_path(definition_path);
+                        let bytes = self
+                            .raw_graph_parts
+                            .get(&rels_path)
+                            .map(Vec::as_slice)
+                            .or_else(|| {
+                                self.unknown_parts
+                                    .iter()
+                                    .find(|(unknown_path, _)| unknown_path == &rels_path)
+                                    .map(|(_, bytes)| bytes.as_slice())
+                            })?;
+                        let relationships =
+                            quick_xml::de::from_reader::<_, Relationships>(bytes).ok()?;
+                        relationships
+                            .relationships
+                            .iter()
+                            .any(|relationship| {
+                                relationship.rel_type == rel_types::PIVOT_CACHE_RECORDS
+                                    && resolve_relationship_target(
+                                        definition_path,
+                                        &relationship.target,
+                                    ) == *path
+                            })
+                            .then_some(definition)
+                    });
+            let xml = if let Some(definition) = cache_definition {
+                serialize_pivot_cache_records(pcr, definition)?
+            } else {
+                serialize_xml(pcr)?
+            };
+            zip.start_file(path, options)
+                .map_err(|error| Error::Zip(error.to_string()))?;
+            zip.write_all(xml.as_bytes())?;
         }
 
         // xl/tables/table{N}.xml
@@ -1803,6 +1839,70 @@ pub(crate) fn serialize_xml<T: Serialize>(value: &T) -> Result<String> {
     result.push('\n');
     result.push_str(&body);
     Ok(result)
+}
+
+fn serialize_pivot_cache_records(
+    records: &sheetkit_xml::pivot_cache::PivotCacheRecords,
+    definition: &sheetkit_xml::pivot_cache::PivotCacheDefinition,
+) -> Result<String> {
+    use std::fmt::Write as _;
+
+    let field_kinds = definition
+        .cache_fields
+        .fields
+        .iter()
+        .map(|field| {
+            let items = field.shared_items.as_ref();
+            items.is_some_and(|items| {
+                items.contains_number == Some(true) && items.contains_string != Some(true)
+            })
+        })
+        .collect::<Vec<_>>();
+    let expected_numbers = field_kinds.iter().filter(|is_number| **is_number).count();
+    let expected_indexes = field_kinds.len().saturating_sub(expected_numbers);
+    if records.records.iter().any(|record| {
+        record.number_fields.len() != expected_numbers
+            || record.index_fields.len() != expected_indexes
+            || !record.string_fields.is_empty()
+            || !record.bool_fields.is_empty()
+    }) {
+        return serialize_xml(records);
+    }
+
+    let mut xml = String::new();
+    xml.push_str(XML_DECLARATION);
+    xml.push('\n');
+    write!(
+        xml,
+        "<pivotCacheRecords xmlns=\"{}\" xmlns:r=\"{}\" count=\"{}\">",
+        quick_xml::escape::escape(&records.xmlns),
+        quick_xml::escape::escape(&records.xmlns_r),
+        records.count.unwrap_or(records.records.len() as u32),
+    )
+    .map_err(|error| Error::Internal(error.to_string()))?;
+    for record in &records.records {
+        xml.push_str("<r>");
+        let mut indexes = record.index_fields.iter();
+        let mut numbers = record.number_fields.iter();
+        for is_number in &field_kinds {
+            if *is_number {
+                let value = numbers
+                    .next()
+                    .ok_or_else(|| Error::Internal("missing pivot cache number".to_string()))?;
+                write!(xml, "<n v=\"{}\"/>", value.v)
+                    .map_err(|error| Error::Internal(error.to_string()))?;
+            } else {
+                let value = indexes
+                    .next()
+                    .ok_or_else(|| Error::Internal("missing pivot cache index".to_string()))?;
+                write!(xml, "<x v=\"{}\"/>", value.v)
+                    .map_err(|error| Error::Internal(error.to_string()))?;
+            }
+        }
+        xml.push_str("</r>");
+    }
+    xml.push_str("</pivotCacheRecords>");
+    Ok(xml)
 }
 
 /// Deserialize a `WorksheetXml` from raw XML bytes.

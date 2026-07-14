@@ -110,6 +110,15 @@ pub fn build_pivot_table_xml(
     cache_id: u32,
     field_names: &[String],
 ) -> Result<sheetkit_xml::pivot_table::PivotTableDefinition> {
+    build_pivot_table_xml_with_items(config, cache_id, field_names, &vec![0; field_names.len()])
+}
+
+pub(crate) fn build_pivot_table_xml_with_items(
+    config: &PivotTableConfig,
+    cache_id: u32,
+    field_names: &[String],
+    item_counts: &[u32],
+) -> Result<sheetkit_xml::pivot_table::PivotTableDefinition> {
     use sheetkit_xml::pivot_table::*;
 
     let ns = sheetkit_xml::namespaces::SPREADSHEET_ML;
@@ -121,7 +130,7 @@ pub fn build_pivot_table_xml(
     };
 
     let mut pivot_field_defs = Vec::new();
-    for field_name in field_names {
+    for (field_index, field_name) in field_names.iter().enumerate() {
         let is_row = config.rows.iter().any(|r| r.name == *field_name);
         let is_col = config.columns.iter().any(|c| c.name == *field_name);
         let is_data = config.data.iter().any(|d| d.name == *field_name);
@@ -138,7 +147,25 @@ pub fn build_pivot_table_xml(
             axis,
             data_field: if is_data { Some(true) } else { None },
             show_all: Some(false),
-            items: None,
+            items: if is_row || is_col {
+                let item_count = item_counts.get(field_index).copied().unwrap_or(0);
+                let mut items = (0..item_count)
+                    .map(|index| FieldItem {
+                        item_type: None,
+                        index: Some(index),
+                    })
+                    .collect::<Vec<_>>();
+                items.push(FieldItem {
+                    item_type: Some("default".to_string()),
+                    index: None,
+                });
+                Some(FieldItems {
+                    count: Some(items.len() as u32),
+                    items,
+                })
+            } else {
+                None
+            },
         });
     }
 
@@ -199,6 +226,25 @@ pub fn build_pivot_table_xml(
         })
     };
 
+    let (target_col, target_row) =
+        crate::utils::cell_ref::cell_name_to_coordinates(&config.target_cell)
+            .map_err(|_| Error::InvalidCellReference(config.target_cell.clone()))?;
+    let source_rows = config
+        .source_range
+        .split_once(':')
+        .and_then(|(start, end)| {
+            let (_, start_row) = crate::utils::cell_ref::cell_name_to_coordinates(start).ok()?;
+            let (_, end_row) = crate::utils::cell_ref::cell_name_to_coordinates(end).ok()?;
+            end_row.checked_sub(start_row).map(|rows| rows + 1)
+        })
+        .unwrap_or(1);
+    let output_width = (config.rows.len() + config.columns.len() + config.data.len()).max(2) as u32;
+    let output_height = source_rows.saturating_add(1).max(2);
+    let end_cell = crate::utils::cell_ref::coordinates_to_cell_name(
+        target_col.saturating_add(output_width - 1),
+        target_row.saturating_add(output_height - 1),
+    )?;
+
     Ok(PivotTableDefinition {
         xmlns: ns.to_string(),
         name: config.name.clone(),
@@ -211,7 +257,7 @@ pub fn build_pivot_table_xml(
         apply_alignment_formats: Some(false),
         apply_width_height_formats: Some(true),
         location: PivotLocation {
-            reference: config.target_cell.clone(),
+            reference: format!("{}:{}", config.target_cell.to_ascii_uppercase(), end_cell),
             first_header_row: 1,
             first_data_row: 1,
             first_data_col: 1,
@@ -259,6 +305,7 @@ pub fn build_pivot_cache_definition(
         xmlns_r: sheetkit_xml::namespaces::RELATIONSHIPS.to_string(),
         r_id: None,
         record_count: Some(0),
+        refresh_on_load: Some(true),
         cache_source: CacheSource {
             source_type: "worksheet".to_string(),
             worksheet_source: Some(WorksheetSource {
@@ -268,6 +315,174 @@ pub fn build_pivot_cache_definition(
         },
         cache_fields,
     }
+}
+
+#[derive(Clone)]
+enum CacheValue {
+    String(String, bool),
+    Number(f64),
+}
+
+fn cache_value(value: &crate::cell::CellValue) -> CacheValue {
+    use crate::cell::CellValue;
+
+    match value {
+        CellValue::Empty => CacheValue::String(String::new(), true),
+        CellValue::Bool(value) => {
+            CacheValue::String(if *value { "TRUE" } else { "FALSE" }.to_string(), false)
+        }
+        CellValue::Number(value) | CellValue::Date(value) if value.is_finite() => {
+            CacheValue::Number(*value)
+        }
+        CellValue::String(value) => CacheValue::String(value.clone(), false),
+        CellValue::RichString(runs) => {
+            CacheValue::String(crate::rich_text::rich_text_to_plain(runs), false)
+        }
+        CellValue::Formula {
+            result: Some(result),
+            ..
+        } => cache_value(result),
+        other => CacheValue::String(other.to_string(), false),
+    }
+}
+
+pub(crate) fn build_pivot_cache_parts(
+    source_sheet: &str,
+    source_range: &str,
+    field_names: &[String],
+    rows: &[Vec<crate::cell::CellValue>],
+    records_r_id: String,
+) -> (
+    sheetkit_xml::pivot_cache::PivotCacheDefinition,
+    sheetkit_xml::pivot_cache::PivotCacheRecords,
+    Vec<u32>,
+) {
+    use sheetkit_xml::pivot_cache::*;
+
+    let values = rows
+        .iter()
+        .map(|row| row.iter().map(cache_value).collect::<Vec<_>>())
+        .collect::<Vec<_>>();
+    let mut fields = Vec::with_capacity(field_names.len());
+    let mut item_counts = Vec::with_capacity(field_names.len());
+    let mut field_indexes = Vec::with_capacity(field_names.len());
+    let mut numeric_columns = Vec::with_capacity(field_names.len());
+
+    for (column, name) in field_names.iter().enumerate() {
+        let mut strings = Vec::<String>::new();
+        let mut numbers = Vec::<f64>::new();
+        let mut contains_blank = false;
+        for row in &values {
+            match &row[column] {
+                CacheValue::String(value, blank) => {
+                    contains_blank |= *blank;
+                    if !strings.contains(value) {
+                        strings.push(value.clone());
+                    }
+                }
+                CacheValue::Number(value) => {
+                    if !numbers
+                        .iter()
+                        .any(|existing| existing.to_bits() == value.to_bits())
+                    {
+                        numbers.push(*value);
+                    }
+                }
+            }
+        }
+
+        let indexes = values
+            .iter()
+            .map(|row| match &row[column] {
+                CacheValue::String(value, _) => strings
+                    .iter()
+                    .position(|existing| existing == value)
+                    .unwrap_or(0) as u32,
+                CacheValue::Number(value) => {
+                    (strings.len()
+                        + numbers
+                            .iter()
+                            .position(|existing| existing.to_bits() == value.to_bits())
+                            .unwrap_or(0)) as u32
+                }
+            })
+            .collect::<Vec<_>>();
+        let count = strings.len() + numbers.len();
+        numeric_columns.push(strings.is_empty() && !numbers.is_empty());
+        item_counts.push(count as u32);
+        field_indexes.push(indexes);
+        fields.push(CacheField {
+            name: name.clone(),
+            num_fmt_id: Some(0),
+            shared_items: Some(SharedItems {
+                contains_semi_mixed_types: Some(!strings.is_empty() && !numbers.is_empty()),
+                contains_string: Some(!strings.is_empty()),
+                contains_number: Some(!numbers.is_empty()),
+                contains_blank: Some(contains_blank),
+                count: Some(count as u32),
+                string_items: strings
+                    .into_iter()
+                    .map(|value| StringItem { value })
+                    .collect(),
+                number_items: numbers
+                    .into_iter()
+                    .map(|value| NumberItem { value })
+                    .collect(),
+            }),
+        });
+    }
+
+    let records = (0..values.len())
+        .map(|row| {
+            let mut index_fields = Vec::new();
+            let mut number_fields = Vec::new();
+            for (column, value) in values[row].iter().enumerate() {
+                if numeric_columns[column] {
+                    let CacheValue::Number(value) = value else {
+                        unreachable!("numeric pivot cache columns contain only numbers")
+                    };
+                    number_fields.push(NumberField { v: *value });
+                } else {
+                    index_fields.push(IndexField {
+                        v: field_indexes[column][row],
+                    });
+                }
+            }
+            CacheRecord {
+                index_fields,
+                number_fields,
+                string_fields: vec![],
+                bool_fields: vec![],
+            }
+        })
+        .collect::<Vec<_>>();
+    let record_count = records.len() as u32;
+    let definition = PivotCacheDefinition {
+        xmlns: sheetkit_xml::namespaces::SPREADSHEET_ML.to_string(),
+        xmlns_r: sheetkit_xml::namespaces::RELATIONSHIPS.to_string(),
+        r_id: Some(records_r_id),
+        record_count: Some(record_count),
+        refresh_on_load: Some(true),
+        cache_source: CacheSource {
+            source_type: "worksheet".to_string(),
+            worksheet_source: Some(WorksheetSource {
+                reference: source_range.to_string(),
+                sheet: source_sheet.to_string(),
+            }),
+        },
+        cache_fields: CacheFields {
+            count: Some(fields.len() as u32),
+            fields,
+        },
+    };
+    let cache_records = PivotCacheRecords {
+        xmlns: sheetkit_xml::namespaces::SPREADSHEET_ML.to_string(),
+        xmlns_r: sheetkit_xml::namespaces::RELATIONSHIPS.to_string(),
+        count: Some(record_count),
+        records,
+    };
+
+    (definition, cache_records, item_counts)
 }
 
 fn capitalize_first(s: &str) -> String {
@@ -566,6 +781,34 @@ mod tests {
         let def = build_pivot_cache_definition("Sheet1", "A1:A1", &field_names);
         assert_eq!(def.cache_fields.count, Some(0));
         assert!(def.cache_fields.fields.is_empty());
+    }
+
+    #[test]
+    fn test_build_pivot_cache_parts_indexes_mixed_type_columns() {
+        let field_names = vec!["Category".to_string(), "Mixed".to_string()];
+        let rows = vec![
+            vec![
+                crate::cell::CellValue::String("A".to_string()),
+                crate::cell::CellValue::Number(1.0),
+            ],
+            vec![
+                crate::cell::CellValue::String("B".to_string()),
+                crate::cell::CellValue::String("one".to_string()),
+            ],
+        ];
+
+        let (definition, records, _) =
+            build_pivot_cache_parts("Sheet1", "A1:B3", &field_names, &rows, "rId1".to_string());
+
+        let mixed_items = definition.cache_fields.fields[1]
+            .shared_items
+            .as_ref()
+            .unwrap();
+        assert_eq!(mixed_items.contains_semi_mixed_types, Some(true));
+        assert!(records
+            .records
+            .iter()
+            .all(|record| { record.index_fields.len() == 2 && record.number_fields.is_empty() }));
     }
 
     #[test]

@@ -25,6 +25,9 @@ pub struct PivotCacheDefinition {
     #[serde(rename = "@recordCount", skip_serializing_if = "Option::is_none")]
     pub record_count: Option<u32>,
 
+    #[serde(rename = "@refreshOnLoad", skip_serializing_if = "Option::is_none")]
+    pub refresh_on_load: Option<bool>,
+
     #[serde(rename = "cacheSource")]
     pub cache_source: CacheSource,
 
@@ -371,6 +374,7 @@ mod tests {
                 .to_string(),
             r_id: None,
             record_count: Some(5),
+            refresh_on_load: Some(true),
             cache_source: CacheSource {
                 source_type: "worksheet".to_string(),
                 worksheet_source: Some(WorksheetSource {
@@ -412,6 +416,7 @@ mod tests {
                 .to_string(),
             r_id: Some("rId1".to_string()),
             record_count: Some(10),
+            refresh_on_load: Some(true),
             cache_source: CacheSource {
                 source_type: "worksheet".to_string(),
                 worksheet_source: Some(WorksheetSource {
