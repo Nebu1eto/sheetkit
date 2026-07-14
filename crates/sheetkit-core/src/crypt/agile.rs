@@ -737,7 +737,7 @@ fn create_data_integrity(
 ) -> Result<DataIntegrity> {
     validate_key_data(key_data, secret_key)?;
     let hash = HashAlgorithm::parse(&key_data.hash_algorithm, key_data.hash_size)?;
-    let hmac_key = generate_random_bytes(key_data.salt_size as usize);
+    let hmac_key = generate_random_bytes(hash.output_size());
     let hmac_value = hash.hmac(&hmac_key, package)?;
     let key_iv = generate_iv(
         &key_data.salt_value,
@@ -779,20 +779,32 @@ pub fn verify_data_integrity(
     )?;
     let hmac_key = aes_cbc_decrypt(secret_key, &key_iv, &integrity.encrypted_hmac_key)?;
     let hmac_value = aes_cbc_decrypt(secret_key, &value_iv, &integrity.encrypted_hmac_value)?;
-    let key_len = key_data.salt_size as usize;
     let value_len = hash.output_size();
-    if hmac_key.len() < key_len || hmac_value.len() < value_len {
+    if !has_zero_padding(&hmac_value, value_len) {
         return Err(Error::Internal(
-            "Agile data integrity fields are truncated".into(),
+            "Agile data integrity value has invalid length or padding".into(),
         ));
     }
-    let expected = hash.hmac(&hmac_key[..key_len], package)?;
-    if !constant_time_eq(&expected, &hmac_value[..value_len]) {
+
+    // Office uses hashSize keys, while the published specification describes
+    // saltSize keys. Accept both encodings without guessing from trailing data.
+    let mut verified = false;
+    for key_len in [value_len, key_data.salt_size as usize] {
+        if has_zero_padding(&hmac_key, key_len) {
+            let expected = hash.hmac(&hmac_key[..key_len], package)?;
+            verified |= constant_time_eq(&expected, &hmac_value[..value_len]);
+        }
+    }
+    if !verified {
         return Err(Error::Internal(
             "Agile data integrity verification failed".into(),
         ));
     }
     Ok(())
+}
+
+fn has_zero_padding(value: &[u8], logical_len: usize) -> bool {
+    value.len() >= logical_len && value[logical_len..].iter().all(|byte| *byte == 0)
 }
 
 fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
@@ -1277,6 +1289,8 @@ mod tests {
         let mut package = (5u64).to_le_bytes().to_vec();
         package.extend_from_slice(&[0x33; 16]);
         let integrity = create_data_integrity(&package, &key, &key_data).unwrap();
+        assert_eq!(integrity.encrypted_hmac_key.len(), 32);
+        assert_eq!(integrity.encrypted_hmac_value.len(), 32);
         verify_data_integrity(&package, &key, &key_data, &integrity).unwrap();
 
         for index in [0, 8] {
