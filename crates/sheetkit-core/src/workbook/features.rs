@@ -925,8 +925,6 @@ impl Workbook {
     /// populates `sheet_form_controls` so that add/delete/get operations work
     /// correctly on files with pre-existing controls.
     ///
-    /// After hydration, form control shapes are stripped from the preserved VML
-    /// to prevent duplication on save. Comment (Note) shapes are preserved.
     fn hydrate_form_controls(&mut self, idx: usize) {
         while self.sheet_form_controls.len() <= idx {
             self.sheet_form_controls.push(vec![]);
@@ -940,12 +938,13 @@ impl Workbook {
             if !parsed.is_empty() {
                 self.sheet_form_controls[idx] =
                     parsed.iter().map(|info| info.to_config()).collect();
-                // Strip form control shapes from preserved VML so save()
-                // regenerates them solely from sheet_form_controls, avoiding
-                // duplication.
-                let cleaned = crate::control::strip_form_control_shapes_from_vml(vml_bytes);
-                self.sheet_vml[idx] = cleaned;
             }
+        }
+    }
+
+    fn prepare_form_control_mutation(&mut self, idx: usize) {
+        if let Some(Some(vml_bytes)) = self.sheet_vml.get(idx) {
+            self.sheet_vml[idx] = crate::control::strip_form_control_shapes_from_vml(vml_bytes);
         }
     }
 
@@ -963,7 +962,9 @@ impl Workbook {
         config.validate()?;
         self.hydrate_comments(idx);
         self.hydrate_form_controls(idx);
+        self.prepare_form_control_mutation(idx);
         self.sheet_form_controls[idx].push(config);
+        self.sheet_controls_dirty[idx] = true;
         self.mark_sheet_dirty(idx);
         Ok(())
     }
@@ -992,7 +993,9 @@ impl Workbook {
     /// Delete a form control from a sheet by its 0-based index.
     pub fn delete_form_control(&mut self, sheet: &str, index: usize) -> Result<()> {
         let idx = self.sheet_index(sheet)?;
+        self.hydrate_comments(idx);
         self.hydrate_form_controls(idx);
+        self.prepare_form_control_mutation(idx);
         let controls = &mut self.sheet_form_controls[idx];
         if index >= controls.len() {
             return Err(Error::InvalidArgument(format!(
@@ -1001,6 +1004,7 @@ impl Workbook {
             )));
         }
         controls.remove(index);
+        self.sheet_controls_dirty[idx] = true;
         self.mark_sheet_dirty(idx);
         Ok(())
     }

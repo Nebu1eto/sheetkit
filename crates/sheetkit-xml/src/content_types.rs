@@ -126,6 +126,9 @@ pub mod mime_types {
     // VML Drawing
     pub const VML_DRAWING: &str = "application/vnd.openxmlformats-officedocument.vmlDrawing";
 
+    // Form controls
+    pub const CONTROL_PROPERTIES: &str = "application/vnd.ms-excel.controlproperties+xml";
+
     // Comments
     pub const COMMENTS: &str =
         "application/vnd.openxmlformats-officedocument.spreadsheetml.comments+xml";

@@ -105,6 +105,7 @@ impl Workbook {
             sheet_threaded_comments: vec![None],
             person_list: sheetkit_xml::threaded_comment::PersonList::default(),
             sheet_form_controls: vec![vec![]],
+            sheet_controls_dirty: vec![false],
             streamed_sheets: HashMap::new(),
             package_source: None,
             read_mode: ReadMode::default(),
@@ -667,6 +668,7 @@ impl Workbook {
 
         let sheet_form_controls: Vec<Vec<crate::control::FormControlConfig>> =
             vec![vec![]; worksheets.len()];
+        let sheet_controls_dirty = vec![false; worksheets.len()];
 
         // Build sheet name -> index lookup.
         let mut sheet_name_index = HashMap::with_capacity(worksheets.len());
@@ -768,6 +770,7 @@ impl Workbook {
             sheet_threaded_comments,
             person_list,
             sheet_form_controls,
+            sheet_controls_dirty,
             streamed_sheets: HashMap::new(),
             package_source: None,
             read_mode: options.read_mode,
@@ -974,6 +977,11 @@ impl Workbook {
         let mut vml_parts_to_write: Vec<(usize, String, Vec<u8>)> = Vec::new();
         // Per-sheet legacy drawing relationship IDs for worksheet XML serialization.
         let mut legacy_drawing_rids: HashMap<usize, String> = HashMap::new();
+        // Per-sheet controls paired with their VML shape IDs and ctrlProp rIds.
+        let mut worksheet_controls: HashMap<usize, Vec<(usize, String, String)>> = HashMap::new();
+        let mut control_parts_to_write: Vec<(String, String)> = Vec::new();
+        let mut allocated_control_paths = self.occupied_part_paths();
+        let mut removed_control_paths: HashSet<String> = HashSet::new();
 
         // Ensure the vml extension default content type is present if any VML exists.
         let mut has_any_vml = false;
@@ -994,7 +1002,6 @@ impl Workbook {
                 .overrides
                 .retain(|entry| entry.content_type != mime_types::VML_DRAWING);
         }
-
         // When deferred_parts is non-empty (Lazy open), skip comment/VML
         // synchronization. The original relationships and content types are already
         // correct, and deferred_parts will supply the raw bytes on save.
@@ -1009,6 +1016,11 @@ impl Workbook {
                 .get(sheet_idx)
                 .map(|v| !v.is_empty())
                 .unwrap_or(false);
+            let controls_dirty = self
+                .sheet_controls_dirty
+                .get(sheet_idx)
+                .copied()
+                .unwrap_or(false);
             let has_preserved_vml = self
                 .sheet_vml
                 .get(sheet_idx)
@@ -1018,7 +1030,12 @@ impl Workbook {
             // When deferred_parts is non-empty (Lazy open), skip comment/VML
             // synchronization only for sheets whose comment data is still deferred
             // (not yet hydrated). Hydrated sheets need normal relationship sync.
-            if has_deferred && !has_comments && !has_form_controls && !has_preserved_vml {
+            if has_deferred
+                && !has_comments
+                && !has_form_controls
+                && !has_preserved_vml
+                && !controls_dirty
+            {
                 continue;
             }
 
@@ -1027,6 +1044,21 @@ impl Workbook {
                     .retain(|r| r.rel_type != rel_types::COMMENTS);
                 rels.relationships
                     .retain(|r| r.rel_type != rel_types::VML_DRAWING);
+                if controls_dirty {
+                    let sheet_path = self.sheet_part_path(sheet_idx);
+                    removed_control_paths.extend(
+                        rels.relationships
+                            .iter()
+                            .filter(|relationship| {
+                                relationship.rel_type == rel_types::CONTROL_PROPERTIES
+                            })
+                            .map(|relationship| {
+                                resolve_relationship_target(&sheet_path, &relationship.target)
+                            }),
+                    );
+                    rels.relationships
+                        .retain(|r| r.rel_type != rel_types::CONTROL_PROPERTIES);
+                }
             }
 
             let needs_vml = has_comments || has_form_controls || has_preserved_vml;
@@ -1088,22 +1120,66 @@ impl Workbook {
                     .collect();
                 vml_bytes = Some(match vml_bytes {
                     Some(existing) => {
-                        let start_id = 1025 + crate::control::count_vml_shapes(&existing);
+                        let start_id = crate::control::next_vml_shape_id(&existing);
                         crate::vml::merge_vml_comments(&existing, &cells, start_id)
                     }
                     None => crate::vml::build_vml_drawing(&cells).into_bytes(),
                 });
             }
 
-            if has_form_controls {
+            if controls_dirty && has_form_controls {
                 let controls = &self.sheet_form_controls[sheet_idx];
+                let start_id = vml_bytes
+                    .as_deref()
+                    .map(crate::control::next_vml_shape_id)
+                    .unwrap_or(1025);
+                let last_shape_id = start_id
+                    .checked_add(controls.len().saturating_sub(1))
+                    .ok_or_else(|| {
+                        Error::InvalidArgument("form control shape ID overflow".to_string())
+                    })?;
+                if last_shape_id > 67_098_623 {
+                    return Err(Error::InvalidArgument(
+                        "form control shape IDs exceed Excel's supported range".to_string(),
+                    ));
+                }
                 vml_bytes = Some(match vml_bytes {
                     Some(existing) => {
-                        let start_id = 1025 + crate::control::count_vml_shapes(&existing);
                         crate::control::merge_vml_controls(&existing, controls, start_id)
                     }
                     None => crate::control::build_form_control_vml(controls, 1025).into_bytes(),
                 });
+
+                let sheet_path = self.sheet_part_path(sheet_idx);
+                let rels = worksheet_rels
+                    .entry(sheet_idx)
+                    .or_insert_with(default_relationships);
+                let mut control_entries = Vec::with_capacity(controls.len());
+                for (offset, control) in controls.iter().enumerate() {
+                    let control_path = next_control_property_path(&allocated_control_paths);
+                    allocated_control_paths.insert(control_path.clone());
+                    let rid = crate::sheet::next_rid(&rels.relationships);
+                    rels.relationships.push(Relationship {
+                        id: rid.clone(),
+                        rel_type: rel_types::CONTROL_PROPERTIES.to_string(),
+                        target: relative_relationship_target(&sheet_path, &control_path),
+                        target_mode: None,
+                    });
+                    content_types.overrides.push(ContentTypeOverride {
+                        part_name: format!("/{control_path}"),
+                        content_type: mime_types::CONTROL_PROPERTIES.to_string(),
+                    });
+                    control_parts_to_write.push((
+                        control_path,
+                        crate::control::build_control_property_xml(control),
+                    ));
+                    control_entries.push((
+                        start_id + offset,
+                        rid,
+                        format!("{} {}", control.control_type.object_type(), offset + 1),
+                    ));
+                }
+                worksheet_controls.insert(sheet_idx, control_entries);
             }
 
             let Some(vml_bytes) = vml_bytes else {
@@ -1138,6 +1214,13 @@ impl Workbook {
             legacy_drawing_rids.insert(sheet_idx, vml_rid);
             vml_parts_to_write.push((sheet_idx, vml_path, vml_bytes));
             has_any_vml = true;
+        }
+
+        if !removed_control_paths.is_empty() {
+            content_types.overrides.retain(|entry| {
+                let path = entry.part_name.trim_start_matches('/');
+                !removed_control_paths.contains(path)
+            });
         }
 
         // Add vml extension default content type if needed.
@@ -1307,6 +1390,8 @@ impl Workbook {
         );
         generated_lifecycle_paths
             .extend(vml_parts_to_write.iter().map(|(_, path, _)| path.clone()));
+        generated_lifecycle_paths
+            .extend(control_parts_to_write.iter().map(|(path, _)| path.clone()));
         generated_lifecycle_paths.extend(self.drawings.iter().map(|(path, _)| path.clone()));
         generated_lifecycle_paths.extend(self.charts.iter().map(|(path, _)| path.clone()));
         generated_lifecycle_paths.extend(self.raw_charts.iter().map(|(path, _)| path.clone()));
@@ -1489,7 +1574,8 @@ impl Workbook {
                 || !sparklines.is_empty()
                 || sheet_table_rids.is_some()
                 || stale_table_parts
-                || !slicer_rids.is_empty();
+                || !slicer_rids.is_empty()
+                || self.sheet_controls_dirty.get(i).copied().unwrap_or(false);
 
             if !has_extras {
                 write_xml_part(zip, &entry_name, ws, options)?;
@@ -1525,6 +1611,8 @@ impl Workbook {
                     legacy_rid,
                     self.raw_sheet_xml.get(i).and_then(|raw| raw.as_deref()),
                     &slicer_rids,
+                    worksheet_controls.get(&i).map(Vec::as_slice).unwrap_or(&[]),
+                    self.sheet_controls_dirty.get(i).copied().unwrap_or(false),
                 )?;
                 zip.start_file(&entry_name, options)
                     .map_err(|e| Error::Zip(e.to_string()))?;
@@ -1552,6 +1640,10 @@ impl Workbook {
             zip.start_file(vml_path, options)
                 .map_err(|e| Error::Zip(e.to_string()))?;
             zip.write_all(vml_bytes)?;
+        }
+
+        for (path, xml) in &control_parts_to_write {
+            write_bytes_part(zip, path, xml.as_bytes(), options)?;
         }
 
         let mut emitted_graph_paths: HashSet<String> = HashSet::new();
@@ -1749,6 +1841,9 @@ impl Workbook {
 
         // Write back unknown parts preserved from the original file.
         for (path, data) in &self.unknown_parts {
+            if removed_control_paths.contains(path) {
+                continue;
+            }
             zip.start_file(path, options)
                 .map_err(|e| Error::Zip(e.to_string()))?;
             zip.write_all(data)?;
@@ -1779,6 +1874,9 @@ impl Workbook {
             }
             for (_sheet_idx, vml_path, _) in &vml_parts_to_write {
                 emitted_owned.insert(vml_path.clone());
+            }
+            for (path, _) in &control_parts_to_write {
+                emitted_owned.insert(path.clone());
             }
             for (path, _) in &self.drawings {
                 emitted_owned.insert(path.clone());
@@ -2265,8 +2363,13 @@ fn serialize_worksheet_with_slicer_extras(
     legacy_drawing_rid: Option<&str>,
     raw_sheet: Option<&[u8]>,
     slicer_rids: &[&str],
+    controls: &[(usize, String, String)],
+    controls_dirty: bool,
 ) -> Result<String> {
     let mut xml = serialize_worksheet_with_extras(ws, sparklines, legacy_drawing_rid)?;
+    if controls_dirty {
+        xml = replace_worksheet_controls(xml, controls)?;
+    }
     if slicer_rids.is_empty() {
         return Ok(xml);
     }
@@ -2299,6 +2402,52 @@ fn serialize_worksheet_with_slicer_extras(
         .ok_or_else(|| Error::XmlParse("worksheet closing tag missing".to_string()))?;
     xml.insert_str(position, &extension);
     Ok(xml)
+}
+
+fn replace_worksheet_controls(
+    mut xml: String,
+    controls: &[(usize, String, String)],
+) -> Result<String> {
+    if let Some(start) = xml.find("<controls") {
+        let end = xml[start..]
+            .find("</controls>")
+            .map(|offset| start + offset + "</controls>".len())
+            .ok_or_else(|| Error::XmlParse("worksheet controls closing tag missing".to_string()))?;
+        xml.replace_range(start..end, "");
+    }
+    if controls.is_empty() {
+        return Ok(xml);
+    }
+
+    let entries = controls
+        .iter()
+        .map(|(shape_id, rid, name)| {
+            format!(
+                "<control shapeId=\"{shape_id}\" r:id=\"{}\" name=\"{}\"/>",
+                quick_xml::escape::escape(rid),
+                quick_xml::escape::escape(name),
+            )
+        })
+        .collect::<String>();
+    let controls_xml = format!("<controls>{entries}</controls>");
+    let position = xml
+        .find("<tableParts")
+        .or_else(|| xml.find("<extLst"))
+        .or_else(|| xml.rfind("</worksheet>"))
+        .ok_or_else(|| Error::XmlParse("worksheet closing tag missing".to_string()))?;
+    xml.insert_str(position, &controls_xml);
+    Ok(xml)
+}
+
+fn next_control_property_path(existing: &HashSet<String>) -> String {
+    let mut number = 1usize;
+    loop {
+        let candidate = format!("xl/ctrlProps/ctrlProp{number}.xml");
+        if !existing.contains(&candidate) {
+            return candidate;
+        }
+        number += 1;
+    }
 }
 
 fn serialize_workbook_with_slicer_extensions(

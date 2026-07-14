@@ -9,6 +9,23 @@
 use crate::error::{Error, Result};
 use crate::utils::cell_ref::cell_name_to_coordinates;
 
+fn escape_xml(value: &str) -> String {
+    quick_xml::escape::escape(value).into_owned()
+}
+
+fn unescape_xml(value: &str) -> String {
+    quick_xml::escape::unescape(value)
+        .map(|value| value.into_owned())
+        .unwrap_or_else(|_| value.to_string())
+}
+
+fn is_xml_char(ch: char) -> bool {
+    matches!(ch, '\u{9}' | '\u{A}' | '\u{D}')
+        || ('\u{20}'..='\u{D7FF}').contains(&ch)
+        || ('\u{E000}'..='\u{FFFD}').contains(&ch)
+        || ('\u{10000}'..='\u{10FFFF}').contains(&ch)
+}
+
 /// Form control types.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FormControlType {
@@ -186,14 +203,45 @@ impl FormControlConfig {
     pub fn validate(&self) -> Result<()> {
         cell_name_to_coordinates(&self.cell)?;
 
+        for (field, value) in [
+            ("text", self.text.as_deref()),
+            ("macro_name", self.macro_name.as_deref()),
+        ] {
+            if value.is_some_and(|value| !value.chars().all(is_xml_char)) {
+                return Err(Error::InvalidArgument(format!(
+                    "{field} contains a character that is not valid in XML 1.0"
+                )));
+            }
+        }
+
         if let Some(ref cl) = self.cell_link {
             cell_name_to_coordinates(cl)?;
         }
+
+        let (default_width, default_height) = default_dimensions(&self.control_type);
+        build_control_anchor(
+            &self.cell,
+            self.width.unwrap_or(default_width),
+            self.height.unwrap_or(default_height),
+        )?;
 
         if let (Some(min), Some(max)) = (self.min_value, self.max_value) {
             if min > max {
                 return Err(Error::InvalidArgument(format!(
                     "min_value ({min}) must not exceed max_value ({max})"
+                )));
+            }
+        }
+
+        for (field, value) in [
+            ("min_value", self.min_value),
+            ("max_value", self.max_value),
+            ("increment", self.increment),
+            ("page_increment", self.page_increment),
+        ] {
+            if value.is_some_and(|value| value > 30_000) {
+                return Err(Error::InvalidArgument(format!(
+                    "{field} must not exceed Excel's limit of 30000"
                 )));
             }
         }
@@ -234,6 +282,58 @@ pub struct FormControlInfo {
     pub page_increment: Option<u32>,
 }
 
+/// Build the modern control-property part paired with the VML fallback.
+pub(crate) fn build_control_property_xml(config: &FormControlConfig) -> String {
+    use std::fmt::Write;
+
+    let mut xml = String::from(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n<x14:formControlPr xmlns:x14=\"http://schemas.microsoft.com/office/spreadsheetml/2009/9/main\"",
+    );
+    let object_type = match config.control_type {
+        FormControlType::Button => "Button",
+        FormControlType::CheckBox => "CheckBox",
+        FormControlType::OptionButton => "Radio",
+        FormControlType::SpinButton => "Spin",
+        FormControlType::ScrollBar => "Scroll",
+        FormControlType::GroupBox => "GBox",
+        FormControlType::Label => "Label",
+    };
+    let _ = write!(xml, " objectType=\"{}\"", escape_xml(object_type));
+    if let Some(checked) = config.checked {
+        let checked = if checked { "Checked" } else { "Unchecked" };
+        let _ = write!(xml, " checked=\"{checked}\"");
+    }
+    if let Some(value) = config.current_value {
+        let _ = write!(xml, " val=\"{value}\"");
+    }
+    if let Some(value) = config.min_value {
+        let _ = write!(xml, " min=\"{value}\"");
+    }
+    if let Some(value) = config.max_value {
+        let _ = write!(xml, " max=\"{value}\"");
+    }
+    if let Some(value) = config.increment {
+        let _ = write!(xml, " inc=\"{value}\"");
+    }
+    if let Some(value) = config.page_increment {
+        let _ = write!(xml, " page=\"{value}\"");
+    }
+    if let Some(ref value) = config.cell_link {
+        let _ = write!(xml, " fmlaLink=\"{}\"", escape_xml(value));
+    }
+    if config.control_type == FormControlType::ScrollBar {
+        let (default_width, default_height) = default_dimensions(&config.control_type);
+        if config.width.unwrap_or(default_width) > config.height.unwrap_or(default_height) {
+            xml.push_str(" horiz=\"1\"");
+        }
+    }
+    if config.three_d == Some(false) {
+        xml.push_str(" noThreeD=\"1\"");
+    }
+    xml.push_str("/>");
+    xml
+}
+
 /// Default dimensions (width, height) in points for each control type.
 fn default_dimensions(ct: &FormControlType) -> (f64, f64) {
     match ct {
@@ -255,19 +355,67 @@ const FORM_CONTROL_SHAPETYPE_ID: &str = "_x0000_t201";
 /// The anchor format is: col1, col1Off, row1, row1Off, col2, col2Off, row2, row2Off.
 /// Offsets are in units of 1/1024 column width or 1/256 row height.
 fn build_control_anchor(cell: &str, width_pt: f64, height_pt: f64) -> Result<String> {
+    if !width_pt.is_finite() || width_pt <= 0.0 {
+        return Err(Error::InvalidArgument(
+            "form control width must be finite and greater than 0".to_string(),
+        ));
+    }
+    if !height_pt.is_finite() || height_pt <= 0.0 {
+        return Err(Error::InvalidArgument(
+            "form control height must be finite and greater than 0".to_string(),
+        ));
+    }
     let (col, row) = cell_name_to_coordinates(cell)?;
     let col0 = col - 1;
     let row0 = row - 1;
 
-    // Approximate column and row span from point dimensions.
-    // Standard column width is ~64 pixels (~48pt), standard row height ~15pt.
-    let col_span = ((width_pt / 48.0).ceil() as u32).max(1);
-    let row_span = ((height_pt / 15.0).ceil() as u32).max(1);
+    const COL_OFFSET_UNITS: f64 = 1024.0;
+    const ROW_OFFSET_UNITS: f64 = 256.0;
+    const STANDARD_COL_WIDTH_PT: f64 = 48.0;
+    const STANDARD_ROW_HEIGHT_PT: f64 = 15.0;
+    const START_COL_OFFSET: u32 = 15;
+    const START_ROW_OFFSET: u32 = 10;
 
-    let col2 = col0 + col_span;
-    let row2 = row0 + row_span;
+    let col_extent =
+        f64::from(START_COL_OFFSET) + width_pt / STANDARD_COL_WIDTH_PT * COL_OFFSET_UNITS;
+    let row_extent =
+        f64::from(START_ROW_OFFSET) + height_pt / STANDARD_ROW_HEIGHT_PT * ROW_OFFSET_UNITS;
+    if !col_extent.is_finite()
+        || !row_extent.is_finite()
+        || col_extent > 16_385.0 * COL_OFFSET_UNITS
+        || row_extent > 1_048_577.0 * ROW_OFFSET_UNITS
+    {
+        return Err(Error::InvalidArgument(
+            "form control dimensions exceed worksheet bounds".to_string(),
+        ));
+    }
 
-    Ok(format!("{col0}, 15, {row0}, 10, {col2}, 63, {row2}, 24"))
+    let mut col_span = (col_extent / COL_OFFSET_UNITS).floor() as u32;
+    let mut col2_offset = (col_extent - f64::from(col_span) * COL_OFFSET_UNITS).round() as u32;
+    if col2_offset == COL_OFFSET_UNITS as u32 {
+        col_span += 1;
+        col2_offset = 0;
+    }
+
+    let mut row_span = (row_extent / ROW_OFFSET_UNITS).floor() as u32;
+    let mut row2_offset = (row_extent - f64::from(row_span) * ROW_OFFSET_UNITS).round() as u32;
+    if row2_offset == ROW_OFFSET_UNITS as u32 {
+        row_span += 1;
+        row2_offset = 0;
+    }
+
+    let col2 = col0
+        .checked_add(col_span)
+        .filter(|column| *column < 16_384)
+        .ok_or_else(|| Error::InvalidArgument("form control exceeds worksheet columns".into()))?;
+    let row2 = row0
+        .checked_add(row_span)
+        .filter(|row| *row < 1_048_576)
+        .ok_or_else(|| Error::InvalidArgument("form control exceeds worksheet rows".into()))?;
+
+    Ok(format!(
+        "{col0}, {START_COL_OFFSET}, {row0}, {START_ROW_OFFSET}, {col2}, {col2_offset}, {row2}, {row2_offset}"
+    ))
 }
 
 /// Build a complete VML drawing document containing form control shapes.
@@ -350,6 +498,7 @@ fn write_form_control_shape(
             out.push_str("  <v:fill color2=\"buttonFace\" o:detectmouseclick=\"t\"/>\n");
             out.push_str("  <o:lock v:ext=\"edit\" rotation=\"t\"/>\n");
             if let Some(ref text) = config.text {
+                let text = escape_xml(text);
                 let _ = write!(
                     out,
                     "  <v:textbox>\n\
@@ -364,6 +513,7 @@ fn write_form_control_shape(
             out.push_str(" fillcolor=\"window\" o:insetmode=\"auto\">\n");
             out.push_str("  <v:fill color2=\"window\"/>\n");
             if let Some(ref text) = config.text {
+                let text = escape_xml(text);
                 let _ = write!(
                     out,
                     "  <v:textbox>\n\
@@ -379,6 +529,7 @@ fn write_form_control_shape(
         FormControlType::GroupBox => {
             out.push_str(" filled=\"f\" stroked=\"f\" o:insetmode=\"auto\">\n");
             if let Some(ref text) = config.text {
+                let text = escape_xml(text);
                 let _ = write!(
                     out,
                     "  <v:textbox>\n\
@@ -390,6 +541,7 @@ fn write_form_control_shape(
         FormControlType::Label => {
             out.push_str(" filled=\"f\" stroked=\"f\" o:insetmode=\"auto\">\n");
             if let Some(ref text) = config.text {
+                let text = escape_xml(text);
                 let _ = write!(
                     out,
                     "  <v:textbox>\n\
@@ -408,10 +560,12 @@ fn write_form_control_shape(
     out.push_str("   <x:AutoFill>False</x:AutoFill>\n");
 
     if let Some(ref macro_name) = config.macro_name {
+        let macro_name = escape_xml(macro_name);
         let _ = writeln!(out, "   <x:FmlaMacro>{macro_name}</x:FmlaMacro>");
     }
 
     if let Some(ref cell_link) = config.cell_link {
+        let cell_link = escape_xml(cell_link);
         let _ = writeln!(out, "   <x:FmlaLink>{cell_link}</x:FmlaLink>");
     }
 
@@ -530,7 +684,7 @@ fn extract_attr(xml: &str, attr: &str) -> Option<String> {
     let start = xml.find(&pattern)?;
     let val_start = start + pattern.len();
     let end = xml[val_start..].find('"')?;
-    Some(xml[val_start..val_start + end].to_string())
+    Some(unescape_xml(&xml[val_start..val_start + end]))
 }
 
 /// Extract text content of an XML element like `<tag>content</tag>`.
@@ -544,7 +698,7 @@ fn extract_element(xml: &str, tag: &str) -> Option<String> {
     if text.is_empty() {
         None
     } else {
-        Some(text)
+        Some(unescape_xml(&text))
     }
 }
 
@@ -569,7 +723,7 @@ fn extract_textbox_text(shape_xml: &str) -> Option<String> {
     if trimmed.is_empty() {
         None
     } else {
-        Some(trimmed)
+        Some(unescape_xml(&trimmed))
     }
 }
 
@@ -672,6 +826,22 @@ impl FormControlInfo {
 pub fn count_vml_shapes(vml_bytes: &[u8]) -> usize {
     let vml_str = String::from_utf8_lossy(vml_bytes);
     vml_str.matches("<v:shape ").count()
+}
+
+/// Return an unused VML shape ID after all existing shape IDs.
+pub(crate) fn next_vml_shape_id(vml_bytes: &[u8]) -> usize {
+    let text = String::from_utf8_lossy(vml_bytes);
+    let mut next = 1025usize;
+    let mut remaining = text.as_ref();
+    while let Some(index) = remaining.find("_x0000_s") {
+        let digits = &remaining[index + "_x0000_s".len()..];
+        let length = digits.bytes().take_while(u8::is_ascii_digit).count();
+        if let Ok(id) = digits[..length].parse::<usize>() {
+            next = next.max(id.saturating_add(1));
+        }
+        remaining = &digits[length..];
+    }
+    next
 }
 
 /// Strip form control shapes from VML bytes, keeping non-control shapes.
@@ -1028,6 +1198,60 @@ mod tests {
     }
 
     #[test]
+    fn test_form_control_labels_are_xml_escaped_and_round_trip() {
+        let label = "A & B < \"quoted\" 'text' Café";
+        let vml = build_form_control_vml(&[FormControlConfig::button("B2", label)], 1025);
+
+        assert!(vml.contains("A &amp; B &lt; &quot;quoted&quot; &apos;text&apos; Café"));
+        assert_eq!(parse_form_controls(&vml)[0].text.as_deref(), Some(label));
+    }
+
+    #[test]
+    fn test_control_properties_use_office_tokens() {
+        let mut checkbox = FormControlConfig::checkbox("B2", "Enabled");
+        checkbox.checked = Some(true);
+        checkbox.cell_link = Some("$D$1".to_string());
+        let checkbox_xml = build_control_property_xml(&checkbox);
+        let group_xml = build_control_property_xml(&FormControlConfig {
+            control_type: FormControlType::GroupBox,
+            cell: "A1".to_string(),
+            width: None,
+            height: None,
+            text: Some("Group".to_string()),
+            macro_name: None,
+            cell_link: None,
+            checked: None,
+            min_value: None,
+            max_value: None,
+            increment: None,
+            page_increment: None,
+            current_value: None,
+            three_d: None,
+        });
+
+        assert!(checkbox_xml.contains("objectType=\"CheckBox\""));
+        assert!(checkbox_xml.contains("checked=\"Checked\""));
+        assert!(checkbox_xml.contains("fmlaLink=\"$D$1\""));
+        assert!(group_xml.contains("objectType=\"GBox\""));
+    }
+
+    #[test]
+    fn test_validate_rejects_invalid_xml_and_unbounded_dimensions() {
+        let mut invalid_text = FormControlConfig::button("A1", "bad\u{1}text");
+        assert!(invalid_text.validate().is_err());
+
+        invalid_text.text = Some("Valid".to_string());
+        invalid_text.width = Some(f64::INFINITY);
+        assert!(invalid_text.validate().is_err());
+
+        let invalid_limit = FormControlConfig::spin_button("A1", 0, 30_001);
+        assert!(invalid_limit.validate().is_err());
+
+        let edge = FormControlConfig::button("XFD1048576", "Edge");
+        assert!(edge.validate().is_err());
+    }
+
+    #[test]
     fn test_parse_form_controls_checkbox_with_link() {
         let mut config = FormControlConfig::checkbox("A1", "Toggle");
         config.cell_link = Some("$D$1".to_string());
@@ -1123,18 +1347,13 @@ mod tests {
     #[test]
     fn test_build_control_anchor_basic() {
         let anchor = build_control_anchor("A1", 72.0, 24.0).unwrap();
-        let parts: Vec<&str> = anchor.split(", ").collect();
-        assert_eq!(parts.len(), 8);
-        assert_eq!(parts[0], "0"); // col0
-        assert_eq!(parts[2], "0"); // row0
+        assert_eq!(anchor, "0, 15, 0, 10, 1, 527, 1, 164");
     }
 
     #[test]
     fn test_build_control_anchor_offset_cell() {
         let anchor = build_control_anchor("C5", 72.0, 30.0).unwrap();
-        let parts: Vec<&str> = anchor.split(", ").collect();
-        assert_eq!(parts[0], "2"); // col0 (C = 3, 0-based = 2)
-        assert_eq!(parts[2], "4"); // row0 (5, 0-based = 4)
+        assert_eq!(anchor, "2, 15, 4, 10, 3, 527, 6, 10");
     }
 
     #[test]

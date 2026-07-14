@@ -138,6 +138,8 @@ pub mod rel_types {
 
     pub const VML_DRAWING: &str =
         "http://schemas.openxmlformats.org/officeDocument/2006/relationships/vmlDrawing";
+    pub const CONTROL_PROPERTIES: &str =
+        "http://schemas.openxmlformats.org/officeDocument/2006/relationships/ctrlProp";
 
     // Drawing level
     pub const CHART: &str =

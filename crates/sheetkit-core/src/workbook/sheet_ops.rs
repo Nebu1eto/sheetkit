@@ -330,6 +330,9 @@ impl Workbook {
         if self.sheet_form_controls.len() < self.worksheets.len() {
             self.sheet_form_controls.push(vec![]);
         }
+        if self.sheet_controls_dirty.len() < self.worksheets.len() {
+            self.sheet_controls_dirty.push(false);
+        }
     }
 
     /// Return the names of all sheets in workbook order.
@@ -437,6 +440,7 @@ impl Workbook {
         self.sheet_dirty.remove(idx);
         self.sheet_threaded_comments.remove(idx);
         self.sheet_form_controls.remove(idx);
+        self.sheet_controls_dirty.remove(idx);
 
         // Remove tables belonging to the deleted sheet and re-index remaining.
         self.tables.retain(|(_, _, si)| *si != idx);
@@ -734,6 +738,11 @@ impl Workbook {
             self.sheet_form_controls.len(),
             n,
             "sheet_form_controls desync"
+        );
+        debug_assert_eq!(
+            self.sheet_controls_dirty.len(),
+            n,
+            "sheet_controls_dirty desync"
         );
     }
 
@@ -1156,6 +1165,7 @@ impl Workbook {
             );
         self.sheet_form_controls
             .push(self.sheet_form_controls[src_idx].clone());
+        self.sheet_controls_dirty.push(true);
         if let Some(cloned) = cloned_streamed {
             self.streamed_sheets.insert(idx, cloned);
         }

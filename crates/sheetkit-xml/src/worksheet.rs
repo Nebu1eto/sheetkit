@@ -84,6 +84,9 @@ pub struct WorksheetXml {
     #[serde(rename = "legacyDrawing", skip_serializing_if = "Option::is_none")]
     pub legacy_drawing: Option<LegacyDrawingRef>,
 
+    #[serde(rename = "controls", skip_serializing_if = "Option::is_none")]
+    pub controls: Option<crate::control::Controls>,
+
     #[serde(rename = "tableParts", skip_serializing_if = "Option::is_none")]
     pub table_parts: Option<TableParts>,
 }
@@ -1098,6 +1101,7 @@ impl Default for WorksheetXml {
             col_breaks: None,
             drawing: None,
             legacy_drawing: None,
+            controls: None,
             table_parts: None,
         }
     }

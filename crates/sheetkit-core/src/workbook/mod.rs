@@ -222,6 +222,8 @@ pub struct Workbook {
     person_list: sheetkit_xml::threaded_comment::PersonList,
     /// Per-sheet form control configurations, parallel to `worksheets`.
     sheet_form_controls: Vec<Vec<crate::control::FormControlConfig>>,
+    /// Tracks sheets whose control graph was intentionally changed.
+    sheet_controls_dirty: Vec<bool>,
     /// O(1) sheet name -> index lookup cache. Must be kept in sync with
     /// `worksheets` via [`rebuild_sheet_index`].
     sheet_name_index: HashMap<String, usize>,
