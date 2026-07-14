@@ -1066,50 +1066,47 @@ impl Workbook {
                 continue;
             }
 
-            // Build VML bytes combining comments and form controls.
+            // Regenerate only owned shapes while preserving unrelated VML.
             let vml_path = format!("xl/drawings/vmlDrawing{}.vml", sheet_idx + 1);
-            let vml_bytes = if has_comments && has_form_controls {
-                // Both comments and form controls: start with comment VML, then append controls.
-                let comment_vml =
-                    if let Some(bytes) = self.sheet_vml.get(sheet_idx).and_then(|v| v.as_ref()) {
-                        bytes.clone()
-                    } else if let Some(Some(comments)) = self.sheet_comments.get(sheet_idx) {
-                        let cells: Vec<&str> = comments
-                            .comment_list
-                            .comments
-                            .iter()
-                            .map(|c| c.r#ref.as_str())
-                            .collect();
-                        crate::vml::build_vml_drawing(&cells).into_bytes()
-                    } else {
-                        continue;
-                    };
-                let shape_count = crate::control::count_vml_shapes(&comment_vml);
-                let start_id = 1025 + shape_count;
-                let form_controls = &self.sheet_form_controls[sheet_idx];
-                crate::control::merge_vml_controls(&comment_vml, form_controls, start_id)
-            } else if has_comments {
-                if let Some(bytes) = self.sheet_vml.get(sheet_idx).and_then(|v| v.as_ref()) {
-                    bytes.clone()
-                } else if let Some(Some(comments)) = self.sheet_comments.get(sheet_idx) {
-                    let cells: Vec<&str> = comments
-                        .comment_list
-                        .comments
-                        .iter()
-                        .map(|c| c.r#ref.as_str())
-                        .collect();
-                    crate::vml::build_vml_drawing(&cells).into_bytes()
-                } else {
-                    continue;
-                }
-            } else if has_form_controls {
-                // Hydrated form controls only (no comments).
-                let form_controls = &self.sheet_form_controls[sheet_idx];
-                crate::control::build_form_control_vml(form_controls, 1025).into_bytes()
-            } else if let Some(Some(vml)) = self.sheet_vml.get(sheet_idx) {
-                // Preserved VML bytes only (controls not hydrated, no comments).
-                vml.clone()
-            } else {
+            let mut vml_bytes = self
+                .sheet_vml
+                .get(sheet_idx)
+                .and_then(|v| v.as_ref())
+                .cloned();
+
+            if has_comments
+                && !vml_bytes
+                    .as_deref()
+                    .is_some_and(|vml| String::from_utf8_lossy(vml).contains("ObjectType=\"Note\""))
+            {
+                let comments = self.sheet_comments[sheet_idx].as_ref().unwrap();
+                let cells: Vec<&str> = comments
+                    .comment_list
+                    .comments
+                    .iter()
+                    .map(|comment| comment.r#ref.as_str())
+                    .collect();
+                vml_bytes = Some(match vml_bytes {
+                    Some(existing) => {
+                        let start_id = 1025 + crate::control::count_vml_shapes(&existing);
+                        crate::vml::merge_vml_comments(&existing, &cells, start_id)
+                    }
+                    None => crate::vml::build_vml_drawing(&cells).into_bytes(),
+                });
+            }
+
+            if has_form_controls {
+                let controls = &self.sheet_form_controls[sheet_idx];
+                vml_bytes = Some(match vml_bytes {
+                    Some(existing) => {
+                        let start_id = 1025 + crate::control::count_vml_shapes(&existing);
+                        crate::control::merge_vml_controls(&existing, controls, start_id)
+                    }
+                    None => crate::control::build_form_control_vml(controls, 1025).into_bytes(),
+                });
+            }
+
+            let Some(vml_bytes) = vml_bytes else {
                 continue;
             };
 
@@ -1856,7 +1853,7 @@ pub(crate) fn read_xml_part<T: serde::de::DeserializeOwned, R: std::io::Read + s
     quick_xml::de::from_reader(reader).map_err(|e| Error::XmlDeserialize(e.to_string()))
 }
 
-fn deserialize_xml_bytes<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T> {
+pub(crate) fn deserialize_xml_bytes<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T> {
     quick_xml::de::from_reader(bytes).map_err(|e| Error::XmlDeserialize(e.to_string()))
 }
 

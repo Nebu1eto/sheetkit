@@ -269,8 +269,8 @@ pub fn get_col_style(ws: &WorksheetXml, col: &str) -> Result<u32> {
     Ok(style)
 }
 
-/// Find an existing Col entry that covers exactly `col_num`, or create a
-/// new single-column entry for it.
+/// Find an existing Col entry that covers `col_num`, splitting a range into
+/// left, target, and right entries when necessary, or create a new entry.
 fn find_or_create_col(ws: &mut WorksheetXml, col_num: u32) -> &mut Col {
     // Ensure the Cols container exists.
     if ws.cols.is_none() {
@@ -278,14 +278,36 @@ fn find_or_create_col(ws: &mut WorksheetXml, col_num: u32) -> &mut Col {
     }
     let cols = ws.cols.as_mut().unwrap();
 
-    // Look for an existing entry that spans exactly this column.
     let existing = cols
         .cols
         .iter()
-        .position(|c| c.min == col_num && c.max == col_num);
+        .position(|c| col_num >= c.min && col_num <= c.max);
 
     if let Some(idx) = existing {
-        return &mut cols.cols[idx];
+        if cols.cols[idx].min == col_num && cols.cols[idx].max == col_num {
+            return &mut cols.cols[idx];
+        }
+
+        let original = cols.cols.remove(idx);
+        let has_left = original.min < col_num;
+        let has_right = col_num < original.max;
+        let mut replacements = Vec::with_capacity(1 + has_left as usize + has_right as usize);
+        if has_left {
+            let mut left = original.clone();
+            left.max = col_num - 1;
+            replacements.push(left);
+        }
+        let mut target = original.clone();
+        target.min = col_num;
+        target.max = col_num;
+        replacements.push(target);
+        if has_right {
+            let mut right = original;
+            right.min = col_num + 1;
+            replacements.push(right);
+        }
+        cols.cols.splice(idx..idx, replacements);
+        return &mut cols.cols[idx + has_left as usize];
     }
 
     // Create a new single-column entry.
@@ -646,6 +668,62 @@ mod tests {
         set_col_width(&mut ws, "A", 25.0).unwrap();
 
         assert_eq!(get_col_width(&ws, "A"), Some(25.0));
+    }
+
+    #[test]
+    fn test_setters_split_loaded_column_spans_preserving_attributes_and_order() {
+        let mut ws = WorksheetXml::default();
+        ws.cols = Some(Cols {
+            cols: vec![
+                Col {
+                    min: 1,
+                    max: 5,
+                    width: Some(12.0),
+                    style: Some(3),
+                    hidden: Some(true),
+                    custom_width: Some(true),
+                    outline_level: Some(2),
+                },
+                Col {
+                    min: 7,
+                    max: 8,
+                    width: Some(20.0),
+                    style: None,
+                    hidden: None,
+                    custom_width: Some(true),
+                    outline_level: None,
+                },
+            ],
+        });
+
+        set_col_width(&mut ws, "C", 25.0).unwrap();
+        let cols = &ws.cols.as_ref().unwrap().cols;
+        assert_eq!(cols.len(), 4);
+        assert_eq!(
+            (cols[0].min, cols[0].max, cols[0].width),
+            (1, 2, Some(12.0))
+        );
+        assert_eq!(
+            (cols[1].min, cols[1].max, cols[1].width),
+            (3, 3, Some(25.0))
+        );
+        assert_eq!(cols[1].style, Some(3));
+        assert_eq!(
+            (cols[2].min, cols[2].max, cols[2].width),
+            (4, 5, Some(12.0))
+        );
+        assert_eq!(
+            (cols[3].min, cols[3].max, cols[3].width),
+            (7, 8, Some(20.0))
+        );
+
+        set_col_visible(&mut ws, "D", true).unwrap();
+        let cols = &ws.cols.as_ref().unwrap().cols;
+        assert_eq!((cols[2].min, cols[2].max), (4, 4));
+        assert_eq!(cols[2].hidden, None);
+        assert_eq!((cols[3].min, cols[3].max), (5, 5));
+        assert_eq!(cols[3].hidden, Some(true));
+        assert_eq!((cols[4].min, cols[4].max), (7, 8));
     }
 
     #[test]

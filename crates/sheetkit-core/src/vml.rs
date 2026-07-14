@@ -16,17 +16,7 @@ const DEFAULT_COMMENT_HEIGHT_ROWS: u32 = 4;
 /// `cells` is a list of cell references (e.g. `["A1", "B3"]`).
 /// Returns the VML XML string.
 pub fn build_vml_drawing(cells: &[&str]) -> String {
-    let mut shapes = String::new();
-    for (i, cell) in cells.iter().enumerate() {
-        let shape_id = 1025 + i;
-        if let Ok((col, row)) = cell_name_to_coordinates(cell) {
-            let anchor = comment_anchor(col, row);
-            let row_0 = row - 1;
-            let col_0 = col - 1;
-            let z = i + 1;
-            write_vml_shape(&mut shapes, shape_id, z, &anchor, row_0, col_0);
-        }
-    }
+    let shapes = build_comment_shapes(cells, 1025);
 
     let mut doc = String::with_capacity(1024 + shapes.len());
     doc.push_str("<xml xmlns:v=\"urn:schemas-microsoft-com:vml\"");
@@ -43,6 +33,80 @@ pub fn build_vml_drawing(cells: &[&str]) -> String {
     doc.push_str(&shapes);
     doc.push_str("</xml>\n");
     doc
+}
+
+/// Merge regenerated comment shapes into preserved VML content.
+pub fn merge_vml_comments(existing_vml: &[u8], cells: &[&str], start_shape_id: usize) -> Vec<u8> {
+    let existing = String::from_utf8_lossy(existing_vml);
+    let shapes = build_comment_shapes(cells, start_shape_id);
+    if let Some(close_pos) = existing.rfind("</xml>") {
+        let mut result = String::with_capacity(existing.len() + shapes.len());
+        result.push_str(&existing[..close_pos]);
+        if !existing.contains("_x0000_t202") {
+            result.push_str(
+                " <v:shapetype id=\"_x0000_t202\" coordsize=\"21600,21600\" \
+                 o:spt=\"202\" path=\"m,l,21600r21600,l21600,xe\">\n\
+                  <v:stroke joinstyle=\"miter\"/>\n\
+                  <v:path gradientshapeok=\"t\" o:connecttype=\"rect\"/>\n\
+                 </v:shapetype>\n",
+            );
+        }
+        result.push_str(&shapes);
+        result.push_str("</xml>\n");
+        result.into_bytes()
+    } else {
+        build_vml_drawing(cells).into_bytes()
+    }
+}
+
+/// Remove comment shapes while retaining non-comment VML content.
+pub fn strip_vml_comment_shapes_from_vml(vml_bytes: &[u8]) -> Option<Vec<u8>> {
+    filter_vml_shapes(vml_bytes, |shape| !shape.contains("ObjectType=\"Note\""))
+}
+
+fn build_comment_shapes(cells: &[&str], start_shape_id: usize) -> String {
+    let mut shapes = String::new();
+    for (i, cell) in cells.iter().enumerate() {
+        if let Ok((col, row)) = cell_name_to_coordinates(cell) {
+            let anchor = comment_anchor(col, row);
+            write_vml_shape(
+                &mut shapes,
+                start_shape_id + i,
+                i + 1,
+                &anchor,
+                row - 1,
+                col - 1,
+            );
+        }
+    }
+    shapes
+}
+
+fn filter_vml_shapes<F>(vml_bytes: &[u8], mut keep: F) -> Option<Vec<u8>>
+where
+    F: FnMut(&str) -> bool,
+{
+    let vml = String::from_utf8_lossy(vml_bytes);
+    let first_shape = vml.find("<v:shape ")?;
+    let mut result = String::from(&vml[..first_shape]);
+    let mut search_from = first_shape;
+    let mut retained = false;
+    while let Some(shape_start) = vml[search_from..].find("<v:shape ") {
+        let start = search_from + shape_start;
+        let end = vml[start..]
+            .find("</v:shape>")
+            .map(|offset| start + offset + "</v:shape>".len())?;
+        if keep(&vml[start..end]) {
+            result.push_str(&vml[start..end]);
+            result.push('\n');
+            retained = true;
+        }
+        search_from = end;
+    }
+    retained.then(|| {
+        result.push_str("</xml>\n");
+        result.into_bytes()
+    })
 }
 
 /// Write a single VML shape element for a comment to the output string.

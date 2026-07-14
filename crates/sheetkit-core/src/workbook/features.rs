@@ -170,11 +170,13 @@ impl Workbook {
     pub fn add_comment(&mut self, sheet: &str, config: &CommentConfig) -> Result<()> {
         let idx = self.sheet_index(sheet)?;
         self.hydrate_comments(idx);
+        self.hydrate_form_controls(idx);
         crate::comment::add_comment(&mut self.sheet_comments[idx], config);
         self.mark_sheet_dirty(idx);
-        // Invalidate cached VML so save() regenerates it from current comments.
         if idx < self.sheet_vml.len() {
-            self.sheet_vml[idx] = None;
+            self.sheet_vml[idx] = self.sheet_vml[idx]
+                .as_deref()
+                .and_then(crate::vml::strip_vml_comment_shapes_from_vml);
         }
         Ok(())
     }
@@ -196,11 +198,13 @@ impl Workbook {
     pub fn remove_comment(&mut self, sheet: &str, cell: &str) -> Result<()> {
         let idx = self.sheet_index(sheet)?;
         self.hydrate_comments(idx);
+        self.hydrate_form_controls(idx);
         if crate::comment::remove_comment(&mut self.sheet_comments[idx], cell) {
             self.mark_sheet_dirty(idx);
-            // Invalidate cached VML so save() regenerates or omits it.
             if idx < self.sheet_vml.len() {
-                self.sheet_vml[idx] = None;
+                self.sheet_vml[idx] = self.sheet_vml[idx]
+                    .as_deref()
+                    .and_then(crate::vml::strip_vml_comment_shapes_from_vml);
             }
         }
         Ok(())
@@ -957,13 +961,10 @@ impl Workbook {
     ) -> Result<()> {
         let idx = self.sheet_index(sheet)?;
         config.validate()?;
+        self.hydrate_comments(idx);
         self.hydrate_form_controls(idx);
         self.sheet_form_controls[idx].push(config);
         self.mark_sheet_dirty(idx);
-        // Invalidate cached VML so save() regenerates from current state.
-        if idx < self.sheet_vml.len() {
-            self.sheet_vml[idx] = None;
-        }
         Ok(())
     }
 
@@ -976,6 +977,7 @@ impl Workbook {
         sheet: &str,
     ) -> Result<Vec<crate::control::FormControlInfo>> {
         let idx = self.sheet_index(sheet)?;
+        self.hydrate_comments(idx);
         self.hydrate_form_controls(idx);
 
         let controls = &self.sheet_form_controls[idx];
@@ -1000,10 +1002,6 @@ impl Workbook {
         }
         controls.remove(index);
         self.mark_sheet_dirty(idx);
-        // Invalidate cached VML.
-        if idx < self.sheet_vml.len() {
-            self.sheet_vml[idx] = None;
-        }
         Ok(())
     }
 
@@ -1061,6 +1059,18 @@ mod tests {
         (0..archive.len())
             .filter(|index| archive.by_index(*index).unwrap().name() == name)
             .count()
+    }
+
+    fn with_unrelated_vml_shape(vml: Vec<u8>) -> Vec<u8> {
+        let mut vml = String::from_utf8(vml).unwrap();
+        let close_pos = vml.rfind("</xml>").unwrap();
+        vml.insert_str(
+            close_pos,
+            " <v:shape id=\"unrelated-shape\" type=\"#_x0000_t75\">\n\
+              <x:ClientData ObjectType=\"Pict\"/>\n\
+             </v:shape>\n",
+        );
+        vml.into_bytes()
     }
 
     #[test]
@@ -1342,6 +1352,74 @@ mod tests {
         let comments = wb3.get_comments("Sheet1").unwrap();
         assert_eq!(comments.len(), 1);
         assert_eq!(comments[0].text, "Roundtrip VML");
+    }
+
+    #[test]
+    fn test_lazy_vml_mutations_preserve_comments_controls_and_unrelated_shapes() {
+        use crate::workbook::aux::AuxCategory;
+
+        let mut original = Workbook::new();
+        original
+            .add_comment(
+                "Sheet1",
+                &crate::comment::CommentConfig {
+                    cell: "A1".to_string(),
+                    author: "Author".to_string(),
+                    text: "Existing comment".to_string(),
+                },
+            )
+            .unwrap();
+        original
+            .add_form_control(
+                "Sheet1",
+                crate::control::FormControlConfig::button("C1", "Existing control"),
+            )
+            .unwrap();
+        let source = original.save_to_buffer().unwrap();
+
+        let options = OpenOptions::new().read_mode(ReadMode::Lazy);
+        let mut opened = Workbook::open_from_buffer_with_options(&source, &options).unwrap();
+        let vml_path = "xl/drawings/vmlDrawing1.vml";
+        let vml = opened
+            .deferred_parts
+            .remove_path(AuxCategory::Vml, vml_path)
+            .unwrap();
+        assert!(opened
+            .deferred_parts
+            .insert(vml_path.to_string(), with_unrelated_vml_shape(vml)));
+
+        opened
+            .add_comment(
+                "Sheet1",
+                &crate::comment::CommentConfig {
+                    cell: "B2".to_string(),
+                    author: "Author".to_string(),
+                    text: "Added comment".to_string(),
+                },
+            )
+            .unwrap();
+        opened
+            .add_form_control(
+                "Sheet1",
+                crate::control::FormControlConfig::checkbox("D2", "Added control"),
+            )
+            .unwrap();
+
+        let saved = opened.save_to_buffer().unwrap();
+        let vml = String::from_utf8(zip_part(&saved, vml_path)).unwrap();
+        assert!(vml.contains("id=\"unrelated-shape\""));
+        assert_eq!(vml.matches("ObjectType=\"Note\"").count(), 2);
+        assert_eq!(vml.matches("ObjectType=\"Button\"").count(), 1);
+        assert_eq!(vml.matches("ObjectType=\"Checkbox\"").count(), 1);
+        assert_eq!(zip_entry_count(&saved, vml_path), 1);
+        assert_eq!(
+            zip_entry_count(&saved, "xl/worksheets/_rels/sheet1.xml.rels"),
+            1
+        );
+
+        let mut reopened = Workbook::open_from_buffer_with_options(&saved, &options).unwrap();
+        assert_eq!(reopened.get_comments("Sheet1").unwrap().len(), 2);
+        assert_eq!(reopened.get_form_controls("Sheet1").unwrap().len(), 2);
     }
 
     #[test]

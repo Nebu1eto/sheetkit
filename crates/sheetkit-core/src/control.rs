@@ -674,16 +674,15 @@ pub fn count_vml_shapes(vml_bytes: &[u8]) -> usize {
     vml_str.matches("<v:shape ").count()
 }
 
-/// Strip form control shapes from VML bytes, keeping only comment (Note) shapes.
+/// Strip form control shapes from VML bytes, keeping non-control shapes.
 ///
-/// Returns `None` if no comment shapes remain after stripping, or `Some(bytes)`
-/// with the cleaned VML that contains only comment shapes.
+/// Returns `None` if no non-control shapes remain after stripping.
 pub fn strip_form_control_shapes_from_vml(vml_bytes: &[u8]) -> Option<Vec<u8>> {
     let vml_str = String::from_utf8_lossy(vml_bytes);
 
     // Collect ranges of form control shapes to remove.
     let mut keep_shapes = Vec::new();
-    let mut has_comment_shapes = false;
+    let mut has_preserved_shapes = false;
     let mut search_from = 0;
 
     while let Some(shape_start) = vml_str[search_from..].find("<v:shape ") {
@@ -694,16 +693,14 @@ pub fn strip_form_control_shapes_from_vml(vml_bytes: &[u8]) -> Option<Vec<u8>> {
         };
         let shape_xml = &vml_str[abs_start..shape_end];
 
-        // Check if this is a comment shape (ObjectType="Note").
-        if shape_xml.contains("ObjectType=\"Note\"") {
+        if parse_single_control(shape_xml).is_none() {
             keep_shapes.push((abs_start, shape_end));
-            has_comment_shapes = true;
+            has_preserved_shapes = true;
         }
-        // Form control shapes are silently dropped.
         search_from = shape_end;
     }
 
-    if !has_comment_shapes {
+    if !has_preserved_shapes {
         return None;
     }
 
@@ -712,12 +709,8 @@ pub fn strip_form_control_shapes_from_vml(vml_bytes: &[u8]) -> Option<Vec<u8>> {
     let first_shape_pos = vml_str.find("<v:shape ").unwrap_or(vml_str.len());
     let header = &vml_str[..first_shape_pos];
 
-    // Also strip the form control shapetype (_x0000_t201) if present, keeping
-    // only the comment shapetype (_x0000_t202).
-    let header = remove_shapetype_block(header, FORM_CONTROL_SHAPETYPE_ID);
-
     let mut result = String::with_capacity(vml_str.len());
-    result.push_str(&header);
+    result.push_str(header);
 
     for (start, end) in &keep_shapes {
         result.push_str(&vml_str[*start..*end]);
@@ -726,27 +719,6 @@ pub fn strip_form_control_shapes_from_vml(vml_bytes: &[u8]) -> Option<Vec<u8>> {
 
     result.push_str("</xml>\n");
     Some(result.into_bytes())
-}
-
-/// Remove a <v:shapetype id="..."> ... </v:shapetype> block from the header.
-fn remove_shapetype_block(header: &str, shapetype_id: &str) -> String {
-    if let Some(st_start) = header.find(&format!("<v:shapetype id=\"{shapetype_id}\"")) {
-        let st_end_tag = "</v:shapetype>";
-        if let Some(rel_end) = header[st_start..].find(st_end_tag) {
-            let st_end = st_start + rel_end + st_end_tag.len();
-            // Also consume a trailing newline if present.
-            let st_end = if header.as_bytes().get(st_end) == Some(&b'\n') {
-                st_end + 1
-            } else {
-                st_end
-            };
-            let mut cleaned = String::with_capacity(header.len());
-            cleaned.push_str(&header[..st_start]);
-            cleaned.push_str(&header[st_end..]);
-            return cleaned;
-        }
-    }
-    header.to_string()
 }
 
 #[cfg(test)]

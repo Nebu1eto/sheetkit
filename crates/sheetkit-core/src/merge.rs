@@ -3,7 +3,7 @@
 //! Provides functions for merging and unmerging ranges of cells in a worksheet.
 
 use crate::error::{Error, Result};
-use crate::utils::cell_ref::cell_name_to_coordinates;
+use crate::utils::cell_ref::{cell_name_to_coordinates, coordinates_to_cell_name};
 use sheetkit_xml::worksheet::{MergeCell, MergeCells, WorksheetXml};
 
 /// Parse a range reference like "A1:C3" into ((col1, row1), (col2, row2)) coordinates,
@@ -23,6 +23,15 @@ fn parse_range(reference: &str) -> Result<(u32, u32, u32, u32)> {
     let min_row = r1.min(r2);
     let max_row = r1.max(r2);
     Ok((min_col, min_row, max_col, max_row))
+}
+
+fn canonical_range_reference(range: (u32, u32, u32, u32)) -> Result<String> {
+    let (min_col, min_row, max_col, max_row) = range;
+    Ok(format!(
+        "{}:{}",
+        coordinates_to_cell_name(min_col, min_row)?,
+        coordinates_to_cell_name(max_col, max_row)?
+    ))
 }
 
 /// Check whether two rectangular ranges overlap.
@@ -63,7 +72,7 @@ pub fn merge_cells(ws: &mut WorksheetXml, top_left: &str, bottom_right: &str) ->
     let max_row = tl_row.max(br_row);
     let new_range = (min_col, min_row, max_col, max_row);
 
-    let reference = format!("{top_left}:{bottom_right}");
+    let reference = canonical_range_reference(new_range)?;
 
     // Check for overlaps using cached coordinates (no string parsing per check).
     if let Some(ref mut mc) = ws.merge_cells {
@@ -101,7 +110,12 @@ pub fn unmerge_cell(ws: &mut WorksheetXml, reference: &str) -> Result<()> {
         .as_mut()
         .ok_or_else(|| Error::MergeCellNotFound(reference.to_string()))?;
 
-    let pos = mc.merge_cells.iter().position(|m| m.reference == reference);
+    ensure_cache(mc)?;
+    let requested_range = parse_range(reference)?;
+    let pos = mc
+        .cached_coords
+        .iter()
+        .position(|coords| *coords == requested_range);
 
     match pos {
         Some(idx) => {
@@ -147,6 +161,16 @@ mod tests {
         let merged = get_merge_cells(&ws);
         assert_eq!(merged, vec!["A1:B2"]);
         assert_eq!(ws.merge_cells.as_ref().unwrap().count, Some(1));
+    }
+
+    #[test]
+    fn test_merge_cells_normalizes_reversed_and_lowercase_references() {
+        let mut ws = new_ws();
+        merge_cells(&mut ws, "c3", "a1").unwrap();
+        assert_eq!(get_merge_cells(&ws), vec!["A1:C3"]);
+
+        unmerge_cell(&mut ws, "c3:a1").unwrap();
+        assert!(get_merge_cells(&ws).is_empty());
     }
 
     #[test]

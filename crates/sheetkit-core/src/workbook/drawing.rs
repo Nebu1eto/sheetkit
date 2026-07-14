@@ -450,14 +450,13 @@ impl Workbook {
         let target_col = col - 1;
         let target_row = row - 1;
 
-        let drawing_idx = match self.worksheet_drawings.get(&sheet_idx) {
-            Some(&idx) => idx,
-            None => return Ok(vec![]),
-        };
-
-        let drawing = match self.drawings.get(drawing_idx) {
-            Some((_, d)) => d,
-            None => return Ok(vec![]),
+        let (drawing_idx, drawing) = match self
+            .worksheet_drawings
+            .get(&sheet_idx)
+            .and_then(|idx| self.drawings.get(*idx).map(|drawing| (*idx, drawing)))
+        {
+            Some((idx, (_, drawing))) => (idx, drawing),
+            None => return self.get_deferred_pictures(sheet_idx, cell, target_col, target_row),
         };
         let mut results = Vec::new();
 
@@ -481,6 +480,9 @@ impl Workbook {
             }
         }
 
+        if results.is_empty() {
+            return self.get_raw_pictures(sheet_idx, cell, target_col, target_row);
+        }
         Ok(results)
     }
 
@@ -528,14 +530,13 @@ impl Workbook {
     pub fn get_picture_cells(&self, sheet: &str) -> Result<Vec<String>> {
         let sheet_idx = self.sheet_index(sheet)?;
 
-        let drawing_idx = match self.worksheet_drawings.get(&sheet_idx) {
-            Some(&idx) => idx,
-            None => return Ok(vec![]),
-        };
-
-        let drawing = match self.drawings.get(drawing_idx) {
-            Some((_, d)) => d,
-            None => return Ok(vec![]),
+        let drawing = match self
+            .worksheet_drawings
+            .get(&sheet_idx)
+            .and_then(|idx| self.drawings.get(*idx))
+        {
+            Some((_, drawing)) => drawing,
+            None => return self.get_deferred_picture_cells(sheet_idx),
         };
         let mut cells = Vec::new();
 
@@ -561,8 +562,349 @@ impl Workbook {
             }
         }
 
+        if cells.is_empty() {
+            return self.get_raw_picture_cells(sheet_idx);
+        }
         Ok(cells)
     }
+
+    /// Parse a deferred drawing into a read-only view for `&self` accessors.
+    fn deferred_drawing_view(
+        &self,
+        sheet_idx: usize,
+    ) -> Option<(
+        String,
+        sheetkit_xml::drawing::WsDr,
+        sheetkit_xml::relationships::Relationships,
+    )> {
+        use crate::workbook::aux::AuxCategory;
+
+        let sheet_path = self.sheet_part_path(sheet_idx);
+        let drawing_rel = self
+            .worksheet_rels
+            .get(&sheet_idx)?
+            .relationships
+            .iter()
+            .find(|rel| rel.rel_type == sheetkit_xml::relationships::rel_types::DRAWING)?;
+        let drawing_path =
+            crate::workbook_paths::resolve_relationship_target(&sheet_path, &drawing_rel.target);
+        let drawing_bytes = self
+            .deferred_parts
+            .get_path(AuxCategory::Drawings, &drawing_path)?;
+        let drawing = crate::workbook::io::deserialize_xml_bytes::<sheetkit_xml::drawing::WsDr>(
+            drawing_bytes,
+        )
+        .ok()?;
+        let rels_path = crate::workbook_paths::relationship_part_path(&drawing_path);
+        let rels_bytes = self
+            .deferred_parts
+            .get_path(AuxCategory::DrawingRels, &rels_path)?;
+        let rels = crate::workbook::io::deserialize_xml_bytes::<
+            sheetkit_xml::relationships::Relationships,
+        >(rels_bytes)
+        .ok()?;
+        Some((drawing_path, drawing, rels))
+    }
+
+    fn get_deferred_pictures(
+        &self,
+        sheet_idx: usize,
+        cell: &str,
+        target_col: u32,
+        target_row: u32,
+    ) -> Result<Vec<crate::image::PictureInfo>> {
+        use crate::workbook::aux::AuxCategory;
+
+        let Some((drawing_path, drawing, rels)) = self.deferred_drawing_view(sheet_idx) else {
+            return Ok(vec![]);
+        };
+        let mut results = Vec::new();
+        let append = |pic: &sheetkit_xml::drawing::Picture| {
+            let rid = &pic.blip_fill.blip.r_embed;
+            let rel = rels.relationships.iter().find(|rel| rel.id == *rid)?;
+            let image_path =
+                crate::workbook_paths::resolve_relationship_target(&drawing_path, &rel.target);
+            let bytes = self
+                .deferred_parts
+                .get_path(AuxCategory::Images, &image_path)?;
+            let extension = image_path.rsplit('.').next()?;
+            let format = crate::image::ImageFormat::from_extension(extension).ok()?;
+            Some(crate::image::PictureInfo {
+                data: bytes.to_vec(),
+                format,
+                cell: cell.to_string(),
+                width_px: (pic.sp_pr.xfrm.ext.cx / crate::image::EMU_PER_PIXEL) as u32,
+                height_px: (pic.sp_pr.xfrm.ext.cy / crate::image::EMU_PER_PIXEL) as u32,
+            })
+        };
+        for anchor in drawing
+            .one_cell_anchors
+            .iter()
+            .filter(|anchor| anchor.from.col == target_col && anchor.from.row == target_row)
+        {
+            if let Some(pic) = &anchor.pic {
+                if let Some(info) = append(pic) {
+                    results.push(info);
+                }
+            }
+        }
+        for anchor in drawing
+            .two_cell_anchors
+            .iter()
+            .filter(|anchor| anchor.from.col == target_col && anchor.from.row == target_row)
+        {
+            if let Some(pic) = &anchor.pic {
+                if let Some(info) = append(pic) {
+                    results.push(info);
+                }
+            }
+        }
+        if results.is_empty() {
+            return self.get_raw_pictures(sheet_idx, cell, target_col, target_row);
+        }
+        Ok(results)
+    }
+
+    fn get_deferred_picture_cells(&self, sheet_idx: usize) -> Result<Vec<String>> {
+        let Some((_, drawing, _)) = self.deferred_drawing_view(sheet_idx) else {
+            return Ok(vec![]);
+        };
+        let mut cells = Vec::new();
+        for anchor in &drawing.one_cell_anchors {
+            if anchor.pic.is_some() {
+                if let Ok(cell) = crate::utils::cell_ref::coordinates_to_cell_name(
+                    anchor.from.col + 1,
+                    anchor.from.row + 1,
+                ) {
+                    cells.push(cell);
+                }
+            }
+        }
+        for anchor in &drawing.two_cell_anchors {
+            if anchor.pic.is_some() {
+                if let Ok(cell) = crate::utils::cell_ref::coordinates_to_cell_name(
+                    anchor.from.col + 1,
+                    anchor.from.row + 1,
+                ) {
+                    cells.push(cell);
+                }
+            }
+        }
+        if cells.is_empty() {
+            return self.get_raw_picture_cells(sheet_idx);
+        }
+        Ok(cells)
+    }
+
+    fn raw_drawing_view(&self, sheet_idx: usize) -> Option<(String, &[u8], &[u8])> {
+        use crate::workbook::aux::AuxCategory;
+
+        let sheet_path = self.sheet_part_path(sheet_idx);
+        let drawing_rel = self
+            .worksheet_rels
+            .get(&sheet_idx)?
+            .relationships
+            .iter()
+            .find(|rel| rel.rel_type == sheetkit_xml::relationships::rel_types::DRAWING)?;
+        let drawing_path =
+            crate::workbook_paths::resolve_relationship_target(&sheet_path, &drawing_rel.target);
+        let rels_path = crate::workbook_paths::relationship_part_path(&drawing_path);
+        let drawing_bytes = self
+            .raw_graph_parts
+            .get(&drawing_path)
+            .map(Vec::as_slice)
+            .or_else(|| {
+                self.deferred_parts
+                    .get_path(AuxCategory::Drawings, &drawing_path)
+            })?;
+        let rels_bytes = self
+            .raw_graph_parts
+            .get(&rels_path)
+            .map(Vec::as_slice)
+            .or_else(|| {
+                self.deferred_parts
+                    .get_path(AuxCategory::DrawingRels, &rels_path)
+            })?;
+        Some((drawing_path, drawing_bytes, rels_bytes))
+    }
+
+    fn get_raw_pictures(
+        &self,
+        sheet_idx: usize,
+        cell: &str,
+        target_col: u32,
+        target_row: u32,
+    ) -> Result<Vec<crate::image::PictureInfo>> {
+        use crate::workbook::aux::AuxCategory;
+
+        let Some((drawing_path, drawing_bytes, rels_bytes)) = self.raw_drawing_view(sheet_idx)
+        else {
+            return Ok(vec![]);
+        };
+        let Ok(rels) = crate::workbook::io::deserialize_xml_bytes::<
+            sheetkit_xml::relationships::Relationships,
+        >(rels_bytes) else {
+            return Ok(vec![]);
+        };
+        let mut pictures = Vec::new();
+        for anchor in parse_raw_picture_anchors(drawing_bytes) {
+            if anchor.col != target_col || anchor.row != target_row {
+                continue;
+            }
+            let Some(rel) = rels.relationships.iter().find(|rel| rel.id == anchor.rid) else {
+                continue;
+            };
+            let image_path =
+                crate::workbook_paths::resolve_relationship_target(&drawing_path, &rel.target);
+            let bytes = self
+                .images
+                .iter()
+                .find(|(path, _)| path == &image_path)
+                .map(|(_, bytes)| bytes.as_slice())
+                .or_else(|| {
+                    self.deferred_parts
+                        .get_path(AuxCategory::Images, &image_path)
+                });
+            let Some(bytes) = bytes else {
+                continue;
+            };
+            let Some(extension) = image_path.rsplit('.').next() else {
+                continue;
+            };
+            let Ok(format) = crate::image::ImageFormat::from_extension(extension) else {
+                continue;
+            };
+            pictures.push(crate::image::PictureInfo {
+                data: bytes.to_vec(),
+                format,
+                cell: cell.to_string(),
+                width_px: (anchor.cx / crate::image::EMU_PER_PIXEL as i64) as u32,
+                height_px: (anchor.cy / crate::image::EMU_PER_PIXEL as i64) as u32,
+            });
+        }
+        Ok(pictures)
+    }
+
+    fn get_raw_picture_cells(&self, sheet_idx: usize) -> Result<Vec<String>> {
+        let Some((_, drawing_bytes, _)) = self.raw_drawing_view(sheet_idx) else {
+            return Ok(vec![]);
+        };
+        Ok(parse_raw_picture_anchors(drawing_bytes)
+            .into_iter()
+            .filter_map(|anchor| {
+                crate::utils::cell_ref::coordinates_to_cell_name(anchor.col + 1, anchor.row + 1)
+                    .ok()
+            })
+            .collect())
+    }
+}
+
+struct RawPictureAnchor {
+    col: u32,
+    row: u32,
+    rid: String,
+    cx: i64,
+    cy: i64,
+}
+
+fn parse_raw_picture_anchors(xml: &[u8]) -> Vec<RawPictureAnchor> {
+    use quick_xml::events::Event;
+
+    let mut reader = quick_xml::Reader::from_reader(xml);
+    reader.config_mut().trim_text(true);
+    let mut buffer = Vec::new();
+    let mut anchors = Vec::new();
+    let mut current: Option<RawPictureAnchor> = None;
+    let mut in_from = false;
+    let mut in_pic = false;
+    let mut value_target: Option<bool> = None;
+
+    loop {
+        match reader.read_event_into(&mut buffer) {
+            Ok(Event::Start(event)) | Ok(Event::Empty(event)) => {
+                let event_name = event.name();
+                let name = local_xml_name(event_name.as_ref());
+                match name {
+                    b"oneCellAnchor" | b"twoCellAnchor" => {
+                        current = Some(RawPictureAnchor {
+                            col: 0,
+                            row: 0,
+                            rid: String::new(),
+                            cx: 0,
+                            cy: 0,
+                        });
+                    }
+                    b"from" if current.is_some() => in_from = true,
+                    b"pic" if current.is_some() => in_pic = true,
+                    b"col" if in_from => value_target = Some(true),
+                    b"row" if in_from => value_target = Some(false),
+                    b"blip" if in_pic => {
+                        if let Some(anchor) = current.as_mut() {
+                            for attribute in event.attributes().flatten() {
+                                if local_xml_name(attribute.key.as_ref()) == b"embed" {
+                                    anchor.rid =
+                                        String::from_utf8_lossy(&attribute.value).into_owned();
+                                }
+                            }
+                        }
+                    }
+                    b"ext" if in_pic => {
+                        if let Some(anchor) = current.as_mut() {
+                            for attribute in event.attributes().flatten() {
+                                match local_xml_name(attribute.key.as_ref()) {
+                                    b"cx" => {
+                                        anchor.cx = String::from_utf8_lossy(&attribute.value)
+                                            .parse()
+                                            .unwrap_or(0)
+                                    }
+                                    b"cy" => {
+                                        anchor.cy = String::from_utf8_lossy(&attribute.value)
+                                            .parse()
+                                            .unwrap_or(0)
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Event::Text(text)) => {
+                if let (Some(is_col), Some(anchor)) = (value_target, current.as_mut()) {
+                    let value = String::from_utf8_lossy(text.as_ref()).parse().unwrap_or(0);
+                    if is_col {
+                        anchor.col = value;
+                    } else {
+                        anchor.row = value;
+                    }
+                }
+            }
+            Ok(Event::End(event)) => {
+                let event_name = event.name();
+                match local_xml_name(event_name.as_ref()) {
+                    b"col" | b"row" => value_target = None,
+                    b"from" => in_from = false,
+                    b"pic" => in_pic = false,
+                    b"oneCellAnchor" | b"twoCellAnchor" => {
+                        if let Some(anchor) = current.take().filter(|anchor| !anchor.rid.is_empty())
+                        {
+                            anchors.push(anchor);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Ok(Event::Eof) | Err(_) => break,
+            _ => {}
+        }
+        buffer.clear();
+    }
+    anchors
+}
+
+fn local_xml_name(name: &[u8]) -> &[u8] {
+    name.rsplit(|byte| *byte == b':').next().unwrap_or(name)
 }
 
 #[cfg(test)]
@@ -1491,6 +1833,57 @@ mod tests {
         assert_eq!(pics[0].cell, "B2");
         assert_eq!(pics[0].width_px, 400);
         assert_eq!(pics[0].height_px, 300);
+    }
+
+    #[test]
+    fn lazy_picture_getters_match_eager_and_roundtrip_exact_data() {
+        use crate::image::{ImageConfig, ImageFormat};
+        let mut source = Workbook::new();
+        let data = vec![0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A];
+        source
+            .add_image(
+                "Sheet1",
+                &ImageConfig {
+                    data: data.clone(),
+                    format: ImageFormat::Png,
+                    from_cell: "C4".to_string(),
+                    width_px: 123,
+                    height_px: 45,
+                },
+            )
+            .unwrap();
+        let bytes = source.save_to_buffer().unwrap();
+        let eager_options = crate::workbook::open_options::OpenOptions::new()
+            .read_mode(crate::workbook::open_options::ReadMode::Eager)
+            .aux_parts(crate::workbook::open_options::AuxParts::EagerLoad);
+        let eager = Workbook::open_from_buffer_with_options(&bytes, &eager_options).unwrap();
+        let lazy = Workbook::open_from_buffer(&bytes).unwrap();
+        assert_eq!(lazy.get_picture_cells("Sheet1").unwrap(), vec!["C4"]);
+        assert_eq!(
+            lazy.get_picture_cells("Sheet1").unwrap(),
+            eager.get_picture_cells("Sheet1").unwrap()
+        );
+        let mut pictures = lazy.get_pictures("Sheet1", "C4").unwrap();
+        let picture = pictures.remove(0);
+        assert_eq!(picture.data, data);
+        assert_eq!(picture.format, ImageFormat::Png);
+        assert_eq!(picture.cell, "C4");
+        assert_eq!(picture.width_px, 123);
+        assert_eq!(picture.height_px, 45);
+        let reopened = Workbook::open_from_buffer(&lazy.save_to_buffer().unwrap()).unwrap();
+        assert_eq!(reopened.get_pictures("Sheet1", "C4").unwrap()[0].data, data);
+    }
+
+    #[test]
+    fn raw_picture_anchor_parser_reads_two_cell_anchor() {
+        let xml = br#"<wsDr><xdr:twoCellAnchor><xdr:from><xdr:col>4</xdr:col><xdr:row>5</xdr:row></xdr:from><xdr:pic><xdr:blipFill><a:blip r:embed="rId7"/></xdr:blipFill><xdr:spPr><a:xfrm><a:ext cx="952500" cy="1905000"/></a:xfrm></xdr:spPr></xdr:pic></xdr:twoCellAnchor></wsDr>"#;
+        let anchors = parse_raw_picture_anchors(xml);
+        assert_eq!(anchors.len(), 1);
+        assert_eq!(anchors[0].col, 4);
+        assert_eq!(anchors[0].row, 5);
+        assert_eq!(anchors[0].rid, "rId7");
+        assert_eq!(anchors[0].cx, 952500);
+        assert_eq!(anchors[0].cy, 1905000);
     }
 
     #[test]

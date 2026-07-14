@@ -301,6 +301,7 @@ impl Workbook {
     ) -> Result<()> {
         let idx = self.sheet_index(sheet)?;
         crate::sparkline::validate_sparkline_config(config)?;
+        self.hydrate_sparklines_for_sheet(idx);
         while self.sheet_sparklines.len() <= idx {
             self.sheet_sparklines.push(vec![]);
         }
@@ -312,12 +313,13 @@ impl Workbook {
     /// Get all sparklines for a worksheet.
     pub fn get_sparklines(&self, sheet: &str) -> Result<Vec<crate::sparkline::SparklineConfig>> {
         let idx = self.sheet_index(sheet)?;
-        Ok(self.sheet_sparklines.get(idx).cloned().unwrap_or_default())
+        Ok(self.sparklines_for_sheet(idx))
     }
 
     /// Remove a sparkline by its location cell reference.
     pub fn remove_sparkline(&mut self, sheet: &str, location: &str) -> Result<()> {
         let idx = self.sheet_index(sheet)?;
+        self.hydrate_sparklines_for_sheet(idx);
         let sparklines = self
             .sheet_sparklines
             .get_mut(idx)
@@ -333,6 +335,31 @@ impl Workbook {
         sparklines.remove(pos);
         self.mark_sheet_dirty(idx);
         Ok(())
+    }
+
+    /// Return sparklines from typed data or a read-only parse of lazy sheet XML.
+    fn sparklines_for_sheet(&self, sheet_idx: usize) -> Vec<crate::sparkline::SparklineConfig> {
+        if let Some(sparklines) = self.sheet_sparklines.get(sheet_idx) {
+            if !sparklines.is_empty() {
+                return sparklines.clone();
+            }
+        }
+        self.raw_sheet_xml
+            .get(sheet_idx)
+            .and_then(Option::as_deref)
+            .map(|bytes| {
+                crate::workbook::io::parse_sparklines_from_xml(&String::from_utf8_lossy(bytes))
+            })
+            .unwrap_or_default()
+    }
+
+    /// Materialize lazy sparkline data before mutating it.
+    fn hydrate_sparklines_for_sheet(&mut self, sheet_idx: usize) {
+        let sparklines = self.sparklines_for_sheet(sheet_idx);
+        while self.sheet_sparklines.len() <= sheet_idx {
+            self.sheet_sparklines.push(vec![]);
+        }
+        self.sheet_sparklines[sheet_idx] = sparklines;
     }
 
     /// Evaluate a single formula string in the context of `sheet`.
@@ -2247,6 +2274,52 @@ mod tests {
         assert_eq!(sparklines[0].line_weight, Some(1.5));
         assert_eq!(sparklines[1].data_range, "Sheet1!A1:A5");
         assert_eq!(sparklines[1].location, "C1");
+    }
+
+    #[test]
+    fn lazy_sparklines_match_eager_and_preserve_existing_configs_on_mutation() {
+        let mut source = Workbook::new();
+        let mut existing = crate::sparkline::SparklineConfig::new("Sheet1!A1:A3", "B1");
+        existing.sparkline_type = crate::sparkline::SparklineType::Column;
+        existing.markers = true;
+        existing.line_weight = Some(1.5);
+        source.add_sparkline("Sheet1", &existing).unwrap();
+        let bytes = source.save_to_buffer().unwrap();
+
+        let eager_options = OpenOptions::new()
+            .read_mode(ReadMode::Eager)
+            .aux_parts(AuxParts::EagerLoad);
+        let eager = Workbook::open_from_buffer_with_options(&bytes, &eager_options).unwrap();
+        let mut lazy = Workbook::open_from_buffer(&bytes).unwrap();
+        let lazy_configs = lazy.get_sparklines("Sheet1").unwrap();
+        let eager_configs = eager.get_sparklines("Sheet1").unwrap();
+        assert_eq!(lazy_configs.len(), 1);
+        assert_eq!(lazy_configs[0].data_range, eager_configs[0].data_range);
+        assert_eq!(lazy_configs[0].location, eager_configs[0].location);
+        assert_eq!(
+            lazy_configs[0].sparkline_type,
+            eager_configs[0].sparkline_type
+        );
+        assert_eq!(lazy_configs[0].markers, eager_configs[0].markers);
+        assert_eq!(lazy_configs[0].line_weight, eager_configs[0].line_weight);
+
+        let added = crate::sparkline::SparklineConfig::new("Sheet1!C1:C3", "D1");
+        lazy.add_sparkline("Sheet1", &added).unwrap();
+        let reopened = Workbook::open_from_buffer(&lazy.save_to_buffer().unwrap()).unwrap();
+        let configs = reopened.get_sparklines("Sheet1").unwrap();
+        assert_eq!(configs.len(), 2);
+        assert_eq!(configs[0].data_range, existing.data_range);
+        assert_eq!(configs[0].location, existing.location);
+        assert_eq!(configs[0].sparkline_type, existing.sparkline_type);
+        assert_eq!(configs[0].markers, existing.markers);
+        assert_eq!(configs[0].line_weight, existing.line_weight);
+        assert_eq!(configs[1].data_range, added.data_range);
+        assert_eq!(configs[1].location, added.location);
+
+        let mut lazy = Workbook::open_from_buffer(&bytes).unwrap();
+        lazy.remove_sparkline("Sheet1", "B1").unwrap();
+        let reopened = Workbook::open_from_buffer(&lazy.save_to_buffer().unwrap()).unwrap();
+        assert!(reopened.get_sparklines("Sheet1").unwrap().is_empty());
     }
 
     #[test]

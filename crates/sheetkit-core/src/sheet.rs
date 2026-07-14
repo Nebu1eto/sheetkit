@@ -33,7 +33,7 @@ pub fn validate_sheet_name(name: &str) -> Result<()> {
     if name.is_empty() {
         return Err(Error::InvalidSheetName("sheet name cannot be empty".into()));
     }
-    if name.len() > MAX_SHEET_NAME_LENGTH {
+    if name.chars().count() > MAX_SHEET_NAME_LENGTH {
         return Err(Error::InvalidSheetName(format!(
             "sheet name '{}' exceeds {} characters",
             name, MAX_SHEET_NAME_LENGTH
@@ -46,6 +46,15 @@ pub fn validate_sheet_name(name: &str) -> Result<()> {
                 name, ch
             )));
         }
+    }
+    if name
+        .chars()
+        .any(|ch| ch.is_control() || matches!(ch, '\u{FFFE}' | '\u{FFFF}'))
+    {
+        return Err(Error::InvalidSheetName(format!(
+            "sheet name '{}' contains an XML control character",
+            name
+        )));
     }
     if name.starts_with('\'') || name.ends_with('\'') {
         return Err(Error::InvalidSheetName(format!(
@@ -161,7 +170,10 @@ pub(crate) fn add_sheet_with_occupied_paths(
 ) -> Result<usize> {
     validate_sheet_name(name)?;
 
-    if worksheets.iter().any(|(n, _)| n == name) {
+    if worksheets
+        .iter()
+        .any(|(existing_name, _)| sheet_names_equal(existing_name, name))
+    {
         return Err(Error::SheetAlreadyExists {
             name: name.to_string(),
         });
@@ -252,7 +264,13 @@ pub fn rename_sheet(
         name: old_name.to_string(),
     })?;
 
-    if worksheets.iter().any(|(n, _)| n == new_name) {
+    if worksheets
+        .iter()
+        .enumerate()
+        .any(|(existing_idx, (existing_name, _))| {
+            existing_idx != idx && sheet_names_equal(existing_name, new_name)
+        })
+    {
         return Err(Error::SheetAlreadyExists {
             name: new_name.to_string(),
         });
@@ -262,6 +280,10 @@ pub fn rename_sheet(
     workbook_xml.sheets.sheets[idx].name = new_name.to_string();
 
     Ok(())
+}
+
+fn sheet_names_equal(left: &str, right: &str) -> bool {
+    left.to_lowercase() == right.to_lowercase()
 }
 
 /// Copy a sheet, returning the 0-based index of the new copy.
@@ -1131,6 +1153,60 @@ mod tests {
 
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), Error::InvalidSheetName(_)));
+    }
+
+    #[test]
+    fn test_sheet_name_limits_and_xml_controls() {
+        assert!(validate_sheet_name(&"a".repeat(31)).is_ok());
+        assert!(validate_sheet_name(&"a".repeat(32)).is_err());
+        assert!(validate_sheet_name(&"가".repeat(31)).is_ok());
+        assert!(validate_sheet_name("Bad\u{0001}Name").is_err());
+    }
+
+    #[test]
+    fn test_sheet_names_are_case_insensitively_unique() {
+        let (mut wb_xml, mut wb_rels, mut ct, mut ws) = test_workbook_parts();
+
+        let result = add_sheet(
+            &mut wb_xml,
+            &mut wb_rels,
+            &mut ct,
+            &mut ws,
+            "sheet1",
+            WorksheetXml::default(),
+        );
+        assert!(matches!(result, Err(Error::SheetAlreadyExists { .. })));
+
+        add_sheet(
+            &mut wb_xml,
+            &mut wb_rels,
+            &mut ct,
+            &mut ws,
+            "Second",
+            WorksheetXml::default(),
+        )
+        .unwrap();
+        let result = rename_sheet(&mut wb_xml, &mut ws, "Second", "SHEET1");
+        assert!(matches!(result, Err(Error::SheetAlreadyExists { .. })));
+
+        add_sheet(
+            &mut wb_xml,
+            &mut wb_rels,
+            &mut ct,
+            &mut ws,
+            "Résumé",
+            WorksheetXml::default(),
+        )
+        .unwrap();
+        let result = add_sheet(
+            &mut wb_xml,
+            &mut wb_rels,
+            &mut ct,
+            &mut ws,
+            "RÉSUMÉ",
+            WorksheetXml::default(),
+        );
+        assert!(matches!(result, Err(Error::SheetAlreadyExists { .. })));
     }
 
     #[test]
