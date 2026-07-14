@@ -359,6 +359,8 @@ impl Workbook {
                 quick_xml::de::from_str::<sheetkit_xml::slicer::SlicerDefinitions>(&xml_str)
             {
                 self.slicer_defs.push((path, sd));
+            } else {
+                self.deferred_parts.insert(path, bytes);
             }
         }
 
@@ -367,11 +369,10 @@ impl Workbook {
             let xml_str = String::from_utf8_lossy(&bytes);
             if let Some(scd) = sheetkit_xml::slicer::parse_slicer_cache(&xml_str) {
                 self.slicer_caches.push((path, scd));
+            } else {
+                self.deferred_parts.insert(path, bytes);
             }
         }
-
-        self.deferred_parts.mark_dirty(AuxCategory::Slicers);
-        self.deferred_parts.mark_dirty(AuxCategory::SlicerCaches);
     }
 
     /// Hydrate deferred threaded comments and person list.

@@ -265,10 +265,14 @@ impl Workbook {
         let stylesheet: StyleSheet = read_xml_part(archive, "xl/styles.xml")?;
         known_paths.insert("xl/styles.xml".to_string());
 
-        // Parse xl/sharedStrings.xml (optional -- may not exist for workbooks with no strings)
-        let shared_strings: Sst =
-            read_xml_part(archive, "xl/sharedStrings.xml").unwrap_or_default();
-        known_paths.insert("xl/sharedStrings.xml".to_string());
+        // Parse xl/sharedStrings.xml (optional -- may not exist for workbooks with no strings).
+        let shared_strings = match read_shared_strings_part(archive, "xl/sharedStrings.xml")? {
+            Some(sst) => {
+                known_paths.insert("xl/sharedStrings.xml".to_string());
+                sst
+            }
+            None => Sst::default(),
+        };
 
         let sst_runtime = SharedStringTable::from_sst(shared_strings);
 
@@ -515,11 +519,13 @@ impl Workbook {
                     if let Ok(sd) =
                         read_xml_part::<sheetkit_xml::slicer::SlicerDefinitions, _>(archive, path)
                     {
+                        known_paths.insert(path.to_string());
                         slicer_defs.push((path.to_string(), sd));
                     }
                 } else if ovr.content_type == mime_types::SLICER_CACHE {
                     if let Ok(raw) = read_string_part(archive, path) {
                         if let Some(scd) = sheetkit_xml::slicer::parse_slicer_cache(&raw) {
+                            known_paths.insert(path.to_string());
                             slicer_caches.push((path.to_string(), scd));
                         }
                     }
@@ -865,6 +871,26 @@ impl Workbook {
         // Skip when deferred_parts is non-empty: relationships are already correct.
         let has_deferred = self.deferred_parts.has_any();
         let mut workbook_rels = self.workbook_rels.clone();
+
+        // The SST is always emitted, so normalize its package metadata in the
+        // save-local clones. This also makes repeated open/save cycles idempotent.
+        content_types
+            .overrides
+            .retain(|entry| entry.part_name != "/xl/sharedStrings.xml");
+        content_types.overrides.push(ContentTypeOverride {
+            part_name: "/xl/sharedStrings.xml".to_string(),
+            content_type: mime_types::SHARED_STRINGS.to_string(),
+        });
+        workbook_rels.relationships.retain(|relationship| {
+            relationship.rel_type != rel_types::SHARED_STRINGS
+                && relationship.target != "sharedStrings.xml"
+        });
+        workbook_rels.relationships.push(Relationship {
+            id: crate::sheet::next_rid(&workbook_rels.relationships),
+            rel_type: rel_types::SHARED_STRINGS.to_string(),
+            target: "sharedStrings.xml".to_string(),
+            target_mode: None,
+        });
         if self.vba_blob.is_some() {
             let vba_part_name = "/xl/vbaProject.bin";
             if !content_types
@@ -1752,6 +1778,173 @@ pub(crate) fn read_xml_part<T: serde::de::DeserializeOwned, R: std::io::Read + s
     quick_xml::de::from_reader(reader).map_err(|e| Error::XmlDeserialize(e.to_string()))
 }
 
+#[derive(Default)]
+struct RawSharedStringText {
+    plain: Option<String>,
+    runs: Vec<String>,
+}
+
+enum SharedStringTextTarget {
+    Plain,
+    Run,
+}
+
+/// Deserialize an SST while retaining whitespace that quick-xml's serde
+/// deserializer trims from text nodes.
+fn read_shared_strings_part<R: std::io::Read + std::io::Seek>(
+    archive: &mut zip::ZipArchive<R>,
+    name: &str,
+) -> Result<Option<Sst>> {
+    let mut entry = match archive.by_name(name) {
+        Ok(entry) => entry,
+        Err(zip::result::ZipError::FileNotFound) => return Ok(None),
+        Err(error) => return Err(Error::Zip(error.to_string())),
+    };
+    let mut bytes = Vec::with_capacity(entry.size() as usize);
+    entry.read_to_end(&mut bytes)?;
+    deserialize_shared_strings(&bytes).map(Some)
+}
+
+fn deserialize_shared_strings(bytes: &[u8]) -> Result<Sst> {
+    let reader =
+        std::io::BufReader::with_capacity(bytes.len().clamp(8192, LARGE_BUF_CAPACITY), bytes);
+    let mut sst: Sst =
+        quick_xml::de::from_reader(reader).map_err(|e| Error::XmlDeserialize(e.to_string()))?;
+    let raw_items = scan_shared_string_text(bytes)?;
+
+    if raw_items.len() != sst.items.len() {
+        return Err(Error::XmlDeserialize(format!(
+            "shared string item count mismatch: parsed {}, scanned {}",
+            sst.items.len(),
+            raw_items.len()
+        )));
+    }
+
+    for (index, (item, raw)) in sst.items.iter_mut().zip(raw_items).enumerate() {
+        match (&mut item.t, item.r.as_mut_slice(), raw.plain, raw.runs) {
+            (Some(text), runs, Some(raw_text), raw_runs) if runs.len() == raw_runs.len() => {
+                text.value = raw_text;
+                for (run, raw_text) in runs.iter_mut().zip(raw_runs) {
+                    run.t.value = raw_text;
+                }
+            }
+            (None, runs, None, raw_runs) if runs.len() == raw_runs.len() => {
+                for (run, raw_text) in runs.iter_mut().zip(raw_runs) {
+                    run.t.value = raw_text;
+                }
+            }
+            (None, [], None, raw_runs) if raw_runs.is_empty() => {}
+            _ => {
+                return Err(Error::XmlDeserialize(format!(
+                    "shared string item {index} text shape mismatch"
+                )));
+            }
+        }
+    }
+
+    Ok(sst)
+}
+
+fn scan_shared_string_text(bytes: &[u8]) -> Result<Vec<RawSharedStringText>> {
+    use quick_xml::events::Event;
+
+    let mut reader = quick_xml::Reader::from_reader(bytes);
+    reader.config_mut().trim_text(false);
+    let mut stack: Vec<Vec<u8>> = Vec::new();
+    let mut items = Vec::new();
+    let mut current_item: Option<RawSharedStringText> = None;
+    let mut text_target: Option<SharedStringTextTarget> = None;
+    let mut text_value = String::new();
+
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(start)) => {
+                let name = start.local_name().as_ref().to_vec();
+                let parent = stack.last().map(Vec::as_slice);
+                if name.as_slice() == b"si" {
+                    if current_item.is_some() {
+                        return Err(Error::XmlDeserialize(
+                            "nested shared string item".to_string(),
+                        ));
+                    }
+                    current_item = Some(RawSharedStringText::default());
+                } else if name.as_slice() == b"t" && current_item.is_some() {
+                    text_target = match parent {
+                        Some(b"si") => Some(SharedStringTextTarget::Plain),
+                        Some(b"r") => Some(SharedStringTextTarget::Run),
+                        _ => None,
+                    };
+                    text_value.clear();
+                }
+                stack.push(name);
+            }
+            Ok(Event::Empty(empty)) => {
+                let name = empty.local_name();
+                let parent = stack.last().map(Vec::as_slice);
+                if name.as_ref() == b"si" {
+                    items.push(RawSharedStringText::default());
+                } else if name.as_ref() == b"t" {
+                    if let Some(item) = current_item.as_mut() {
+                        match parent {
+                            Some(b"si") => item.plain = Some(String::new()),
+                            Some(b"r") => item.runs.push(String::new()),
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            Ok(Event::Text(text)) => {
+                if text_target.is_some() {
+                    text_value.push_str(
+                        &text
+                            .unescape()
+                            .map_err(|error| Error::XmlParse(error.to_string()))?,
+                    );
+                }
+            }
+            Ok(Event::CData(cdata)) => {
+                if text_target.is_some() {
+                    text_value.push_str(
+                        &reader
+                            .decoder()
+                            .decode(cdata.as_ref())
+                            .map_err(|error| Error::XmlParse(error.to_string()))?,
+                    );
+                }
+            }
+            Ok(Event::End(end)) => {
+                let name = end.local_name();
+                if name.as_ref() == b"t" {
+                    if let (Some(item), Some(target)) = (current_item.as_mut(), text_target.take())
+                    {
+                        let value = std::mem::take(&mut text_value);
+                        match target {
+                            SharedStringTextTarget::Plain => item.plain = Some(value),
+                            SharedStringTextTarget::Run => item.runs.push(value),
+                        }
+                    }
+                } else if name.as_ref() == b"si" {
+                    let item = current_item.take().ok_or_else(|| {
+                        Error::XmlDeserialize("shared string end without start".to_string())
+                    })?;
+                    items.push(item);
+                }
+                stack.pop();
+            }
+            Ok(Event::Eof) => break,
+            Ok(_) => {}
+            Err(error) => return Err(Error::XmlParse(error.to_string())),
+        }
+    }
+
+    if current_item.is_some() || text_target.is_some() {
+        return Err(Error::XmlDeserialize(
+            "unterminated shared string item".to_string(),
+        ));
+    }
+    Ok(items)
+}
+
 /// Read a ZIP entry as a raw string (no serde deserialization).
 pub(crate) fn read_string_part<R: std::io::Read + std::io::Seek>(
     archive: &mut zip::ZipArchive<R>,
@@ -2045,6 +2238,82 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    fn zip_part(buffer: &[u8], name: &str) -> Vec<u8> {
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(buffer)).unwrap();
+        let mut bytes = Vec::new();
+        archive
+            .by_name(name)
+            .unwrap()
+            .read_to_end(&mut bytes)
+            .unwrap();
+        bytes
+    }
+
+    fn zip_entry_count(buffer: &[u8], name: &str) -> usize {
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(buffer)).unwrap();
+        (0..archive.len())
+            .filter(|index| archive.by_index(*index).unwrap().name() == name)
+            .count()
+    }
+
+    fn rewrite_zip_parts(buffer: &[u8], replacements: &[(&str, Option<Vec<u8>>)]) -> Vec<u8> {
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(buffer)).unwrap();
+        let mut output = Vec::new();
+        {
+            let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut output));
+            let options =
+                SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+            for index in 0..archive.len() {
+                let mut entry = archive.by_index(index).unwrap();
+                let name = entry.name().to_string();
+                let replacement = replacements
+                    .iter()
+                    .find(|(path, _)| *path == name)
+                    .map(|(_, value)| value);
+                if matches!(replacement, Some(None)) {
+                    continue;
+                }
+                let mut bytes = Vec::new();
+                entry.read_to_end(&mut bytes).unwrap();
+                let bytes = replacement.and_then(Option::as_ref).unwrap_or(&bytes);
+                writer.start_file(name, options).unwrap();
+                writer.write_all(bytes).unwrap();
+            }
+            writer.finish().unwrap();
+        }
+        output
+    }
+
+    fn assert_canonical_sst_metadata(buffer: &[u8]) {
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(buffer)).unwrap();
+        let content_types: ContentTypes =
+            read_xml_part(&mut archive, "[Content_Types].xml").unwrap();
+        let relationships: Relationships =
+            read_xml_part(&mut archive, "xl/_rels/workbook.xml.rels").unwrap();
+        assert_eq!(
+            content_types
+                .overrides
+                .iter()
+                .filter(|entry| {
+                    entry.part_name == "/xl/sharedStrings.xml"
+                        && entry.content_type == mime_types::SHARED_STRINGS
+                })
+                .count(),
+            1
+        );
+        assert_eq!(
+            relationships
+                .relationships
+                .iter()
+                .filter(|relationship| {
+                    relationship.rel_type == rel_types::SHARED_STRINGS
+                        && relationship.target == "sharedStrings.xml"
+                })
+                .count(),
+            1
+        );
+    }
+
     #[test]
     fn test_fast_col_number() {
         assert_eq!(fast_col_number("A1"), 1);
@@ -2245,6 +2514,221 @@ mod tests {
         for name in &expected_files {
             assert!(archive.by_name(name).is_ok(), "Missing ZIP entry: {}", name);
         }
+    }
+
+    #[test]
+    fn test_save_adds_canonical_sst_metadata_to_inline_string_package() {
+        let base = Workbook::new().save_to_buffer().unwrap();
+        let mut content_types: ContentTypes = {
+            let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&base)).unwrap();
+            read_xml_part(&mut archive, "[Content_Types].xml").unwrap()
+        };
+        content_types
+            .overrides
+            .retain(|entry| entry.part_name != "/xl/sharedStrings.xml");
+        let mut workbook_rels: Relationships = {
+            let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&base)).unwrap();
+            read_xml_part(&mut archive, "xl/_rels/workbook.xml.rels").unwrap()
+        };
+        workbook_rels
+            .relationships
+            .retain(|relationship| relationship.rel_type != rel_types::SHARED_STRINGS);
+        let worksheet = String::from_utf8(zip_part(&base, "xl/worksheets/sheet1.xml"))
+            .unwrap()
+            .replace(
+                "<sheetData/>",
+                "<sheetData><row r=\"1\"><c r=\"A1\" t=\"inlineStr\"><is><t>Inline</t></is></c></row></sheetData>",
+            );
+        let input = rewrite_zip_parts(
+            &base,
+            &[
+                ("xl/sharedStrings.xml", None),
+                (
+                    "[Content_Types].xml",
+                    Some(serialize_xml(&content_types).unwrap().into_bytes()),
+                ),
+                (
+                    "xl/_rels/workbook.xml.rels",
+                    Some(serialize_xml(&workbook_rels).unwrap().into_bytes()),
+                ),
+                ("xl/worksheets/sheet1.xml", Some(worksheet.into_bytes())),
+            ],
+        );
+
+        let mut workbook = Workbook::open_from_buffer(&input).unwrap();
+        workbook
+            .set_cell_value("Sheet1", "B1", CellValue::String("Shared".to_string()))
+            .unwrap();
+        let first = workbook.save_to_buffer().unwrap();
+        assert_canonical_sst_metadata(&first);
+        let reopened = Workbook::open_from_buffer(&first).unwrap();
+        let second = reopened.save_to_buffer().unwrap();
+        assert_canonical_sst_metadata(&second);
+        assert_eq!(zip_entry_count(&second, "xl/sharedStrings.xml"), 1);
+        let reopened_second = Workbook::open_from_buffer(&second).unwrap();
+        assert_eq!(
+            reopened_second.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("Inline".to_string())
+        );
+        assert_eq!(
+            reopened_second.get_cell_value("Sheet1", "B1").unwrap(),
+            CellValue::String("Shared".to_string())
+        );
+    }
+
+    #[test]
+    fn test_deserialize_shared_strings_preserves_text_exactly() {
+        let xml = br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="3" uniqueCount="3">
+  <si><t xml:space="preserve">  plain&#9;line&#10;&amp;  </t></si>
+  <si><t xml:space="preserve"> direct </t><r><rPr><b/></rPr><t xml:space="preserve"> rich </t></r><r><t><![CDATA[tail  ]]></t></r></si>
+  <si><t>entity &lt;value&gt;</t></si>
+</sst>"#;
+        let sst = deserialize_shared_strings(xml).unwrap();
+        assert_eq!(sst.items[0].t.as_ref().unwrap().value, "  plain\tline\n&  ");
+        assert_eq!(sst.items[1].t.as_ref().unwrap().value, " direct ");
+        assert_eq!(sst.items[1].r[0].t.value, " rich ");
+        assert_eq!(sst.items[1].r[1].t.value, "tail  ");
+        assert!(sst.items[1].r[0].r_pr.as_ref().unwrap().b.is_some());
+        assert_eq!(sst.items[2].t.as_ref().unwrap().value, "entity <value>");
+    }
+
+    #[test]
+    fn test_shared_string_whitespace_survives_open_save_reopen() {
+        let mut workbook = Workbook::new();
+        workbook
+            .set_cell_value("Sheet1", "A1", CellValue::String("placeholder".to_string()))
+            .unwrap();
+        let base = workbook.save_to_buffer().unwrap();
+        let exact = "  leading\tand\nmultiple  spaces & entities <ok>  rich tail  ";
+        let sst = format!(
+            "{XML_DECLARATION}\n<sst xmlns=\"{}\" count=\"1\" uniqueCount=\"1\"><si><t xml:space=\"preserve\">  leading&#9;and&#10;multiple  spaces &amp; entities &lt;ok&gt;  </t><r><rPr><b/></rPr><t xml:space=\"preserve\">rich </t></r><r><t><![CDATA[tail  ]]></t></r></si></sst>",
+            sheetkit_xml::namespaces::SPREADSHEET_ML
+        );
+        let input = rewrite_zip_parts(&base, &[("xl/sharedStrings.xml", Some(sst.into_bytes()))]);
+        let opened = Workbook::open_from_buffer(&input).unwrap();
+        assert_eq!(
+            opened.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String(exact.to_string())
+        );
+        let saved = opened.save_to_buffer().unwrap();
+        let reopened = Workbook::open_from_buffer(&saved).unwrap();
+        assert_eq!(
+            reopened.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String(exact.to_string())
+        );
+        let roundtripped = reopened.sst_runtime.to_sst();
+        let item = &roundtripped.items[0];
+        assert_eq!(
+            item.t.as_ref().unwrap().value,
+            "  leading\tand\nmultiple  spaces & entities <ok>  "
+        );
+        assert_eq!(item.r[0].t.value, "rich ");
+        assert!(item.r[0].r_pr.as_ref().unwrap().b.is_some());
+        assert_eq!(item.r[1].t.value, "tail  ");
+    }
+
+    fn workbook_with_slicer() -> Workbook {
+        let mut workbook = Workbook::new();
+        workbook
+            .add_table(
+                "Sheet1",
+                &crate::table::TableConfig {
+                    name: "Table1".to_string(),
+                    display_name: "Table1".to_string(),
+                    range: "A1:B3".to_string(),
+                    columns: vec![
+                        crate::table::TableColumn {
+                            name: "Status".to_string(),
+                            totals_row_function: None,
+                            totals_row_label: None,
+                        },
+                        crate::table::TableColumn {
+                            name: "Value".to_string(),
+                            totals_row_function: None,
+                            totals_row_label: None,
+                        },
+                    ],
+                    ..crate::table::TableConfig::default()
+                },
+            )
+            .unwrap();
+        workbook
+            .add_slicer(
+                "Sheet1",
+                &crate::slicer::SlicerConfig {
+                    name: "StatusFilter".to_string(),
+                    cell: "D1".to_string(),
+                    table_name: "Table1".to_string(),
+                    column_name: "Status".to_string(),
+                    caption: None,
+                    style: None,
+                    width: None,
+                    height: None,
+                    show_caption: None,
+                    column_count: None,
+                },
+            )
+            .unwrap();
+        workbook
+    }
+
+    #[test]
+    fn test_eager_slicer_parts_are_emitted_once_across_two_saves() {
+        use crate::workbook::open_options::{AuxParts, OpenOptions, ReadMode};
+
+        let initial = workbook_with_slicer().save_to_buffer().unwrap();
+        let options = OpenOptions::new()
+            .read_mode(ReadMode::Eager)
+            .aux_parts(AuxParts::EagerLoad);
+        let opened = Workbook::open_from_buffer_with_options(&initial, &options).unwrap();
+        let first = opened.save_to_buffer().unwrap();
+        let reopened = Workbook::open_from_buffer_with_options(&first, &options).unwrap();
+        let second = reopened.save_to_buffer().unwrap();
+
+        for buffer in [&first, &second] {
+            assert_eq!(zip_entry_count(buffer, "xl/slicers/slicer1.xml"), 1);
+            assert_eq!(
+                zip_entry_count(buffer, "xl/slicerCaches/slicerCache1.xml"),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn test_lazy_hydration_preserves_malformed_slicer_parts_as_raw() {
+        use crate::workbook::open_options::{AuxParts, OpenOptions, ReadMode};
+
+        let initial = workbook_with_slicer().save_to_buffer().unwrap();
+        let malformed_slicer = b"<x14:slicers><broken>".to_vec();
+        let malformed_cache = b"<x14:slicerCacheDefinition><broken>".to_vec();
+        let input = rewrite_zip_parts(
+            &initial,
+            &[
+                ("xl/slicers/slicer1.xml", Some(malformed_slicer.clone())),
+                (
+                    "xl/slicerCaches/slicerCache1.xml",
+                    Some(malformed_cache.clone()),
+                ),
+            ],
+        );
+        let options = OpenOptions::new()
+            .read_mode(ReadMode::Lazy)
+            .aux_parts(AuxParts::Deferred);
+        let mut opened = Workbook::open_from_buffer_with_options(&input, &options).unwrap();
+        assert!(opened.delete_slicer("Sheet1", "Missing").is_err());
+        let saved = opened.save_to_buffer().unwrap();
+
+        assert_eq!(zip_entry_count(&saved, "xl/slicers/slicer1.xml"), 1);
+        assert_eq!(zip_part(&saved, "xl/slicers/slicer1.xml"), malformed_slicer);
+        assert_eq!(
+            zip_entry_count(&saved, "xl/slicerCaches/slicerCache1.xml"),
+            1
+        );
+        assert_eq!(
+            zip_part(&saved, "xl/slicerCaches/slicerCache1.xml"),
+            malformed_cache
+        );
     }
 
     #[test]

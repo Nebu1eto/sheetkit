@@ -40,8 +40,8 @@ impl SharedStringTable {
     /// Build from an XML [`Sst`], taking ownership to avoid cloning items.
     ///
     /// Plain-text items consume the `t.value` String directly (zero-copy into
-    /// `Arc<str>`). Rich-text items concatenate all run texts. Pre-sizes
-    /// internal containers.
+    /// `Arc<str>`). Rich-text items concatenate direct text and all run texts.
+    /// Pre-sizes internal containers.
     pub fn from_sst(sst: Sst) -> Self {
         let cap = sst.items.len();
         let mut strings = Vec::with_capacity(cap);
@@ -49,7 +49,7 @@ impl SharedStringTable {
         let mut si_items: Vec<Option<Si>> = Vec::with_capacity(cap);
 
         for mut si in sst.items {
-            let is_rich = si.t.is_none() && !si.r.is_empty();
+            let is_rich = !si.r.is_empty();
             let has_space_attr = si.t.as_ref().is_some_and(|t| t.xml_space.is_some());
             let preserve_si = is_rich || has_space_attr;
 
@@ -224,15 +224,16 @@ fn needs_space_preserve(s: &str) -> bool {
 
 /// Extract the plain-text content of a shared string item.
 ///
-/// For plain items, returns `si.t.value`. For rich-text items, concatenates
-/// all run texts.
+/// Concatenate the direct text, when present, with all rich-text runs.
 fn si_to_string(si: &Si) -> String {
-    if let Some(ref t) = si.t {
-        t.value.clone()
-    } else {
-        // Rich text: concatenate all runs.
-        si.r.iter().map(|r| r.t.value.as_str()).collect()
+    let mut text =
+        si.t.as_ref()
+            .map(|value| value.value.clone())
+            .unwrap_or_default();
+    for run in &si.r {
+        text.push_str(&run.t.value);
     }
+    text
 }
 
 #[cfg(test)]
@@ -571,5 +572,33 @@ mod tests {
         };
         let table = SharedStringTable::from_sst(xml_sst);
         assert!(table.is_empty());
+    }
+
+    #[test]
+    fn test_from_sst_preserves_mixed_direct_and_rich_text() {
+        let xml_sst = Sst {
+            xmlns: sheetkit_xml::namespaces::SPREADSHEET_ML.to_string(),
+            count: Some(1),
+            unique_count: Some(1),
+            items: vec![Si {
+                t: Some(T {
+                    xml_space: Some("preserve".to_string()),
+                    value: " direct ".to_string(),
+                }),
+                r: vec![R {
+                    r_pr: None,
+                    t: T {
+                        xml_space: Some("preserve".to_string()),
+                        value: " rich ".to_string(),
+                    },
+                }],
+            }],
+        };
+
+        let table = SharedStringTable::from_sst(xml_sst);
+        assert_eq!(table.get(0), Some(" direct  rich "));
+        let roundtripped = table.to_sst();
+        assert_eq!(roundtripped.items[0].t.as_ref().unwrap().value, " direct ");
+        assert_eq!(roundtripped.items[0].r[0].t.value, " rich ");
     }
 }
