@@ -2257,10 +2257,12 @@ mod tests {
     }
 
     fn make_table_config(cols: &[&str]) -> crate::table::TableConfig {
+        let end = crate::utils::cell_ref::coordinates_to_cell_name(cols.len() as u32, 10)
+            .expect("test table columns must fit within worksheet bounds");
         crate::table::TableConfig {
             name: "Table1".to_string(),
             display_name: "Table1".to_string(),
-            range: "A1:D10".to_string(),
+            range: format!("A1:{end}"),
             columns: cols
                 .iter()
                 .map(|c| crate::table::TableColumn {

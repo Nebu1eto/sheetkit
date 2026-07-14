@@ -4,6 +4,7 @@
 //! worksheets, as well as the existing auto-filter helpers.
 
 use crate::error::{Error, Result};
+use crate::utils::cell_ref::{cell_name_to_coordinates, coordinates_to_cell_name};
 use sheetkit_xml::table::{
     TableAutoFilter, TableColumnXml, TableColumnsXml, TableStyleInfoXml, TableXml,
 };
@@ -173,7 +174,47 @@ pub(crate) fn table_xml_to_info(table_xml: &TableXml) -> TableInfo {
     }
 }
 
-/// Validate that a table name is non-empty and the range is non-empty.
+fn table_range_bounds(range: &str) -> Result<(u32, u32, u32, u32)> {
+    let mut cells = range.split(':');
+    let start = cells.next().unwrap_or_default();
+    let end = cells.next().unwrap_or(start);
+    if cells.next().is_some() {
+        return Err(Error::InvalidArgument(format!(
+            "table range must contain one cell or a single cell range: {range}"
+        )));
+    }
+
+    let (start_col, start_row) = cell_name_to_coordinates(start)?;
+    let (end_col, end_row) = cell_name_to_coordinates(end)?;
+    Ok((
+        start_col.min(end_col),
+        start_row.min(end_row),
+        start_col.max(end_col),
+        start_row.max(end_row),
+    ))
+}
+
+/// Return the header cell reference and name for each configured table column.
+pub(crate) fn table_header_cells(config: &TableConfig) -> Result<Vec<(String, String)>> {
+    if !config.show_header_row {
+        return Ok(Vec::new());
+    }
+
+    let (start_col, start_row, _, _) = table_range_bounds(&config.range)?;
+    config
+        .columns
+        .iter()
+        .enumerate()
+        .map(|(offset, column)| {
+            Ok((
+                coordinates_to_cell_name(start_col + offset as u32, start_row)?,
+                column.name.clone(),
+            ))
+        })
+        .collect()
+}
+
+/// Validate that a table name, range, and column definitions are consistent.
 pub(crate) fn validate_table_config(config: &TableConfig) -> Result<()> {
     if config.name.is_empty() {
         return Err(Error::InvalidArgument("table name cannot be empty".into()));
@@ -185,6 +226,15 @@ pub(crate) fn validate_table_config(config: &TableConfig) -> Result<()> {
         return Err(Error::InvalidArgument(
             "table must have at least one column".into(),
         ));
+    }
+
+    let (start_col, _, end_col, _) = table_range_bounds(&config.range)?;
+    let range_width = end_col - start_col + 1;
+    if range_width != config.columns.len() as u32 {
+        return Err(Error::InvalidArgument(format!(
+            "table range width ({range_width}) must match column count ({})",
+            config.columns.len()
+        )));
     }
     Ok(())
 }
@@ -460,7 +510,7 @@ mod tests {
         let config = TableConfig {
             name: "T1".to_string(),
             display_name: "T1".to_string(),
-            range: "A1:B5".to_string(),
+            range: "A1:A5".to_string(),
             columns: vec![TableColumn {
                 name: "Col".to_string(),
                 totals_row_function: None,
@@ -469,6 +519,26 @@ mod tests {
             ..TableConfig::default()
         };
         assert!(validate_table_config(&config).is_ok());
+    }
+
+    #[test]
+    fn test_validate_table_config_rejects_range_width_mismatch() {
+        let config = TableConfig {
+            name: "T1".to_string(),
+            display_name: "T1".to_string(),
+            range: "A1:B5".to_string(),
+            columns: vec![TableColumn {
+                name: "Only column".to_string(),
+                totals_row_function: None,
+                totals_row_label: None,
+            }],
+            ..TableConfig::default()
+        };
+
+        assert!(matches!(
+            validate_table_config(&config),
+            Err(Error::InvalidArgument(_))
+        ));
     }
 
     #[test]

@@ -186,7 +186,13 @@ pub struct ConditionalFormatRule {
 /// Convert a `ConditionalStyle` to an XML `Dxf` and add it to the stylesheet.
 /// Returns the DXF index.
 fn add_dxf(stylesheet: &mut StyleSheet, style: &ConditionalStyle) -> u32 {
-    let dxf = conditional_style_to_dxf(style);
+    let mut dxf = conditional_style_to_dxf(style);
+
+    if let (Some(NumFmtStyle::Custom(format_code)), Some(num_fmt)) =
+        (&style.num_fmt, &mut dxf.num_fmt)
+    {
+        num_fmt.num_fmt_id = custom_num_fmt_id(stylesheet, format_code);
+    }
 
     let dxfs = stylesheet.dxfs.get_or_insert_with(|| Dxfs {
         count: Some(0),
@@ -197,6 +203,28 @@ fn add_dxf(stylesheet: &mut StyleSheet, style: &ConditionalStyle) -> u32 {
     dxfs.dxfs.push(dxf);
     dxfs.count = Some(dxfs.dxfs.len() as u32);
     id
+}
+
+/// Return a non-conflicting custom number format ID for a DXF.
+fn custom_num_fmt_id(stylesheet: &StyleSheet, format_code: &str) -> u32 {
+    let cell_num_fmts = stylesheet
+        .num_fmts
+        .iter()
+        .flat_map(|num_fmts| num_fmts.num_fmts.iter());
+    let dxf_num_fmts = stylesheet
+        .dxfs
+        .iter()
+        .flat_map(|dxfs| dxfs.dxfs.iter())
+        .filter_map(|dxf| dxf.num_fmt.as_ref());
+
+    let mut next_id = 164;
+    for num_fmt in cell_num_fmts.chain(dxf_num_fmts) {
+        if num_fmt.format_code == format_code {
+            return num_fmt.num_fmt_id;
+        }
+        next_id = next_id.max(num_fmt.num_fmt_id.saturating_add(1));
+    }
+    next_id
 }
 
 /// Convert a `ConditionalStyle` to the XML `Dxf` struct.
@@ -446,7 +474,12 @@ fn next_priority(ws: &WorksheetXml) -> u32 {
 
 /// Convert a `ConditionalFormatRule` to an XML `CfRule`, adding a DXF to the
 /// stylesheet if needed. Returns the CfRule ready for insertion.
-fn rule_to_xml(rule: &ConditionalFormatRule, stylesheet: &mut StyleSheet, priority: u32) -> CfRule {
+fn rule_to_xml(
+    rule: &ConditionalFormatRule,
+    stylesheet: &mut StyleSheet,
+    priority: u32,
+    first_cell: &str,
+) -> CfRule {
     let dxf_id = rule.format.as_ref().map(|style| add_dxf(stylesheet, style));
 
     let stop_if_true = if rule.stop_if_true { Some(true) } else { None };
@@ -769,7 +802,11 @@ fn rule_to_xml(rule: &ConditionalFormatRule, stylesheet: &mut StyleSheet, priori
             percent: None,
             rank: None,
             bottom: None,
-            formulas: vec![],
+            formulas: vec![format!(
+                "NOT(ISERROR(SEARCH(\"{}\",{})))",
+                escape_formula_string(text),
+                first_cell
+            )],
             color_scale: None,
             data_bar: None,
             icon_set: None,
@@ -786,7 +823,11 @@ fn rule_to_xml(rule: &ConditionalFormatRule, stylesheet: &mut StyleSheet, priori
             percent: None,
             rank: None,
             bottom: None,
-            formulas: vec![],
+            formulas: vec![format!(
+                "ISERROR(SEARCH(\"{}\",{}))",
+                escape_formula_string(text),
+                first_cell
+            )],
             color_scale: None,
             data_bar: None,
             icon_set: None,
@@ -803,7 +844,12 @@ fn rule_to_xml(rule: &ConditionalFormatRule, stylesheet: &mut StyleSheet, priori
             percent: None,
             rank: None,
             bottom: None,
-            formulas: vec![],
+            formulas: vec![format!(
+                "LEFT({},LEN(\"{}\"))=\"{}\"",
+                first_cell,
+                escape_formula_string(text),
+                escape_formula_string(text)
+            )],
             color_scale: None,
             data_bar: None,
             icon_set: None,
@@ -820,12 +866,31 @@ fn rule_to_xml(rule: &ConditionalFormatRule, stylesheet: &mut StyleSheet, priori
             percent: None,
             rank: None,
             bottom: None,
-            formulas: vec![],
+            formulas: vec![format!(
+                "RIGHT({},LEN(\"{}\"))=\"{}\"",
+                first_cell,
+                escape_formula_string(text),
+                escape_formula_string(text)
+            )],
             color_scale: None,
             data_bar: None,
             icon_set: None,
         },
     }
+}
+
+fn escape_formula_string(value: &str) -> String {
+    value.replace('"', "\"\"")
+}
+
+fn first_cell_reference(sqref: &str) -> &str {
+    sqref
+        .split_whitespace()
+        .next()
+        .unwrap_or(sqref)
+        .split(':')
+        .next()
+        .unwrap_or(sqref)
 }
 
 /// Convert an XML `CfRule` to a `ConditionalFormatRule`, looking up the DXF
@@ -1017,9 +1082,12 @@ pub fn set_conditional_format(
     rules: &[ConditionalFormatRule],
 ) -> Result<()> {
     let mut xml_rules = Vec::with_capacity(rules.len());
+    let mut auto_priority = next_priority(ws);
+    let first_cell = first_cell_reference(sqref);
     for rule in rules {
-        let priority = rule.priority.unwrap_or_else(|| next_priority(ws));
-        let cf_rule = rule_to_xml(rule, stylesheet, priority);
+        let priority = rule.priority.unwrap_or(auto_priority);
+        auto_priority = auto_priority.max(priority.saturating_add(1));
+        let cf_rule = rule_to_xml(rule, stylesheet, priority, first_cell);
         xml_rules.push(cf_rule);
     }
 
@@ -1540,6 +1608,7 @@ mod tests {
         assert_eq!(rule.rule_type, "containsText");
         assert_eq!(rule.text, Some("error".to_string()));
         assert_eq!(rule.operator, Some("containsText".to_string()));
+        assert_eq!(rule.formulas, vec!["NOT(ISERROR(SEARCH(\"error\",A1)))"]);
     }
 
     #[test]
@@ -1560,6 +1629,7 @@ mod tests {
         let rule = &ws.conditional_formatting[0].cf_rules[0];
         assert_eq!(rule.rule_type, "notContainsText");
         assert_eq!(rule.operator, Some("notContains".to_string()));
+        assert_eq!(rule.formulas, vec!["ISERROR(SEARCH(\"done\",A1))"]);
     }
 
     #[test]
@@ -1580,6 +1650,7 @@ mod tests {
         let rule = &ws.conditional_formatting[0].cf_rules[0];
         assert_eq!(rule.rule_type, "beginsWith");
         assert_eq!(rule.text, Some("Total".to_string()));
+        assert_eq!(rule.formulas, vec!["LEFT(A1,LEN(\"Total\"))=\"Total\""]);
     }
 
     #[test]
@@ -1600,6 +1671,7 @@ mod tests {
         let rule = &ws.conditional_formatting[0].cf_rules[0];
         assert_eq!(rule.rule_type, "endsWith");
         assert_eq!(rule.text, Some("Inc.".to_string()));
+        assert_eq!(rule.formulas, vec!["RIGHT(A1,LEN(\"Inc.\"))=\"Inc.\""]);
     }
 
     // Blanks / Errors tests
@@ -2042,6 +2114,69 @@ mod tests {
 
         assert_eq!(ws.conditional_formatting[0].cf_rules[0].priority, 1);
         assert_eq!(ws.conditional_formatting[1].cf_rules[0].priority, 2);
+    }
+
+    #[test]
+    fn test_priority_auto_increment_within_single_call() {
+        let mut ws = WorksheetXml::default();
+        let mut ss = default_stylesheet();
+        let rules = vec![
+            ConditionalFormatRule {
+                rule_type: ConditionalFormatType::DuplicateValues,
+                format: None,
+                priority: None,
+                stop_if_true: false,
+            },
+            ConditionalFormatRule {
+                rule_type: ConditionalFormatType::UniqueValues,
+                format: None,
+                priority: None,
+                stop_if_true: false,
+            },
+        ];
+
+        set_conditional_format(&mut ws, &mut ss, "A1:A100", &rules).unwrap();
+
+        let priorities: Vec<_> = ws.conditional_formatting[0]
+            .cf_rules
+            .iter()
+            .map(|rule| rule.priority)
+            .collect();
+        assert_eq!(priorities, vec![1, 2]);
+    }
+
+    #[test]
+    fn test_custom_dxf_num_fmt_ids_do_not_conflict() {
+        let mut ws = WorksheetXml::default();
+        let mut ss = default_stylesheet();
+        ss.num_fmts = Some(sheetkit_xml::styles::NumFmts {
+            count: Some(1),
+            num_fmts: vec![NumFmt {
+                num_fmt_id: 164,
+                format_code: "0.00".to_string(),
+            }],
+        });
+        let rules = ["0.0%", "#,##0"].map(|code| ConditionalFormatRule {
+            rule_type: ConditionalFormatType::DuplicateValues,
+            format: Some(ConditionalStyle {
+                num_fmt: Some(NumFmtStyle::Custom(code.to_string())),
+                ..ConditionalStyle::default()
+            }),
+            priority: None,
+            stop_if_true: false,
+        });
+
+        set_conditional_format(&mut ws, &mut ss, "A1:A100", &rules).unwrap();
+
+        let ids: Vec<_> = ss
+            .dxfs
+            .as_ref()
+            .unwrap()
+            .dxfs
+            .iter()
+            .map(|dxf| dxf.num_fmt.as_ref().unwrap().num_fmt_id)
+            .collect();
+        assert_eq!(ids, vec![165, 166]);
     }
 
     #[test]

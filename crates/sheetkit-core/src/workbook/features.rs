@@ -383,9 +383,10 @@ impl Workbook {
     pub fn add_table(&mut self, sheet: &str, config: &crate::table::TableConfig) -> Result<()> {
         use crate::workbook::aux::AuxCategory;
 
-        self.hydrate_tables();
         crate::table::validate_table_config(config)?;
+        let header_cells = crate::table::table_header_cells(config)?;
         let sheet_idx = self.sheet_index(sheet)?;
+        self.hydrate_tables();
 
         // Check for duplicate table name across the entire workbook.
         if self.tables.iter().any(|(_, t, _)| t.name == config.name) {
@@ -400,6 +401,9 @@ impl Workbook {
         let table_path = self.next_available_part_path("xl/tables/table", ".xml");
         let table_xml = crate::table::build_table_xml(config, table_id);
 
+        for (cell, name) in header_cells {
+            self.set_cell_value(sheet, &cell, name)?;
+        }
         self.tables.push((table_path, table_xml, sheet_idx));
         self.deferred_parts.mark_dirty(AuxCategory::Tables);
         self.mark_sheet_dirty(sheet_idx);
@@ -2005,7 +2009,7 @@ mod tests {
         let config = TableConfig {
             name: "T1".to_string(),
             display_name: "T1".to_string(),
-            range: "A1:B5".to_string(),
+            range: "A1:A5".to_string(),
             columns: vec![TableColumn {
                 name: "Col".to_string(),
                 totals_row_function: None,
@@ -2035,6 +2039,136 @@ mod tests {
     }
 
     #[test]
+    fn test_add_table_rejects_column_count_mismatch_without_mutation() {
+        use crate::table::{TableColumn, TableConfig};
+
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", "existing").unwrap();
+        let config = TableConfig {
+            name: "Mismatch".to_string(),
+            display_name: "Mismatch".to_string(),
+            range: "A1:B2".to_string(),
+            columns: vec![TableColumn {
+                name: "Only column".to_string(),
+                totals_row_function: None,
+                totals_row_label: None,
+            }],
+            ..TableConfig::default()
+        };
+
+        let error = wb.add_table("Sheet1", &config).unwrap_err();
+
+        assert!(matches!(error, Error::InvalidArgument(_)));
+        assert_eq!(wb.get_tables("Sheet1").unwrap().len(), 0);
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("existing".to_string())
+        );
+        assert_eq!(wb.get_cell_value("Sheet1", "B1").unwrap(), CellValue::Empty);
+    }
+
+    #[test]
+    fn test_add_table_writes_header_cells_and_roundtrips() {
+        use crate::table::{TableColumn, TableConfig};
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("table_headers.xlsx");
+        let mut wb = Workbook::new();
+        let config = TableConfig {
+            name: "Sales".to_string(),
+            display_name: "Sales".to_string(),
+            range: "B3:C5".to_string(),
+            columns: vec![
+                TableColumn {
+                    name: "Product".to_string(),
+                    totals_row_function: None,
+                    totals_row_label: None,
+                },
+                TableColumn {
+                    name: "Quantity".to_string(),
+                    totals_row_function: None,
+                    totals_row_label: None,
+                },
+            ],
+            ..TableConfig::default()
+        };
+
+        wb.add_table("Sheet1", &config).unwrap();
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "B3").unwrap(),
+            CellValue::String("Product".to_string())
+        );
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "C3").unwrap(),
+            CellValue::String("Quantity".to_string())
+        );
+
+        wb.save(&path).unwrap();
+        let wb = Workbook::open(&path).unwrap();
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "B3").unwrap(),
+            CellValue::String("Product".to_string())
+        );
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "C3").unwrap(),
+            CellValue::String("Quantity".to_string())
+        );
+    }
+
+    #[test]
+    fn test_conditional_text_rules_roundtrip_with_priorities_and_formats() {
+        use crate::conditional::{ConditionalFormatRule, ConditionalFormatType, ConditionalStyle};
+        use crate::style::NumFmtStyle;
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("conditional_text_rules.xlsx");
+        let mut wb = Workbook::new();
+        let rules = ["0.0%", "#,##0"].map(|format_code| ConditionalFormatRule {
+            rule_type: ConditionalFormatType::ContainsText {
+                text: "review".to_string(),
+            },
+            format: Some(ConditionalStyle {
+                num_fmt: Some(NumFmtStyle::Custom(format_code.to_string())),
+                ..ConditionalStyle::default()
+            }),
+            priority: None,
+            stop_if_true: false,
+        });
+
+        wb.set_conditional_format("Sheet1", "B2:B10", &rules)
+            .unwrap();
+        wb.save(&path).unwrap();
+
+        let wb = Workbook::open(&path).unwrap();
+        let formats = wb.get_conditional_formats("Sheet1").unwrap();
+        assert_eq!(formats.len(), 1);
+        assert_eq!(formats[0].0, "B2:B10");
+        assert_eq!(formats[0].1.len(), 2);
+        assert_eq!(formats[0].1[0].priority, Some(1));
+        assert_eq!(formats[0].1[1].priority, Some(2));
+        for rule in &formats[0].1 {
+            assert!(matches!(
+                rule.rule_type,
+                ConditionalFormatType::ContainsText { ref text } if text == "review"
+            ));
+        }
+        assert!(matches!(
+            formats[0].1[0]
+                .format
+                .as_ref()
+                .and_then(|style| style.num_fmt.as_ref()),
+            Some(NumFmtStyle::Custom(code)) if code == "0.0%"
+        ));
+        assert!(matches!(
+            formats[0].1[1]
+                .format
+                .as_ref()
+                .and_then(|style| style.num_fmt.as_ref()),
+            Some(NumFmtStyle::Custom(code)) if code == "#,##0"
+        ));
+    }
+
+    #[test]
     fn test_add_table_sheet_not_found() {
         use crate::table::{TableColumn, TableConfig};
 
@@ -2042,7 +2176,7 @@ mod tests {
         let config = TableConfig {
             name: "T1".to_string(),
             display_name: "T1".to_string(),
-            range: "A1:B5".to_string(),
+            range: "A1:A5".to_string(),
             columns: vec![TableColumn {
                 name: "Col".to_string(),
                 totals_row_function: None,
@@ -2112,7 +2246,7 @@ mod tests {
         let config = TableConfig {
             name: "T1".to_string(),
             display_name: "T1".to_string(),
-            range: "A1:B5".to_string(),
+            range: "A1:A5".to_string(),
             columns: vec![TableColumn {
                 name: "Col".to_string(),
                 totals_row_function: None,
@@ -2143,7 +2277,7 @@ mod tests {
         let config = TableConfig {
             name: "T1".to_string(),
             display_name: "T1".to_string(),
-            range: "A1:B5".to_string(),
+            range: "A1:A5".to_string(),
             columns: vec![TableColumn {
                 name: "Col".to_string(),
                 totals_row_function: None,
@@ -2218,7 +2352,7 @@ mod tests {
         let config1 = TableConfig {
             name: "T1".to_string(),
             display_name: "T1".to_string(),
-            range: "A1:B5".to_string(),
+            range: "A1:A5".to_string(),
             columns: vec![TableColumn {
                 name: "Col1".to_string(),
                 totals_row_function: None,
@@ -2229,7 +2363,7 @@ mod tests {
         let config2 = TableConfig {
             name: "T2".to_string(),
             display_name: "T2".to_string(),
-            range: "A1:B5".to_string(),
+            range: "A1:A5".to_string(),
             columns: vec![TableColumn {
                 name: "Col2".to_string(),
                 totals_row_function: None,
@@ -2548,7 +2682,7 @@ mod tests {
             &TableConfig {
                 name: "T1".to_string(),
                 display_name: "T1".to_string(),
-                range: "A1:B5".to_string(),
+                range: "A1:A5".to_string(),
                 columns: vec![TableColumn {
                     name: "Col".to_string(),
                     totals_row_function: None,
@@ -2563,7 +2697,7 @@ mod tests {
             &TableConfig {
                 name: "T2".to_string(),
                 display_name: "T2".to_string(),
-                range: "A1:B5".to_string(),
+                range: "A1:A5".to_string(),
                 columns: vec![TableColumn {
                     name: "Col".to_string(),
                     totals_row_function: None,
