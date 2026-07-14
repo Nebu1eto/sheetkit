@@ -2,6 +2,8 @@
 //! MINUTE, SECOND, DATEDIF, EDATE, EOMONTH, DATEVALUE, WEEKDAY, WEEKNUM,
 //! NETWORKDAYS, WORKDAY.
 
+use std::collections::HashSet;
+
 use chrono::{Datelike, Duration, Local, NaiveDate, Timelike};
 
 use crate::cell::{
@@ -10,7 +12,7 @@ use crate::cell::{
 use crate::error::Result;
 use crate::formula::ast::Expr;
 use crate::formula::eval::{coerce_to_number, coerce_to_string, Evaluator};
-use crate::formula::functions::check_arg_count;
+use crate::formula::functions::{check_arg_count, collect_criteria_range_values};
 
 /// Convert a CellValue to an Excel serial number.
 fn to_serial(v: &CellValue) -> std::result::Result<f64, CellValue> {
@@ -67,6 +69,100 @@ fn last_day_of_month(year: i32, month: u32) -> u32 {
         }
         _ => 30,
     }
+}
+
+fn workday_date(value: &CellValue) -> std::result::Result<NaiveDate, CellValue> {
+    if let CellValue::Error(error) = value {
+        return Err(CellValue::Error(error.clone()));
+    }
+    let serial = to_serial(value)?;
+    serial_to_date(serial).ok_or_else(|| CellValue::Error("#VALUE!".to_string()))
+}
+
+fn holiday_dates(
+    args: &[Expr],
+    ctx: &mut Evaluator,
+) -> Result<std::result::Result<HashSet<NaiveDate>, CellValue>> {
+    if args.len() < 3 {
+        return Ok(Ok(HashSet::new()));
+    }
+
+    let mut holidays = HashSet::new();
+    for value in collect_criteria_range_values(&args[2], ctx)? {
+        if value == CellValue::Empty {
+            continue;
+        }
+        let date = match workday_date(&value) {
+            Ok(date) => date,
+            Err(error) => return Ok(Err(error)),
+        };
+        if date.weekday().num_days_from_monday() < 5 {
+            holidays.insert(date);
+        }
+    }
+    Ok(Ok(holidays))
+}
+
+fn weekday_count(start: NaiveDate, end: NaiveDate) -> i64 {
+    let days = (end - start).num_days() + 1;
+    let full_weeks = days / 7;
+    let remaining_days = days % 7;
+    let mut count = full_weeks * 5;
+    let start_weekday = start.weekday().num_days_from_monday() as i64;
+    for offset in 0..remaining_days {
+        if (start_weekday + offset) % 7 < 5 {
+            count += 1;
+        }
+    }
+    count
+}
+
+fn checked_add_days(date: NaiveDate, days: i64) -> Option<NaiveDate> {
+    date.checked_add_signed(Duration::days(days))
+}
+
+fn add_weekdays(mut date: NaiveDate, mut days: u64, direction: i64) -> Option<NaiveDate> {
+    while days > 0 && date.weekday().num_days_from_monday() >= 5 {
+        date = checked_add_days(date, direction)?;
+        if date.weekday().num_days_from_monday() < 5 {
+            days -= 1;
+        }
+    }
+    if days == 0 {
+        return Some(date);
+    }
+
+    let weeks = days / 5;
+    if weeks > 0 {
+        let calendar_days = i64::try_from(weeks).ok()?.checked_mul(7)?;
+        date = checked_add_days(date, direction.checked_mul(calendar_days)?)?;
+        days %= 5;
+    }
+    while days > 0 {
+        date = checked_add_days(date, direction)?;
+        if date.weekday().num_days_from_monday() < 5 {
+            days -= 1;
+        }
+    }
+    Some(date)
+}
+
+fn holidays_between(
+    holidays: &HashSet<NaiveDate>,
+    start: NaiveDate,
+    end: NaiveDate,
+    direction: i64,
+) -> u64 {
+    holidays
+        .iter()
+        .filter(|date| {
+            if direction > 0 {
+                **date > start && **date <= end
+            } else {
+                **date < start && **date >= end
+            }
+        })
+        .count() as u64
 }
 
 /// DATE(year, month, day) - constructs a date serial number.
@@ -392,23 +488,17 @@ pub fn fn_weeknum(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
 /// NETWORKDAYS(start_date, end_date, [holidays]) - working days between two dates.
 pub fn fn_networkdays(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("NETWORKDAYS", args, 2, 3)?;
-    let v1 = ctx.eval_expr(&args[0])?;
-    let v2 = ctx.eval_expr(&args[1])?;
-    let s1 = match to_serial(&v1) {
-        Ok(n) => n,
-        Err(e) => return Ok(e),
+    let d1 = match workday_date(&ctx.eval_expr(&args[0])?) {
+        Ok(date) => date,
+        Err(error) => return Ok(error),
     };
-    let s2 = match to_serial(&v2) {
-        Ok(n) => n,
-        Err(e) => return Ok(e),
+    let d2 = match workday_date(&ctx.eval_expr(&args[1])?) {
+        Ok(date) => date,
+        Err(error) => return Ok(error),
     };
-    let d1 = match serial_to_date(s1) {
-        Some(d) => d,
-        None => return Ok(CellValue::Error("#VALUE!".to_string())),
-    };
-    let d2 = match serial_to_date(s2) {
-        Some(d) => d,
-        None => return Ok(CellValue::Error("#VALUE!".to_string())),
+    let holidays = match holiday_dates(args, ctx)? {
+        Ok(holidays) => holidays,
+        Err(error) => return Ok(error),
     };
 
     let (start, end, sign) = if d1 <= d2 {
@@ -417,43 +507,50 @@ pub fn fn_networkdays(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
         (d2, d1, -1i32)
     };
 
-    let mut count = 0i32;
-    let mut current = start;
-    while current <= end {
-        let wd = current.weekday().num_days_from_monday();
-        if wd < 5 {
-            count += 1;
-        }
-        current += Duration::days(1);
-    }
-    Ok(CellValue::Number((count * sign) as f64))
+    let holiday_count = holidays
+        .iter()
+        .filter(|date| **date >= start && **date <= end)
+        .count() as i64;
+    let count = weekday_count(start, end) - holiday_count;
+    Ok(CellValue::Number((count * i64::from(sign)) as f64))
 }
 
 /// WORKDAY(start_date, days, [holidays]) - date after N working days.
 pub fn fn_workday(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("WORKDAY", args, 2, 3)?;
-    let v = ctx.eval_expr(&args[0])?;
-    let days = coerce_to_number(&ctx.eval_expr(&args[1])?)? as i32;
-    let serial = match to_serial(&v) {
-        Ok(n) => n,
-        Err(e) => return Ok(e),
+    let start = match workday_date(&ctx.eval_expr(&args[0])?) {
+        Ok(date) => date,
+        Err(error) => return Ok(error),
     };
-    let start = match serial_to_date(serial) {
-        Some(d) => d,
-        None => return Ok(CellValue::Error("#VALUE!".to_string())),
-    };
-
-    let step = if days >= 0 { 1i64 } else { -1i64 };
-    let mut remaining = days.unsigned_abs() as i32;
-    let mut current = start;
-    while remaining > 0 {
-        current += Duration::days(step);
-        let wd = current.weekday().num_days_from_monday();
-        if wd < 5 {
-            remaining -= 1;
-        }
+    let days = coerce_to_number(&ctx.eval_expr(&args[1])?)?;
+    if !days.is_finite() || days < i64::MIN as f64 || days > i64::MAX as f64 {
+        return Ok(CellValue::Error("#NUM!".to_string()));
     }
-    Ok(CellValue::Date(date_to_serial(current)))
+    let days = days.trunc() as i64;
+    let holidays = match holiday_dates(args, ctx)? {
+        Ok(holidays) => holidays,
+        Err(error) => return Ok(error),
+    };
+    let direction = if days >= 0 { 1 } else { -1 };
+    let mut current = match add_weekdays(start, days.unsigned_abs(), direction) {
+        Some(date) => date,
+        None => return Ok(CellValue::Error("#NUM!".to_string())),
+    };
+    loop {
+        let skipped = holidays_between(&holidays, start, current, direction);
+        let adjusted = match add_weekdays(
+            start,
+            days.unsigned_abs().saturating_add(skipped),
+            direction,
+        ) {
+            Some(date) => date,
+            None => return Ok(CellValue::Error("#NUM!".to_string())),
+        };
+        if adjusted == current {
+            return Ok(CellValue::Date(date_to_serial(current)));
+        }
+        current = adjusted;
+    }
 }
 
 #[cfg(test)]
@@ -465,6 +562,15 @@ mod tests {
 
     fn eval(formula: &str) -> CellValue {
         let snap = CellSnapshot::new("Sheet1".to_string());
+        let expr = parse_formula(formula).unwrap();
+        evaluate(&expr, &snap).unwrap()
+    }
+
+    fn eval_with_data(formula: &str, data: &[(&str, u32, u32, CellValue)]) -> CellValue {
+        let mut snap = CellSnapshot::new("Sheet1".to_string());
+        for (sheet, col, row, value) in data {
+            snap.set_cell(sheet, *col, *row, value.clone());
+        }
         let expr = parse_formula(formula).unwrap();
         evaluate(&expr, &snap).unwrap()
     }
@@ -599,5 +705,96 @@ mod tests {
         let result = eval("WORKDAY(DATE(2024,1,5),1)");
         let expected = date_to_serial(NaiveDate::from_ymd_opt(2024, 1, 8).unwrap());
         assert_eq!(result, CellValue::Date(expected));
+    }
+
+    #[test]
+    fn networkdays_excludes_range_holidays_once_and_preserves_reverse_sign() {
+        let holidays = [
+            (
+                "Sheet1",
+                1,
+                1,
+                CellValue::Date(date_to_serial(NaiveDate::from_ymd_opt(2024, 1, 1).unwrap())),
+            ),
+            (
+                "Sheet1",
+                1,
+                2,
+                CellValue::Date(date_to_serial(NaiveDate::from_ymd_opt(2024, 1, 1).unwrap())),
+            ),
+            (
+                "Sheet1",
+                1,
+                3,
+                CellValue::Date(date_to_serial(NaiveDate::from_ymd_opt(2024, 1, 6).unwrap())),
+            ),
+        ];
+        assert_eq!(
+            eval_with_data(
+                "NETWORKDAYS(DATE(2024,1,1),DATE(2024,1,7),A1:A3)",
+                &holidays
+            ),
+            CellValue::Number(4.0)
+        );
+        assert_eq!(
+            eval_with_data(
+                "NETWORKDAYS(DATE(2024,1,7),DATE(2024,1,1),A1:A3)",
+                &holidays
+            ),
+            CellValue::Number(-4.0)
+        );
+    }
+
+    #[test]
+    fn workday_skips_scalar_and_range_holidays_in_both_directions() {
+        assert_eq!(
+            eval("WORKDAY(DATE(2024,1,5),1,DATE(2024,1,8))"),
+            CellValue::Date(date_to_serial(NaiveDate::from_ymd_opt(2024, 1, 9).unwrap()))
+        );
+        let holidays = [
+            (
+                "Sheet1",
+                1,
+                1,
+                CellValue::Date(date_to_serial(NaiveDate::from_ymd_opt(2024, 1, 8).unwrap())),
+            ),
+            (
+                "Sheet1",
+                1,
+                2,
+                CellValue::Date(date_to_serial(NaiveDate::from_ymd_opt(2024, 1, 8).unwrap())),
+            ),
+            (
+                "Sheet1",
+                1,
+                3,
+                CellValue::Date(date_to_serial(NaiveDate::from_ymd_opt(2024, 1, 7).unwrap())),
+            ),
+        ];
+        assert_eq!(
+            eval_with_data("WORKDAY(DATE(2024,1,9),-1,A1:A3)", &holidays),
+            CellValue::Date(date_to_serial(NaiveDate::from_ymd_opt(2024, 1, 5).unwrap()))
+        );
+    }
+
+    #[test]
+    fn workday_functions_propagate_holiday_errors_and_reject_invalid_dates() {
+        let errors = [("Sheet1", 1, 1, CellValue::Error("#N/A".to_string()))];
+        assert_eq!(
+            eval_with_data("NETWORKDAYS(DATE(2024,1,1),DATE(2024,1,5),A1)", &errors),
+            CellValue::Error("#N/A".to_string())
+        );
+        assert_eq!(
+            eval_with_data("WORKDAY(DATE(2024,1,5),1,A1)", &errors),
+            CellValue::Error("#N/A".to_string())
+        );
+        assert_eq!(
+            eval("NETWORKDAYS(0,DATE(2024,1,5))"),
+            CellValue::Error("#VALUE!".to_string())
+        );
+        assert_eq!(
+            eval("WORKDAY(0,1)"),
+            CellValue::Error("#VALUE!".to_string())
+        );
     }
 }

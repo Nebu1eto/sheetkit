@@ -451,10 +451,10 @@ pub fn fn_besseli(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("BESSELI", args, 2, 2)?;
     let x = coerce_to_number(&ctx.eval_expr(&args[0])?)?;
     let n = coerce_to_number(&ctx.eval_expr(&args[1])?)? as i32;
-    if n < 0 {
+    if !x.is_finite() || n < 0 {
         return Ok(CellValue::Error("#NUM!".to_string()));
     }
-    Ok(CellValue::Number(bessel_i(x, n as f64)))
+    finite_number_or_num_error(bessel_i(x, n as f64))
 }
 
 /// BESSELJ(x, n)
@@ -462,10 +462,10 @@ pub fn fn_besselj(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("BESSELJ", args, 2, 2)?;
     let x = coerce_to_number(&ctx.eval_expr(&args[0])?)?;
     let n = coerce_to_number(&ctx.eval_expr(&args[1])?)? as i32;
-    if n < 0 {
+    if !x.is_finite() || n < 0 {
         return Ok(CellValue::Error("#NUM!".to_string()));
     }
-    Ok(CellValue::Number(bessel_j(x, n as f64)))
+    finite_number_or_num_error(bessel_j(x, n as f64))
 }
 
 /// BESSELK(x, n)
@@ -473,10 +473,10 @@ pub fn fn_besselk(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("BESSELK", args, 2, 2)?;
     let x = coerce_to_number(&ctx.eval_expr(&args[0])?)?;
     let n = coerce_to_number(&ctx.eval_expr(&args[1])?)? as i32;
-    if x <= 0.0 || n < 0 {
+    if !x.is_finite() || x <= 0.0 || n < 0 {
         return Ok(CellValue::Error("#NUM!".to_string()));
     }
-    Ok(CellValue::Number(bessel_k(x, n)))
+    finite_number_or_num_error(bessel_k(x, n))
 }
 
 /// BESSELY(x, n)
@@ -484,10 +484,18 @@ pub fn fn_bessely(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("BESSELY", args, 2, 2)?;
     let x = coerce_to_number(&ctx.eval_expr(&args[0])?)?;
     let n = coerce_to_number(&ctx.eval_expr(&args[1])?)? as i32;
-    if x <= 0.0 || n < 0 {
+    if !x.is_finite() || x <= 0.0 || n < 0 {
         return Ok(CellValue::Error("#NUM!".to_string()));
     }
-    Ok(CellValue::Number(bessel_y(x, n)))
+    finite_number_or_num_error(bessel_y(x, n))
+}
+
+fn finite_number_or_num_error(value: f64) -> Result<CellValue> {
+    if value.is_finite() {
+        Ok(CellValue::Number(value))
+    } else {
+        Ok(CellValue::Error("#NUM!".to_string()))
+    }
 }
 
 fn format_bin(n: i64, args: &[Expr], ctx: &mut Evaluator, places_idx: usize) -> Result<CellValue> {
@@ -810,6 +818,18 @@ fn unit_to_base_factor(unit: &str) -> Option<(f64, &'static str)> {
 }
 
 fn bessel_y(x: f64, n: i32) -> f64 {
+    if x > 15.0 {
+        let y0 = bessel_jy_asymptotic(x, 0).1;
+        if n == 0 {
+            return y0;
+        }
+        let mut previous = y0;
+        let mut current = bessel_jy_asymptotic(x, 1).1;
+        for order in 1..n {
+            (previous, current) = (current, 2.0 * order as f64 / x * current - previous);
+        }
+        return current;
+    }
     // For integer orders, the generic formula divides by sin(n*pi) = 0.
     // Use the limiting form via numerical differentiation instead.
     let nf = n as f64;
@@ -829,6 +849,11 @@ fn bessel_y(x: f64, n: i32) -> f64 {
 
 /// Evaluate J_v(x) for real (non-integer) order v using the power series.
 fn bessel_j(x: f64, v: f64) -> f64 {
+    if x.abs() > 15.0 && v.fract() == 0.0 && v * v <= 2.0 * x.abs() {
+        let n = v as i32;
+        let value = bessel_jy_asymptotic(x.abs(), n).0;
+        return if x < 0.0 && n % 2 != 0 { -value } else { value };
+    }
     let mut sum = 0.0;
     for m in 0_i32..50 {
         let sign = if m % 2 == 0 { 1.0 } else { -1.0 };
@@ -843,6 +868,18 @@ fn bessel_j(x: f64, v: f64) -> f64 {
 }
 
 fn bessel_k(x: f64, n: i32) -> f64 {
+    if x > 15.0 {
+        let k0 = bessel_ik_asymptotic(x, 0).1;
+        if n == 0 {
+            return k0;
+        }
+        let mut previous = k0;
+        let mut current = bessel_ik_asymptotic(x, 1).1;
+        for order in 1..n {
+            (previous, current) = (current, previous + 2.0 * order as f64 / x * current);
+        }
+        return current;
+    }
     // For integer orders, the generic formula divides by sin(n*pi) = 0.
     // Use the limiting form via numerical differentiation.
     let nf = n as f64;
@@ -861,6 +898,11 @@ fn bessel_k(x: f64, n: i32) -> f64 {
 
 /// Evaluate I_v(x) for real (non-integer) order v using the power series.
 fn bessel_i(x: f64, v: f64) -> f64 {
+    if x.abs() > 15.0 && v.fract() == 0.0 && v * v <= 2.0 * x.abs() {
+        let n = v as i32;
+        let value = bessel_ik_asymptotic(x.abs(), n).0;
+        return if x < 0.0 && n % 2 != 0 { -value } else { value };
+    }
     let mut sum = 0.0;
     for m in 0_i32..50 {
         let numer = (x / 2.0).powf(2.0 * m as f64 + v);
@@ -871,6 +913,53 @@ fn bessel_i(x: f64, v: f64) -> f64 {
         sum += numer / denom;
     }
     sum
+}
+
+fn bessel_jy_asymptotic(x: f64, n: i32) -> (f64, f64) {
+    let mu = 4.0 * (n as f64).powi(2);
+    let mut term = 1.0;
+    let mut p = 1.0;
+    let mut q = 0.0;
+    let mut previous = f64::INFINITY;
+    for k in 1..=40 {
+        let odd = (2 * k - 1) as f64;
+        term *= (mu - odd * odd) / (k as f64 * 8.0 * x);
+        if term.abs() > previous {
+            break;
+        }
+        previous = term.abs();
+        if k % 2 == 0 {
+            p += if k % 4 == 0 { term } else { -term };
+        } else {
+            q += if k % 4 == 1 { term } else { -term };
+        }
+    }
+    let phase = x - n as f64 * std::f64::consts::FRAC_PI_2 - std::f64::consts::FRAC_PI_4;
+    let scale = (2.0 / (std::f64::consts::PI * x)).sqrt();
+    let (sin, cos) = phase.sin_cos();
+    (scale * (cos * p - sin * q), scale * (sin * p + cos * q))
+}
+
+fn bessel_ik_asymptotic(x: f64, n: i32) -> (f64, f64) {
+    let mu = 4.0 * (n as f64).powi(2);
+    let mut term = 1.0;
+    let mut i_sum = 1.0;
+    let mut k_sum = 1.0;
+    let mut previous = f64::INFINITY;
+    for k in 1..=40 {
+        let odd = (2 * k - 1) as f64;
+        term *= (mu - odd * odd) / (k as f64 * 8.0 * x);
+        if term.abs() > previous {
+            break;
+        }
+        previous = term.abs();
+        k_sum += term;
+        i_sum += if k % 2 == 0 { term } else { -term };
+    }
+    (
+        x.exp() / (2.0 * std::f64::consts::PI * x).sqrt() * i_sum,
+        (std::f64::consts::PI / (2.0 * x)).sqrt() * (-x).exp() * k_sum,
+    )
 }
 
 /// Lanczos approximation of the Gamma function for real arguments.
@@ -1341,5 +1430,38 @@ mod tests {
         } else {
             panic!("expected number, got {result:?}");
         }
+    }
+
+    #[test]
+    fn bessel_large_x_reference_vectors() {
+        // High-precision reference values computed from the DLMF definitions.
+        assert_approx(eval("BESSELJ(20,0)"), 0.167_024_664_340_583_16, 1e-12);
+        assert_approx(eval("BESSELJ(20,3)"), -0.098_901_394_560_449_58, 1e-12);
+        assert_approx(eval("BESSELY(20,0)"), 0.062_640_596_809_383_83, 1e-12);
+        assert_approx(eval("BESSELY(20,3)"), 0.149_673_262_713_394_08, 1e-12);
+        assert_approx(eval("BESSELI(20,0)"), 43_558_282.559_553_534, 1e-6);
+        assert_approx(eval("BESSELI(20,3)"), 34_592_416.340_919_62, 1e-6);
+        assert_approx(eval("BESSELK(20,0)"), 5.741_237_815_336_524e-10, 1e-20);
+        assert_approx(eval("BESSELK(20,3)"), 7.148_966_692_015_484e-10, 1e-20);
+        assert_approx(eval("BESSELJ(20,10)"), 0.186_482_558_023_945_1, 1e-9);
+        assert_approx(eval("BESSELY(20,10)"), -0.043_894_653_515_658_4, 1e-12);
+        assert_approx(eval("BESSELI(20,10)"), 3_540_200.209_019_521, 1e-6);
+        assert_approx(eval("BESSELK(20,10)"), 6.316_214_528_321_58e-9, 1e-19);
+    }
+
+    #[test]
+    fn bessel_large_x_boundary_regression() {
+        assert_approx(eval("BESSELJ(15,2)"), 0.041_571_677_975_250_48, 1e-9);
+        assert_approx(eval("BESSELJ(16,2)"), 0.186_198_720_941_292_8, 1e-10);
+    }
+
+    #[test]
+    fn bessel_validates_domains_and_non_finite_results() {
+        assert_eq!(eval("BESSELJ(1,-1)"), CellValue::Error("#NUM!".to_string()));
+        assert_eq!(eval("BESSELY(-1,0)"), CellValue::Error("#NUM!".to_string()));
+        assert_eq!(
+            eval("BESSELI(1000,0)"),
+            CellValue::Error("#NUM!".to_string())
+        );
     }
 }

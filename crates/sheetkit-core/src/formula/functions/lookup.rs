@@ -227,10 +227,10 @@ pub fn fn_lookup(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
 }
 
 /// ROW([reference]) - returns the row number of a reference.
-pub fn fn_row(args: &[Expr], _ctx: &mut Evaluator) -> Result<CellValue> {
+pub fn fn_row(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("ROW", args, 0, 1)?;
     if args.is_empty() {
-        return Ok(CellValue::Number(1.0));
+        return Ok(CellValue::Number(ctx.position().1 as f64));
     }
     match &args[0] {
         Expr::CellRef(cell_ref) => Ok(CellValue::Number(cell_ref.row as f64)),
@@ -240,10 +240,10 @@ pub fn fn_row(args: &[Expr], _ctx: &mut Evaluator) -> Result<CellValue> {
 }
 
 /// COLUMN([reference]) - returns the column number of a reference.
-pub fn fn_column(args: &[Expr], _ctx: &mut Evaluator) -> Result<CellValue> {
+pub fn fn_column(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("COLUMN", args, 0, 1)?;
     if args.is_empty() {
-        return Ok(CellValue::Number(1.0));
+        return Ok(CellValue::Number(ctx.position().0 as f64));
     }
     match &args[0] {
         Expr::CellRef(cell_ref) => {

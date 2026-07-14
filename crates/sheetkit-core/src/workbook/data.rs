@@ -430,6 +430,7 @@ impl Workbook {
             if let Some(parsed) = formula_map.get(coord) {
                 snapshot.set_current_sheet(&coord.sheet);
                 let mut evaluator = crate::formula::eval::Evaluator::new(&snapshot);
+                evaluator.set_position(coord.col, coord.row);
                 let result = match evaluator.eval_expr(parsed) {
                     Ok(result) => result,
                     Err(error) => formula_error_to_cached_value(&error).ok_or(error)?,
@@ -1781,6 +1782,44 @@ mod tests {
         assert_eq!(cached("E1"), CellValue::Number(5.0));
         assert_eq!(cached("F1"), CellValue::Error("#VALUE!".to_string()));
         assert_eq!(cached("G1"), CellValue::Error("#N/A".to_string()));
+    }
+
+    #[test]
+    fn test_calculate_all_caches_range_errors_and_continues() {
+        let mut wb = Workbook::new();
+        for (cell, expr) in [
+            ("A1", "1/0"),
+            ("B1", "SUM(A1:A2)"),
+            ("C1", "2+2"),
+            ("C5", "ROW()"),
+            ("D5", "COLUMN()"),
+        ] {
+            wb.set_cell_value(
+                "Sheet1",
+                cell,
+                CellValue::Formula {
+                    expr: expr.to_string(),
+                    result: None,
+                },
+            )
+            .unwrap();
+        }
+
+        wb.calculate_all().unwrap();
+
+        let cached = |cell: &str| match wb.get_cell_value("Sheet1", cell).unwrap() {
+            CellValue::Formula {
+                result: Some(result),
+                ..
+            } => *result,
+            value => panic!("{cell} should have a cached formula result, got {value:?}"),
+        };
+
+        assert_eq!(cached("A1"), CellValue::Error("#DIV/0!".to_string()));
+        assert_eq!(cached("B1"), CellValue::Error("#DIV/0!".to_string()));
+        assert_eq!(cached("C1"), CellValue::Number(4.0));
+        assert_eq!(cached("C5"), CellValue::Number(5.0));
+        assert_eq!(cached("D5"), CellValue::Number(4.0));
     }
 
     #[test]

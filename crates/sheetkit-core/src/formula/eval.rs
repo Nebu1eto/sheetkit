@@ -73,6 +73,7 @@ pub struct Evaluator<'a> {
     provider: &'a dyn CellDataProvider,
     eval_stack: HashSet<(String, u32, u32)>,
     depth: usize,
+    position: (u32, u32),
 }
 
 impl<'a> Evaluator<'a> {
@@ -82,7 +83,18 @@ impl<'a> Evaluator<'a> {
             provider,
             eval_stack: HashSet::new(),
             depth: 0,
+            position: (1, 1),
         }
+    }
+
+    /// Set the 1-based `(column, row)` coordinate of the formula being evaluated.
+    pub fn set_position(&mut self, col: u32, row: u32) {
+        self.position = (col, row);
+    }
+
+    /// Return the 1-based `(column, row)` coordinate of the formula being evaluated.
+    pub fn position(&self) -> (u32, u32) {
+        self.position
     }
 
     /// Evaluate an AST expression node.
@@ -119,6 +131,9 @@ impl<'a> Evaluator<'a> {
                 Expr::Range { start, end } => {
                     let values = self.expand_range(start, end)?;
                     for v in values {
+                        if let CellValue::Error(error) = v {
+                            return Err(Error::FormulaError(error));
+                        }
                         if let Ok(n) = coerce_to_number(&v) {
                             nums.push(n);
                         }
@@ -274,6 +289,9 @@ impl<'a> Evaluator<'a> {
                     BinaryOperator::Pow => ln.powf(rn),
                     _ => unreachable!(),
                 };
+                if !result.is_finite() {
+                    return Ok(CellValue::Error("#NUM!".to_string()));
+                }
                 Ok(CellValue::Number(result))
             }
             BinaryOperator::Eq
@@ -425,6 +443,16 @@ pub fn coerce_to_bool(value: &CellValue) -> Result<bool> {
 /// mixed types rank as: empty < number < string < bool.
 pub fn compare_values(lhs: &CellValue, rhs: &CellValue) -> std::cmp::Ordering {
     use std::cmp::Ordering;
+
+    match (lhs, rhs) {
+        (CellValue::Empty, CellValue::Number(n) | CellValue::Date(n)) => {
+            return 0.0_f64.partial_cmp(n).unwrap_or(Ordering::Equal);
+        }
+        (CellValue::Number(n) | CellValue::Date(n), CellValue::Empty) => {
+            return n.partial_cmp(&0.0).unwrap_or(Ordering::Equal);
+        }
+        _ => {}
+    }
 
     fn type_rank(v: &CellValue) -> u8 {
         match v {
@@ -745,6 +773,17 @@ mod tests {
     }
 
     #[test]
+    fn eval_negative_fractional_power_returns_num_error() {
+        let snap = make_snapshot();
+        let expr = parse_formula("(-8)^0.5").unwrap();
+
+        assert_eq!(
+            evaluate(&expr, &snap).unwrap(),
+            CellValue::Error("#NUM!".to_string())
+        );
+    }
+
+    #[test]
     fn eval_concat() {
         let snap = make_snapshot();
         let expr = Expr::BinaryOp {
@@ -923,6 +962,83 @@ mod tests {
         snap.set_cell("Sheet1", 2, 2, CellValue::Number(4.0));
         let expr = parse_formula("SUM(A1:B2)").unwrap();
         assert_eq!(evaluate(&expr, &snap).unwrap(), CellValue::Number(10.0));
+    }
+
+    #[test]
+    fn eval_sum_range_propagates_cell_errors() {
+        let mut snap = make_snapshot();
+        snap.set_cell("Sheet1", 1, 1, CellValue::Number(1.0));
+        snap.set_cell("Sheet1", 1, 2, CellValue::Error("#DIV/0!".to_string()));
+        let expr = parse_formula("SUM(A1:A2)").unwrap();
+
+        let error = evaluate(&expr, &snap).unwrap_err();
+        assert!(error.to_string().contains("#DIV/0!"));
+    }
+
+    #[test]
+    fn eval_sum_range_skips_non_numeric_text() {
+        let mut snap = make_snapshot();
+        snap.set_cell("Sheet1", 1, 1, CellValue::Number(1.0));
+        snap.set_cell("Sheet1", 1, 2, CellValue::String("text".to_string()));
+        let expr = parse_formula("SUM(A1:A2)").unwrap();
+
+        assert_eq!(evaluate(&expr, &snap).unwrap(), CellValue::Number(1.0));
+    }
+
+    #[test]
+    fn eval_blank_cell_compares_as_zero_against_numbers() {
+        let snap = make_snapshot();
+
+        assert_eq!(
+            evaluate(&parse_formula("A1=0").unwrap(), &snap).unwrap(),
+            CellValue::Bool(true)
+        );
+        assert_eq!(
+            evaluate(&parse_formula("A1<>0").unwrap(), &snap).unwrap(),
+            CellValue::Bool(false)
+        );
+        assert_eq!(
+            evaluate(&parse_formula("A1<1").unwrap(), &snap).unwrap(),
+            CellValue::Bool(true)
+        );
+    }
+
+    #[test]
+    fn eval_row_and_column_without_reference_use_evaluator_position() {
+        let snap = make_snapshot();
+        let mut evaluator = Evaluator::new(&snap);
+        evaluator.set_position(3, 5);
+
+        assert_eq!(
+            evaluator
+                .eval_expr(&parse_formula("ROW()").unwrap())
+                .unwrap(),
+            CellValue::Number(5.0)
+        );
+        assert_eq!(
+            evaluator
+                .eval_expr(&parse_formula("COLUMN()").unwrap())
+                .unwrap(),
+            CellValue::Number(3.0)
+        );
+    }
+
+    #[test]
+    fn eval_row_and_column_preserve_default_and_explicit_references() {
+        let snap = make_snapshot();
+
+        assert_eq!(
+            evaluate(&parse_formula("ROW()").unwrap(), &snap).unwrap(),
+            CellValue::Number(1.0)
+        );
+        assert_eq!(
+            evaluate(&parse_formula("ROW(A7)").unwrap(), &snap).unwrap(),
+            CellValue::Number(7.0)
+        );
+        assert_eq!(
+            evaluate(&parse_formula("COLUMN(C7)").unwrap(), &snap).unwrap(),
+            CellValue::Number(3.0)
+        );
     }
 
     // -- Type coercion --

@@ -222,7 +222,6 @@ pub fn matches_criteria(cell_value: &CellValue, criteria: &str) -> bool {
     if criteria.is_empty() {
         return matches!(cell_value, CellValue::Empty);
     }
-
     let (op, val_str) = if let Some(rest) = criteria.strip_prefix("<=") {
         ("<=", rest)
     } else if let Some(rest) = criteria.strip_prefix(">=") {
@@ -241,6 +240,10 @@ pub fn matches_criteria(cell_value: &CellValue, criteria: &str) -> bool {
 
     let cell_num = coerce_to_number(cell_value).ok();
     let crit_num: Option<f64> = val_str.parse().ok();
+
+    if crit_num.is_some() && matches!(cell_value, CellValue::Empty) {
+        return false;
+    }
 
     if let (Some(cn), Some(crn)) = (cell_num, crit_num) {
         return match op {
@@ -468,7 +471,11 @@ fn fn_power(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("POWER", args, 2, 2)?;
     let base = crate::formula::eval::coerce_to_number(&ctx.eval_expr(&args[0])?)?;
     let exp = crate::formula::eval::coerce_to_number(&ctx.eval_expr(&args[1])?)?;
-    Ok(CellValue::Number(base.powf(exp)))
+    let result = base.powf(exp);
+    if !result.is_finite() {
+        return Ok(CellValue::Error("#NUM!".to_string()));
+    }
+    Ok(CellValue::Number(result))
 }
 
 fn fn_sqrt(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
@@ -486,7 +493,7 @@ fn fn_len(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("LEN", args, 1, 1)?;
     let v = ctx.eval_expr(&args[0])?;
     let s = crate::formula::eval::coerce_to_string(&v);
-    Ok(CellValue::Number(s.len() as f64))
+    Ok(CellValue::Number(s.chars().count() as f64))
 }
 
 fn fn_lower(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
@@ -605,10 +612,86 @@ fn fn_value(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
 
 fn fn_text(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("TEXT", args, 2, 2)?;
-    let v = ctx.eval_expr(&args[0])?;
-    let _fmt = ctx.eval_expr(&args[1])?;
-    // Simplified: just convert to string representation (full format codes not implemented).
-    Ok(CellValue::String(crate::formula::eval::coerce_to_string(
-        &v,
+    let value = ctx.eval_expr(&args[0])?;
+    let format = ctx.eval_expr(&args[1])?;
+    let CellValue::String(format_code) = format else {
+        return Ok(CellValue::Error("#VALUE!".to_string()));
+    };
+    let Ok(number) = crate::formula::eval::coerce_to_number(&value) else {
+        return Ok(CellValue::Error("#VALUE!".to_string()));
+    };
+    Ok(CellValue::String(crate::numfmt::format_number(
+        number,
+        &format_code,
     )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::matches_criteria;
+    use crate::cell::CellValue;
+    use crate::formula::eval::{evaluate, CellSnapshot};
+    use crate::formula::parser::parse_formula;
+
+    fn eval(formula: &str) -> CellValue {
+        let snapshot = CellSnapshot::new("Sheet1".to_string());
+        let expr = parse_formula(formula).unwrap();
+        evaluate(&expr, &snapshot).unwrap()
+    }
+
+    #[test]
+    fn numeric_criteria_does_not_match_blank() {
+        assert!(!matches_criteria(&CellValue::Empty, "0"));
+        assert!(matches_criteria(&CellValue::Number(0.0), "0"));
+        assert!(matches_criteria(&CellValue::Empty, ""));
+        assert!(matches_criteria(&CellValue::Empty, "<>word"));
+    }
+
+    #[test]
+    fn power_rejects_non_finite_results() {
+        assert_eq!(eval("POWER(-1,0.5)"), CellValue::Error("#NUM!".to_string()));
+        assert_eq!(
+            eval("POWER(1E308,2)"),
+            CellValue::Error("#NUM!".to_string())
+        );
+    }
+
+    #[test]
+    fn len_counts_unicode_scalars() {
+        assert_eq!(eval("LEN(\"café\")"), CellValue::Number(4.0));
+        assert_eq!(eval("LEN(\"한글🚀\")"), CellValue::Number(3.0));
+    }
+
+    #[test]
+    fn text_applies_excel_number_formats() {
+        assert_eq!(
+            eval("TEXT(12.345,\"0.00\")"),
+            CellValue::String("12.35".to_string())
+        );
+        assert_eq!(
+            eval("TEXT(1234.5,\"#,##0.00\")"),
+            CellValue::String("1,234.50".to_string())
+        );
+        assert_eq!(
+            eval("TEXT(0.256,\"0.0%\")"),
+            CellValue::String("25.6%".to_string())
+        );
+        assert_eq!(
+            eval("TEXT(45292,\"m/d/yyyy\")"),
+            CellValue::String("1/1/2024".to_string())
+        );
+        assert_eq!(
+            eval("TEXT(0.625,\"h:mm AM/PM\")"),
+            CellValue::String("3:00 PM".to_string())
+        );
+    }
+
+    #[test]
+    fn text_requires_numeric_value_and_string_format() {
+        assert_eq!(eval("TEXT(12,0)"), CellValue::Error("#VALUE!".to_string()));
+        assert_eq!(
+            eval("TEXT(\"word\",\"0.00\")"),
+            CellValue::Error("#VALUE!".to_string())
+        );
+    }
 }

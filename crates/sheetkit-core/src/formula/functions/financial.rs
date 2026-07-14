@@ -501,7 +501,10 @@ fn calc_pmt(rate: f64, nper: f64, pv: f64, fv: f64, pmt_type: i32) -> f64 {
 fn calc_ipmt(rate: f64, per: f64, nper: f64, pv: f64, fv: f64, pmt_type: i32) -> f64 {
     let pmt = calc_pmt(rate, nper, pv, fv, pmt_type);
     if pmt_type != 0 {
-        let fv_prev = calc_fv(rate, per - 2.0, pmt, pv, pmt_type);
+        if per == 1.0 {
+            return 0.0;
+        }
+        let fv_prev = calc_fv(rate, per - 1.0, pmt, pv, pmt_type);
         fv_prev * rate / (1.0 + rate)
     } else {
         let fv_prev = calc_fv(rate, per - 1.0, pmt, pv, pmt_type);
@@ -710,6 +713,40 @@ mod tests {
         } else {
             panic!("expected numbers");
         }
+    }
+
+    #[test]
+    fn ipmt_and_ppmt_follow_payment_timing_schedules() {
+        // Excel's IPMT documentation example: 10% annual rate paid monthly.
+        let rate = 0.1 / 12.0;
+        for (payment_type, expected_interest) in [
+            (0, [-8.3333333333, -5.5785756372, -2.8008616270]),
+            (1, [0.0, -5.5324717063, -2.7777140102]),
+        ] {
+            let pmt = eval(&format!("PMT({rate},3,1000,0,{payment_type})"));
+            let CellValue::Number(pmt) = pmt else {
+                panic!("PMT should return a number");
+            };
+            for (index, expected) in expected_interest.into_iter().enumerate() {
+                let per = index + 1;
+                let ipmt = eval(&format!("IPMT({rate},{per},3,1000,0,{payment_type})"));
+                let ppmt = eval(&format!("PPMT({rate},{per},3,1000,0,{payment_type})"));
+                assert_approx(ipmt.clone(), expected, 1e-8);
+                let (CellValue::Number(ipmt), CellValue::Number(ppmt)) = (ipmt, ppmt) else {
+                    panic!("IPMT and PPMT should return numbers");
+                };
+                assert!((pmt - ipmt - ppmt).abs() < 1e-8);
+            }
+        }
+    }
+
+    #[test]
+    fn beginning_of_period_cumulative_interest_and_principal_match_schedule() {
+        let rate = 0.1 / 12.0;
+        let cumulative_interest = eval(&format!("CUMIPMT({rate},3,1000,1,3,1)"));
+        let cumulative_principal = eval(&format!("CUMPRINC({rate},3,1000,1,3,1)"));
+        assert_approx(cumulative_interest, -8.3101857166, 1e-8);
+        assert_approx(cumulative_principal, -1000.0, 1e-8);
     }
 
     #[test]
