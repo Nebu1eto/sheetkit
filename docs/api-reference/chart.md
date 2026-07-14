@@ -151,6 +151,8 @@ wb.addChart("Sheet1", "D1", "K15", {
 | `ChartType::StockVHLC` | `"stockVHLC"` | Volume-High-Low-Close |
 | `ChartType::StockVOHLC` | `"stockVOHLC"` | Volume-Open-High-Low-Close |
 
+Stock charts require their series in the order named by the chart type. `stockHLC`, `stockOHLC`, `stockVHLC`, and `stockVOHLC` require exactly 3, 4, 4, and 5 series respectively; `add_chart` / `addChart` returns an error for any other count.
+
 **Surface and contour charts:**
 
 | Rust | TypeScript | Description |

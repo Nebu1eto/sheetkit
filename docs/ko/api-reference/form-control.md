@@ -1,6 +1,6 @@
 ## 양식 컨트롤 (Form Controls)
 
-시트에 레거시 양식 컨트롤을 삽입합니다. 양식 컨트롤은 VML (Vector Markup Language) drawing 파트를 사용하며, 버튼, 체크 박스, 옵션 버튼, 스핀 버튼, 스크롤 바, 그룹 박스, 레이블을 지원합니다.
+시트에 양식 컨트롤을 삽입합니다. SheetKit은 워크시트 컨트롤 메타데이터와 컨트롤 속성 파트를 VML (Vector Markup Language) fallback과 함께 작성하며, 버튼, 체크 박스, 옵션 버튼, 스핀 버튼, 스크롤 바, 그룹 박스, 레이블을 지원합니다.
 
 ### 지원 컨트롤 타입
 
@@ -158,7 +158,7 @@ wb.deleteFormControl("Sheet1", 0);
 
 ### 참고사항
 
-- 양식 컨트롤은 DrawingML이 아닌 레거시 VML drawing 파트(`xl/drawings/vmlDrawingN.vml`)를 사용합니다.
+- 양식 컨트롤은 DrawingML이 아닌 워크시트 컨트롤 메타데이터와 `xl/ctrlProps/` 파트 및 VML fallback(`xl/drawings/vmlDrawingN.vml`)을 사용합니다.
 - 양식 컨트롤은 같은 시트의 주석(comment)과 공존할 수 있습니다. 둘 다 있는 경우 VML 콘텐츠가 하나의 파일로 병합됩니다.
 - 양식 컨트롤은 차트, 이미지, 도형과도 같은 시트에서 공존할 수 있습니다.
 - `cellLink` 속성은 컨트롤의 값을 시트 셀에 바인딩합니다. 체크 박스의 경우 연결된 셀에 TRUE/FALSE가 설정됩니다. 스핀 버튼과 스크롤 바의 경우 숫자 값이 설정됩니다.

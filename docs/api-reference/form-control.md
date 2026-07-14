@@ -1,6 +1,6 @@
 ## Form Controls
 
-Insert legacy form controls into worksheets. Form controls use VML (Vector Markup Language) drawing parts and support buttons, check boxes, option buttons, spin buttons, scroll bars, group boxes, and labels.
+Insert form controls into worksheets. SheetKit writes worksheet control metadata and control-property parts with a VML (Vector Markup Language) fallback, and supports buttons, check boxes, option buttons, spin buttons, scroll bars, group boxes, and labels.
 
 ### Supported Control Types
 
@@ -158,7 +158,7 @@ wb.deleteFormControl("Sheet1", 0);
 
 ### Notes
 
-- Form controls use legacy VML drawing parts (`xl/drawings/vmlDrawingN.vml`), not DrawingML.
+- Form controls use worksheet control metadata and `xl/ctrlProps/` parts with a VML fallback (`xl/drawings/vmlDrawingN.vml`), not DrawingML.
 - Form controls can coexist with comments on the same sheet. When both are present, the VML content is merged into a single file.
 - Form controls can also coexist with charts, images, and shapes on the same sheet.
 - The `cellLink` field binds a control's value to a worksheet cell. For check boxes, the linked cell receives TRUE/FALSE. For spin buttons and scroll bars, it receives the numeric value.

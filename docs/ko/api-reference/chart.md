@@ -182,6 +182,8 @@ wb.deleteChart("Sheet1", "D1");
 | `stockVHLC` | `ChartType::StockVHLC` | 거래량-고가-저가-종가 |
 | `stockVOHLC` | `ChartType::StockVOHLC` | 거래량-시가-고가-저가-종가 |
 
+주식 차트는 차트 타입 이름에 지정된 순서로 series를 제공해야 합니다. `stockHLC`, `stockOHLC`, `stockVHLC`, `stockVOHLC`에는 각각 정확히 3개, 4개, 4개, 5개의 series가 필요하며, 다른 개수를 제공하면 `add_chart` / `addChart`가 오류를 반환합니다.
+
 #### 표면형 및 등고선 차트
 
 | 타입 문자열 | Rust Enum | 설명 |
