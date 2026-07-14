@@ -184,6 +184,7 @@ pub fn build_drawing_with_image(image_ref_id: &str, config: &ImageConfig) -> Res
         from,
         ext: Extent { cx, cy },
         pic: Some(pic),
+        alternate_content: None,
         client_data: ClientData {},
     };
 
@@ -245,6 +246,7 @@ pub fn add_image_to_drawing(
         from,
         ext: Extent { cx, cy },
         pic: Some(pic),
+        alternate_content: None,
         client_data: ClientData {},
     });
 

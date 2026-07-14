@@ -1,6 +1,138 @@
 use super::*;
 
+fn next_drawing_object_id(drawing: &WsDr) -> u32 {
+    drawing
+        .two_cell_anchors
+        .iter()
+        .flat_map(|anchor| {
+            anchor
+                .shape
+                .as_ref()
+                .map(|shape| shape.nv_sp_pr.c_nv_pr.id)
+                .into_iter()
+                .chain(
+                    anchor
+                        .pic
+                        .as_ref()
+                        .map(|picture| picture.nv_pic_pr.c_nv_pr.id),
+                )
+                .chain(
+                    anchor
+                        .graphic_frame
+                        .as_ref()
+                        .map(|frame| frame.nv_graphic_frame_pr.c_nv_pr.id),
+                )
+        })
+        .chain(drawing.one_cell_anchors.iter().filter_map(|anchor| {
+            anchor
+                .pic
+                .as_ref()
+                .map(|picture| picture.nv_pic_pr.c_nv_pr.id)
+        }))
+        .chain(drawing.one_cell_anchors.iter().filter_map(|anchor| {
+            anchor.alternate_content.as_ref().map(|content| {
+                content
+                    .fallback
+                    .shape
+                    .nv_sp_pr
+                    .c_nv_pr
+                    .id
+                    .max(content.choice.graphic_frame.nv_graphic_frame_pr.c_nv_pr.id)
+            })
+        }))
+        .max()
+        .unwrap_or(1)
+        + 1
+}
+
 impl Workbook {
+    /// Add the visible anchor used by a slicer.
+    pub(crate) fn add_slicer_anchor(
+        &mut self,
+        sheet_idx: usize,
+        cell: &str,
+        width_px: u32,
+        height_px: u32,
+        name: &str,
+        caption: &str,
+    ) -> Result<()> {
+        self.ensure_owned_drawing_hydratable(sheet_idx)?;
+        self.hydrate_drawings();
+        let existing = self.ensure_owned_drawing_parsed(sheet_idx)?;
+        let drawing_idx = existing.unwrap_or_else(|| self.ensure_drawing_for_sheet(sheet_idx));
+        let (col, row) = cell_name_to_coordinates(cell)?;
+        let fallback = crate::shape::build_shape_anchor(
+            &crate::shape::ShapeConfig {
+                shape_type: crate::shape::ShapeType::Rect,
+                from_cell: cell.to_string(),
+                to_cell: cell.to_string(),
+                text: Some(caption.to_string()),
+                fill_color: Some("FFFFFF".to_string()),
+                line_color: Some("A6A6A6".to_string()),
+                line_width: Some(0.75),
+            },
+            next_drawing_object_id(&self.drawings[drawing_idx].1),
+        )?
+        .shape
+        .expect("shape builder always creates a fallback shape");
+        let fallback_id = fallback.nv_sp_pr.c_nv_pr.id;
+        let frame_id = fallback_id + 1;
+        self.drawings[drawing_idx]
+            .1
+            .one_cell_anchors
+            .push(sheetkit_xml::drawing::OneCellAnchor {
+                from: MarkerType {
+                    col: col - 1,
+                    col_off: 0,
+                    row: row - 1,
+                    row_off: 0,
+                },
+                ext: sheetkit_xml::drawing::Extent {
+                    cx: u64::from(width_px) * crate::slicer::PX_TO_EMU,
+                    cy: u64::from(height_px) * crate::slicer::PX_TO_EMU,
+                },
+                pic: None,
+                alternate_content: Some(sheetkit_xml::drawing::SlicerAlternateContent {
+                    xmlns_mc: sheetkit_xml::namespaces::MC.to_string(),
+                    choice: sheetkit_xml::drawing::SlicerChoice {
+                        requires: "sle".to_string(),
+                        graphic_frame: sheetkit_xml::drawing::SlicerGraphicFrame {
+                            macro_name: None,
+                            nv_graphic_frame_pr: sheetkit_xml::drawing::NvGraphicFramePr {
+                                c_nv_pr: sheetkit_xml::drawing::CNvPr {
+                                    id: frame_id,
+                                    name: format!("Slicer {name}"),
+                                },
+                                c_nv_graphic_frame_pr: sheetkit_xml::drawing::CNvGraphicFramePr {},
+                            },
+                            xfrm: sheetkit_xml::drawing::Xfrm {
+                                off: sheetkit_xml::drawing::Offset { x: 0, y: 0 },
+                                ext: sheetkit_xml::drawing::AExt {
+                                    cx: u64::from(width_px) * crate::slicer::PX_TO_EMU,
+                                    cy: u64::from(height_px) * crate::slicer::PX_TO_EMU,
+                                },
+                            },
+                            graphic: sheetkit_xml::drawing::SlicerGraphic {
+                                graphic_data: sheetkit_xml::drawing::SlicerGraphicData {
+                                    uri: "http://schemas.microsoft.com/office/drawing/2010/slicer"
+                                        .to_string(),
+                                    xmlns_sle:
+                                        "http://schemas.microsoft.com/office/drawing/2010/slicer"
+                                            .to_string(),
+                                    slicer: sheetkit_xml::drawing::SlicerRef {
+                                        name: name.to_string(),
+                                    },
+                                },
+                            },
+                        },
+                    },
+                    fallback: sheetkit_xml::drawing::SlicerFallback { shape: fallback },
+                }),
+                client_data: sheetkit_xml::drawing::ClientData {},
+            });
+        self.mark_drawing_dirty(drawing_idx);
+        Ok(())
+    }
     /// Add a chart to a sheet, anchored between two cells.
     ///
     /// The chart spans from `from_cell` (e.g., `"B2"`) to `to_cell`
@@ -2143,6 +2275,7 @@ mod tests {
                     cy: 100 * crate::image::EMU_PER_PIXEL as u64,
                 },
                 pic: Some(pic),
+                alternate_content: None,
                 client_data: ClientData {},
             });
 

@@ -944,17 +944,30 @@ impl Workbook {
         }
 
         let cache_name = crate::slicer::slicer_cache_name(&config.name);
+        if self
+            .workbook_xml
+            .defined_names
+            .as_ref()
+            .is_some_and(|names| {
+                names
+                    .defined_names
+                    .iter()
+                    .any(|defined| defined.name.eq_ignore_ascii_case(&cache_name))
+            })
+        {
+            return Err(Error::InvalidArgument(format!(
+                "slicer cache name already exists: {cache_name}"
+            )));
+        }
         let caption = config
             .caption
             .clone()
             .unwrap_or_else(|| config.column_name.clone());
 
-        // Determine part numbers.
-        let slicer_num = self.slicer_defs.len() + 1;
-        let cache_num = self.slicer_caches.len() + 1;
-
-        let slicer_path = format!("xl/slicers/slicer{}.xml", slicer_num);
-        let cache_path = format!("xl/slicerCaches/slicerCache{}.xml", cache_num);
+        // Allocate package paths from the complete occupied graph, not vector
+        // lengths; reopened workbooks commonly have sparse part numbers.
+        let slicer_path = self.next_available_part_path("xl/slicers/slicer", ".xml");
+        let cache_path = self.next_available_part_path("xl/slicerCaches/slicerCache", ".xml");
 
         // Build the slicer definition.
         let slicer_def = SlicerDefinition {
@@ -982,25 +995,22 @@ impl Workbook {
                 name: config.table_name.clone(),
             })?;
 
-        if table_sheet_idx != sheet_idx {
-            return Err(Error::TableNotFound {
-                name: config.table_name.clone(),
-            });
-        }
+        // The placement sheet may differ from the table's owner sheet.
+        let _ = table_sheet_idx;
 
-        // Validate the column exists in the table and get its 1-based index.
-        let column_index = table_xml
+        // CT_TableSlicerCache uses tableColumn@id, not its vector position.
+        let column = table_xml
             .table_columns
             .columns
             .iter()
-            .position(|c| c.name == config.column_name)
+            .find(|c| c.name == config.column_name)
             .ok_or_else(|| Error::TableColumnNotFound {
                 table: config.table_name.clone(),
                 column: config.column_name.clone(),
             })?;
 
         let real_table_id = table_xml.id;
-        let real_column = (column_index + 1) as u32;
+        let real_column = column.id;
 
         // Build the slicer cache definition with real table metadata.
         let slicer_cache = SlicerCacheDefinition {
@@ -1012,31 +1022,57 @@ impl Workbook {
             }),
         };
 
-        // Store parts.
+        // Prove the drawing can be edited before committing any package state.
+        self.ensure_owned_drawing_hydratable(sheet_idx)?;
+        self.hydrate_drawings();
+        self.ensure_owned_drawing_parsed(sheet_idx)?;
+        crate::defined_names::set_defined_name(
+            &mut self.workbook_xml,
+            &cache_name,
+            "#N/A",
+            crate::defined_names::DefinedNameScope::Workbook,
+            None,
+        )?;
+
+        // Store parts after all fallible validation has completed.
         self.slicer_defs.push((slicer_path.clone(), slicer_defs));
         self.slicer_caches.push((cache_path.clone(), slicer_cache));
 
         // Add content type overrides.
-        self.content_types.overrides.push(ContentTypeOverride {
-            part_name: format!("/{}", slicer_path),
-            content_type: mime_types::SLICER.to_string(),
-        });
-        self.content_types.overrides.push(ContentTypeOverride {
-            part_name: format!("/{}", cache_path),
-            content_type: mime_types::SLICER_CACHE.to_string(),
-        });
+        for (path, content_type) in [
+            (&slicer_path, mime_types::SLICER),
+            (&cache_path, mime_types::SLICER_CACHE),
+        ] {
+            if !self
+                .content_types
+                .overrides
+                .iter()
+                .any(|entry| entry.part_name == format!("/{path}"))
+            {
+                self.content_types.overrides.push(ContentTypeOverride {
+                    part_name: format!("/{path}"),
+                    content_type: content_type.to_string(),
+                });
+            }
+        }
 
         // Add workbook relationship for slicer cache.
         let wb_rid = crate::sheet::next_rid(&self.workbook_rels.relationships);
         self.workbook_rels.relationships.push(Relationship {
             id: wb_rid,
             rel_type: rel_types::SLICER_CACHE.to_string(),
-            target: format!("slicerCaches/slicerCache{}.xml", cache_num),
+            target: crate::workbook_paths::relative_relationship_target(
+                "xl/workbook.xml",
+                &cache_path,
+            ),
             target_mode: None,
         });
 
         // Add worksheet relationship for slicer part.
         let ws_rid = self.next_worksheet_rid(sheet_idx);
+        let sheet_path = self.sheet_part_path(sheet_idx);
+        let slicer_target =
+            crate::workbook_paths::relative_relationship_target(&sheet_path, &slicer_path);
         let ws_rels = self
             .worksheet_rels
             .entry(sheet_idx)
@@ -1047,9 +1083,21 @@ impl Workbook {
         ws_rels.relationships.push(Relationship {
             id: ws_rid,
             rel_type: rel_types::SLICER.to_string(),
-            target: format!("../slicers/slicer{}.xml", slicer_num),
+            target: slicer_target,
             target_mode: None,
         });
+
+        self.add_slicer_anchor(
+            sheet_idx,
+            &config.cell,
+            config.width.unwrap_or(crate::slicer::DEFAULT_WIDTH_PX),
+            config.height.unwrap_or(crate::slicer::DEFAULT_HEIGHT_PX),
+            &config.name,
+            &config
+                .caption
+                .clone()
+                .unwrap_or_else(|| config.column_name.clone()),
+        )?;
 
         Ok(())
     }
@@ -1169,7 +1217,8 @@ impl Workbook {
                                 .and_then(|(_, t, _)| {
                                     t.table_columns
                                         .columns
-                                        .get(tsc.column.saturating_sub(1) as usize)
+                                        .iter()
+                                        .find(|column| column.id == tsc.column)
                                 })
                                 .map(|c| c.name.clone())
                         })
@@ -1201,15 +1250,36 @@ impl Workbook {
     pub fn delete_slicer(&mut self, sheet: &str, name: &str) -> Result<()> {
         self.hydrate_slicers();
         let sheet_idx = self.sheet_index(sheet)?;
+        let sheet_path = self.sheet_part_path(sheet_idx);
+        let slicer_targets: Vec<String> = self
+            .worksheet_rels
+            .get(&sheet_idx)
+            .into_iter()
+            .flat_map(|relationships| &relationships.relationships)
+            .filter(|relationship| relationship.rel_type == rel_types::SLICER)
+            .map(|relationship| {
+                crate::workbook_paths::resolve_relationship_target(
+                    &sheet_path,
+                    &relationship.target,
+                )
+            })
+            .collect();
 
-        // Find the slicer definition containing this slicer name.
         let sd_idx = self
             .slicer_defs
             .iter()
-            .position(|(_, sd)| sd.slicers.iter().any(|s| s.name == name))
+            .position(|(path, definitions)| {
+                slicer_targets.contains(path)
+                    && definitions.slicers.iter().any(|slicer| slicer.name == name)
+            })
             .ok_or_else(|| Error::SlicerNotFound {
                 name: name.to_string(),
             })?;
+
+        self.ensure_owned_drawing_hydratable(sheet_idx)?;
+        self.hydrate_drawings();
+        self.ensure_owned_drawing_parsed(sheet_idx)?;
+        self.ensure_hydrated(sheet_idx)?;
 
         let (sd_path, sd) = &self.slicer_defs[sd_idx];
 
@@ -1235,14 +1305,13 @@ impl Workbook {
                 .retain(|o| o.part_name != sd_part);
 
             // Remove worksheet relationship pointing to this slicer part.
-            let ws_path = self.sheet_part_path(sheet_idx);
             if let Some(rels) = self.worksheet_rels.get_mut(&sheet_idx) {
                 rels.relationships.retain(|r| {
                     if r.rel_type != rel_types::SLICER {
                         return true;
                     }
                     let target =
-                        crate::workbook_paths::resolve_relationship_target(&ws_path, &r.target);
+                        crate::workbook_paths::resolve_relationship_target(&sheet_path, &r.target);
                     target != sd_path_clone
                 });
             }
@@ -1254,8 +1323,15 @@ impl Workbook {
                 .retain(|s| s.name != name);
         }
 
-        // Remove the matching slicer cache.
-        if !cache_name.is_empty() {
+        let cache_is_still_used = self.slicer_defs.iter().any(|(_, definitions)| {
+            definitions
+                .slicers
+                .iter()
+                .any(|slicer| slicer.cache == cache_name)
+        });
+
+        // Remove the matching slicer cache after its final view is removed.
+        if !cache_name.is_empty() && !cache_is_still_used {
             if let Some(sc_idx) = self
                 .slicer_caches
                 .iter()
@@ -1272,13 +1348,101 @@ impl Workbook {
                     if r.rel_type != rel_types::SLICER_CACHE {
                         return true;
                     }
-                    let full_target = format!("xl/{}", r.target);
-                    full_target != sc_path
+                    crate::workbook_paths::resolve_relationship_target("xl/workbook.xml", &r.target)
+                        != sc_path
                 });
+            }
+            if let Some(defined_names) = self.workbook_xml.defined_names.as_mut() {
+                defined_names
+                    .defined_names
+                    .retain(|defined| !defined.name.eq_ignore_ascii_case(&cache_name));
+                if defined_names.defined_names.is_empty() {
+                    self.workbook_xml.defined_names = None;
+                }
             }
         }
 
+        // Remove the visible one-cell slicer anchor from the owning drawing.
+        let mut empty_drawing = None;
+        if let Some(&drawing_idx) = self.worksheet_drawings.get(&sheet_idx) {
+            let mut anchor_removed = false;
+            let mut anchors_empty = false;
+            if let Some((_, drawing)) = self.drawings.get_mut(drawing_idx) {
+                let before = drawing.one_cell_anchors.len();
+                drawing.one_cell_anchors.retain(|anchor| {
+                    anchor.alternate_content.as_ref().is_none_or(|content| {
+                        content
+                            .choice
+                            .graphic_frame
+                            .graphic
+                            .graphic_data
+                            .slicer
+                            .name
+                            != name
+                    })
+                });
+                anchor_removed = drawing.one_cell_anchors.len() != before;
+                anchors_empty =
+                    drawing.one_cell_anchors.is_empty() && drawing.two_cell_anchors.is_empty();
+            }
+            if anchor_removed {
+                self.mark_drawing_dirty(drawing_idx);
+            }
+            if anchors_empty
+                && self
+                    .drawing_rels
+                    .get(&drawing_idx)
+                    .is_none_or(|relationships| relationships.relationships.is_empty())
+            {
+                empty_drawing = Some(drawing_idx);
+            }
+        }
+        if let Some(drawing_idx) = empty_drawing {
+            self.remove_empty_drawing(sheet_idx, drawing_idx);
+        }
+        self.mark_sheet_dirty(sheet_idx);
+
         Ok(())
+    }
+
+    fn remove_empty_drawing(&mut self, sheet_idx: usize, drawing_idx: usize) {
+        let last_idx = self.drawings.len() - 1;
+        let (drawing_path, _) = self.drawings.swap_remove(drawing_idx);
+        let relationships_path = relationship_part_path(&drawing_path);
+        self.drawing_rels.remove(&drawing_idx);
+        self.remove_graph_part(&drawing_path);
+        self.remove_graph_part(&relationships_path);
+        self.worksheet_drawings.remove(&sheet_idx);
+
+        if drawing_idx != last_idx {
+            if let Some(relationships) = self.drawing_rels.remove(&last_idx) {
+                self.drawing_rels.insert(drawing_idx, relationships);
+            }
+            for existing_idx in self.worksheet_drawings.values_mut() {
+                if *existing_idx == last_idx {
+                    *existing_idx = drawing_idx;
+                }
+            }
+        }
+
+        self.content_types
+            .overrides
+            .retain(|override_| override_.part_name != format!("/{drawing_path}"));
+        let sheet_path = self.sheet_part_path(sheet_idx);
+        if let Some(relationships) = self.worksheet_rels.get_mut(&sheet_idx) {
+            relationships.relationships.retain(|relationship| {
+                if relationship.rel_type != rel_types::DRAWING {
+                    return true;
+                }
+                crate::workbook_paths::resolve_relationship_target(
+                    &sheet_path,
+                    &relationship.target,
+                ) != drawing_path
+            });
+        }
+        if let Some(worksheet) = self.worksheets[sheet_idx].1.get_mut() {
+            worksheet.drawing = None;
+        }
     }
 }
 
@@ -2774,6 +2938,26 @@ mod tests {
     }
 
     #[test]
+    fn test_get_slicers_resolves_nonsequential_table_column_id() {
+        let mut wb = make_slicer_workbook();
+        wb.tables[0].1.table_columns.columns[2].id = 17;
+        wb.add_slicer("Sheet1", &make_slicer_config("S1", "Category"))
+            .unwrap();
+
+        let slicers = wb.get_slicers("Sheet1").unwrap();
+        assert_eq!(slicers[0].column_name, "Category");
+        assert_eq!(
+            wb.slicer_caches[0]
+                .1
+                .table_slicer_cache
+                .as_ref()
+                .unwrap()
+                .column,
+            17
+        );
+    }
+
+    #[test]
     fn test_get_slicers_empty() {
         let wb = Workbook::new();
         let slicers = wb.get_slicers("Sheet1").unwrap();
@@ -2801,6 +2985,21 @@ mod tests {
     }
 
     #[test]
+    fn test_delete_slicer_rejects_name_from_another_sheet_without_mutation() {
+        let mut wb = make_slicer_workbook();
+        wb.new_sheet("Other").unwrap();
+        wb.add_slicer("Sheet1", &make_slicer_config("S1", "Status"))
+            .unwrap();
+        let before = wb.save_to_buffer().unwrap();
+
+        let result = wb.delete_slicer("Other", "S1");
+
+        assert!(matches!(result, Err(Error::SlicerNotFound { .. })));
+        assert_eq!(wb.get_slicers("Sheet1").unwrap().len(), 1);
+        assert_eq!(wb.save_to_buffer().unwrap(), before);
+    }
+
+    #[test]
     fn test_delete_slicer_cleans_content_types() {
         let mut wb = make_slicer_workbook();
         let config = make_slicer_config("S1", "Status");
@@ -2810,8 +3009,8 @@ mod tests {
         wb.delete_slicer("Sheet1", "S1").unwrap();
         let ct_after = wb.content_types.overrides.len();
 
-        // Two content type overrides (slicer + cache) should be removed.
-        assert_eq!(ct_before - ct_after, 2);
+        // The slicer, cache, and now-empty drawing overrides are removed.
+        assert_eq!(ct_before - ct_after, 3);
     }
 
     #[test]
@@ -2835,6 +3034,35 @@ mod tests {
             .iter()
             .any(|r| r.rel_type == rel_types::SLICER_CACHE);
         assert!(!has_cache_rel);
+    }
+
+    #[test]
+    fn test_delete_slicer_preserves_a_cache_used_by_another_view() {
+        let mut wb = make_slicer_workbook();
+        wb.add_slicer("Sheet1", &make_slicer_config("S1", "Status"))
+            .unwrap();
+        wb.add_slicer("Sheet1", &make_slicer_config("S2", "Region"))
+            .unwrap();
+        let shared_cache = wb.slicer_defs[0].1.slicers[0].cache.clone();
+        wb.slicer_defs[1].1.slicers[0].cache = shared_cache.clone();
+
+        wb.delete_slicer("Sheet1", "S1").unwrap();
+
+        assert!(wb
+            .slicer_caches
+            .iter()
+            .any(|(_, cache)| cache.name == shared_cache));
+        assert!(wb
+            .workbook_rels
+            .relationships
+            .iter()
+            .any(|relationship| relationship.rel_type == rel_types::SLICER_CACHE));
+        assert!(wb.workbook_xml.defined_names.as_ref().is_some_and(|names| {
+            names
+                .defined_names
+                .iter()
+                .any(|defined| defined.name == shared_cache)
+        }));
     }
 
     #[test]
@@ -2955,15 +3183,14 @@ mod tests {
     }
 
     #[test]
-    fn test_slicer_table_on_wrong_sheet() {
+    fn test_slicer_can_be_placed_away_from_its_source_table() {
         let mut wb = Workbook::new();
         wb.new_sheet("Sheet2").unwrap();
         let table = make_table_config(&["Status"]);
         wb.add_table("Sheet2", &table).unwrap();
 
         let config = make_slicer_config("S1", "Status");
-        let result = wb.add_slicer("Sheet1", &config);
-        assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), Error::TableNotFound { .. }));
+        wb.add_slicer("Sheet1", &config).unwrap();
+        assert_eq!(wb.get_slicers("Sheet1").unwrap().len(), 1);
     }
 }

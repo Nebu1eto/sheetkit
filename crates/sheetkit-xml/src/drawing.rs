@@ -72,8 +72,72 @@ pub struct OneCellAnchor {
     #[serde(rename = "xdr:pic", skip_serializing_if = "Option::is_none")]
     pub pic: Option<Picture>,
 
+    #[serde(
+        rename = "mc:AlternateContent",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub alternate_content: Option<SlicerAlternateContent>,
+
     #[serde(rename = "xdr:clientData")]
     pub client_data: ClientData,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SlicerAlternateContent {
+    #[serde(rename = "@xmlns:mc")]
+    pub xmlns_mc: String,
+    #[serde(rename = "mc:Choice")]
+    pub choice: SlicerChoice,
+    #[serde(rename = "mc:Fallback")]
+    pub fallback: SlicerFallback,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SlicerChoice {
+    #[serde(rename = "@Requires")]
+    pub requires: String,
+    #[serde(rename = "xdr:graphicFrame")]
+    pub graphic_frame: SlicerGraphicFrame,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SlicerGraphicFrame {
+    #[serde(rename = "@macro", skip_serializing_if = "Option::is_none")]
+    pub macro_name: Option<String>,
+    #[serde(rename = "xdr:nvGraphicFramePr")]
+    pub nv_graphic_frame_pr: NvGraphicFramePr,
+    #[serde(rename = "xdr:xfrm")]
+    pub xfrm: Xfrm,
+    #[serde(rename = "a:graphic")]
+    pub graphic: SlicerGraphic,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SlicerGraphic {
+    #[serde(rename = "a:graphicData")]
+    pub graphic_data: SlicerGraphicData,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SlicerGraphicData {
+    #[serde(rename = "@uri")]
+    pub uri: String,
+    #[serde(rename = "@xmlns:sle")]
+    pub xmlns_sle: String,
+    #[serde(rename = "sle:slicer")]
+    pub slicer: SlicerRef,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SlicerRef {
+    #[serde(rename = "@name")]
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SlicerFallback {
+    #[serde(rename = "xdr:sp")]
+    pub shape: Shape,
 }
 
 /// A cell marker indicating column, column offset, row, and row offset.

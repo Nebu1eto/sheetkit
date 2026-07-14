@@ -1375,7 +1375,24 @@ impl Workbook {
         write_xml_part(zip, "_rels/.rels", &self.package_rels, options)?;
 
         // xl/workbook.xml
-        if let (Some(raw), Some(baseline)) = (&self.raw_workbook_xml, &self.workbook_xml_baseline) {
+        let slicer_cache_rids: Vec<&str> = workbook_rels
+            .relationships
+            .iter()
+            .filter(|rel| rel.rel_type == rel_types::SLICER_CACHE)
+            .map(|rel| rel.id.as_str())
+            .collect();
+        let workbook_needs_slicer_extensions = !slicer_cache_rids.is_empty();
+        if workbook_needs_slicer_extensions {
+            let raw = self.raw_workbook_xml.as_deref();
+            let xml = serialize_workbook_with_slicer_extensions(
+                &self.workbook_xml,
+                raw,
+                &slicer_cache_rids,
+            )?;
+            write_bytes_part(zip, "xl/workbook.xml", xml.as_bytes(), options)?;
+        } else if let (Some(raw), Some(baseline)) =
+            (&self.raw_workbook_xml, &self.workbook_xml_baseline)
+        {
             if self.workbook_xml == *baseline {
                 write_bytes_part(zip, "xl/workbook.xml", raw, options)?;
             } else {
@@ -1408,8 +1425,19 @@ impl Workbook {
             // The passthrough is also disabled when auxiliary parts (comments,
             // tables, sparklines) require XML injection into the worksheet,
             // since the raw bytes would lack those references.
-            let needs_aux_injection =
-                legacy_drawing_rids.contains_key(&i) || table_parts_by_sheet.contains_key(&i);
+            let slicer_rids: Vec<&str> = worksheet_rels
+                .get(&i)
+                .map(|rels| {
+                    rels.relationships
+                        .iter()
+                        .filter(|rel| rel.rel_type == rel_types::SLICER)
+                        .map(|rel| rel.id.as_str())
+                        .collect()
+                })
+                .unwrap_or_default();
+            let needs_aux_injection = legacy_drawing_rids.contains_key(&i)
+                || table_parts_by_sheet.contains_key(&i)
+                || !slicer_rids.is_empty();
             if !dirty && !needs_aux_injection {
                 if let Some(Some(raw_bytes)) = self.raw_sheet_xml.get(i) {
                     write_bytes_part(zip, &entry_name, raw_bytes, options)?;
@@ -1460,7 +1488,8 @@ impl Workbook {
             let has_extras = legacy_rid.is_some()
                 || !sparklines.is_empty()
                 || sheet_table_rids.is_some()
-                || stale_table_parts;
+                || stale_table_parts
+                || !slicer_rids.is_empty();
 
             if !has_extras {
                 write_xml_part(zip, &entry_name, ws, options)?;
@@ -1490,7 +1519,13 @@ impl Workbook {
                 } else {
                     ws
                 };
-                let xml = serialize_worksheet_with_extras(ws_ref, sparklines, legacy_rid)?;
+                let xml = serialize_worksheet_with_slicer_extras(
+                    ws_ref,
+                    sparklines,
+                    legacy_rid,
+                    self.raw_sheet_xml.get(i).and_then(|raw| raw.as_deref()),
+                    &slicer_rids,
+                )?;
                 zip.start_file(&entry_name, options)
                     .map_err(|e| Error::Zip(e.to_string()))?;
                 zip.write_all(xml.as_bytes())?;
@@ -2224,6 +2259,110 @@ pub(crate) fn serialize_worksheet_with_extras(
     }
 }
 
+fn serialize_worksheet_with_slicer_extras(
+    ws: &WorksheetXml,
+    sparklines: &[crate::sparkline::SparklineConfig],
+    legacy_drawing_rid: Option<&str>,
+    raw_sheet: Option<&[u8]>,
+    slicer_rids: &[&str],
+) -> Result<String> {
+    let mut xml = serialize_worksheet_with_extras(ws, sparklines, legacy_drawing_rid)?;
+    if slicer_rids.is_empty() {
+        return Ok(xml);
+    }
+    let generated_entries = ext_list_contents(&xml).unwrap_or_default();
+    xml = remove_extension_list(xml);
+    let raw_entries = raw_sheet
+        .and_then(|bytes| std::str::from_utf8(bytes).ok())
+        .and_then(ext_list_contents)
+        .map(|contents| {
+            let contents =
+                remove_known_slicer_extensions(contents, "A8765BA9-456A-4DAB-B4F3-ACF838C121DE");
+            remove_known_slicer_extensions(contents, "05C60535-1F16-4fd2-B633-F4F36F0B64E0")
+        })
+        .unwrap_or_default();
+    let entries = format!("{raw_entries}{generated_entries}");
+    let slicers = slicer_rids
+        .iter()
+        .map(|rid| {
+            format!(
+                "<x14:slicer r:id=\"{}\" xmlns:r=\"{}\"/>",
+                rid,
+                sheetkit_xml::namespaces::RELATIONSHIPS,
+            )
+        })
+        .collect::<String>();
+    let extension = format!("<extLst>{entries}<ext uri=\"{{A8765BA9-456A-4DAB-B4F3-ACF838C121DE}}\"><x14:slicerList xmlns:x14=\"{}\">{slicers}</x14:slicerList></ext></extLst>", sheetkit_xml::namespaces::SLICER_2009);
+    let closing = "</worksheet>";
+    let position = xml
+        .rfind(closing)
+        .ok_or_else(|| Error::XmlParse("worksheet closing tag missing".to_string()))?;
+    xml.insert_str(position, &extension);
+    Ok(xml)
+}
+
+fn serialize_workbook_with_slicer_extensions(
+    workbook: &WorkbookXml,
+    raw_workbook: Option<&[u8]>,
+    slicer_cache_rids: &[&str],
+) -> Result<String> {
+    let mut body =
+        quick_xml::se::to_string(workbook).map_err(|error| Error::XmlParse(error.to_string()))?;
+    let entries = raw_workbook
+        .and_then(|bytes| std::str::from_utf8(bytes).ok())
+        .and_then(ext_list_contents)
+        .map(|contents| {
+            remove_known_slicer_extensions(contents, "BBE1A952-AA13-448E-AADC-164F8A28A991")
+        })
+        .unwrap_or_default();
+    let caches = slicer_cache_rids
+        .iter()
+        .map(|rid| {
+            format!(
+                "<x14:slicerCache r:id=\"{}\" xmlns:r=\"{}\"/>",
+                rid,
+                sheetkit_xml::namespaces::RELATIONSHIPS,
+            )
+        })
+        .collect::<String>();
+    let closing = "</workbook>";
+    let position = body
+        .rfind(closing)
+        .ok_or_else(|| Error::XmlParse("workbook closing tag missing".to_string()))?;
+    body.insert_str(position, &format!("<extLst>{entries}<ext uri=\"{{BBE1A952-AA13-448E-AADC-164F8A28A991}}\"><x14:slicerCaches xmlns:x14=\"{}\">{caches}</x14:slicerCaches></ext></extLst>", sheetkit_xml::namespaces::SLICER_2009));
+    Ok(format!("{XML_DECLARATION}\n{body}"))
+}
+
+fn ext_list_contents(xml: &str) -> Option<String> {
+    let start = xml.find("<extLst")?;
+    let content_start = xml[start..].find('>')? + start + 1;
+    let end = xml[content_start..].find("</extLst>")? + content_start;
+    Some(xml[content_start..end].to_string())
+}
+
+fn remove_extension_list(mut xml: String) -> String {
+    if let Some(start) = xml.find("<extLst") {
+        if let Some(end) = xml[start..].find("</extLst>") {
+            xml.replace_range(start..start + end + "</extLst>".len(), "");
+        }
+    }
+    xml
+}
+
+fn remove_known_slicer_extensions(mut contents: String, uri: &str) -> String {
+    while let Some(offset) = contents
+        .to_ascii_lowercase()
+        .find(&uri.to_ascii_lowercase())
+    {
+        let start = contents[..offset].rfind("<ext").unwrap_or(offset);
+        let Some(end) = contents[offset..].find("</ext>") else {
+            break;
+        };
+        contents.replace_range(start..offset + end + "</ext>".len(), "");
+    }
+    contents
+}
+
 /// Build the extLst XML block for sparklines using manual string construction.
 pub(crate) fn build_sparkline_ext_xml(sparklines: &[crate::sparkline::SparklineConfig]) -> String {
     use std::fmt::Write;
@@ -2437,6 +2576,128 @@ fn fast_col_number(cell_ref: &str) -> u32 {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn known_slicer_extensions_are_removed_case_insensitively() {
+        let contents = concat!(
+            "<ext uri=\"{bbe1a952-aa13-448e-aadc-164f8a28a991}\">",
+            "<x14:slicerCaches/>",
+            "</ext>",
+            "<ext uri=\"{opaque}\"><opaque:payload/></ext>"
+        );
+
+        let remaining = remove_known_slicer_extensions(
+            contents.to_string(),
+            "BBE1A952-AA13-448E-AADC-164F8A28A991",
+        );
+
+        assert!(!remaining.contains("slicerCaches"));
+        assert!(remaining.contains("{opaque}"));
+    }
+
+    #[test]
+    fn adding_a_slicer_merges_existing_workbook_and_sheet_extensions() {
+        let mut workbook = Workbook::new();
+        workbook
+            .add_table(
+                "Sheet1",
+                &crate::table::TableConfig {
+                    name: "Table1".to_string(),
+                    display_name: "Table1".to_string(),
+                    range: "A1:B3".to_string(),
+                    columns: vec![
+                        crate::table::TableColumn {
+                            name: "Status".to_string(),
+                            totals_row_function: None,
+                            totals_row_label: None,
+                        },
+                        crate::table::TableColumn {
+                            name: "Value".to_string(),
+                            totals_row_function: None,
+                            totals_row_label: None,
+                        },
+                    ],
+                    ..crate::table::TableConfig::default()
+                },
+            )
+            .unwrap();
+        let base = workbook.save_to_buffer().unwrap();
+        let workbook_xml = String::from_utf8(zip_part(&base, "xl/workbook.xml"))
+            .unwrap()
+            .replacen(
+                "</workbook>",
+                concat!(
+                    "<extLst>",
+                    "<ext uri=\"{opaque-workbook}\">",
+                    "<opaque:payload xmlns:opaque=\"urn:sheetkit:workbook\"/>",
+                    "</ext>",
+                    "<ext uri=\"{bbe1a952-aa13-448e-aadc-164f8a28a991}\">",
+                    "<x14:slicerCaches xmlns:x14=\"",
+                    "http://schemas.microsoft.com/office/spreadsheetml/2009/9/main",
+                    "\"/>",
+                    "</ext>",
+                    "</extLst></workbook>"
+                ),
+                1,
+            );
+        let sheet_xml = String::from_utf8(zip_part(&base, "xl/worksheets/sheet1.xml"))
+            .unwrap()
+            .replacen(
+                "</worksheet>",
+                concat!(
+                    "<extLst>",
+                    "<ext uri=\"{opaque-sheet}\">",
+                    "<opaque:payload xmlns:opaque=\"urn:sheetkit:sheet\"/>",
+                    "</ext>",
+                    "<ext uri=\"{a8765ba9-456a-4dab-b4f3-acf838c121de}\">",
+                    "<x14:slicerList xmlns:x14=\"",
+                    "http://schemas.microsoft.com/office/spreadsheetml/2009/9/main",
+                    "\"/>",
+                    "</ext>",
+                    "</extLst></worksheet>"
+                ),
+                1,
+            );
+        let input = rewrite_zip_parts(
+            &base,
+            &[
+                ("xl/workbook.xml", Some(workbook_xml.into_bytes())),
+                ("xl/worksheets/sheet1.xml", Some(sheet_xml.into_bytes())),
+            ],
+        );
+        let options = OpenOptions::new()
+            .read_mode(ReadMode::Eager)
+            .aux_parts(AuxParts::EagerLoad);
+        let mut opened = Workbook::open_from_buffer_with_options(&input, &options).unwrap();
+
+        opened
+            .add_slicer(
+                "Sheet1",
+                &crate::slicer::SlicerConfig {
+                    name: "StatusFilter".to_string(),
+                    cell: "D1".to_string(),
+                    table_name: "Table1".to_string(),
+                    column_name: "Status".to_string(),
+                    caption: None,
+                    style: None,
+                    width: None,
+                    height: None,
+                    show_caption: None,
+                    column_count: None,
+                },
+            )
+            .unwrap();
+        let saved = opened.save_to_buffer().unwrap();
+        let saved_workbook = String::from_utf8(zip_part(&saved, "xl/workbook.xml")).unwrap();
+        let saved_sheet = String::from_utf8(zip_part(&saved, "xl/worksheets/sheet1.xml")).unwrap();
+
+        assert!(saved_workbook.contains("urn:sheetkit:workbook"));
+        assert!(saved_sheet.contains("urn:sheetkit:sheet"));
+        assert_eq!(saved_workbook.matches("<extLst>").count(), 1);
+        assert_eq!(saved_sheet.matches("<extLst>").count(), 1);
+        assert_eq!(saved_workbook.matches("<x14:slicerCaches").count(), 1);
+        assert_eq!(saved_sheet.matches("<x14:slicerList").count(), 1);
+    }
 
     fn zip_part(buffer: &[u8], name: &str) -> Vec<u8> {
         let mut archive = zip::ZipArchive::new(std::io::Cursor::new(buffer)).unwrap();
