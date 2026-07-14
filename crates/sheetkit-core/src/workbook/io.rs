@@ -916,6 +916,23 @@ impl Workbook {
         // Ensure the vml extension default content type is present if any VML exists.
         let mut has_any_vml = false;
 
+        if !self
+            .deferred_parts
+            .has_category(crate::workbook::aux::AuxCategory::Comments)
+        {
+            content_types
+                .overrides
+                .retain(|entry| entry.content_type != mime_types::COMMENTS);
+        }
+        if !self
+            .deferred_parts
+            .has_category(crate::workbook::aux::AuxCategory::Vml)
+        {
+            content_types
+                .overrides
+                .retain(|entry| entry.content_type != mime_types::VML_DRAWING);
+        }
+
         // When deferred_parts is non-empty (Lazy open), skip comment/VML
         // synchronization. The original relationships and content types are already
         // correct, and deferred_parts will supply the raw bytes on save.
@@ -1118,6 +1135,32 @@ impl Workbook {
                 .push(rid);
         }
 
+        let has_deferred_threaded = self
+            .deferred_parts
+            .has_category(crate::workbook::aux::AuxCategory::ThreadedComments)
+            || self
+                .deferred_parts
+                .has_category(crate::workbook::aux::AuxCategory::PersonList);
+        if !has_deferred_threaded {
+            // Threaded-comment targets are sheet-index based, so rebuild the entire
+            // relationship and override set after sheet lifecycle changes.
+            content_types.overrides.retain(|override_entry| {
+                override_entry.content_type
+                    != sheetkit_xml::threaded_comment::THREADED_COMMENTS_CONTENT_TYPE
+                    && override_entry.content_type
+                        != sheetkit_xml::threaded_comment::PERSON_LIST_CONTENT_TYPE
+            });
+            for rels in worksheet_rels.values_mut() {
+                rels.relationships.retain(|relationship| {
+                    relationship.rel_type
+                        != sheetkit_xml::threaded_comment::REL_TYPE_THREADED_COMMENT
+                });
+            }
+            workbook_rels.relationships.retain(|relationship| {
+                relationship.rel_type != sheetkit_xml::threaded_comment::REL_TYPE_PERSON
+            });
+        }
+
         // Register threaded comment content types and relationships before writing.
         let has_any_threaded = self.sheet_threaded_comments.iter().any(|tc| tc.is_some());
         if has_any_threaded {
@@ -1143,18 +1186,14 @@ impl Workbook {
                     let rels = worksheet_rels
                         .entry(i)
                         .or_insert_with(default_relationships);
-                    if !rels.relationships.iter().any(|r| {
-                        r.rel_type == sheetkit_xml::threaded_comment::REL_TYPE_THREADED_COMMENT
-                    }) {
-                        let rid = crate::sheet::next_rid(&rels.relationships);
-                        rels.relationships.push(Relationship {
-                            id: rid,
-                            rel_type: sheetkit_xml::threaded_comment::REL_TYPE_THREADED_COMMENT
-                                .to_string(),
-                            target,
-                            target_mode: None,
-                        });
-                    }
+                    let rid = crate::sheet::next_rid(&rels.relationships);
+                    rels.relationships.push(Relationship {
+                        id: rid,
+                        rel_type: sheetkit_xml::threaded_comment::REL_TYPE_THREADED_COMMENT
+                            .to_string(),
+                        target,
+                        target_mode: None,
+                    });
                 }
             }
 
@@ -1171,19 +1210,101 @@ impl Workbook {
             }
 
             // Add person relationship to workbook_rels so Excel can discover the person list.
-            if !workbook_rels
-                .relationships
+            let rid = crate::sheet::next_rid(&workbook_rels.relationships);
+            workbook_rels.relationships.push(Relationship {
+                id: rid,
+                rel_type: sheetkit_xml::threaded_comment::REL_TYPE_PERSON.to_string(),
+                target: "persons/person.xml".to_string(),
+                target_mode: None,
+            });
+        }
+
+        let raw_preserved_paths: HashSet<String> = self
+            .unknown_parts
+            .iter()
+            .map(|(path, _)| path.clone())
+            .chain(
+                self.deferred_parts
+                    .remaining_parts()
+                    .map(|(path, _)| path.to_string()),
+            )
+            .collect();
+        let mut generated_lifecycle_paths: HashSet<String> = HashSet::from([
+            "[Content_Types].xml".to_string(),
+            "_rels/.rels".to_string(),
+            "xl/workbook.xml".to_string(),
+            "xl/_rels/workbook.xml.rels".to_string(),
+            "xl/styles.xml".to_string(),
+            "xl/sharedStrings.xml".to_string(),
+        ]);
+        generated_lifecycle_paths
+            .extend((0..self.worksheets.len()).map(|i| self.sheet_part_path(i)));
+        generated_lifecycle_paths.extend(
+            self.sheet_comments
                 .iter()
-                .any(|r| r.rel_type == sheetkit_xml::threaded_comment::REL_TYPE_PERSON)
-            {
-                let rid = crate::sheet::next_rid(&workbook_rels.relationships);
-                workbook_rels.relationships.push(Relationship {
-                    id: rid,
-                    rel_type: sheetkit_xml::threaded_comment::REL_TYPE_PERSON.to_string(),
-                    target: "persons/person.xml".to_string(),
-                    target_mode: None,
-                });
-            }
+                .enumerate()
+                .filter(|(_, comments)| comments.is_some())
+                .map(|(i, _)| format!("xl/comments{}.xml", i + 1)),
+        );
+        generated_lifecycle_paths
+            .extend(vml_parts_to_write.iter().map(|(_, path, _)| path.clone()));
+        generated_lifecycle_paths.extend(self.drawings.iter().map(|(path, _)| path.clone()));
+        generated_lifecycle_paths.extend(self.charts.iter().map(|(path, _)| path.clone()));
+        generated_lifecycle_paths.extend(self.raw_charts.iter().map(|(path, _)| path.clone()));
+        generated_lifecycle_paths.extend(self.images.iter().map(|(path, _)| path.clone()));
+        generated_lifecycle_paths.extend(self.tables.iter().map(|(path, _, _)| path.clone()));
+        generated_lifecycle_paths.extend(self.pivot_tables.iter().map(|(path, _)| path.clone()));
+        generated_lifecycle_paths
+            .extend(self.pivot_cache_defs.iter().map(|(path, _)| path.clone()));
+        generated_lifecycle_paths.extend(
+            self.pivot_cache_records
+                .iter()
+                .map(|(path, _)| path.clone()),
+        );
+        generated_lifecycle_paths.extend(self.slicer_defs.iter().map(|(path, _)| path.clone()));
+        generated_lifecycle_paths.extend(self.slicer_caches.iter().map(|(path, _)| path.clone()));
+        generated_lifecycle_paths.extend(
+            worksheet_rels
+                .keys()
+                .map(|sheet_idx| relationship_part_path(&self.sheet_part_path(*sheet_idx))),
+        );
+        generated_lifecycle_paths.extend(self.drawing_rels.keys().filter_map(|drawing_idx| {
+            self.drawings
+                .get(*drawing_idx)
+                .map(|(path, _)| relationship_part_path(path))
+        }));
+        if self.theme_xml.is_some() {
+            generated_lifecycle_paths.insert("xl/theme/theme1.xml".to_string());
+        }
+        if self.vba_blob.is_some() {
+            generated_lifecycle_paths.insert("xl/vbaProject.bin".to_string());
+        }
+        if self.core_properties.is_some() {
+            generated_lifecycle_paths.insert("docProps/core.xml".to_string());
+        }
+        if self.app_properties.is_some() {
+            generated_lifecycle_paths.insert("docProps/app.xml".to_string());
+        }
+        if self.custom_properties.is_some() {
+            generated_lifecycle_paths.insert("docProps/custom.xml".to_string());
+        }
+        if has_any_threaded {
+            generated_lifecycle_paths.extend(
+                self.sheet_threaded_comments
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, threaded)| threaded.is_some())
+                    .map(|(i, _)| format!("xl/threadedComments/threadedComment{}.xml", i + 1)),
+            );
+            generated_lifecycle_paths.insert("xl/persons/person.xml".to_string());
+        }
+        if let Some(conflict) = generated_lifecycle_paths
+            .intersection(&raw_preserved_paths)
+            .next()
+        {
+            return Err(Error::InvalidArgument(format!(
+                "cannot save because owned part path '{conflict}' conflicts with preserved raw data"
+            )));
         }
 
         // [Content_Types].xml

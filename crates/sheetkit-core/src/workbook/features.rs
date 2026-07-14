@@ -394,19 +394,7 @@ impl Workbook {
         // Assign a unique table ID (max existing + 1).
         let table_id = self.tables.iter().map(|(_, t, _)| t.id).max().unwrap_or(0) + 1;
 
-        let max_existing = self
-            .tables
-            .iter()
-            .filter_map(|(path, _, _)| {
-                path.trim_start_matches("xl/tables/table")
-                    .trim_end_matches(".xml")
-                    .parse::<u32>()
-                    .ok()
-            })
-            .max()
-            .unwrap_or(0);
-        let table_num = max_existing + 1;
-        let table_path = format!("xl/tables/table{}.xml", table_num);
+        let table_path = self.next_available_part_path("xl/tables/table", ".xml");
         let table_xml = crate::table::build_table_xml(config, table_id);
 
         self.tables.push((table_path, table_xml, sheet_idx));
@@ -1919,6 +1907,36 @@ mod tests {
         assert!(tables[0].auto_filter);
         assert!(tables[0].show_header_row);
         assert_eq!(tables[0].style_name, Some("TableStyleMedium2".to_string()));
+    }
+
+    #[test]
+    fn test_add_table_skips_unknown_and_content_type_reserved_paths() {
+        use crate::table::{TableColumn, TableConfig};
+
+        let mut wb = Workbook::new();
+        wb.unknown_parts
+            .push(("xl/tables/table1.xml".to_string(), b"opaque".to_vec()));
+        wb.content_types.overrides.push(ContentTypeOverride {
+            part_name: "/xl/tables/table2.xml".to_string(),
+            content_type: mime_types::TABLE.to_string(),
+        });
+        wb.add_table(
+            "Sheet1",
+            &TableConfig {
+                name: "ReservedSafe".to_string(),
+                display_name: "ReservedSafe".to_string(),
+                range: "A1:A2".to_string(),
+                columns: vec![TableColumn {
+                    name: "Value".to_string(),
+                    totals_row_function: None,
+                    totals_row_label: None,
+                }],
+                ..TableConfig::default()
+            },
+        )
+        .unwrap();
+
+        assert_eq!(wb.tables[0].0, "xl/tables/table3.xml");
     }
 
     #[test]

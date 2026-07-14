@@ -47,6 +47,138 @@ fn shift_duplicated_row_formula(formula: &str) -> Result<String> {
     )
 }
 
+fn next_numbered_part_path(
+    prefix: &str,
+    suffix: &str,
+    existing: &std::collections::HashSet<String>,
+) -> String {
+    let mut number = 1usize;
+    loop {
+        let candidate = format!("{prefix}{number}{suffix}");
+        if !existing.contains(&candidate) {
+            return candidate;
+        }
+        number += 1;
+    }
+}
+
+fn validate_drawing_relationship_ids(drawing: &WsDr, relationships: &Relationships) -> Result<()> {
+    let mut required = Vec::new();
+    for anchor in &drawing.two_cell_anchors {
+        if let Some(frame) = &anchor.graphic_frame {
+            required.push((
+                frame.graphic.graphic_data.chart.r_id.as_str(),
+                rel_types::CHART,
+            ));
+        }
+        if let Some(picture) = &anchor.pic {
+            required.push((picture.blip_fill.blip.r_embed.as_str(), rel_types::IMAGE));
+        }
+    }
+    for anchor in &drawing.one_cell_anchors {
+        if let Some(picture) = &anchor.pic {
+            required.push((picture.blip_fill.blip.r_embed.as_str(), rel_types::IMAGE));
+        }
+    }
+    for (r_id, rel_type) in required {
+        if !relationships
+            .relationships
+            .iter()
+            .any(|relationship| relationship.id == r_id && relationship.rel_type == rel_type)
+        {
+            return Err(Error::InvalidArgument(format!(
+                "drawing relationship '{r_id}' is missing or has the wrong type"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_worksheet_relationship_ids(
+    worksheet: &WorksheetXml,
+    relationships: &Relationships,
+) -> Result<()> {
+    let relationship_matches = |r_id: &str, rel_type: &str| {
+        relationships
+            .relationships
+            .iter()
+            .any(|relationship| relationship.id == r_id && relationship.rel_type == rel_type)
+    };
+    if let Some(drawing) = &worksheet.drawing {
+        if !relationship_matches(&drawing.r_id, rel_types::DRAWING) {
+            return Err(Error::InvalidArgument(format!(
+                "worksheet drawing relationship '{}' is missing or has the wrong type",
+                drawing.r_id
+            )));
+        }
+    }
+    if let Some(legacy_drawing) = &worksheet.legacy_drawing {
+        if !relationship_matches(&legacy_drawing.r_id, rel_types::VML_DRAWING) {
+            return Err(Error::InvalidArgument(format!(
+                "worksheet legacy drawing relationship '{}' is missing or has the wrong type",
+                legacy_drawing.r_id
+            )));
+        }
+    }
+    if let Some(page_setup) = &worksheet.page_setup {
+        if let Some(r_id) = &page_setup.r_id {
+            if !relationship_matches(r_id, rel_types::PRINTER_SETTINGS) {
+                return Err(Error::InvalidArgument(format!(
+                    "worksheet page setup relationship '{r_id}' is missing or has the wrong type"
+                )));
+            }
+        }
+    }
+    if let Some(hyperlinks) = &worksheet.hyperlinks {
+        for hyperlink in &hyperlinks.hyperlinks {
+            if let Some(r_id) = &hyperlink.r_id {
+                if !relationship_matches(r_id, rel_types::HYPERLINK) {
+                    return Err(Error::InvalidArgument(format!(
+                        "worksheet hyperlink relationship '{r_id}' is missing or has the wrong type"
+                    )));
+                }
+            }
+        }
+    }
+    if let Some(table_parts) = &worksheet.table_parts {
+        for table_part in &table_parts.table_parts {
+            if !relationship_matches(&table_part.r_id, rel_types::TABLE) {
+                return Err(Error::InvalidArgument(format!(
+                    "worksheet table relationship '{}' is missing or has the wrong type",
+                    table_part.r_id
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn clone_threaded_comments_with_new_ids(
+    source: &sheetkit_xml::threaded_comment::ThreadedComments,
+    occupied_ids: &mut std::collections::HashSet<String>,
+) -> sheetkit_xml::threaded_comment::ThreadedComments {
+    let mut cloned = source.clone();
+    let mut remapped = std::collections::HashMap::new();
+    for comment in &mut cloned.comments {
+        let new_id = loop {
+            let candidate = format!("{{{}}}", uuid::Uuid::new_v4().to_string().to_uppercase());
+            if occupied_ids.insert(candidate.clone()) {
+                break candidate;
+            }
+        };
+        remapped.insert(comment.id.clone(), new_id.clone());
+        comment.id = new_id;
+    }
+    for comment in &mut cloned.comments {
+        if let Some(parent_id) = &mut comment.parent_id {
+            if let Some(new_parent_id) = remapped.get(parent_id) {
+                *parent_id = new_parent_id.clone();
+            }
+        }
+    }
+    cloned
+}
+
 fn visit_series_references<F>(
     series: &mut sheetkit_xml::chart::Series,
     visitor: &mut F,
@@ -176,24 +308,7 @@ where
 }
 
 impl Workbook {
-    /// Return the names of all sheets in workbook order.
-    pub fn sheet_names(&self) -> Vec<&str> {
-        self.worksheets
-            .iter()
-            .map(|(name, _)| name.as_str())
-            .collect()
-    }
-
-    /// Create a new empty sheet with the given name. Returns the 0-based sheet index.
-    pub fn new_sheet(&mut self, name: &str) -> Result<usize> {
-        let idx = crate::sheet::add_sheet(
-            &mut self.workbook_xml,
-            &mut self.workbook_rels,
-            &mut self.content_types,
-            &mut self.worksheets,
-            name,
-            WorksheetXml::default(),
-        )?;
+    fn append_empty_sheet_state(&mut self) {
         if self.sheet_comments.len() < self.worksheets.len() {
             self.sheet_comments.push(None);
         }
@@ -215,6 +330,29 @@ impl Workbook {
         if self.sheet_form_controls.len() < self.worksheets.len() {
             self.sheet_form_controls.push(vec![]);
         }
+    }
+
+    /// Return the names of all sheets in workbook order.
+    pub fn sheet_names(&self) -> Vec<&str> {
+        self.worksheets
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .collect()
+    }
+
+    /// Create a new empty sheet with the given name. Returns the 0-based sheet index.
+    pub fn new_sheet(&mut self, name: &str) -> Result<usize> {
+        let occupied_paths = self.occupied_part_paths();
+        let idx = crate::sheet::add_sheet_with_occupied_paths(
+            &mut self.workbook_xml,
+            &mut self.workbook_rels,
+            &mut self.content_types,
+            &mut self.worksheets,
+            name,
+            WorksheetXml::default(),
+            occupied_paths,
+        )?;
+        self.append_empty_sheet_state();
         self.rebuild_sheet_index();
         Ok(idx)
     }
@@ -223,6 +361,38 @@ impl Workbook {
     pub fn delete_sheet(&mut self, name: &str) -> Result<()> {
         let idx = self.sheet_index(name)?;
         self.assert_parallel_vecs_in_sync();
+        if self.worksheets.len() <= 1 {
+            return Err(Error::InvalidSheetName(
+                "cannot delete the last sheet in a workbook".into(),
+            ));
+        }
+        if self.worksheet_rels.get(&idx).is_some_and(|rels| {
+            rels.relationships.iter().any(|relationship| {
+                relationship.rel_type == rel_types::PIVOT_TABLE
+                    || relationship.rel_type == rel_types::SLICER
+                    || relationship.rel_type == rel_types::SLICER_CACHE
+            })
+        }) {
+            return Err(Error::InvalidArgument(
+                "cannot delete a sheet with pivot or slicer relationships safely".into(),
+            ));
+        }
+        self.hydrate_lifecycle_parts_for_delete()?;
+        let deleted_drawing_idx = self.worksheet_drawings.get(&idx).copied();
+        let deleted_sheet_path = self.sheet_part_path(idx);
+        let deleted_direct_targets: Vec<String> = self
+            .worksheet_rels
+            .get(&idx)
+            .into_iter()
+            .flat_map(|rels| &rels.relationships)
+            .filter(|relationship| relationship.target_mode.as_deref() != Some("External"))
+            .map(|relationship| {
+                crate::workbook_paths::resolve_relationship_target(
+                    &deleted_sheet_path,
+                    &relationship.target,
+                )
+            })
+            .collect();
 
         crate::sheet::delete_sheet(
             &mut self.workbook_xml,
@@ -231,6 +401,30 @@ impl Workbook {
             &mut self.worksheets,
             name,
         )?;
+
+        if let Some(defined_names) = &mut self.workbook_xml.defined_names {
+            defined_names
+                .defined_names
+                .retain(|defined_name| defined_name.local_sheet_id != Some(idx as u32));
+            for defined_name in &mut defined_names.defined_names {
+                if let Some(local_sheet_id) = &mut defined_name.local_sheet_id {
+                    if *local_sheet_id > idx as u32 {
+                        *local_sheet_id -= 1;
+                    }
+                }
+            }
+        }
+        if let Some(book_views) = &mut self.workbook_xml.book_views {
+            let last_sheet_idx = self.worksheets.len().saturating_sub(1) as u32;
+            for view in &mut book_views.workbook_views {
+                if let Some(active_tab) = &mut view.active_tab {
+                    if *active_tab > idx as u32 {
+                        *active_tab -= 1;
+                    }
+                    *active_tab = (*active_tab).min(last_sheet_idx);
+                }
+            }
+        }
 
         // Remove all per-sheet parallel data at once. After delete_sheet
         // above, worksheets has already been shortened by 1 so these
@@ -260,8 +454,233 @@ impl Workbook {
             .collect();
 
         self.reindex_sheet_maps_after_delete(idx);
+        if let Some(drawing_idx) = deleted_drawing_idx {
+            self.remove_unreferenced_drawing(drawing_idx);
+        }
+        self.remove_unreferenced_unknown_targets(&deleted_direct_targets);
         self.rebuild_sheet_index();
         Ok(())
+    }
+
+    fn remove_unreferenced_unknown_targets(&mut self, deleted_targets: &[String]) {
+        for target in deleted_targets {
+            let still_referenced =
+                self.worksheet_rels.iter().any(|(sheet_idx, rels)| {
+                    let sheet_path = self.sheet_part_path(*sheet_idx);
+                    rels.relationships.iter().any(|relationship| {
+                        relationship.target_mode.as_deref() != Some("External")
+                            && crate::workbook_paths::resolve_relationship_target(
+                                &sheet_path,
+                                &relationship.target,
+                            ) == *target
+                    })
+                }) || self.workbook_rels.relationships.iter().any(|relationship| {
+                    relationship.target_mode.as_deref() != Some("External")
+                        && crate::workbook_paths::resolve_relationship_target(
+                            "xl/workbook.xml",
+                            &relationship.target,
+                        ) == *target
+                }) || self.package_rels.relationships.iter().any(|relationship| {
+                    relationship.target_mode.as_deref() != Some("External")
+                        && crate::workbook_paths::resolve_relationship_target(
+                            "",
+                            &relationship.target,
+                        ) == *target
+                }) || self.drawing_rels.iter().any(|(drawing_idx, rels)| {
+                    let drawing_path = &self.drawings[*drawing_idx].0;
+                    rels.relationships.iter().any(|relationship| {
+                        relationship.target_mode.as_deref() != Some("External")
+                            && crate::workbook_paths::resolve_relationship_target(
+                                drawing_path,
+                                &relationship.target,
+                            ) == *target
+                    })
+                });
+            if still_referenced {
+                continue;
+            }
+            self.unknown_parts.retain(|(path, _)| path != target);
+            self.content_types
+                .overrides
+                .retain(|entry| entry.part_name != format!("/{target}"));
+        }
+    }
+
+    fn hydrate_lifecycle_parts_for_delete(&mut self) -> Result<()> {
+        use crate::workbook::aux::AuxCategory;
+
+        let parse_entries = |category, validate: &dyn Fn(&str) -> bool| -> Result<()> {
+            if let Some(entries) = self.deferred_parts.entries(category) {
+                for (path, bytes) in entries {
+                    let xml = std::str::from_utf8(bytes)
+                        .map_err(|error| Error::XmlParse(format!("{path}: {error}")))?;
+                    if !validate(xml) {
+                        return Err(Error::XmlDeserialize(format!(
+                            "cannot hydrate lifecycle part '{path}'"
+                        )));
+                    }
+                }
+            }
+            Ok(())
+        };
+        parse_entries(AuxCategory::Comments, &|xml| {
+            quick_xml::de::from_str::<Comments>(xml).is_ok()
+        })?;
+        parse_entries(AuxCategory::Tables, &|xml| {
+            quick_xml::de::from_str::<sheetkit_xml::table::TableXml>(xml).is_ok()
+        })?;
+        parse_entries(AuxCategory::ThreadedComments, &|xml| {
+            quick_xml::de::from_str::<sheetkit_xml::threaded_comment::ThreadedComments>(xml).is_ok()
+        })?;
+        parse_entries(AuxCategory::PersonList, &|xml| {
+            quick_xml::de::from_str::<sheetkit_xml::threaded_comment::PersonList>(xml).is_ok()
+        })?;
+        parse_entries(AuxCategory::Drawings, &|xml| {
+            quick_xml::de::from_str::<WsDr>(xml).is_ok()
+        })?;
+        parse_entries(AuxCategory::DrawingRels, &|xml| {
+            quick_xml::de::from_str::<Relationships>(xml).is_ok()
+        })?;
+
+        let comment_entries = self.deferred_parts.take(AuxCategory::Comments);
+        for (path, bytes) in comment_entries {
+            let xml = std::str::from_utf8(&bytes)
+                .map_err(|error| Error::XmlParse(format!("{path}: {error}")))?;
+            let comments: Comments = quick_xml::de::from_str(xml)
+                .map_err(|error| Error::XmlDeserialize(format!("{path}: {error}")))?;
+            if let Some(sheet_idx) = self.find_sheet_for_owned_rel_path(rel_types::COMMENTS, &path)
+            {
+                self.sheet_comments[sheet_idx] = Some(comments);
+            }
+        }
+        let vml_entries = self.deferred_parts.take(AuxCategory::Vml);
+        for (path, bytes) in vml_entries {
+            if let Some(sheet_idx) =
+                self.find_sheet_for_owned_rel_path(rel_types::VML_DRAWING, &path)
+            {
+                self.sheet_vml[sheet_idx] = Some(bytes);
+            }
+        }
+        if !self.deferred_parts.is_empty() {
+            self.deferred_parts.mark_dirty(AuxCategory::Comments);
+            self.deferred_parts.mark_dirty(AuxCategory::Vml);
+        }
+        self.hydrate_tables();
+        self.hydrate_threaded_comments();
+        self.hydrate_drawings();
+        Ok(())
+    }
+
+    fn find_sheet_for_owned_rel_path(&self, rel_type: &str, part_path: &str) -> Option<usize> {
+        self.worksheet_rels.iter().find_map(|(sheet_idx, rels)| {
+            rels.relationships
+                .iter()
+                .any(|relationship| {
+                    relationship.rel_type == rel_type
+                        && crate::workbook_paths::resolve_relationship_target(
+                            &self.sheet_part_path(*sheet_idx),
+                            &relationship.target,
+                        ) == part_path
+                })
+                .then_some(*sheet_idx)
+        })
+    }
+
+    fn remove_unreferenced_drawing(&mut self, drawing_idx: usize) {
+        if self
+            .worksheet_drawings
+            .values()
+            .any(|existing_idx| *existing_idx == drawing_idx)
+        {
+            return;
+        }
+        let Some((drawing_path, _)) = self.drawings.get(drawing_idx) else {
+            return;
+        };
+        let drawing_path = drawing_path.clone();
+        let removed_chart_paths: Vec<String> = self
+            .drawing_rels
+            .get(&drawing_idx)
+            .into_iter()
+            .flat_map(|rels| &rels.relationships)
+            .filter(|relationship| relationship.rel_type == rel_types::CHART)
+            .map(|relationship| {
+                crate::workbook_paths::resolve_relationship_target(
+                    &drawing_path,
+                    &relationship.target,
+                )
+            })
+            .collect();
+        let removed_image_paths: Vec<String> = self
+            .drawing_rels
+            .get(&drawing_idx)
+            .into_iter()
+            .flat_map(|rels| &rels.relationships)
+            .filter(|relationship| relationship.rel_type == rel_types::IMAGE)
+            .map(|relationship| {
+                crate::workbook_paths::resolve_relationship_target(
+                    &drawing_path,
+                    &relationship.target,
+                )
+            })
+            .collect();
+
+        self.drawings.remove(drawing_idx);
+        self.drawing_rels.remove(&drawing_idx);
+        self.drawing_rels = self
+            .drawing_rels
+            .drain()
+            .map(|(idx, rels)| {
+                if idx > drawing_idx {
+                    (idx - 1, rels)
+                } else {
+                    (idx, rels)
+                }
+            })
+            .collect();
+        for existing_idx in self.worksheet_drawings.values_mut() {
+            if *existing_idx > drawing_idx {
+                *existing_idx -= 1;
+            }
+        }
+        self.content_types
+            .overrides
+            .retain(|entry| entry.part_name != format!("/{drawing_path}"));
+
+        for chart_path in removed_chart_paths {
+            let still_referenced = self.drawing_rels.iter().any(|(idx, rels)| {
+                let owner_path = &self.drawings[*idx].0;
+                rels.relationships.iter().any(|relationship| {
+                    relationship.rel_type == rel_types::CHART
+                        && crate::workbook_paths::resolve_relationship_target(
+                            owner_path,
+                            &relationship.target,
+                        ) == chart_path
+                })
+            });
+            if !still_referenced {
+                self.charts.retain(|(path, _)| path != &chart_path);
+                self.raw_charts.retain(|(path, _)| path != &chart_path);
+                self.content_types
+                    .overrides
+                    .retain(|entry| entry.part_name != format!("/{chart_path}"));
+            }
+        }
+        for image_path in removed_image_paths {
+            let still_referenced = self.drawing_rels.iter().any(|(idx, rels)| {
+                let owner_path = &self.drawings[*idx].0;
+                rels.relationships.iter().any(|relationship| {
+                    relationship.rel_type == rel_types::IMAGE
+                        && crate::workbook_paths::resolve_relationship_target(
+                            owner_path,
+                            &relationship.target,
+                        ) == image_path
+                })
+            });
+            if !still_referenced {
+                self.images.retain(|(path, _)| path != &image_path);
+            }
+        }
     }
 
     /// Debug assertion that all per-sheet parallel vectors have the same
@@ -300,49 +719,457 @@ impl Workbook {
 
     /// Copy a sheet, returning the 0-based index of the new copy.
     pub fn copy_sheet(&mut self, source: &str, target: &str) -> Result<usize> {
-        // Resolve the source index before copy_sheet changes the array.
         let src_idx = self.sheet_index(source)?;
-        // Hydrate the source sheet so copy_sheet clones the real data,
-        // not an empty default.
-        self.ensure_hydrated(src_idx)?;
-        let idx = crate::sheet::copy_sheet(
+        crate::sheet::validate_sheet_name(target)?;
+        if self.worksheets.iter().any(|(name, _)| name == target) {
+            return Err(Error::SheetAlreadyExists {
+                name: target.to_string(),
+            });
+        }
+
+        let cloned_streamed = self
+            .streamed_sheets
+            .get(&src_idx)
+            .map(crate::stream::StreamedSheetData::try_clone)
+            .transpose()?;
+        let cloned_worksheet = if let Some(worksheet) = self.worksheets[src_idx].1.get() {
+            worksheet.clone()
+        } else if let Some(raw) = self.raw_sheet_xml[src_idx].as_ref() {
+            let xml =
+                std::str::from_utf8(raw).map_err(|error| Error::XmlParse(error.to_string()))?;
+            quick_xml::de::from_str(xml)
+                .map_err(|error| Error::XmlDeserialize(error.to_string()))?
+        } else {
+            WorksheetXml::default()
+        };
+
+        use crate::workbook::aux::AuxCategory;
+        let source_rels = self
+            .worksheet_rels
+            .get(&src_idx)
+            .cloned()
+            .unwrap_or_else(crate::workbook_paths::default_relationships);
+        validate_worksheet_relationship_ids(&cloned_worksheet, &source_rels)?;
+        let has_rel_type = |rel_type: &str| {
+            source_rels
+                .relationships
+                .iter()
+                .any(|relationship| relationship.rel_type == rel_type)
+        };
+        let source_has_drawing = has_rel_type(rel_types::DRAWING);
+        let source_has_comments = has_rel_type(rel_types::COMMENTS);
+        let source_has_vml = has_rel_type(rel_types::VML_DRAWING);
+        let source_has_tables = has_rel_type(rel_types::TABLE);
+        let source_has_threaded =
+            has_rel_type(sheetkit_xml::threaded_comment::REL_TYPE_THREADED_COMMENT);
+        let occupied_aux_paths = self.occupied_part_paths();
+        let deferred_source_data = (source_has_drawing
+            && [
+                AuxCategory::Drawings,
+                AuxCategory::DrawingRels,
+                AuxCategory::Charts,
+                AuxCategory::Images,
+            ]
+            .into_iter()
+            .any(|category| self.deferred_parts.has_category(category)))
+            || (source_has_comments && self.deferred_parts.has_category(AuxCategory::Comments))
+            || (source_has_vml && self.deferred_parts.has_category(AuxCategory::Vml))
+            || (source_has_tables && self.deferred_parts.has_category(AuxCategory::Tables))
+            || (source_has_threaded
+                && self
+                    .deferred_parts
+                    .has_category(AuxCategory::ThreadedComments));
+        if deferred_source_data {
+            return Err(Error::InvalidArgument(
+                "cannot copy a sheet with deferred relationship parts; hydrate them first".into(),
+            ));
+        }
+
+        for relationship in &source_rels.relationships {
+            let supported = relationship.rel_type == rel_types::HYPERLINK
+                || relationship.rel_type == rel_types::DRAWING
+                || relationship.rel_type == rel_types::COMMENTS
+                || relationship.rel_type == rel_types::VML_DRAWING
+                || relationship.rel_type == rel_types::TABLE
+                || relationship.rel_type
+                    == sheetkit_xml::threaded_comment::REL_TYPE_THREADED_COMMENT;
+            if !supported {
+                return Err(Error::InvalidArgument(format!(
+                    "cannot copy unsupported worksheet relationship type '{}'",
+                    relationship.rel_type
+                )));
+            }
+            if relationship.rel_type == rel_types::HYPERLINK
+                && relationship.target_mode.as_deref() != Some("External")
+            {
+                return Err(Error::InvalidArgument(
+                    "worksheet hyperlink relationships must be external".into(),
+                ));
+            }
+        }
+
+        let source_sheet_path = self.sheet_part_path(src_idx);
+        let managed_rel_count = |rel_type: &str| {
+            source_rels
+                .relationships
+                .iter()
+                .filter(|relationship| relationship.rel_type == rel_type)
+                .count()
+        };
+        let content_type_matches = |path: &str, content_type: &str| {
+            self.content_types.overrides.iter().any(|entry| {
+                entry.part_name.trim_start_matches('/') == path
+                    && entry.content_type == content_type
+            })
+        };
+        if source_has_comments {
+            let relationship = source_rels
+                .relationships
+                .iter()
+                .find(|relationship| relationship.rel_type == rel_types::COMMENTS)
+                .unwrap();
+            let path = crate::workbook_paths::resolve_relationship_target(
+                &source_sheet_path,
+                &relationship.target,
+            );
+            if managed_rel_count(rel_types::COMMENTS) != 1
+                || self.sheet_comments[src_idx].is_none()
+                || !content_type_matches(&path, mime_types::COMMENTS)
+            {
+                return Err(Error::InvalidArgument(
+                    "worksheet comments relationship is unresolved".into(),
+                ));
+            }
+        }
+        if source_has_vml {
+            let relationship = source_rels
+                .relationships
+                .iter()
+                .find(|relationship| relationship.rel_type == rel_types::VML_DRAWING)
+                .unwrap();
+            let path = crate::workbook_paths::resolve_relationship_target(
+                &source_sheet_path,
+                &relationship.target,
+            );
+            let has_managed_vml = self.sheet_vml[src_idx].is_some()
+                || !self.sheet_form_controls[src_idx].is_empty()
+                || self.sheet_comments[src_idx].is_some();
+            if managed_rel_count(rel_types::VML_DRAWING) != 1
+                || !has_managed_vml
+                || !occupied_aux_paths.contains(&path)
+            {
+                return Err(Error::InvalidArgument(
+                    "worksheet VML relationship is unresolved".into(),
+                ));
+            }
+        }
+        if source_has_tables {
+            let table_relationships: Vec<&Relationship> = source_rels
+                .relationships
+                .iter()
+                .filter(|relationship| relationship.rel_type == rel_types::TABLE)
+                .collect();
+            let source_tables: Vec<&str> = self
+                .tables
+                .iter()
+                .filter(|(_, _, sheet_idx)| *sheet_idx == src_idx)
+                .map(|(path, _, _)| path.as_str())
+                .collect();
+            let all_resolved = table_relationships.iter().all(|relationship| {
+                let path = crate::workbook_paths::resolve_relationship_target(
+                    &source_sheet_path,
+                    &relationship.target,
+                );
+                source_tables.contains(&path.as_str())
+                    && content_type_matches(&path, mime_types::TABLE)
+            });
+            if !all_resolved || table_relationships.len() != source_tables.len() {
+                return Err(Error::InvalidArgument(
+                    "worksheet table relationship is unresolved".into(),
+                ));
+            }
+        }
+        if source_has_threaded {
+            let relationship = source_rels
+                .relationships
+                .iter()
+                .find(|relationship| {
+                    relationship.rel_type
+                        == sheetkit_xml::threaded_comment::REL_TYPE_THREADED_COMMENT
+                })
+                .unwrap();
+            let path = crate::workbook_paths::resolve_relationship_target(
+                &source_sheet_path,
+                &relationship.target,
+            );
+            if managed_rel_count(sheetkit_xml::threaded_comment::REL_TYPE_THREADED_COMMENT) != 1
+                || self.sheet_threaded_comments[src_idx].is_none()
+                || !content_type_matches(
+                    &path,
+                    sheetkit_xml::threaded_comment::THREADED_COMMENTS_CONTENT_TYPE,
+                )
+            {
+                return Err(Error::InvalidArgument(
+                    "worksheet threaded-comment relationship is unresolved".into(),
+                ));
+            }
+        }
+        if source_has_drawing {
+            let drawing_relationships: Vec<&Relationship> = source_rels
+                .relationships
+                .iter()
+                .filter(|relationship| relationship.rel_type == rel_types::DRAWING)
+                .collect();
+            let mapped_drawing_path = self
+                .worksheet_drawings
+                .get(&src_idx)
+                .and_then(|drawing_idx| self.drawings.get(*drawing_idx))
+                .map(|(path, _)| path.as_str());
+            let resolved_path = drawing_relationships.first().map(|relationship| {
+                crate::workbook_paths::resolve_relationship_target(
+                    &source_sheet_path,
+                    &relationship.target,
+                )
+            });
+            if drawing_relationships.len() != 1
+                || resolved_path.as_deref() != mapped_drawing_path
+                || !resolved_path
+                    .as_deref()
+                    .is_some_and(|path| content_type_matches(path, mime_types::DRAWING))
+            {
+                return Err(Error::InvalidArgument(
+                    "worksheet drawing relationship is unresolved".into(),
+                ));
+            }
+        }
+
+        let mut cloned_drawing = None;
+        if source_has_drawing {
+            let drawing_idx = *self.worksheet_drawings.get(&src_idx).ok_or_else(|| {
+                Error::InvalidArgument("worksheet drawing relationship is unresolved".into())
+            })?;
+            let (source_drawing_path, source_drawing) =
+                self.drawings.get(drawing_idx).ok_or_else(|| {
+                    Error::InvalidArgument("worksheet drawing part is missing".into())
+                })?;
+            let new_drawing_path =
+                next_numbered_part_path("xl/drawings/drawing", ".xml", &occupied_aux_paths);
+            let mut new_drawing_rels =
+                self.drawing_rels
+                    .get(&drawing_idx)
+                    .cloned()
+                    .ok_or_else(|| {
+                        Error::InvalidArgument("worksheet drawing relationships are missing".into())
+                    })?;
+            validate_drawing_relationship_ids(source_drawing, &new_drawing_rels)?;
+            let mut cloned_charts = Vec::new();
+            let mut cloned_images = Vec::new();
+            let mut reserved_chart_paths = occupied_aux_paths.clone();
+            let mut reserved_image_paths = occupied_aux_paths.clone();
+            for relationship in &mut new_drawing_rels.relationships {
+                if relationship.rel_type == rel_types::IMAGE {
+                    let source_image_path = crate::workbook_paths::resolve_relationship_target(
+                        source_drawing_path,
+                        &relationship.target,
+                    );
+                    let (_, image_bytes) = self
+                        .images
+                        .iter()
+                        .find(|(path, _)| *path == source_image_path)
+                        .ok_or_else(|| {
+                            Error::InvalidArgument(format!(
+                                "drawing image target '{source_image_path}' is missing"
+                            ))
+                        })?;
+                    let extension = source_image_path
+                        .rsplit_once('.')
+                        .map(|(_, extension)| extension)
+                        .ok_or_else(|| {
+                            Error::InvalidArgument(format!(
+                                "drawing image target '{source_image_path}' has no extension"
+                            ))
+                        })?;
+                    let new_image_path = next_numbered_part_path(
+                        "xl/media/image",
+                        &format!(".{extension}"),
+                        &reserved_image_paths,
+                    );
+                    reserved_image_paths.insert(new_image_path.clone());
+                    cloned_images.push((new_image_path.clone(), image_bytes.clone()));
+                    relationship.target = crate::workbook_paths::relative_relationship_target(
+                        &new_drawing_path,
+                        &new_image_path,
+                    );
+                    continue;
+                }
+                if relationship.rel_type != rel_types::CHART {
+                    return Err(Error::InvalidArgument(format!(
+                        "cannot copy unsupported drawing relationship type '{}'",
+                        relationship.rel_type
+                    )));
+                }
+                let source_chart_path = crate::workbook_paths::resolve_relationship_target(
+                    source_drawing_path,
+                    &relationship.target,
+                );
+                let new_chart_path =
+                    next_numbered_part_path("xl/charts/chart", ".xml", &reserved_chart_paths);
+                if let Some((_, chart)) = self
+                    .charts
+                    .iter()
+                    .find(|(path, _)| *path == source_chart_path)
+                {
+                    cloned_charts.push((new_chart_path.clone(), Some(chart.clone()), None));
+                } else if let Some((_, raw)) = self
+                    .raw_charts
+                    .iter()
+                    .find(|(path, _)| *path == source_chart_path)
+                {
+                    cloned_charts.push((new_chart_path.clone(), None, Some(raw.clone())));
+                } else {
+                    return Err(Error::InvalidArgument(format!(
+                        "drawing chart target '{source_chart_path}' is missing"
+                    )));
+                }
+                reserved_chart_paths.insert(new_chart_path.clone());
+                relationship.target = crate::workbook_paths::relative_relationship_target(
+                    &new_drawing_path,
+                    &new_chart_path,
+                );
+            }
+            cloned_drawing = Some((
+                new_drawing_path,
+                source_drawing.clone(),
+                new_drawing_rels,
+                cloned_charts,
+                cloned_images,
+            ));
+        }
+
+        let max_table_id = self
+            .tables
+            .iter()
+            .map(|(_, table, _)| table.id)
+            .max()
+            .unwrap_or(0);
+        let mut reserved_table_paths = occupied_aux_paths.clone();
+        let mut cloned_tables = Vec::new();
+        for (offset, (_, source_table, _)) in self
+            .tables
+            .iter()
+            .filter(|(_, _, sheet_idx)| *sheet_idx == src_idx)
+            .enumerate()
+        {
+            let new_path =
+                next_numbered_part_path("xl/tables/table", ".xml", &reserved_table_paths);
+            reserved_table_paths.insert(new_path.clone());
+            let mut table = source_table.clone();
+            let id_increment = u32::try_from(offset)
+                .ok()
+                .and_then(|offset| offset.checked_add(1))
+                .ok_or_else(|| Error::InvalidArgument("table ID allocation overflow".into()))?;
+            table.id = max_table_id
+                .checked_add(id_increment)
+                .ok_or_else(|| Error::InvalidArgument("table ID allocation overflow".into()))?;
+            let base_name = format!("{}_Copy", table.name);
+            let mut name = base_name.clone();
+            let mut suffix = 2usize;
+            while self
+                .tables
+                .iter()
+                .any(|(_, existing, _)| existing.name == name || existing.display_name == name)
+                || cloned_tables.iter().any(
+                    |(_, existing): &(String, sheetkit_xml::table::TableXml)| {
+                        existing.name == name || existing.display_name == name
+                    },
+                )
+            {
+                name = format!("{base_name}{suffix}");
+                suffix += 1;
+            }
+            table.name = name.clone();
+            table.display_name = name;
+            cloned_tables.push((new_path, table));
+        }
+
+        let idx = crate::sheet::add_sheet_with_occupied_paths(
             &mut self.workbook_xml,
             &mut self.workbook_rels,
             &mut self.content_types,
             &mut self.worksheets,
-            source,
             target,
+            cloned_worksheet,
+            occupied_aux_paths,
         )?;
-        if self.sheet_comments.len() < self.worksheets.len() {
-            self.sheet_comments.push(None);
-        }
-        let source_sparklines = self
-            .sheet_sparklines
-            .get(src_idx)
-            .cloned()
-            .unwrap_or_default();
-        if self.sheet_sparklines.len() < self.worksheets.len() {
-            self.sheet_sparklines.push(source_sparklines);
-        }
-        if self.sheet_vml.len() < self.worksheets.len() {
-            self.sheet_vml.push(None);
-        }
-        if self.raw_sheet_xml.len() < self.worksheets.len() {
-            self.raw_sheet_xml.push(None);
-        }
-        if self.sheet_dirty.len() < self.worksheets.len() {
-            self.sheet_dirty.push(true);
-        }
-        if self.sheet_threaded_comments.len() < self.worksheets.len() {
-            self.sheet_threaded_comments.push(None);
-        }
-        if self.sheet_form_controls.len() < self.worksheets.len() {
-            self.sheet_form_controls.push(vec![]);
-        }
-        // Copy streamed data if the source sheet was streamed.
-        if let Some(src_streamed) = self.streamed_sheets.get(&src_idx) {
-            let cloned = src_streamed.try_clone()?;
+        self.sheet_comments
+            .push(self.sheet_comments[src_idx].clone());
+        self.sheet_sparklines
+            .push(self.sheet_sparklines[src_idx].clone());
+        self.sheet_vml.push(self.sheet_vml[src_idx].clone());
+        self.raw_sheet_xml.push(None);
+        self.sheet_dirty.push(true);
+        let mut occupied_thread_ids: std::collections::HashSet<String> = self
+            .sheet_threaded_comments
+            .iter()
+            .flatten()
+            .flat_map(|threaded| threaded.comments.iter().map(|comment| comment.id.clone()))
+            .collect();
+        self.sheet_threaded_comments
+            .push(
+                self.sheet_threaded_comments[src_idx]
+                    .as_ref()
+                    .map(|threaded| {
+                        clone_threaded_comments_with_new_ids(threaded, &mut occupied_thread_ids)
+                    }),
+            );
+        self.sheet_form_controls
+            .push(self.sheet_form_controls[src_idx].clone());
+        if let Some(cloned) = cloned_streamed {
             self.streamed_sheets.insert(idx, cloned);
+        }
+
+        let mut copied_rels = source_rels;
+        copied_rels.relationships.retain(|relationship| {
+            relationship.rel_type == rel_types::HYPERLINK
+                || relationship.rel_type == rel_types::DRAWING
+        });
+        if let Some((drawing_path, drawing, drawing_rels, cloned_charts, cloned_images)) =
+            cloned_drawing
+        {
+            let drawing_idx = self.drawings.len();
+            for relationship in &mut copied_rels.relationships {
+                if relationship.rel_type == rel_types::DRAWING {
+                    relationship.target = crate::workbook_paths::relative_relationship_target(
+                        &self.sheet_part_path(idx),
+                        &drawing_path,
+                    );
+                }
+            }
+            self.drawings.push((drawing_path.clone(), drawing));
+            self.worksheet_drawings.insert(idx, drawing_idx);
+            self.drawing_rels.insert(drawing_idx, drawing_rels);
+            self.content_types.overrides.push(ContentTypeOverride {
+                part_name: format!("/{drawing_path}"),
+                content_type: mime_types::DRAWING.to_string(),
+            });
+            for (path, typed, raw) in cloned_charts {
+                self.content_types.overrides.push(ContentTypeOverride {
+                    part_name: format!("/{path}"),
+                    content_type: mime_types::CHART.to_string(),
+                });
+                if let Some(chart) = typed {
+                    self.charts.push((path, chart));
+                } else if let Some(bytes) = raw {
+                    self.raw_charts.push((path, bytes));
+                }
+            }
+            self.images.extend(cloned_images);
+        }
+        if !copied_rels.relationships.is_empty() {
+            self.worksheet_rels.insert(idx, copied_rels);
+        }
+        for (path, table) in cloned_tables {
+            self.tables.push((path, table, idx));
         }
         self.rebuild_sheet_index();
         Ok(idx)
@@ -406,35 +1233,17 @@ impl Workbook {
         // Add an empty WorksheetXml placeholder for sheet management
         // (sheet names, indices, metadata). The actual data lives in the
         // temp file and is streamed to the ZIP during save.
-        let idx = crate::sheet::add_sheet(
+        let occupied_paths = self.occupied_part_paths();
+        let idx = crate::sheet::add_sheet_with_occupied_paths(
             &mut self.workbook_xml,
             &mut self.workbook_rels,
             &mut self.content_types,
             &mut self.worksheets,
             &sheet_name,
             WorksheetXml::default(),
+            occupied_paths,
         )?;
-        if self.sheet_comments.len() < self.worksheets.len() {
-            self.sheet_comments.push(None);
-        }
-        if self.sheet_sparklines.len() < self.worksheets.len() {
-            self.sheet_sparklines.push(vec![]);
-        }
-        if self.sheet_vml.len() < self.worksheets.len() {
-            self.sheet_vml.push(None);
-        }
-        if self.raw_sheet_xml.len() < self.worksheets.len() {
-            self.raw_sheet_xml.push(None);
-        }
-        if self.sheet_dirty.len() < self.worksheets.len() {
-            self.sheet_dirty.push(true);
-        }
-        if self.sheet_threaded_comments.len() < self.worksheets.len() {
-            self.sheet_threaded_comments.push(None);
-        }
-        if self.sheet_form_controls.len() < self.worksheets.len() {
-            self.sheet_form_controls.push(vec![]);
-        }
+        self.append_empty_sheet_state();
 
         // Store the streamed data for use during save.
         self.streamed_sheets.insert(idx, streamed_data);
@@ -1384,8 +2193,8 @@ impl Workbook {
         }
 
         let idx = self.drawings.len();
-        let drawing_path = format!("xl/drawings/drawing{}.xml", idx + 1);
-        self.drawings.push((drawing_path, WsDr::default()));
+        let drawing_path = self.next_available_part_path("xl/drawings/drawing", ".xml");
+        self.drawings.push((drawing_path.clone(), WsDr::default()));
         self.worksheet_drawings.insert(sheet_idx, idx);
 
         // Add drawing reference to the worksheet.
@@ -1401,7 +2210,10 @@ impl Workbook {
         });
 
         // Add worksheet->drawing relationship.
-        let drawing_rel_target = format!("../drawings/drawing{}.xml", idx + 1);
+        let drawing_rel_target = crate::workbook_paths::relative_relationship_target(
+            &self.sheet_part_path(sheet_idx),
+            &drawing_path,
+        );
         let ws_rels = self
             .worksheet_rels
             .entry(sheet_idx)
@@ -1418,11 +2230,47 @@ impl Workbook {
 
         // Add content type for the drawing.
         self.content_types.overrides.push(ContentTypeOverride {
-            part_name: format!("/xl/drawings/drawing{}.xml", idx + 1),
+            part_name: format!("/{drawing_path}"),
             content_type: mime_types::DRAWING.to_string(),
         });
 
         idx
+    }
+
+    pub(crate) fn occupied_part_paths(&self) -> std::collections::HashSet<String> {
+        let mut paths: std::collections::HashSet<String> = self
+            .content_types
+            .overrides
+            .iter()
+            .map(|entry| entry.part_name.trim_start_matches('/').to_string())
+            .collect();
+        paths.extend((0..self.worksheets.len()).map(|idx| self.sheet_part_path(idx)));
+        paths.extend(self.charts.iter().map(|(path, _)| path.clone()));
+        paths.extend(self.raw_charts.iter().map(|(path, _)| path.clone()));
+        paths.extend(self.drawings.iter().map(|(path, _)| path.clone()));
+        paths.extend(self.images.iter().map(|(path, _)| path.clone()));
+        paths.extend(self.tables.iter().map(|(path, _, _)| path.clone()));
+        paths.extend(self.pivot_tables.iter().map(|(path, _)| path.clone()));
+        paths.extend(self.pivot_cache_defs.iter().map(|(path, _)| path.clone()));
+        paths.extend(
+            self.pivot_cache_records
+                .iter()
+                .map(|(path, _)| path.clone()),
+        );
+        paths.extend(self.slicer_defs.iter().map(|(path, _)| path.clone()));
+        paths.extend(self.slicer_caches.iter().map(|(path, _)| path.clone()));
+        paths.extend(self.unknown_parts.iter().map(|(path, _)| path.clone()));
+        paths.extend(
+            self.deferred_parts
+                .remaining_parts()
+                .map(|(path, _)| path.to_string()),
+        );
+        paths
+    }
+
+    pub(crate) fn next_available_part_path(&self, prefix: &str, suffix: &str) -> String {
+        let occupied = self.occupied_part_paths();
+        next_numbered_part_path(prefix, suffix, &occupied)
     }
 
     /// Generate the next relationship ID for a worksheet's rels.
@@ -1450,7 +2298,88 @@ impl Workbook {
 #[allow(clippy::approx_constant)]
 mod tests {
     use super::*;
+    use std::io::Read;
     use tempfile::TempDir;
+
+    fn assert_package_integrity(bytes: &[u8]) {
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let names: Vec<String> = (0..archive.len())
+            .map(|index| archive.by_index(index).unwrap().name().to_string())
+            .collect();
+        let unique_names: std::collections::HashSet<&str> =
+            names.iter().map(String::as_str).collect();
+        assert_eq!(names.len(), unique_names.len(), "duplicate ZIP entry");
+
+        let mut content_types_xml = String::new();
+        archive
+            .by_name("[Content_Types].xml")
+            .unwrap()
+            .read_to_string(&mut content_types_xml)
+            .unwrap();
+        let content_types: ContentTypes = quick_xml::de::from_str(&content_types_xml).unwrap();
+        let mut part_names = std::collections::HashSet::new();
+        for entry in content_types.overrides {
+            assert!(part_names.insert(entry.part_name.clone()));
+            let is_unset_document_property = matches!(
+                entry.part_name.as_str(),
+                "/docProps/core.xml" | "/docProps/app.xml" | "/docProps/custom.xml"
+            ) && !unique_names
+                .contains(entry.part_name.trim_start_matches('/'));
+            if is_unset_document_property {
+                continue;
+            }
+            assert!(
+                unique_names.contains(entry.part_name.trim_start_matches('/')),
+                "content type target missing: {}",
+                entry.part_name
+            );
+        }
+
+        let rel_paths: Vec<String> = names
+            .iter()
+            .filter(|name| name.ends_with(".rels"))
+            .cloned()
+            .collect();
+        for rel_path in rel_paths {
+            let mut xml = String::new();
+            archive
+                .by_name(&rel_path)
+                .unwrap()
+                .read_to_string(&mut xml)
+                .unwrap();
+            let relationships: Relationships = quick_xml::de::from_str(&xml).unwrap();
+            let owner = if rel_path == "_rels/.rels" {
+                String::new()
+            } else {
+                let (dir, file) = rel_path.rsplit_once("/_rels/").unwrap();
+                format!("{dir}/{}", file.trim_end_matches(".rels"))
+            };
+            for relationship in relationships.relationships {
+                if relationship.target_mode.as_deref() == Some("External") {
+                    continue;
+                }
+                let target = crate::workbook_paths::resolve_relationship_target(
+                    &owner,
+                    &relationship.target,
+                );
+                let is_unset_document_property = rel_path == "_rels/.rels"
+                    && matches!(
+                        relationship.rel_type.as_str(),
+                        rel_types::CORE_PROPERTIES
+                            | rel_types::EXTENDED_PROPERTIES
+                            | rel_types::CUSTOM_PROPERTIES
+                    )
+                    && !unique_names.contains(target.as_str());
+                if is_unset_document_property {
+                    continue;
+                }
+                assert!(
+                    unique_names.contains(target.as_str()),
+                    "relationship target missing: {rel_path} -> {target}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn test_new_sheet_basic() {
@@ -1458,6 +2387,55 @@ mod tests {
         let idx = wb.new_sheet("Sheet2").unwrap();
         assert_eq!(idx, 1);
         assert_eq!(wb.sheet_names(), vec!["Sheet1", "Sheet2"]);
+    }
+
+    #[test]
+    fn test_sparse_worksheet_paths_save_with_package_integrity() {
+        let mut wb = Workbook::new();
+        let first_rid = wb.workbook_xml.sheets.sheets[0].r_id.clone();
+        wb.workbook_rels
+            .relationships
+            .iter_mut()
+            .find(|relationship| relationship.id == first_rid)
+            .unwrap()
+            .target = "worksheets/sheet2.xml".to_string();
+        let worksheet_override = wb
+            .content_types
+            .overrides
+            .iter_mut()
+            .find(|entry| entry.content_type == mime_types::WORKSHEET)
+            .unwrap();
+        worksheet_override.part_name = "/xl/worksheets/sheet2.xml".to_string();
+
+        wb.new_sheet("Added").unwrap();
+        assert_eq!(wb.sheet_part_path(0), "xl/worksheets/sheet2.xml");
+        assert_eq!(wb.sheet_part_path(1), "xl/worksheets/sheet1.xml");
+        let bytes = wb.save_to_buffer().unwrap();
+        assert_package_integrity(&bytes);
+    }
+
+    #[test]
+    fn test_new_sheet_skips_unknown_worksheet_path_collision() {
+        let mut wb = Workbook::new();
+        let first_rid = wb.workbook_xml.sheets.sheets[0].r_id.clone();
+        wb.workbook_rels
+            .relationships
+            .iter_mut()
+            .find(|relationship| relationship.id == first_rid)
+            .unwrap()
+            .target = "worksheets/sheet9.xml".to_string();
+        wb.content_types
+            .overrides
+            .iter_mut()
+            .find(|entry| entry.content_type == mime_types::WORKSHEET)
+            .unwrap()
+            .part_name = "/xl/worksheets/sheet9.xml".to_string();
+        wb.unknown_parts
+            .push(("xl/worksheets/sheet1.xml".to_string(), b"reserved".to_vec()));
+
+        wb.new_sheet("Added").unwrap();
+
+        assert_eq!(wb.sheet_part_path(1), "xl/worksheets/sheet2.xml");
     }
 
     #[test]
@@ -1522,6 +2500,67 @@ mod tests {
     }
 
     #[test]
+    fn test_delete_sheet_reindexes_local_names_and_all_active_tabs() {
+        use sheetkit_xml::workbook::{DefinedName, DefinedNames};
+
+        let mut wb = Workbook::new();
+        wb.new_sheet("Sheet2").unwrap();
+        wb.new_sheet("Sheet3").unwrap();
+        wb.set_defined_name("OnFirst", "Sheet1!$A$1", Some("Sheet1"), None)
+            .unwrap();
+        wb.set_defined_name("OnSecond", "Sheet2!$A$1", Some("Sheet2"), None)
+            .unwrap();
+        wb.set_defined_name("OnThird", "Sheet3!$A$1", Some("Sheet3"), None)
+            .unwrap();
+        wb.workbook_xml
+            .defined_names
+            .get_or_insert_with(|| DefinedNames {
+                defined_names: vec![],
+            })
+            .defined_names
+            .push(DefinedName {
+                name: "Global".to_string(),
+                local_sheet_id: None,
+                comment: None,
+                hidden: None,
+                value: "Sheet3!$B$2".to_string(),
+            });
+        let views = wb.workbook_xml.book_views.as_mut().unwrap();
+        let mut extra_view = views.workbook_views[0].clone();
+        views.workbook_views[0].active_tab = Some(1);
+        extra_view.active_tab = Some(99);
+        views.workbook_views.push(extra_view);
+
+        wb.delete_sheet("Sheet2").unwrap();
+
+        let names = wb.workbook_xml.defined_names.as_ref().unwrap();
+        assert!(names
+            .defined_names
+            .iter()
+            .all(|name| name.name != "OnSecond"));
+        assert_eq!(
+            names
+                .defined_names
+                .iter()
+                .find(|name| name.name == "OnThird")
+                .unwrap()
+                .local_sheet_id,
+            Some(1)
+        );
+        assert_eq!(
+            wb.workbook_xml
+                .book_views
+                .as_ref()
+                .unwrap()
+                .workbook_views
+                .iter()
+                .map(|view| view.active_tab)
+                .collect::<Vec<_>>(),
+            vec![Some(1), Some(1)]
+        );
+    }
+
+    #[test]
     fn test_delete_last_sheet_returns_error() {
         let mut wb = Workbook::new();
         let result = wb.delete_sheet("Sheet1");
@@ -1561,6 +2600,785 @@ mod tests {
         let idx = wb.copy_sheet("Sheet1", "Sheet1 Copy").unwrap();
         assert_eq!(idx, 1);
         assert_eq!(wb.sheet_names(), vec!["Sheet1", "Sheet1 Copy"]);
+    }
+
+    #[test]
+    fn test_copy_sheet_clones_mixed_relationship_graph_and_roundtrips() {
+        use crate::chart::{ChartConfig, ChartSeries, ChartType};
+        use crate::hyperlink::HyperlinkType;
+        use crate::table::{TableColumn, TableConfig};
+
+        let mut wb = Workbook::new();
+        wb.set_cell_hyperlink(
+            "Sheet1",
+            "A1",
+            HyperlinkType::External("https://example.com/source".to_string()),
+            Some("Source"),
+            None,
+        )
+        .unwrap();
+        wb.add_comment(
+            "Sheet1",
+            &crate::comment::CommentConfig {
+                cell: "B2".to_string(),
+                author: "Author".to_string(),
+                text: "Copied note".to_string(),
+            },
+        )
+        .unwrap();
+        wb.add_threaded_comment(
+            "Sheet1",
+            "C3",
+            &crate::threaded_comment::ThreadedCommentInput {
+                author: "Author".to_string(),
+                text: "Copied thread".to_string(),
+                parent_id: None,
+            },
+        )
+        .unwrap();
+        wb.add_table(
+            "Sheet1",
+            &TableConfig {
+                name: "SourceTable".to_string(),
+                display_name: "SourceTable".to_string(),
+                range: "A1:B3".to_string(),
+                columns: vec![
+                    TableColumn {
+                        name: "Name".to_string(),
+                        totals_row_function: None,
+                        totals_row_label: None,
+                    },
+                    TableColumn {
+                        name: "Value".to_string(),
+                        totals_row_function: None,
+                        totals_row_label: None,
+                    },
+                ],
+                ..TableConfig::default()
+            },
+        )
+        .unwrap();
+        wb.add_chart(
+            "Sheet1",
+            "E1",
+            "L10",
+            &ChartConfig {
+                chart_type: ChartType::Line,
+                title: None,
+                series: vec![ChartSeries {
+                    name: "Series".to_string(),
+                    categories: "Sheet1!$A$1:$A$3".to_string(),
+                    values: "Sheet1!$B$1:$B$3".to_string(),
+                    x_values: None,
+                    bubble_sizes: None,
+                }],
+                show_legend: false,
+                view_3d: None,
+            },
+        )
+        .unwrap();
+
+        wb.copy_sheet("Sheet1", "Copied").unwrap();
+
+        let copied_link = wb.get_cell_hyperlink("Copied", "A1").unwrap().unwrap();
+        assert_eq!(
+            copied_link.link_type,
+            HyperlinkType::External("https://example.com/source".to_string())
+        );
+        assert_eq!(wb.get_comments("Copied").unwrap().len(), 1);
+        assert_eq!(wb.get_threaded_comments("Copied").unwrap().len(), 1);
+        let copied_tables = wb.get_tables("Copied").unwrap();
+        assert_eq!(copied_tables.len(), 1);
+        assert_ne!(copied_tables[0].name, "SourceTable");
+        assert_eq!(wb.drawings.len(), 2);
+        assert_eq!(wb.charts.len(), 2);
+
+        wb.delete_sheet("Sheet1").unwrap();
+        let bytes = wb.save_to_buffer().unwrap();
+        assert_package_integrity(&bytes);
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes.clone())).unwrap();
+        let names: Vec<String> = (0..archive.len())
+            .map(|index| archive.by_index(index).unwrap().name().to_string())
+            .collect();
+        let unique_names: std::collections::HashSet<&str> =
+            names.iter().map(String::as_str).collect();
+        assert_eq!(names.len(), unique_names.len());
+        assert_eq!(
+            names
+                .iter()
+                .filter(|name| name.starts_with("xl/charts/chart"))
+                .count(),
+            1
+        );
+        let mut reopened = Workbook::open_from_buffer(&bytes).unwrap();
+        assert_eq!(reopened.sheet_names(), vec!["Copied"]);
+        assert!(reopened
+            .get_cell_hyperlink("Copied", "A1")
+            .unwrap()
+            .is_some());
+        assert_eq!(reopened.get_comments("Copied").unwrap().len(), 1);
+        assert_eq!(reopened.get_threaded_comments("Copied").unwrap().len(), 1);
+        assert_eq!(reopened.get_tables("Copied").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_delete_sheet_retargets_threaded_comments_by_surviving_sheet() {
+        let mut wb = Workbook::new();
+        wb.new_sheet("Second").unwrap();
+        wb.new_sheet("Third").unwrap();
+        for (sheet, text) in [("Second", "Second thread"), ("Third", "Third thread")] {
+            wb.add_threaded_comment(
+                sheet,
+                "A1",
+                &crate::threaded_comment::ThreadedCommentInput {
+                    author: "Author".to_string(),
+                    text: text.to_string(),
+                    parent_id: None,
+                },
+            )
+            .unwrap();
+        }
+
+        wb.delete_sheet("Sheet1").unwrap();
+        let bytes = wb.save_to_buffer().unwrap();
+        let reopened = Workbook::open_from_buffer(&bytes).unwrap();
+
+        assert_eq!(
+            reopened.get_threaded_comments("Second").unwrap()[0].text,
+            "Second thread"
+        );
+        assert_eq!(
+            reopened.get_threaded_comments("Third").unwrap()[0].text,
+            "Third thread"
+        );
+    }
+
+    #[test]
+    fn test_delete_last_threaded_sheet_removes_person_and_comment_parts() {
+        let mut wb = Workbook::new();
+        wb.new_sheet("Survivor").unwrap();
+        wb.add_threaded_comment(
+            "Sheet1",
+            "A1",
+            &crate::threaded_comment::ThreadedCommentInput {
+                author: "Author".to_string(),
+                text: "Removed thread".to_string(),
+                parent_id: None,
+            },
+        )
+        .unwrap();
+
+        wb.delete_sheet("Sheet1").unwrap();
+        let bytes = wb.save_to_buffer().unwrap();
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes.clone())).unwrap();
+        let names: Vec<String> = (0..archive.len())
+            .map(|index| archive.by_index(index).unwrap().name().to_string())
+            .collect();
+        assert!(!names
+            .iter()
+            .any(|name| name.starts_with("xl/threadedComments/")));
+        assert!(!names.iter().any(|name| name == "xl/persons/person.xml"));
+
+        let reopened = Workbook::open_from_buffer(&bytes).unwrap();
+        assert!(!reopened
+            .workbook_rels
+            .relationships
+            .iter()
+            .any(|relationship| {
+                relationship.rel_type == sheetkit_xml::threaded_comment::REL_TYPE_PERSON
+            }));
+        assert!(!reopened.content_types.overrides.iter().any(|entry| {
+            entry.content_type == sheetkit_xml::threaded_comment::THREADED_COMMENTS_CONTENT_TYPE
+                || entry.content_type == sheetkit_xml::threaded_comment::PERSON_LIST_CONTENT_TYPE
+        }));
+    }
+
+    #[test]
+    fn test_untouched_lazy_threaded_comments_survive_save() {
+        let mut wb = Workbook::new();
+        wb.add_threaded_comment(
+            "Sheet1",
+            "A1",
+            &crate::threaded_comment::ThreadedCommentInput {
+                author: "Author".to_string(),
+                text: "Deferred thread".to_string(),
+                parent_id: None,
+            },
+        )
+        .unwrap();
+        let original = wb.save_to_buffer().unwrap();
+        let options = OpenOptions::new().read_mode(ReadMode::Lazy);
+        let lazy = Workbook::open_from_buffer_with_options(&original, &options).unwrap();
+
+        let saved = lazy.save_to_buffer().unwrap();
+        let reopened = Workbook::open_from_buffer(&saved).unwrap();
+
+        let comments = reopened.get_threaded_comments("Sheet1").unwrap();
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments[0].text, "Deferred thread");
+        assert_eq!(reopened.get_persons().len(), 1);
+    }
+
+    #[test]
+    fn test_copy_sheet_rejects_unsupported_relationship_atomically() {
+        let mut wb = Workbook::new();
+        wb.worksheet_rels.insert(
+            0,
+            Relationships {
+                xmlns: sheetkit_xml::namespaces::PACKAGE_RELATIONSHIPS.to_string(),
+                relationships: vec![Relationship {
+                    id: "rId1".to_string(),
+                    rel_type: rel_types::PRINTER_SETTINGS.to_string(),
+                    target: "../printerSettings/printerSettings1.bin".to_string(),
+                    target_mode: None,
+                }],
+            },
+        );
+        let before_names: Vec<String> = wb.sheet_names().into_iter().map(str::to_string).collect();
+        let before_sheet_count = wb.workbook_xml.sheets.sheets.len();
+
+        let error = wb.copy_sheet("Sheet1", "Copied").unwrap_err();
+
+        assert!(matches!(error, Error::InvalidArgument(_)));
+        assert_eq!(
+            wb.sheet_names(),
+            before_names.iter().map(String::as_str).collect::<Vec<_>>()
+        );
+        assert_eq!(wb.workbook_xml.sheets.sheets.len(), before_sheet_count);
+    }
+
+    fn assert_copy_rejected_without_mutation(mut wb: Workbook) {
+        let before_names: Vec<String> = wb.sheet_names().into_iter().map(str::to_string).collect();
+        assert!(matches!(
+            wb.copy_sheet("Sheet1", "Copied"),
+            Err(Error::InvalidArgument(_))
+        ));
+        assert_eq!(
+            wb.sheet_names(),
+            before_names.iter().map(String::as_str).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn test_copy_sheet_rejects_unresolved_supported_relationships() {
+        let relationship = |rel_type: &str, target: &str| Relationship {
+            id: "rId99".to_string(),
+            rel_type: rel_type.to_string(),
+            target: target.to_string(),
+            target_mode: None,
+        };
+
+        let mut comments = Workbook::new();
+        comments
+            .add_comment(
+                "Sheet1",
+                &crate::comment::CommentConfig {
+                    cell: "A1".to_string(),
+                    author: "Author".to_string(),
+                    text: "Note".to_string(),
+                },
+            )
+            .unwrap();
+        comments
+            .worksheet_rels
+            .entry(0)
+            .or_insert_with(crate::workbook_paths::default_relationships)
+            .relationships
+            .push(relationship(rel_types::COMMENTS, "../comments99.xml"));
+        assert_copy_rejected_without_mutation(comments);
+
+        let mut vml = Workbook::new();
+        vml.sheet_vml[0] = Some(b"<xml/>".to_vec());
+        vml.worksheet_rels
+            .entry(0)
+            .or_insert_with(crate::workbook_paths::default_relationships)
+            .relationships
+            .push(relationship(
+                rel_types::VML_DRAWING,
+                "../drawings/vmlDrawing99.vml",
+            ));
+        assert_copy_rejected_without_mutation(vml);
+
+        let mut table = Workbook::new();
+        table
+            .worksheet_rels
+            .entry(0)
+            .or_insert_with(crate::workbook_paths::default_relationships)
+            .relationships
+            .push(relationship(rel_types::TABLE, "../tables/table99.xml"));
+        assert_copy_rejected_without_mutation(table);
+
+        let mut threaded = Workbook::new();
+        threaded
+            .add_threaded_comment(
+                "Sheet1",
+                "A1",
+                &crate::threaded_comment::ThreadedCommentInput {
+                    author: "Author".to_string(),
+                    text: "Thread".to_string(),
+                    parent_id: None,
+                },
+            )
+            .unwrap();
+        threaded
+            .worksheet_rels
+            .entry(0)
+            .or_insert_with(crate::workbook_paths::default_relationships)
+            .relationships
+            .push(relationship(
+                sheetkit_xml::threaded_comment::REL_TYPE_THREADED_COMMENT,
+                "../threadedComments/threadedComment99.xml",
+            ));
+        assert_copy_rejected_without_mutation(threaded);
+    }
+
+    #[test]
+    fn test_copy_sheet_rejects_missing_drawing_relationships_and_rids() {
+        use crate::chart::{ChartConfig, ChartSeries, ChartType};
+        let config = ChartConfig {
+            chart_type: ChartType::Line,
+            title: None,
+            series: vec![ChartSeries {
+                name: "Series".to_string(),
+                categories: "Sheet1!$A$1:$A$3".to_string(),
+                values: "Sheet1!$B$1:$B$3".to_string(),
+                x_values: None,
+                bubble_sizes: None,
+            }],
+            show_legend: false,
+            view_3d: None,
+        };
+
+        let mut missing_rels = Workbook::new();
+        missing_rels
+            .add_chart("Sheet1", "E1", "L10", &config)
+            .unwrap();
+        missing_rels.drawing_rels.clear();
+        assert_copy_rejected_without_mutation(missing_rels);
+
+        let mut missing_rid = Workbook::new();
+        missing_rid
+            .add_chart("Sheet1", "E1", "L10", &config)
+            .unwrap();
+        missing_rid.drawings[0].1.two_cell_anchors[0]
+            .graphic_frame
+            .as_mut()
+            .unwrap()
+            .graphic
+            .graphic_data
+            .chart
+            .r_id = "missing".to_string();
+        assert_copy_rejected_without_mutation(missing_rid);
+    }
+
+    #[test]
+    fn test_copy_sheet_rejects_unresolved_worksheet_rids_atomically() {
+        let mut drawing = Workbook::new();
+        drawing.worksheets[0].1.get_mut().unwrap().drawing =
+            Some(sheetkit_xml::worksheet::DrawingRef {
+                r_id: "missingDrawing".to_string(),
+            });
+        assert_copy_rejected_without_mutation(drawing);
+
+        let mut legacy = Workbook::new();
+        legacy.worksheets[0].1.get_mut().unwrap().legacy_drawing =
+            Some(sheetkit_xml::worksheet::LegacyDrawingRef {
+                r_id: "missingLegacy".to_string(),
+            });
+        assert_copy_rejected_without_mutation(legacy);
+
+        let mut hyperlink = Workbook::new();
+        hyperlink.worksheets[0].1.get_mut().unwrap().hyperlinks =
+            Some(sheetkit_xml::worksheet::Hyperlinks {
+                hyperlinks: vec![sheetkit_xml::worksheet::Hyperlink {
+                    reference: "A1".to_string(),
+                    r_id: Some("missingHyperlink".to_string()),
+                    location: None,
+                    display: None,
+                    tooltip: None,
+                }],
+            });
+        assert_copy_rejected_without_mutation(hyperlink);
+
+        let mut table = Workbook::new();
+        table.worksheets[0].1.get_mut().unwrap().table_parts =
+            Some(sheetkit_xml::worksheet::TableParts {
+                count: Some(1),
+                table_parts: vec![sheetkit_xml::worksheet::TablePart {
+                    r_id: "missingTable".to_string(),
+                }],
+            });
+        assert_copy_rejected_without_mutation(table);
+
+        let mut page_setup = Workbook::new();
+        page_setup.worksheets[0].1.get_mut().unwrap().page_setup =
+            Some(sheetkit_xml::worksheet::PageSetup {
+                paper_size: None,
+                orientation: None,
+                scale: None,
+                fit_to_width: None,
+                fit_to_height: None,
+                first_page_number: None,
+                horizontal_dpi: None,
+                vertical_dpi: None,
+                r_id: Some("missingPrinter".to_string()),
+            });
+        assert_copy_rejected_without_mutation(page_setup);
+    }
+
+    #[test]
+    fn test_copy_sheet_clones_image_and_source_delete_keeps_copy() {
+        use crate::image::{ImageConfig, ImageFormat};
+        let mut wb = Workbook::new();
+        wb.add_image(
+            "Sheet1",
+            &ImageConfig {
+                data: vec![0x89, 0x50, 0x4e, 0x47],
+                format: ImageFormat::Png,
+                from_cell: "B2".to_string(),
+                width_px: 32,
+                height_px: 32,
+            },
+        )
+        .unwrap();
+
+        wb.copy_sheet("Sheet1", "Copied").unwrap();
+        assert_eq!(wb.images.len(), 2);
+        assert_ne!(wb.images[0].0, wb.images[1].0);
+        assert_eq!(wb.images[0].1, wb.images[1].1);
+
+        wb.delete_sheet("Sheet1").unwrap();
+        assert_eq!(wb.images.len(), 1);
+        let bytes = wb.save_to_buffer().unwrap();
+        assert_package_integrity(&bytes);
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes.clone())).unwrap();
+        let media_count = (0..archive.len())
+            .filter(|index| {
+                archive
+                    .by_index(*index)
+                    .unwrap()
+                    .name()
+                    .starts_with("xl/media/")
+            })
+            .count();
+        assert_eq!(media_count, 1);
+        Workbook::open_from_buffer(&bytes).unwrap();
+    }
+
+    #[test]
+    fn test_delete_sheet_retains_image_referenced_by_surviving_drawing() {
+        use crate::image::{ImageConfig, ImageFormat};
+        let config = ImageConfig {
+            data: vec![0x89, 0x50, 0x4e, 0x47],
+            format: ImageFormat::Png,
+            from_cell: "B2".to_string(),
+            width_px: 32,
+            height_px: 32,
+        };
+        let mut wb = Workbook::new();
+        wb.add_image("Sheet1", &config).unwrap();
+        wb.new_sheet("Survivor").unwrap();
+        wb.add_image("Survivor", &config).unwrap();
+        let shared_image_path = wb.images[0].0.clone();
+        let survivor_drawing_idx = wb.worksheet_drawings[&1];
+        let survivor_drawing_path = wb.drawings[survivor_drawing_idx].0.clone();
+        wb.drawing_rels
+            .get_mut(&survivor_drawing_idx)
+            .unwrap()
+            .relationships[0]
+            .target = crate::workbook_paths::relative_relationship_target(
+            &survivor_drawing_path,
+            &shared_image_path,
+        );
+        wb.images.remove(1);
+
+        wb.delete_sheet("Sheet1").unwrap();
+
+        assert_eq!(wb.images.len(), 1);
+        assert_eq!(wb.images[0].0, shared_image_path);
+        let bytes = wb.save_to_buffer().unwrap();
+        assert_package_integrity(&bytes);
+    }
+
+    #[test]
+    fn test_copy_sheet_remaps_threaded_reply_ids() {
+        let mut wb = Workbook::new();
+        let root_id = wb
+            .add_threaded_comment(
+                "Sheet1",
+                "A1",
+                &crate::threaded_comment::ThreadedCommentInput {
+                    author: "Author".to_string(),
+                    text: "Root".to_string(),
+                    parent_id: None,
+                },
+            )
+            .unwrap();
+        wb.add_threaded_comment(
+            "Sheet1",
+            "A1",
+            &crate::threaded_comment::ThreadedCommentInput {
+                author: "Author".to_string(),
+                text: "Reply".to_string(),
+                parent_id: Some(root_id),
+            },
+        )
+        .unwrap();
+
+        wb.copy_sheet("Sheet1", "Copied").unwrap();
+        let source = wb.sheet_threaded_comments[0].as_ref().unwrap();
+        let copied = wb.sheet_threaded_comments[1].as_ref().unwrap();
+        let source_ids: std::collections::HashSet<&str> = source
+            .comments
+            .iter()
+            .map(|comment| comment.id.as_str())
+            .collect();
+        assert!(copied
+            .comments
+            .iter()
+            .all(|comment| !source_ids.contains(comment.id.as_str())));
+        assert_eq!(
+            copied.comments[1].parent_id.as_deref(),
+            Some(copied.comments[0].id.as_str())
+        );
+        assert_eq!(source.comments[0].person_id, copied.comments[0].person_id);
+    }
+
+    #[test]
+    fn test_copy_sheet_table_id_overflow_is_atomic() {
+        use crate::table::{TableColumn, TableConfig};
+        let mut wb = Workbook::new();
+        wb.add_table(
+            "Sheet1",
+            &TableConfig {
+                name: "AtLimit".to_string(),
+                display_name: "AtLimit".to_string(),
+                range: "A1:A2".to_string(),
+                columns: vec![TableColumn {
+                    name: "Value".to_string(),
+                    totals_row_function: None,
+                    totals_row_label: None,
+                }],
+                ..TableConfig::default()
+            },
+        )
+        .unwrap();
+        wb.tables[0].1.id = u32::MAX;
+        assert_copy_rejected_without_mutation(wb);
+    }
+
+    #[test]
+    fn test_delete_sheet_rejects_pivot_and_slicer_closure_atomically() {
+        use crate::workbook::aux::AuxCategory;
+        for rel_type in [rel_types::PIVOT_TABLE, rel_types::SLICER] {
+            let mut wb = Workbook::new();
+            wb.new_sheet("Survivor").unwrap();
+            wb.worksheet_rels.insert(
+                0,
+                Relationships {
+                    xmlns: sheetkit_xml::namespaces::PACKAGE_RELATIONSHIPS.to_string(),
+                    relationships: vec![Relationship {
+                        id: "rId1".to_string(),
+                        rel_type: rel_type.to_string(),
+                        target: "../unsupported/part1.xml".to_string(),
+                        target_mode: None,
+                    }],
+                },
+            );
+            wb.deferred_parts.insert(
+                "xl/pivotTables/pivotTable1.xml".to_string(),
+                b"deferred".to_vec(),
+            );
+            assert!(matches!(
+                wb.delete_sheet("Sheet1"),
+                Err(Error::InvalidArgument(_))
+            ));
+            assert_eq!(wb.sheet_names(), vec!["Sheet1", "Survivor"]);
+            assert!(wb.deferred_parts.has_category(AuxCategory::PivotTables));
+        }
+    }
+
+    #[test]
+    fn test_copy_sheet_skips_unknown_part_path_collisions() {
+        use crate::chart::{ChartConfig, ChartSeries, ChartType};
+
+        let mut wb = Workbook::new();
+        wb.add_chart(
+            "Sheet1",
+            "E1",
+            "L10",
+            &ChartConfig {
+                chart_type: ChartType::Line,
+                title: None,
+                series: vec![ChartSeries {
+                    name: "Series".to_string(),
+                    categories: "Sheet1!$A$1:$A$3".to_string(),
+                    values: "Sheet1!$B$1:$B$3".to_string(),
+                    x_values: None,
+                    bubble_sizes: None,
+                }],
+                show_legend: false,
+                view_3d: None,
+            },
+        )
+        .unwrap();
+        wb.unknown_parts.extend([
+            ("xl/drawings/drawing2.xml".to_string(), b"opaque".to_vec()),
+            ("xl/charts/chart2.xml".to_string(), b"opaque".to_vec()),
+        ]);
+
+        wb.copy_sheet("Sheet1", "Copied").unwrap();
+
+        assert!(wb
+            .drawings
+            .iter()
+            .any(|(path, _)| path == "xl/drawings/drawing3.xml"));
+        assert!(wb
+            .charts
+            .iter()
+            .any(|(path, _)| path == "xl/charts/chart3.xml"));
+    }
+
+    #[test]
+    fn test_normal_drawing_chart_and_image_allocation_skips_reserved_paths() {
+        use crate::chart::{ChartConfig, ChartSeries, ChartType};
+        use crate::image::{ImageConfig, ImageFormat};
+        let mut wb = Workbook::new();
+        wb.unknown_parts.extend([
+            ("xl/drawings/drawing1.xml".to_string(), b"opaque".to_vec()),
+            ("xl/charts/chart1.xml".to_string(), b"opaque".to_vec()),
+            ("xl/media/image1.png".to_string(), b"opaque".to_vec()),
+        ]);
+        wb.content_types.overrides.extend([
+            ContentTypeOverride {
+                part_name: "/xl/drawings/drawing2.xml".to_string(),
+                content_type: mime_types::DRAWING.to_string(),
+            },
+            ContentTypeOverride {
+                part_name: "/xl/charts/chart2.xml".to_string(),
+                content_type: mime_types::CHART.to_string(),
+            },
+        ]);
+        wb.add_chart(
+            "Sheet1",
+            "E1",
+            "L10",
+            &ChartConfig {
+                chart_type: ChartType::Line,
+                title: None,
+                series: vec![ChartSeries {
+                    name: "Series".to_string(),
+                    categories: "Sheet1!$A$1:$A$3".to_string(),
+                    values: "Sheet1!$B$1:$B$3".to_string(),
+                    x_values: None,
+                    bubble_sizes: None,
+                }],
+                show_legend: false,
+                view_3d: None,
+            },
+        )
+        .unwrap();
+        wb.add_image(
+            "Sheet1",
+            &ImageConfig {
+                data: vec![0x89, 0x50, 0x4e, 0x47],
+                format: ImageFormat::Png,
+                from_cell: "B2".to_string(),
+                width_px: 32,
+                height_px: 32,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(wb.drawings[0].0, "xl/drawings/drawing3.xml");
+        assert_eq!(wb.charts[0].0, "xl/charts/chart3.xml");
+        assert_eq!(wb.images[0].0, "xl/media/image2.png");
+    }
+
+    #[test]
+    fn test_save_rejects_raw_collision_without_dropping_unknown_part() {
+        let mut wb = Workbook::new();
+        wb.unknown_parts
+            .push(("xl/comments1.xml".to_string(), b"opaque".to_vec()));
+        wb.add_comment(
+            "Sheet1",
+            &crate::comment::CommentConfig {
+                cell: "A1".to_string(),
+                author: "Author".to_string(),
+                text: "Note".to_string(),
+            },
+        )
+        .unwrap();
+
+        assert!(matches!(
+            wb.save_to_buffer(),
+            Err(Error::InvalidArgument(_))
+        ));
+        assert_eq!(wb.unknown_parts[0].0, "xl/comments1.xml");
+        assert_eq!(wb.unknown_parts[0].1, b"opaque");
+    }
+
+    #[test]
+    fn test_save_rejects_relationship_part_collision_before_writing() {
+        use crate::hyperlink::HyperlinkType;
+        let mut wb = Workbook::new();
+        wb.set_cell_hyperlink(
+            "Sheet1",
+            "A1",
+            HyperlinkType::External("https://example.com".to_string()),
+            None,
+            None,
+        )
+        .unwrap();
+        let rel_path = crate::workbook_paths::relationship_part_path(&wb.sheet_part_path(0));
+        wb.unknown_parts
+            .push((rel_path.clone(), b"preserved relationships".to_vec()));
+
+        assert!(matches!(
+            wb.save_to_buffer(),
+            Err(Error::InvalidArgument(_))
+        ));
+        assert_eq!(wb.unknown_parts[0].0, rel_path);
+        assert_eq!(wb.unknown_parts[0].1, b"preserved relationships");
+
+        wb.unknown_parts.clear();
+        let bytes = wb.save_to_buffer().unwrap();
+        assert_package_integrity(&bytes);
+    }
+
+    #[test]
+    fn test_delete_sheet_rejects_malformed_deferred_lifecycle_part_atomically() {
+        use crate::workbook::aux::AuxCategory;
+
+        let mut wb = Workbook::new();
+        wb.new_sheet("Survivor").unwrap();
+        wb.worksheet_rels.insert(
+            0,
+            Relationships {
+                xmlns: sheetkit_xml::namespaces::PACKAGE_RELATIONSHIPS.to_string(),
+                relationships: vec![Relationship {
+                    id: "rId1".to_string(),
+                    rel_type: rel_types::COMMENTS.to_string(),
+                    target: "../comments1.xml".to_string(),
+                    target_mode: None,
+                }],
+            },
+        );
+        assert!(wb.deferred_parts.insert(
+            "xl/comments1.xml".to_string(),
+            b"<comments><broken>".to_vec(),
+        ));
+        assert!(wb.deferred_parts.has_category(AuxCategory::Comments));
+        let before_names: Vec<String> = wb.sheet_names().into_iter().map(str::to_string).collect();
+
+        let error = wb.delete_sheet("Sheet1").unwrap_err();
+
+        assert!(matches!(error, Error::XmlDeserialize(_)));
+        assert_eq!(
+            wb.sheet_names(),
+            before_names.iter().map(String::as_str).collect::<Vec<_>>()
+        );
+        assert!(wb.deferred_parts.has_category(AuxCategory::Comments));
     }
 
     #[test]

@@ -39,17 +39,19 @@ impl Workbook {
         };
 
         // Allocate chart part.
-        let chart_num = self.charts.len() + 1;
-        let chart_path = format!("xl/charts/chart{}.xml", chart_num);
+        let chart_path = self.next_available_part_path("xl/charts/chart", ".xml");
         let chart_space = crate::chart::build_chart_xml(config);
-        self.charts.push((chart_path, chart_space));
+        self.charts.push((chart_path.clone(), chart_space));
 
         // Get or create drawing for this sheet.
         let drawing_idx = self.ensure_drawing_for_sheet(sheet_idx);
 
         // Add chart reference to the drawing's relationships.
         let chart_rid = self.next_drawing_rid(drawing_idx);
-        let chart_rel_target = format!("../charts/chart{}.xml", chart_num);
+        let chart_rel_target = crate::workbook_paths::relative_relationship_target(
+            &self.drawings[drawing_idx].0,
+            &chart_path,
+        );
 
         let dr_rels = self
             .drawing_rels
@@ -72,7 +74,7 @@ impl Workbook {
 
         // Add content type for the chart.
         self.content_types.overrides.push(ContentTypeOverride {
-            part_name: format!("/xl/charts/chart{}.xml", chart_num),
+            part_name: format!("/{chart_path}"),
             content_type: mime_types::CHART.to_string(),
         });
 
@@ -121,9 +123,9 @@ impl Workbook {
             })?;
 
         // Allocate image media part.
-        let image_num = self.images.len() + 1;
-        let image_path = format!("xl/media/image{}.{}", image_num, config.format.extension());
-        self.images.push((image_path, config.data.clone()));
+        let image_path = self
+            .next_available_part_path("xl/media/image", &format!(".{}", config.format.extension()));
+        self.images.push((image_path.clone(), config.data.clone()));
 
         // Ensure the image extension has a default content type.
         let ext = config.format.extension().to_string();
@@ -144,7 +146,10 @@ impl Workbook {
 
         // Add image reference to the drawing's relationships.
         let image_rid = self.next_drawing_rid(drawing_idx);
-        let image_rel_target = format!("../media/image{}.{}", image_num, config.format.extension());
+        let image_rel_target = crate::workbook_paths::relative_relationship_target(
+            &self.drawings[drawing_idx].0,
+            &image_path,
+        );
 
         let dr_rels = self
             .drawing_rels

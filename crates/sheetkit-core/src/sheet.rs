@@ -81,6 +81,44 @@ pub fn next_sheet_id(existing_sheets: &[SheetEntry]) -> u32 {
         + 1
 }
 
+fn next_worksheet_target(
+    existing_rels: &[Relationship],
+    content_types: &ContentTypes,
+    occupied_paths: impl IntoIterator<Item = String>,
+) -> String {
+    let mut used: std::collections::HashSet<String> = existing_rels
+        .iter()
+        .filter(|rel| rel.rel_type == rel_types::WORKSHEET)
+        .map(|rel| rel.target.trim_start_matches('/').to_string())
+        .collect();
+    used.extend(
+        content_types
+            .overrides
+            .iter()
+            .filter(|entry| entry.content_type == mime_types::WORKSHEET)
+            .map(|entry| {
+                entry
+                    .part_name
+                    .trim_start_matches("/xl/")
+                    .trim_start_matches('/')
+                    .to_string()
+            }),
+    );
+    used.extend(occupied_paths.into_iter().map(|path| {
+        path.trim_start_matches("/xl/")
+            .trim_start_matches('/')
+            .to_string()
+    }));
+    let mut number = 1usize;
+    loop {
+        let target = format!("worksheets/sheet{number}.xml");
+        if !used.contains(target.as_str()) && !used.contains(format!("xl/{target}").as_str()) {
+            return target;
+        }
+        number += 1;
+    }
+}
+
 /// Find the index (0-based) of a sheet by name.
 pub fn find_sheet_index(
     worksheets: &[(String, OnceLock<WorksheetXml>)],
@@ -101,6 +139,26 @@ pub fn add_sheet(
     name: &str,
     worksheet_data: WorksheetXml,
 ) -> Result<usize> {
+    add_sheet_with_occupied_paths(
+        workbook_xml,
+        workbook_rels,
+        content_types,
+        worksheets,
+        name,
+        worksheet_data,
+        std::iter::empty(),
+    )
+}
+
+pub(crate) fn add_sheet_with_occupied_paths(
+    workbook_xml: &mut WorkbookXml,
+    workbook_rels: &mut Relationships,
+    content_types: &mut ContentTypes,
+    worksheets: &mut Vec<(String, OnceLock<WorksheetXml>)>,
+    name: &str,
+    worksheet_data: WorksheetXml,
+    occupied_paths: impl IntoIterator<Item = String>,
+) -> Result<usize> {
     validate_sheet_name(name)?;
 
     if worksheets.iter().any(|(n, _)| n == name) {
@@ -111,8 +169,7 @@ pub fn add_sheet(
 
     let rid = next_rid(&workbook_rels.relationships);
     let sheet_id = next_sheet_id(&workbook_xml.sheets.sheets);
-    let sheet_number = worksheets.len() + 1;
-    let target = format!("worksheets/sheet{}.xml", sheet_number);
+    let target = next_worksheet_target(&workbook_rels.relationships, content_types, occupied_paths);
 
     workbook_xml.sheets.sheets.push(SheetEntry {
         name: name.to_string(),
@@ -159,13 +216,25 @@ pub fn delete_sheet(
     }
 
     let r_id = workbook_xml.sheets.sheets[idx].r_id.clone();
+    let deleted_target = workbook_rels
+        .relationships
+        .iter()
+        .find(|rel| rel.id == r_id && rel.rel_type == rel_types::WORKSHEET)
+        .map(|rel| {
+            format!(
+                "/{}",
+                crate::workbook_paths::resolve_relationship_target("xl/workbook.xml", &rel.target,)
+            )
+        });
 
     worksheets.remove(idx);
     workbook_xml.sheets.sheets.remove(idx);
     workbook_rels.relationships.retain(|r| r.id != r_id);
-
-    rebuild_content_type_overrides(content_types, worksheets.len());
-    rebuild_worksheet_relationships(workbook_xml, workbook_rels);
+    if let Some(deleted_part_name) = deleted_target {
+        content_types.overrides.retain(|entry| {
+            entry.content_type != mime_types::WORKSHEET || entry.part_name != deleted_part_name
+        });
+    }
 
     Ok(())
 }
@@ -675,44 +744,6 @@ impl SheetVisibility {
     }
 }
 
-/// Rebuild content type overrides for worksheets so they match the current
-/// worksheet indices (sheet1.xml, sheet2.xml, ...).
-fn rebuild_content_type_overrides(content_types: &mut ContentTypes, sheet_count: usize) {
-    content_types
-        .overrides
-        .retain(|o| o.content_type != mime_types::WORKSHEET);
-
-    for i in 1..=sheet_count {
-        content_types.overrides.push(ContentTypeOverride {
-            part_name: format!("/xl/worksheets/sheet{}.xml", i),
-            content_type: mime_types::WORKSHEET.to_string(),
-        });
-    }
-}
-
-/// Rebuild worksheet relationship targets so they match the current worksheet indices.
-fn rebuild_worksheet_relationships(
-    workbook_xml: &mut WorkbookXml,
-    workbook_rels: &mut Relationships,
-) {
-    let sheet_rids: Vec<String> = workbook_xml
-        .sheets
-        .sheets
-        .iter()
-        .map(|s| s.r_id.clone())
-        .collect();
-
-    for (i, rid) in sheet_rids.iter().enumerate() {
-        if let Some(rel) = workbook_rels
-            .relationships
-            .iter_mut()
-            .find(|r| r.id == *rid)
-        {
-            rel.target = format!("worksheets/sheet{}.xml", i + 1);
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1138,6 +1169,99 @@ mod tests {
             .filter(|o| o.content_type == mime_types::WORKSHEET)
             .collect();
         assert_eq!(ws_overrides.len(), 1);
+    }
+
+    #[test]
+    fn test_add_sheet_allocates_after_sparse_custom_targets() {
+        let (mut wb_xml, mut wb_rels, mut ct, mut ws) = test_workbook_parts();
+        let first_rid = wb_xml.sheets.sheets[0].r_id.clone();
+        wb_rels
+            .relationships
+            .iter_mut()
+            .find(|rel| rel.id == first_rid)
+            .unwrap()
+            .target = "worksheets/sheet2.xml".to_string();
+        ct.overrides
+            .retain(|entry| entry.content_type != mime_types::WORKSHEET);
+        ct.overrides.push(ContentTypeOverride {
+            part_name: "/xl/worksheets/sheet2.xml".to_string(),
+            content_type: mime_types::WORKSHEET.to_string(),
+        });
+
+        add_sheet(
+            &mut wb_xml,
+            &mut wb_rels,
+            &mut ct,
+            &mut ws,
+            "Added",
+            WorksheetXml::default(),
+        )
+        .unwrap();
+
+        let added_rid = &wb_xml.sheets.sheets[1].r_id;
+        let added_rel = wb_rels
+            .relationships
+            .iter()
+            .find(|rel| &rel.id == added_rid)
+            .unwrap();
+        assert_eq!(added_rel.target, "worksheets/sheet1.xml");
+    }
+
+    #[test]
+    fn test_delete_sheet_preserves_surviving_custom_targets() {
+        let (mut wb_xml, mut wb_rels, mut ct, mut ws) = test_workbook_parts();
+        add_sheet(
+            &mut wb_xml,
+            &mut wb_rels,
+            &mut ct,
+            &mut ws,
+            "Sheet2",
+            WorksheetXml::default(),
+        )
+        .unwrap();
+        let first_rid = wb_xml.sheets.sheets[0].r_id.clone();
+        let second_rid = wb_xml.sheets.sheets[1].r_id.clone();
+        wb_rels
+            .relationships
+            .iter_mut()
+            .find(|rel| rel.id == first_rid)
+            .unwrap()
+            .target = "worksheets/../worksheets/custom-source.xml".to_string();
+        wb_rels
+            .relationships
+            .iter_mut()
+            .find(|rel| rel.id == second_rid)
+            .unwrap()
+            .target = "worksheets/sheet9.xml".to_string();
+        ct.overrides
+            .retain(|entry| entry.content_type != mime_types::WORKSHEET);
+        ct.overrides.extend([
+            ContentTypeOverride {
+                part_name: "/xl/worksheets/custom-source.xml".to_string(),
+                content_type: mime_types::WORKSHEET.to_string(),
+            },
+            ContentTypeOverride {
+                part_name: "/xl/worksheets/sheet9.xml".to_string(),
+                content_type: mime_types::WORKSHEET.to_string(),
+            },
+        ]);
+
+        delete_sheet(&mut wb_xml, &mut wb_rels, &mut ct, &mut ws, "Sheet1").unwrap();
+
+        let surviving_rel = wb_rels
+            .relationships
+            .iter()
+            .find(|rel| rel.id == second_rid)
+            .unwrap();
+        assert_eq!(surviving_rel.target, "worksheets/sheet9.xml");
+        assert!(ct
+            .overrides
+            .iter()
+            .any(|entry| entry.part_name == "/xl/worksheets/sheet9.xml"));
+        assert!(!ct
+            .overrides
+            .iter()
+            .any(|entry| entry.part_name == "/xl/worksheets/custom-source.xml"));
     }
 
     #[test]
