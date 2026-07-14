@@ -113,9 +113,18 @@ pub fn decrypt_xlsx(data: &[u8], password: &str) -> Result<Vec<u8>> {
         EncryptionInfo::Agile(info) => {
             let encryptor = info
                 .key_encryptors
-                .first()
-                .ok_or_else(|| Error::Internal("no key encryptor found".to_string()))?;
+                .iter()
+                .find(|encryptor| agile::validate_password_encryptor(encryptor).is_ok())
+                .ok_or_else(|| {
+                    Error::UnsupportedEncryption("no usable password key encryptor".to_string())
+                })?;
             let secret_key = agile::verify_password_agile(password, encryptor)?;
+            agile::verify_data_integrity(
+                &encrypted_package,
+                &secret_key,
+                &info.key_data,
+                &info.data_integrity,
+            )?;
             agile::decrypt_package_agile(&encrypted_package, &secret_key, &info.key_data)
         }
     }

@@ -1,7 +1,7 @@
-//! Standard Encryption (Office 2007): AES-128-ECB + SHA-1.
+//! Standard Encryption (Office 2007): AES-ECB + SHA-1.
 //!
-//! This encryption method uses a 128-bit AES key in ECB mode with SHA-1
-//! for key derivation. SheetKit supports decryption only for this format.
+//! This encryption method uses an AES key in ECB mode with SHA-1 for key
+//! derivation. SheetKit supports decryption only for this format.
 
 use crate::error::{Error, Result};
 
@@ -29,33 +29,71 @@ pub struct StandardEncryptionVerifier {
     pub encrypted_verifier_hash: [u8; 32],
 }
 
+const ENCRYPTION_HEADER_FIXED_SIZE: usize = 32;
+const ENCRYPTION_VERIFIER_SIZE: usize = 72;
+const AES_BLOCK_SIZE: usize = 16;
+const CALG_SHA1: u32 = 0x0000_8004;
+const CALG_AES_128: u32 = 0x0000_660e;
+const CALG_AES_192: u32 = 0x0000_660f;
+const CALG_AES_256: u32 = 0x0000_6610;
+const PROV_RSA_AES: u32 = 24;
+
 /// Parse the Standard Encryption binary data (after the 8-byte version header).
 pub fn parse_standard_encryption_info(
     data: &[u8],
 ) -> Result<(StandardEncryptionHeader, StandardEncryptionVerifier)> {
-    // EncryptionHeader starts at offset 0 (after we skipped 8-byte version header)
-    // Header layout:
-    //   4 bytes: header size
-    //   4 bytes: flags
-    //   4 bytes: size extra
-    //   4 bytes: algID
-    //   4 bytes: algIDHash
-    //   4 bytes: keySize
-    //   4 bytes: providerType
-    //   4 bytes: reserved1
-    //   4 bytes: reserved2
-    //   variable: CSP name (UTF-16LE, null-terminated)
-    if data.len() < 36 {
+    if data.len() < 4 {
         return Err(Error::Internal(
             "Standard EncryptionInfo header too short".to_string(),
         ));
     }
 
-    let header_size = u32::from_le_bytes([data[0], data[1], data[2], data[3]]) as usize;
+    let header_size = usize::try_from(read_u32(data, 0, "header size")?).map_err(|_| {
+        Error::Internal("Standard EncryptionInfo header size is unsupported".to_string())
+    })?;
+    if header_size < ENCRYPTION_HEADER_FIXED_SIZE {
+        return Err(Error::Internal(
+            "Standard EncryptionInfo header size is too small".to_string(),
+        ));
+    }
+    let header_end = 4usize.checked_add(header_size).ok_or_else(|| {
+        Error::Internal("Standard EncryptionInfo header size overflows".to_string())
+    })?;
+    if header_end > data.len() {
+        return Err(Error::Internal(
+            "Standard EncryptionInfo header is truncated".to_string(),
+        ));
+    }
 
-    let alg_id = u32::from_le_bytes([data[8], data[9], data[10], data[11]]);
-    let alg_id_hash = u32::from_le_bytes([data[12], data[13], data[14], data[15]]);
-    let key_size = u32::from_le_bytes([data[16], data[17], data[18], data[19]]);
+    let flags = read_u32(data, 4, "flags")?;
+    let size_extra = read_u32(data, 8, "size extra")?;
+    let alg_id = read_u32(data, 12, "algorithm ID")?;
+    let alg_id_hash = read_u32(data, 16, "hash algorithm ID")?;
+    let key_size = read_u32(data, 20, "key size")?;
+    let provider_type = read_u32(data, 24, "provider type")?;
+    let reserved1 = read_u32(data, 28, "reserved field")?;
+    let reserved2 = read_u32(data, 32, "reserved field")?;
+
+    if flags != 0x24 || size_extra != 0 || provider_type != PROV_RSA_AES {
+        return Err(Error::UnsupportedEncryption(
+            "unsupported Standard Encryption header".to_string(),
+        ));
+    }
+    if reserved1 != 0 || reserved2 != 0 {
+        return Err(Error::Internal(
+            "Standard EncryptionInfo reserved fields are not zero".to_string(),
+        ));
+    }
+    validate_standard_algorithm(alg_id, alg_id_hash, key_size)?;
+
+    let csp_name = &data[36..header_end];
+    if !csp_name.is_empty()
+        && (!csp_name.len().is_multiple_of(2) || csp_name[csp_name.len() - 2..] != [0, 0])
+    {
+        return Err(Error::Internal(
+            "Standard EncryptionInfo CSP name is malformed".to_string(),
+        ));
+    }
 
     let header = StandardEncryptionHeader {
         alg_id,
@@ -63,18 +101,20 @@ pub fn parse_standard_encryption_info(
         key_size,
     };
 
-    // EncryptionVerifier starts after the header
-    // The header_size includes from flags onward, so verifier offset = 4 + header_size
-    let verifier_offset = 4 + header_size;
-    let vdata = &data[verifier_offset..];
-
-    if vdata.len() < 68 {
+    let verifier_offset = header_end;
+    let verifier_end = verifier_offset
+        .checked_add(ENCRYPTION_VERIFIER_SIZE)
+        .ok_or_else(|| {
+            Error::Internal("Standard EncryptionInfo verifier offset overflows".to_string())
+        })?;
+    if verifier_end > data.len() {
         return Err(Error::Internal(
             "Standard EncryptionInfo verifier too short".to_string(),
         ));
     }
+    let vdata = &data[verifier_offset..verifier_end];
 
-    let salt_size = u32::from_le_bytes([vdata[0], vdata[1], vdata[2], vdata[3]]);
+    let salt_size = read_u32(vdata, 0, "salt size")?;
     if salt_size != 16 {
         return Err(Error::Internal(format!(
             "unexpected salt size: {salt_size}, expected 16"
@@ -87,7 +127,12 @@ pub fn parse_standard_encryption_info(
     let mut encrypted_verifier = [0u8; 16];
     encrypted_verifier.copy_from_slice(&vdata[20..36]);
 
-    let verifier_hash_size = u32::from_le_bytes([vdata[36], vdata[37], vdata[38], vdata[39]]);
+    let verifier_hash_size = read_u32(vdata, 36, "verifier hash size")?;
+    if verifier_hash_size != 20 {
+        return Err(Error::Internal(format!(
+            "unexpected verifier hash size: {verifier_hash_size}, expected 20"
+        )));
+    }
 
     let mut encrypted_verifier_hash = [0u8; 32];
     encrypted_verifier_hash.copy_from_slice(&vdata[40..72]);
@@ -102,7 +147,7 @@ pub fn parse_standard_encryption_info(
     Ok((header, verifier))
 }
 
-/// Derive a 128-bit AES key from a password using the Standard Encryption
+/// Derive an AES key from a password using the Standard Encryption
 /// key derivation algorithm.
 ///
 /// Algorithm:
@@ -172,6 +217,7 @@ pub fn verify_password_standard(
     header: &StandardEncryptionHeader,
     verifier: &StandardEncryptionVerifier,
 ) -> Result<Vec<u8>> {
+    validate_standard_algorithm(header.alg_id, header.alg_id_hash, header.key_size)?;
     let key = derive_key_standard(password, &verifier.salt, header.key_size);
 
     // AES-ECB decrypt the encrypted verifier
@@ -198,7 +244,7 @@ pub fn verify_password_standard(
     Ok(key)
 }
 
-/// Decrypt the EncryptedPackage using Standard Encryption (AES-128-ECB).
+/// Decrypt the EncryptedPackage using Standard Encryption (AES-ECB).
 pub fn decrypt_package_standard(encrypted_data: &[u8], key: &[u8]) -> Result<Vec<u8>> {
     if encrypted_data.len() < 8 {
         return Err(Error::Internal(
@@ -206,59 +252,209 @@ pub fn decrypt_package_standard(encrypted_data: &[u8], key: &[u8]) -> Result<Vec
         ));
     }
 
-    let original_size = u64::from_le_bytes(encrypted_data[..8].try_into().unwrap()) as usize;
+    let original_size_u64 =
+        u64::from_le_bytes(encrypted_data[..8].try_into().map_err(|_| {
+            Error::Internal("EncryptedPackage size prefix is malformed".to_string())
+        })?);
+    let original_size = usize::try_from(original_size_u64).map_err(|_| {
+        Error::Internal("EncryptedPackage original size is unsupported".to_string())
+    })?;
     let ciphertext = &encrypted_data[8..];
+    if !ciphertext.len().is_multiple_of(AES_BLOCK_SIZE) {
+        return Err(Error::Internal(
+            "EncryptedPackage ciphertext is not AES block aligned".to_string(),
+        ));
+    }
 
     let decrypted = aes_ecb_decrypt(key, ciphertext)?;
+    if original_size > decrypted.len() {
+        return Err(Error::Internal(
+            "EncryptedPackage original size exceeds decrypted data".to_string(),
+        ));
+    }
 
-    // Truncate to original size (remove padding)
-    let mut result = decrypted;
-    result.truncate(original_size);
-
-    Ok(result)
+    Ok(decrypted[..original_size].to_vec())
 }
 
 /// AES-ECB decryption helper.
 fn aes_ecb_decrypt(key: &[u8], data: &[u8]) -> Result<Vec<u8>> {
     use aes::cipher::generic_array::GenericArray;
     use aes::cipher::{BlockDecrypt, KeyInit};
-    use aes::Aes128;
+    if !data.len().is_multiple_of(AES_BLOCK_SIZE) {
+        return Err(Error::Internal(
+            "AES ciphertext is not block aligned".to_string(),
+        ));
+    }
 
-    if key.len() != 16 {
-        return Err(Error::Internal(format!(
-            "AES-128 requires 16-byte key, got {}",
-            key.len()
+    fn decrypt<C: BlockDecrypt + KeyInit>(key: &[u8], data: &[u8]) -> Vec<u8> {
+        let cipher = C::new(GenericArray::from_slice(key));
+        let mut result = Vec::with_capacity(data.len());
+        for chunk in data.chunks_exact(AES_BLOCK_SIZE) {
+            let mut block = GenericArray::clone_from_slice(chunk);
+            cipher.decrypt_block(&mut block);
+            result.extend_from_slice(&block);
+        }
+        result
+    }
+
+    match key.len() {
+        16 => Ok(decrypt::<aes::Aes128>(key, data)),
+        24 => Ok(decrypt::<aes::Aes192>(key, data)),
+        32 => Ok(decrypt::<aes::Aes256>(key, data)),
+        len => Err(Error::UnsupportedEncryption(format!(
+            "unsupported Standard Encryption AES key size: {len} bytes"
+        ))),
+    }
+}
+
+fn read_u32(data: &[u8], offset: usize, field: &str) -> Result<u32> {
+    let bytes = data
+        .get(offset..offset + 4)
+        .ok_or_else(|| Error::Internal(format!("Standard EncryptionInfo {field} is truncated")))?;
+    Ok(u32::from_le_bytes(bytes.try_into().map_err(|_| {
+        Error::Internal(format!("Standard EncryptionInfo {field} is malformed"))
+    })?))
+}
+
+fn validate_standard_algorithm(alg_id: u32, alg_id_hash: u32, key_size: u32) -> Result<()> {
+    if alg_id_hash != CALG_SHA1 {
+        return Err(Error::UnsupportedEncryption(format!(
+            "unsupported Standard Encryption hash algorithm: {alg_id_hash:#x}"
         )));
     }
-
-    let cipher = Aes128::new(GenericArray::from_slice(key));
-
-    // Process 16-byte blocks
-    let mut result = Vec::with_capacity(data.len());
-    for chunk in data.chunks(16) {
-        let mut padded = [0u8; 16];
-        let block_data = if chunk.len() == 16 {
-            chunk
-        } else {
-            padded[..chunk.len()].copy_from_slice(chunk);
-            &padded
-        };
-        let mut block = GenericArray::clone_from_slice(block_data);
-        cipher.decrypt_block(&mut block);
-        result.extend_from_slice(&block);
+    let expected_key_size = match alg_id {
+        CALG_AES_128 => 128,
+        CALG_AES_192 => 192,
+        CALG_AES_256 => 256,
+        _ => {
+            return Err(Error::UnsupportedEncryption(format!(
+                "unsupported Standard Encryption algorithm: {alg_id:#x}"
+            )));
+        }
+    };
+    if key_size != expected_key_size {
+        return Err(Error::UnsupportedEncryption(format!(
+            "unsupported Standard Encryption key size: {key_size}"
+        )));
     }
-
-    Ok(result)
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn valid_standard_info() -> Vec<u8> {
+        let header_size = ENCRYPTION_HEADER_FIXED_SIZE + 2;
+        let mut data = vec![0u8; 4 + header_size + ENCRYPTION_VERIFIER_SIZE];
+        data[0..4].copy_from_slice(&(header_size as u32).to_le_bytes());
+        data[4..8].copy_from_slice(&0x24u32.to_le_bytes());
+        data[12..16].copy_from_slice(&CALG_AES_128.to_le_bytes());
+        data[16..20].copy_from_slice(&CALG_SHA1.to_le_bytes());
+        data[20..24].copy_from_slice(&128u32.to_le_bytes());
+        data[24..28].copy_from_slice(&PROV_RSA_AES.to_le_bytes());
+        data[36..38].copy_from_slice(&[0, 0]);
+
+        let verifier = 4 + header_size;
+        data[verifier..verifier + 4].copy_from_slice(&16u32.to_le_bytes());
+        data[verifier + 4..verifier + 20].copy_from_slice(&[7; 16]);
+        data[verifier + 36..verifier + 40].copy_from_slice(&20u32.to_le_bytes());
+        data
+    }
+
+    fn aes_ecb_encrypt_for_test(key: &[u8; 16], data: &[u8]) -> Vec<u8> {
+        use aes::cipher::generic_array::GenericArray;
+        use aes::cipher::{BlockEncrypt, KeyInit};
+
+        let cipher = aes::Aes128::new(GenericArray::from_slice(key));
+        let mut encrypted = Vec::with_capacity(data.len());
+        for chunk in data.chunks_exact(AES_BLOCK_SIZE) {
+            let mut block = GenericArray::clone_from_slice(chunk);
+            cipher.encrypt_block(&mut block);
+            encrypted.extend_from_slice(&block);
+        }
+        encrypted
+    }
+
     #[test]
     fn test_parse_standard_encryption_info_too_short() {
         let data = vec![0u8; 10];
         assert!(parse_standard_encryption_info(&data).is_err());
+    }
+
+    #[test]
+    fn test_parse_standard_encryption_info_reads_unshifted_algorithm_fields() {
+        let data = valid_standard_info();
+        let (header, verifier) = parse_standard_encryption_info(&data).unwrap();
+
+        assert_eq!(header.alg_id, CALG_AES_128);
+        assert_eq!(header.alg_id_hash, CALG_SHA1);
+        assert_eq!(header.key_size, 128);
+        assert_eq!(verifier.salt, [7; 16]);
+    }
+
+    #[test]
+    fn test_parse_standard_encryption_info_rejects_invalid_header_size() {
+        let mut too_small = valid_standard_info();
+        too_small[0..4].copy_from_slice(&31u32.to_le_bytes());
+        assert!(parse_standard_encryption_info(&too_small).is_err());
+
+        let mut oversized = valid_standard_info();
+        oversized[0..4].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(parse_standard_encryption_info(&oversized).is_err());
+    }
+
+    #[test]
+    fn test_parse_standard_encryption_info_rejects_truncated_verifier() {
+        let mut data = valid_standard_info();
+        data.truncate(data.len() - 1);
+        assert!(parse_standard_encryption_info(&data).is_err());
+    }
+
+    #[test]
+    fn test_parse_standard_encryption_info_rejects_invalid_verifier_sizes() {
+        let mut invalid_salt = valid_standard_info();
+        let verifier = 4 + ENCRYPTION_HEADER_FIXED_SIZE + 2;
+        invalid_salt[verifier..verifier + 4].copy_from_slice(&15u32.to_le_bytes());
+        assert!(parse_standard_encryption_info(&invalid_salt).is_err());
+
+        let mut invalid_hash = valid_standard_info();
+        invalid_hash[verifier + 36..verifier + 40].copy_from_slice(&19u32.to_le_bytes());
+        assert!(parse_standard_encryption_info(&invalid_hash).is_err());
+    }
+
+    #[test]
+    fn test_parse_standard_encryption_info_rejects_unsupported_algorithm() {
+        let mut data = valid_standard_info();
+        data[12..16].copy_from_slice(&0x6601u32.to_le_bytes());
+        assert!(parse_standard_encryption_info(&data).is_err());
+    }
+
+    #[test]
+    fn test_verify_password_standard_accepts_valid_verifier() {
+        use sha1::Digest;
+
+        let mut data = valid_standard_info();
+        let verifier_offset = 4 + ENCRYPTION_HEADER_FIXED_SIZE + 2;
+        let salt = [7; 16];
+        let key: [u8; 16] = derive_key_standard("password", &salt, 128)
+            .try_into()
+            .unwrap();
+        let verifier_plaintext = [9; AES_BLOCK_SIZE];
+        let encrypted_verifier = aes_ecb_encrypt_for_test(&key, &verifier_plaintext);
+        data[verifier_offset + 20..verifier_offset + 36].copy_from_slice(&encrypted_verifier);
+
+        let mut hash_plaintext = [0u8; 32];
+        hash_plaintext[..20].copy_from_slice(&sha1::Sha1::digest(verifier_plaintext));
+        let encrypted_hash = aes_ecb_encrypt_for_test(&key, &hash_plaintext);
+        data[verifier_offset + 40..verifier_offset + 72].copy_from_slice(&encrypted_hash);
+
+        let (header, verifier) = parse_standard_encryption_info(&data).unwrap();
+        assert_eq!(
+            verify_password_standard("password", &header, &verifier).unwrap(),
+            key
+        );
+        assert!(verify_password_standard("incorrect", &header, &verifier).is_err());
     }
 
     #[test]
@@ -282,5 +478,26 @@ mod tests {
         let key1 = derive_key_standard("test", &salt, 128);
         let key2 = derive_key_standard("test", &salt, 128);
         assert_eq!(key1, key2);
+    }
+
+    #[test]
+    fn test_decrypt_package_standard_rejects_malformed_ciphertext() {
+        let mut encrypted = 1u64.to_le_bytes().to_vec();
+        encrypted.extend_from_slice(&[0; 15]);
+        assert!(decrypt_package_standard(&encrypted, &[0; 16]).is_err());
+    }
+
+    #[test]
+    fn test_decrypt_package_standard_rejects_size_beyond_plaintext() {
+        let mut encrypted = 17u64.to_le_bytes().to_vec();
+        encrypted.extend_from_slice(&[0; AES_BLOCK_SIZE]);
+        assert!(decrypt_package_standard(&encrypted, &[0; 16]).is_err());
+    }
+
+    #[test]
+    fn test_decrypt_package_standard_rejects_unsupported_key_size() {
+        let mut encrypted = 0u64.to_le_bytes().to_vec();
+        encrypted.extend_from_slice(&[0; AES_BLOCK_SIZE]);
+        assert!(decrypt_package_standard(&encrypted, &[0; 15]).is_err());
     }
 }
