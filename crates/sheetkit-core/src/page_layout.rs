@@ -7,7 +7,9 @@ use sheetkit_xml::worksheet::{
     Break, HeaderFooter, PageMargins, PageSetup, PrintOptions, RowBreaks, WorksheetXml,
 };
 
+use crate::error::Error;
 use crate::error::Result;
+use crate::utils::constants::{MAX_COLUMNS, MAX_ROWS};
 
 // -- Default margin values (inches, matching Excel defaults) --
 
@@ -299,6 +301,7 @@ pub fn get_print_options(
 ///
 /// If a break already exists at this row, the call is a no-op.
 pub fn insert_page_break(ws: &mut WorksheetXml, row: u32) -> Result<()> {
+    let id = page_break_id(row, MAX_ROWS, Error::InvalidRowNumber)?;
     let rb = ws.row_breaks.get_or_insert_with(|| RowBreaks {
         count: None,
         manual_break_count: None,
@@ -306,13 +309,13 @@ pub fn insert_page_break(ws: &mut WorksheetXml, row: u32) -> Result<()> {
     });
 
     // Avoid duplicate breaks.
-    if rb.brk.iter().any(|b| b.id == row) {
+    if rb.brk.iter().any(|b| b.id == id) {
         return Ok(());
     }
 
     rb.brk.push(Break {
-        id: row,
-        max: Some(16383),
+        id,
+        max: Some(MAX_COLUMNS - 1),
         man: Some(true),
     });
 
@@ -330,8 +333,9 @@ pub fn insert_page_break(ws: &mut WorksheetXml, row: u32) -> Result<()> {
 ///
 /// If no break exists at this row, the call is a no-op.
 pub fn remove_page_break(ws: &mut WorksheetXml, row: u32) -> Result<()> {
+    let id = page_break_id(row, MAX_ROWS, Error::InvalidRowNumber)?;
     if let Some(rb) = &mut ws.row_breaks {
-        rb.brk.retain(|b| b.id != row);
+        rb.brk.retain(|b| b.id != id);
         if rb.brk.is_empty() {
             ws.row_breaks = None;
         } else {
@@ -346,14 +350,82 @@ pub fn remove_page_break(ws: &mut WorksheetXml, row: u32) -> Result<()> {
 /// Get all row page break positions (1-based row numbers).
 pub fn get_page_breaks(ws: &WorksheetXml) -> Vec<u32> {
     match &ws.row_breaks {
-        Some(rb) => rb.brk.iter().map(|b| b.id).collect(),
+        Some(rb) => rb.brk.iter().map(|b| b.id + 1).collect(),
         None => vec![],
     }
+}
+
+/// Insert a vertical page break before the given 1-based column number.
+///
+/// If a break already exists at this column, the call is a no-op.
+pub fn insert_column_page_break(ws: &mut WorksheetXml, column: u32) -> Result<()> {
+    let id = page_break_id(column, MAX_COLUMNS, Error::InvalidColumnNumber)?;
+    let cb = ws.col_breaks.get_or_insert_with(|| RowBreaks {
+        count: None,
+        manual_break_count: None,
+        brk: vec![],
+    });
+
+    if cb.brk.iter().any(|b| b.id == id) {
+        return Ok(());
+    }
+
+    cb.brk.push(Break {
+        id,
+        max: Some(MAX_ROWS - 1),
+        man: Some(true),
+    });
+    cb.brk.sort_by_key(|b| b.id);
+
+    let count = cb.brk.len() as u32;
+    cb.count = Some(count);
+    cb.manual_break_count = Some(count);
+    Ok(())
+}
+
+/// Remove a vertical page break at the given 1-based column number.
+///
+/// If no break exists at this column, the call is a no-op.
+pub fn remove_column_page_break(ws: &mut WorksheetXml, column: u32) -> Result<()> {
+    let id = page_break_id(column, MAX_COLUMNS, Error::InvalidColumnNumber)?;
+    if let Some(cb) = &mut ws.col_breaks {
+        cb.brk.retain(|b| b.id != id);
+        if cb.brk.is_empty() {
+            ws.col_breaks = None;
+        } else {
+            let count = cb.brk.len() as u32;
+            cb.count = Some(count);
+            cb.manual_break_count = Some(count);
+        }
+    }
+    Ok(())
+}
+
+/// Get all column page break positions (1-based column numbers).
+pub fn get_column_page_breaks(ws: &WorksheetXml) -> Vec<u32> {
+    match &ws.col_breaks {
+        Some(cb) => cb.brk.iter().map(|b| b.id + 1).collect(),
+        None => vec![],
+    }
+}
+
+fn page_break_id(
+    coordinate: u32,
+    max_coordinate: u32,
+    invalid: impl FnOnce(u32) -> Error,
+) -> Result<u32> {
+    if !(1..=max_coordinate).contains(&coordinate) {
+        return Err(invalid(coordinate));
+    }
+    Ok(coordinate - 1)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::TempDir;
+
+    use crate::workbook::Workbook;
     use sheetkit_xml::worksheet::WorksheetXml;
 
     // -- Page margins tests --
@@ -638,6 +710,95 @@ mod tests {
 
         let breaks = get_page_breaks(&ws);
         assert_eq!(breaks, vec![10]);
+        assert_eq!(ws.row_breaks.as_ref().unwrap().brk[0].id, 9);
+    }
+
+    #[test]
+    fn test_page_breaks_convert_between_one_based_api_and_ooxml_ids() {
+        let mut ws = WorksheetXml::default();
+        for row in [1, 500_000, 1_048_576] {
+            insert_page_break(&mut ws, row).unwrap();
+        }
+
+        let row_breaks = ws.row_breaks.as_ref().unwrap();
+        assert_eq!(
+            row_breaks
+                .brk
+                .iter()
+                .map(|break_| break_.id)
+                .collect::<Vec<_>>(),
+            vec![0, 499_999, 1_048_575]
+        );
+        assert_eq!(get_page_breaks(&ws), vec![1, 500_000, 1_048_576]);
+
+        let xml = quick_xml::se::to_string(&ws).unwrap();
+        assert!(xml.contains(r#"<brk id="0""#));
+        assert!(xml.contains(r#"max="16383""#));
+        let reopened: WorksheetXml = quick_xml::de::from_str(&xml).unwrap();
+        assert_eq!(get_page_breaks(&reopened), vec![1, 500_000, 1_048_576]);
+    }
+
+    #[test]
+    fn test_column_page_breaks_convert_between_one_based_api_and_ooxml_ids() {
+        let mut ws = WorksheetXml::default();
+        for column in [1, 8_000, 16_384] {
+            insert_column_page_break(&mut ws, column).unwrap();
+        }
+
+        let column_breaks = ws.col_breaks.as_ref().unwrap();
+        assert_eq!(
+            column_breaks
+                .brk
+                .iter()
+                .map(|break_| break_.id)
+                .collect::<Vec<_>>(),
+            vec![0, 7_999, 16_383]
+        );
+        assert_eq!(get_column_page_breaks(&ws), vec![1, 8_000, 16_384]);
+
+        let xml = quick_xml::se::to_string(&ws).unwrap();
+        assert!(xml.contains(r#"<brk id="0""#));
+        assert!(xml.contains(r#"max="1048575""#));
+        let reopened: WorksheetXml = quick_xml::de::from_str(&xml).unwrap();
+        assert_eq!(get_column_page_breaks(&reopened), vec![1, 8_000, 16_384]);
+    }
+
+    #[test]
+    fn test_page_breaks_reject_zero_and_overflow_coordinates() {
+        let mut ws = WorksheetXml::default();
+        assert!(matches!(
+            insert_page_break(&mut ws, 0),
+            Err(crate::error::Error::InvalidRowNumber(0))
+        ));
+        assert!(matches!(
+            insert_page_break(&mut ws, 1_048_577),
+            Err(crate::error::Error::InvalidRowNumber(1_048_577))
+        ));
+        assert!(matches!(
+            insert_column_page_break(&mut ws, 0),
+            Err(crate::error::Error::InvalidColumnNumber(0))
+        ));
+        assert!(matches!(
+            insert_column_page_break(&mut ws, 16_385),
+            Err(crate::error::Error::InvalidColumnNumber(16_385))
+        ));
+    }
+
+    #[test]
+    fn test_page_breaks_survive_workbook_save_and_reopen() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("page-breaks.xlsx");
+        let mut workbook = Workbook::new();
+        for row in [1, 500_000, 1_048_576] {
+            workbook.insert_page_break("Sheet1", row).unwrap();
+        }
+        workbook.save(&path).unwrap();
+
+        let reopened = Workbook::open(&path).unwrap();
+        assert_eq!(
+            reopened.get_page_breaks("Sheet1").unwrap(),
+            vec![1, 500_000, 1_048_576]
+        );
     }
 
     #[test]

@@ -18,6 +18,10 @@ pub struct WorkbookProtectionConfig {
 /// This is NOT cryptographically secure -- it is the same hash algorithm
 /// that Excel uses for the `workbookPassword` attribute. The result is a
 /// 16-bit value that is typically stored as a 4-character uppercase hex string.
+///
+/// Passwords are processed as UTF-8 bytes to preserve the existing public API
+/// behavior. This matches Office-compatible ASCII passwords; non-ASCII input
+/// follows the crate's established byte-oriented policy.
 pub fn legacy_password_hash(password: &str) -> u16 {
     if password.is_empty() {
         return 0;
@@ -25,9 +29,10 @@ pub fn legacy_password_hash(password: &str) -> u16 {
     let mut hash: u16 = 0;
     let bytes = password.as_bytes();
     for (i, &byte) in bytes.iter().enumerate() {
-        let mut intermediate = byte as u16;
-        intermediate = (intermediate << (i + 1)) | (intermediate >> (15 - i));
-        hash ^= intermediate;
+        let rotation = (i + 1) % 15;
+        let value = byte as u16;
+        let rotated = ((value << rotation) & 0x7FFF) | (value >> (15 - rotation));
+        hash ^= rotated & 0x7FFF;
     }
     hash ^= bytes.len() as u16;
     hash ^= 0xCE4B;
@@ -44,21 +49,18 @@ mod tests {
     }
 
     #[test]
-    fn test_legacy_password_hash_known_values() {
-        // "password" should produce a deterministic non-zero hash
-        let h = legacy_password_hash("password");
-        assert_ne!(h, 0);
-        // Verify it is stable across calls
-        assert_eq!(h, legacy_password_hash("password"));
+    fn test_legacy_password_hash_office_compatible_vectors() {
+        assert_eq!(legacy_password_hash("a"), 0xCE88);
+        assert_eq!(legacy_password_hash("test"), 0xCBEB);
+        assert_eq!(legacy_password_hash("password"), 0x83AF);
+        assert_eq!(legacy_password_hash("VelvetSweatshop"), 0x9A0A);
+    }
 
-        // "test" should produce a different hash than "password"
-        let h2 = legacy_password_hash("test");
-        assert_ne!(h2, 0);
-        assert_ne!(h, h2);
-
-        // Single character
-        let h3 = legacy_password_hash("a");
-        assert_ne!(h3, 0);
+    #[test]
+    fn test_legacy_password_hash_rotates_within_15_bits() {
+        assert_eq!(legacy_password_hash("abcdefghij"), 0xFEF1);
+        assert_eq!(legacy_password_hash("abcdefghijklmno"), 0xC6BC);
+        assert_eq!(legacy_password_hash("abcdefghijklmnop"), 0xC643);
     }
 
     #[test]

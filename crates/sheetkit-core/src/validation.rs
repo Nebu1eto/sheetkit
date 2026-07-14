@@ -179,9 +179,8 @@ impl DataValidationConfig {
     /// Create a dropdown list validation.
     ///
     /// The items are joined with commas and quoted for the formula.
-    /// Individual items must not contain commas (Excel limitation).
     pub fn dropdown(sqref: &str, items: &[&str]) -> Self {
-        let formula = format!("\"{}\"", items.join(","));
+        let formula = format!("\"{}\"", items.join(",").replace('"', "\"\""));
         Self {
             sqref: sqref.to_string(),
             validation_type: ValidationType::List,
@@ -292,35 +291,85 @@ fn validate_sqref(sqref: &str) -> Result<()> {
 
 /// Validate formula constraints for the given validation type and operator.
 fn validate_formulas(config: &DataValidationConfig) -> Result<()> {
-    match &config.validation_type {
-        ValidationType::None => {}
-        ValidationType::List | ValidationType::Custom => {
-            if config.formula1.as_ref().is_none_or(|f| f.is_empty()) {
+    let has_formula1 = config
+        .formula1
+        .as_ref()
+        .is_some_and(|formula| !formula.is_empty());
+    let has_formula2 = config
+        .formula2
+        .as_ref()
+        .is_some_and(|formula| !formula.is_empty());
+
+    match config.validation_type {
+        ValidationType::None => {
+            if config.operator.is_some() || has_formula1 || has_formula2 {
+                return Err(Error::InvalidArgument(
+                    "none validation does not accept an operator or formulas".to_string(),
+                ));
+            }
+        }
+        ValidationType::List => {
+            if !has_formula1 {
+                return Err(Error::InvalidArgument(
+                    "formula1 is required for List validation".to_string(),
+                ));
+            }
+            if config.operator.is_some() || has_formula2 {
+                return Err(Error::InvalidArgument(
+                    "list validation does not accept an operator or formula2".to_string(),
+                ));
+            }
+            let formula1 = config.formula1.as_ref().unwrap();
+            if is_inline_list_formula(formula1) && formula1.chars().count() > 255 {
                 return Err(Error::InvalidArgument(format!(
-                    "formula1 is required for {:?} validation",
-                    config.validation_type
+                    "inline list formula1 is {} characters (max 255)",
+                    formula1.chars().count()
                 )));
             }
         }
+        ValidationType::Custom => {
+            if !has_formula1 {
+                return Err(Error::InvalidArgument(
+                    "formula1 is required for Custom validation".to_string(),
+                ));
+            }
+            if config.operator.is_some() || has_formula2 {
+                return Err(Error::InvalidArgument(
+                    "custom validation does not accept an operator or formula2".to_string(),
+                ));
+            }
+        }
         _ => {
-            // Types that use an operator need formula1 at minimum.
-            if config.formula1.as_ref().is_none_or(|f| f.is_empty()) {
+            if !has_formula1 {
                 return Err(Error::InvalidArgument(format!(
                     "formula1 is required for {:?} validation",
                     config.validation_type
                 )));
             }
-            if let Some(op) = &config.operator {
-                if op.needs_formula2() && config.formula2.as_ref().is_none_or(|f| f.is_empty()) {
-                    return Err(Error::InvalidArgument(format!(
-                        "formula2 is required for {:?} operator",
-                        op
-                    )));
-                }
+            let operator = config.operator.as_ref().ok_or_else(|| {
+                Error::InvalidArgument(format!(
+                    "operator is required for {:?} validation",
+                    config.validation_type
+                ))
+            })?;
+            if operator.needs_formula2() != has_formula2 {
+                let requirement = if operator.needs_formula2() {
+                    "formula2 is required"
+                } else {
+                    "formula2 is only valid"
+                };
+                return Err(Error::InvalidArgument(format!(
+                    "{requirement} for {:?} operator",
+                    operator
+                )));
             }
         }
     }
     Ok(())
+}
+
+fn is_inline_list_formula(formula: &str) -> bool {
+    formula.starts_with('"') && formula.ends_with('"')
 }
 
 /// Convert a `DataValidationConfig` to the XML `DataValidation` struct.
@@ -427,6 +476,31 @@ mod tests {
         assert!(config.allow_blank);
         assert!(config.show_input_message);
         assert!(config.show_error_message);
+    }
+
+    #[test]
+    fn test_dropdown_escapes_embedded_quotes() {
+        let config = DataValidationConfig::dropdown("A1", &["North, East", "He said \"yes\""]);
+        assert_eq!(
+            config.formula1,
+            Some("\"North, East,He said \"\"yes\"\"\"".to_string())
+        );
+    }
+
+    #[test]
+    fn test_dropdown_quote_escaping_survives_xml_roundtrip() {
+        let mut ws = WorksheetXml::default();
+        let config = DataValidationConfig::dropdown("A1", &["North, East", "He said \"yes\""]);
+        add_validation(&mut ws, &config).unwrap();
+
+        let xml = quick_xml::se::to_string(&ws).unwrap();
+        assert!(xml.contains("<formula1>\"North, East,He said \"\"yes\"\"\"</formula1>"));
+
+        let reopened: WorksheetXml = quick_xml::de::from_str(&xml).unwrap();
+        assert_eq!(
+            get_validations(&reopened)[0].formula1,
+            Some("\"North, East,He said \"\"yes\"\"\"".to_string())
+        );
     }
 
     #[test]
@@ -746,6 +820,104 @@ mod tests {
             show_error_message: false,
         };
         assert!(add_validation(&mut ws, &config).is_err());
+    }
+
+    #[test]
+    fn test_validation_type_requires_its_applicable_operator_and_formulas() {
+        let base = |validation_type, operator, formula1, formula2| DataValidationConfig {
+            sqref: "A1".to_string(),
+            validation_type,
+            operator,
+            formula1,
+            formula2,
+            allow_blank: true,
+            error_style: None,
+            error_title: None,
+            error_message: None,
+            prompt_title: None,
+            prompt_message: None,
+            show_input_message: true,
+            show_error_message: true,
+        };
+        let mut ws = WorksheetXml::default();
+
+        assert!(add_validation(
+            &mut ws,
+            &base(ValidationType::Date, None, Some("1".to_string()), None)
+        )
+        .is_err());
+        assert!(add_validation(
+            &mut ws,
+            &base(
+                ValidationType::Time,
+                Some(ValidationOperator::Equal),
+                Some("1".to_string()),
+                Some("2".to_string()),
+            )
+        )
+        .is_err());
+        assert!(add_validation(
+            &mut ws,
+            &base(
+                ValidationType::Custom,
+                Some(ValidationOperator::Equal),
+                Some("A1>0".to_string()),
+                None,
+            )
+        )
+        .is_err());
+        assert!(add_validation(
+            &mut ws,
+            &base(
+                ValidationType::TextLength,
+                Some(ValidationOperator::LessThanOrEqual),
+                Some("10".to_string()),
+                None,
+            )
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn test_inline_list_formula_limit_counts_characters_and_preserves_worksheet() {
+        let mut ws = WorksheetXml::default();
+        let valid = DataValidationConfig::dropdown("A1", &[&"a".repeat(253)]);
+        add_validation(&mut ws, &valid).unwrap();
+
+        let too_long = DataValidationConfig::dropdown("A2", &[&"a".repeat(254)]);
+        let error = add_validation(&mut ws, &too_long).unwrap_err();
+        assert!(error.to_string().contains("255"));
+        assert_eq!(
+            ws.data_validations.as_ref().unwrap().data_validations.len(),
+            1
+        );
+
+        let non_ascii = DataValidationConfig::dropdown("A3", &[&"é".repeat(253)]);
+        add_validation(&mut ws, &non_ascii).unwrap();
+
+        let non_ascii_too_long = DataValidationConfig::dropdown("A4", &[&"é".repeat(254)]);
+        assert!(add_validation(&mut ws, &non_ascii_too_long).is_err());
+    }
+
+    #[test]
+    fn test_list_range_source_is_not_subject_to_inline_list_limit() {
+        let mut ws = WorksheetXml::default();
+        let config = DataValidationConfig {
+            sqref: "A1".to_string(),
+            validation_type: ValidationType::List,
+            operator: None,
+            formula1: Some(format!("=Sheet1!${}$1", "A".repeat(300))),
+            formula2: None,
+            allow_blank: true,
+            error_style: None,
+            error_title: None,
+            error_message: None,
+            prompt_title: None,
+            prompt_message: None,
+            show_input_message: true,
+            show_error_message: true,
+        };
+        assert!(add_validation(&mut ws, &config).is_ok());
     }
 
     #[test]

@@ -328,7 +328,9 @@ pub fn decompress_vba_stream(data: &[u8]) -> Result<Vec<u8>> {
 
     while pos < data.len() {
         if pos + 1 >= data.len() {
-            break;
+            return Err(Error::Internal(
+                "truncated VBA compressed chunk header".to_string(),
+            ));
         }
 
         // Read chunk header (2 bytes, little-endian)
@@ -338,14 +340,15 @@ pub fn decompress_vba_stream(data: &[u8]) -> Result<Vec<u8>> {
         let chunk_size = (header & 0x0FFF) as usize + 3;
         let is_compressed = (header & 0x8000) != 0;
 
-        let chunk_end = (pos + chunk_size - 2).min(data.len());
+        let payload_size = chunk_size - 2;
+        let chunk_end = pos
+            .checked_add(payload_size)
+            .filter(|&end| end <= data.len())
+            .ok_or_else(|| Error::Internal("truncated VBA compressed chunk".to_string()))?;
 
         if !is_compressed {
             // Uncompressed chunk: raw bytes (4096 bytes max)
             let raw_end = chunk_end.min(pos + 4096);
-            if raw_end > data.len() {
-                break;
-            }
             output.extend_from_slice(&data[pos..raw_end]);
             pos = chunk_end;
             continue;
@@ -368,34 +371,44 @@ pub fn decompress_vba_stream(data: &[u8]) -> Result<Vec<u8>> {
 
                 if (flag_byte >> bit_index) & 1 == 0 {
                     // Literal byte
+                    if output.len() - chunk_start_output >= 4096 {
+                        return Err(Error::Internal(
+                            "VBA literal exceeds decompressed chunk size".to_string(),
+                        ));
+                    }
                     output.push(data[pos]);
                     pos += 1;
                 } else {
                     // Copy token (2 bytes, little-endian)
-                    if pos + 1 >= data.len() {
-                        pos = chunk_end;
-                        break;
+                    if pos + 1 >= chunk_end {
+                        return Err(Error::Internal("truncated VBA copy token".to_string()));
                     }
                     let token = u16::from_le_bytes([data[pos], data[pos + 1]]);
                     pos += 2;
 
                     // Calculate the number of bits for the length and offset
                     let decompressed_current = output.len() - chunk_start_output;
-                    let bit_count = max_bit_count(decompressed_current);
+                    let bit_count = offset_bit_count(decompressed_current);
                     let length_mask = 0xFFFF >> bit_count;
                     let offset_mask = !length_mask;
 
                     let length = ((token & length_mask) + 3) as usize;
                     let offset = (((token & offset_mask) >> (16 - bit_count)) + 1) as usize;
 
-                    if offset > output.len() {
-                        // Invalid offset, skip
-                        break;
+                    if offset == 0 || offset > decompressed_current {
+                        return Err(Error::Internal(format!(
+                            "invalid VBA copy token offset {offset} at chunk position {decompressed_current}"
+                        )));
+                    }
+                    if decompressed_current + length > 4096 {
+                        return Err(Error::Internal(format!(
+                            "VBA copy token exceeds decompressed chunk size: {} bytes",
+                            decompressed_current + length
+                        )));
                     }
 
-                    let copy_start = output.len() - offset;
-                    for i in 0..length {
-                        let byte = output[copy_start + (i % offset)];
+                    for _ in 0..length {
+                        let byte = output[output.len() - offset];
                         output.push(byte);
                     }
                 }
@@ -409,32 +422,32 @@ pub fn decompress_vba_stream(data: &[u8]) -> Result<Vec<u8>> {
 /// Calculate the bit count for the copy token offset field.
 /// Per MS-OVBA 2.4.1.3.19.1:
 /// The number of bits used for the offset is ceil(log2(decompressed_current)) with min 4.
-fn max_bit_count(decompressed_current: usize) -> u16 {
+fn offset_bit_count(decompressed_current: usize) -> u16 {
     if decompressed_current <= 16 {
-        return 12;
+        return 4;
     }
     if decompressed_current <= 32 {
-        return 11;
+        return 5;
     }
     if decompressed_current <= 64 {
-        return 10;
+        return 6;
     }
     if decompressed_current <= 128 {
-        return 9;
+        return 7;
     }
     if decompressed_current <= 256 {
         return 8;
     }
     if decompressed_current <= 512 {
-        return 7;
+        return 9;
     }
     if decompressed_current <= 1024 {
-        return 6;
+        return 10;
     }
     if decompressed_current <= 2048 {
-        return 5;
+        return 11;
     }
-    4 // >= 4096
+    12
 }
 
 /// Parse the decompressed `dir` stream to extract module entries and codepage.
@@ -467,11 +480,23 @@ fn parse_dir_stream(data: &[u8]) -> Result<DirInfo> {
                 as usize;
         pos += 6;
 
-        if pos + record_size > data.len() {
-            break;
+        let payload_size = if record_id == 0x0009 {
+            if record_size != 4 {
+                return Err(Error::Internal(format!(
+                    "invalid PROJECTVERSION declared size {record_size}"
+                )));
+            }
+            6
+        } else {
+            record_size
+        };
+        if pos + payload_size > data.len() {
+            return Err(Error::Internal(format!(
+                "truncated VBA dir record 0x{record_id:04X}"
+            )));
         }
 
-        let record_data = &data[pos..pos + record_size];
+        let record_data = &data[pos..pos + payload_size];
 
         match record_id {
             // PROJECTCODEPAGE
@@ -572,7 +597,7 @@ fn parse_dir_stream(data: &[u8]) -> Result<DirInfo> {
             _ => {}
         }
 
-        pos += record_size;
+        pos += payload_size;
     }
 
     // Save the last module if present
@@ -690,26 +715,100 @@ mod tests {
     }
 
     #[test]
-    fn test_max_bit_count() {
-        assert_eq!(max_bit_count(0), 12);
-        assert_eq!(max_bit_count(1), 12);
-        assert_eq!(max_bit_count(16), 12);
-        assert_eq!(max_bit_count(17), 11);
-        assert_eq!(max_bit_count(32), 11);
-        assert_eq!(max_bit_count(33), 10);
-        assert_eq!(max_bit_count(64), 10);
-        assert_eq!(max_bit_count(65), 9);
-        assert_eq!(max_bit_count(128), 9);
-        assert_eq!(max_bit_count(129), 8);
-        assert_eq!(max_bit_count(256), 8);
-        assert_eq!(max_bit_count(257), 7);
-        assert_eq!(max_bit_count(512), 7);
-        assert_eq!(max_bit_count(513), 6);
-        assert_eq!(max_bit_count(1024), 6);
-        assert_eq!(max_bit_count(1025), 5);
-        assert_eq!(max_bit_count(2048), 5);
-        assert_eq!(max_bit_count(2049), 4);
-        assert_eq!(max_bit_count(4096), 4);
+    fn test_offset_bit_count_thresholds() {
+        for (position, expected) in [
+            (0, 4),
+            (16, 4),
+            (17, 5),
+            (32, 5),
+            (33, 6),
+            (64, 6),
+            (65, 7),
+            (128, 7),
+            (129, 8),
+            (256, 8),
+            (257, 9),
+            (512, 9),
+            (513, 10),
+            (1024, 10),
+            (1025, 11),
+            (2048, 11),
+            (2049, 12),
+            (4096, 12),
+        ] {
+            assert_eq!(offset_bit_count(position), expected, "position {position}");
+        }
+    }
+
+    #[test]
+    fn test_copy_tokens_at_each_bit_width_threshold() {
+        for position in [
+            16, 17, 32, 33, 64, 65, 128, 129, 256, 257, 512, 513, 1024, 1025, 2048, 2049,
+        ] {
+            let literals: Vec<u8> = (0..position).map(|i| (i % 251) as u8).collect();
+            let offset = position.min(13);
+            let stream = compressed_copy_stream(&literals, offset, 3);
+            let output = decompress_vba_stream(&stream).unwrap();
+            assert_eq!(
+                &output[position..],
+                &literals[position - offset..position - offset + 3]
+            );
+        }
+    }
+
+    #[test]
+    fn test_copy_token_uses_overlapping_expanding_output() {
+        let output = decompress_vba_stream(&compressed_copy_stream(b"abc", 3, 9)).unwrap();
+        assert_eq!(output, b"abcabcabcabc");
+    }
+
+    #[test]
+    fn test_maximum_valid_copy_token_fills_chunk() {
+        let output = decompress_vba_stream(&compressed_copy_stream(b"x", 1, 4095)).unwrap();
+        assert_eq!(output.len(), 4096);
+        assert!(output.iter().all(|&byte| byte == b'x'));
+    }
+
+    #[test]
+    fn test_copy_token_rejects_offset_beyond_current_chunk() {
+        let error = decompress_vba_stream(&compressed_copy_stream(b"x", 2, 3)).unwrap_err();
+        assert!(error.to_string().contains("offset 2"));
+    }
+
+    #[test]
+    fn test_copy_token_rejects_output_past_chunk_limit() {
+        let error = decompress_vba_stream(&compressed_copy_stream(b"x", 1, 4096)).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("exceeds decompressed chunk size"));
+    }
+
+    #[test]
+    fn test_copy_token_rejects_truncated_token() {
+        let data = [0x01, 0x01, 0x80, 0x01, 0x00];
+        let error = decompress_vba_stream(&data).unwrap_err();
+        assert!(error.to_string().contains("truncated VBA copy token"));
+    }
+
+    #[test]
+    fn test_project_version_consumes_fixed_six_byte_payload() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&0x0009u16.to_le_bytes());
+        data.extend_from_slice(&4u32.to_le_bytes());
+        data.extend_from_slice(&0x0001_0000u32.to_le_bytes());
+        data.extend_from_slice(&7u16.to_le_bytes());
+        write_dir_record(&mut data, 0x0003, &65001u16.to_le_bytes());
+
+        assert_eq!(parse_dir_stream(&data).unwrap().codepage, 65001);
+    }
+
+    #[test]
+    fn test_project_version_rejects_truncated_fixed_payload() {
+        let mut data = Vec::new();
+        data.extend_from_slice(&0x0009u16.to_le_bytes());
+        data.extend_from_slice(&4u32.to_le_bytes());
+        data.extend_from_slice(&1u32.to_le_bytes());
+        assert!(parse_dir_stream(&data).is_err());
     }
 
     #[test]
@@ -999,7 +1098,9 @@ mod tests {
         version.extend_from_slice(&1u32.to_le_bytes());
         version.extend_from_slice(&0u16.to_le_bytes());
         // Version record is special: id=0x0009, size=4 for major, then 2 bytes minor appended
-        write_dir_record(&mut data, 0x0009, &version);
+        data.extend_from_slice(&0x0009u16.to_le_bytes());
+        data.extend_from_slice(&4u32.to_le_bytes());
+        data.extend_from_slice(&version);
 
         // PROJECTCONSTANTS (0x000C): empty
         write_dir_record(&mut data, 0x000C, &[]);
@@ -1047,6 +1148,31 @@ mod tests {
         buf.extend_from_slice(data);
     }
 
+    fn compressed_copy_stream(literals: &[u8], offset: usize, length: usize) -> Vec<u8> {
+        let mut payload = Vec::new();
+        let mut literal_pos = 0;
+        while literals.len() - literal_pos >= 8 {
+            payload.push(0);
+            payload.extend_from_slice(&literals[literal_pos..literal_pos + 8]);
+            literal_pos += 8;
+        }
+
+        let remaining = literals.len() - literal_pos;
+        payload.push(1 << remaining);
+        payload.extend_from_slice(&literals[literal_pos..]);
+
+        let offset_bits = offset_bit_count(literals.len());
+        let length_bits = 16 - offset_bits;
+        let token = (((offset - 1) as u16) << length_bits) | (length - 3) as u16;
+        payload.extend_from_slice(&token.to_le_bytes());
+
+        let header = 0x8000 | ((payload.len() as u16 - 1) & 0x0FFF);
+        let mut stream = vec![0x01];
+        stream.extend_from_slice(&header.to_le_bytes());
+        stream.extend_from_slice(&payload);
+        stream
+    }
+
     /// Minimal MS-OVBA "compression" that produces an uncompressed container.
     /// Signature 0x01 + one uncompressed chunk per 4096 bytes.
     fn compress_for_test(data: &[u8]) -> Vec<u8> {
@@ -1055,8 +1181,8 @@ mod tests {
         while pos < data.len() {
             let chunk_len = (data.len() - pos).min(4096);
             let chunk_data = &data[pos..pos + chunk_len];
-            // Chunk header: bit 15 = 0 (uncompressed), bits 0-11 = chunk_len + 2 - 3
-            let header: u16 = (chunk_len as u16 + 2).wrapping_sub(3) & 0x0FFF;
+            // An uncompressed chunk always carries a full 4096-byte payload.
+            let header: u16 = 0x0FFF;
             result.extend_from_slice(&header.to_le_bytes());
             result.extend_from_slice(chunk_data);
             // Pad to 4096 if needed

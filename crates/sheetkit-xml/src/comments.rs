@@ -2,7 +2,7 @@
 //!
 //! Represents `xl/comments{N}.xml` in the OOXML package.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::namespaces;
 
@@ -48,10 +48,52 @@ pub struct Comment {
 }
 
 /// Comment text content.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct CommentText {
     #[serde(rename = "r", default)]
     pub runs: Vec<CommentRun>,
+}
+
+impl<'de> Deserialize<'de> for CommentText {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let elements = CommentTextElements::deserialize(deserializer)?;
+        Ok(Self {
+            runs: elements
+                .content
+                .into_iter()
+                .map(|element| match element {
+                    CommentTextElement::Run(run) => run,
+                    CommentTextElement::DirectText(t) => CommentRun {
+                        rpr: None,
+                        t: t.value,
+                    },
+                })
+                .collect(),
+        })
+    }
+}
+
+#[derive(Deserialize)]
+struct CommentTextElements {
+    #[serde(rename = "$value", default)]
+    content: Vec<CommentTextElement>,
+}
+
+#[derive(Deserialize)]
+enum CommentTextElement {
+    #[serde(rename = "r")]
+    Run(CommentRun),
+    #[serde(rename = "t")]
+    DirectText(CommentTextValue),
+}
+
+#[derive(Deserialize)]
+struct CommentTextValue {
+    #[serde(rename = "$value", default)]
+    value: String,
 }
 
 /// A text run within a comment.
@@ -146,5 +188,51 @@ mod tests {
             parsed.comment_list.comments[0].text.runs[0].t,
             "This is a comment"
         );
+    }
+
+    #[test]
+    fn test_comment_text_deserializes_direct_rich_and_mixed_text_in_order() {
+        let xml = r#"
+<comments xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <authors><author>Author</author></authors>
+  <commentList>
+    <comment ref="A1" authorId="0"><text><t>plain text &amp; more</t></text></comment>
+    <comment ref="A2" authorId="0"><text><r><rPr><b/></rPr><t>rich text</t></r></text></comment>
+    <comment ref="A3" authorId="0"><text><t>first part</t><r><t>middle part</t></r><t>last part</t></text></comment>
+  </commentList>
+</comments>"#;
+
+        let parsed: Comments = quick_xml::de::from_str(xml).unwrap();
+        let direct = &parsed.comment_list.comments[0].text;
+        assert_eq!(
+            direct
+                .runs
+                .iter()
+                .map(|run| run.t.as_str())
+                .collect::<String>(),
+            "plain text & more"
+        );
+        assert!(direct.runs[0].rpr.is_none());
+
+        let rich = &parsed.comment_list.comments[1].text;
+        assert_eq!(rich.runs[0].t, "rich text");
+        assert!(rich.runs[0].rpr.is_some());
+
+        let mixed = &parsed.comment_list.comments[2].text;
+        assert_eq!(
+            mixed
+                .runs
+                .iter()
+                .map(|run| run.t.as_str())
+                .collect::<String>(),
+            "first partmiddle partlast part"
+        );
+
+        let serialized = quick_xml::se::to_string(&parsed).unwrap();
+        assert_eq!(serialized.matches("plain text &amp; more").count(), 1);
+        assert_eq!(serialized.matches("rich text").count(), 1);
+        assert_eq!(serialized.matches("first part").count(), 1);
+        let reparsed: Comments = quick_xml::de::from_str(&serialized).unwrap();
+        assert_eq!(reparsed, parsed);
     }
 }
