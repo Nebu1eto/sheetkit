@@ -1,0 +1,13 @@
+
+===== tag ^save_latency/ =====
+    Finished `bench` profile [optimized] target(s) in 0.12s
+     Running benches/open_modes.rs (/tmp/sheetkit-u1-20260715/targets/tag/release/deps/open_modes-887357c68bd414a8)
+Gnuplot not found, using plotters backend
+Benchmarking save_latency/save/scale-1k
+Benchmarking save_latency/save/scale-1k: Warming up for 3.0000 s
+
+thread 'main' (2301177) panicked at crates/sheetkit-core/benches/open_modes.rs:123:37:
+save failed: UnsupportedFileExtension("")
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+error: bench failed, to rerun pass `-p sheetkit-core --bench open_modes`

@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "capturedAtUtc": "2026-07-15T13:19:45.099Z",
+  "refs": {
+    "tag": "f9eac5366eb83b6dd79d5dd6d03a8988b5c319a8",
+    "current": "150e57939ac816a9bfa86daa856b432a135e3ca9"
+  },
+  "sourceTransport": "git archive (no worktree)",
+  "tempRoot": "/tmp/sheetkit-u1-20260715",
+  "machine": {
+    "os": "macOS 26.5.2 (25F84)",
+    "kernel": "Darwin 25.5.0 arm64",
+    "cpu": "Apple M4 Pro",
+    "ramBytes": 25769803776
+  },
+  "toolchain": {
+    "rustc": "rustc 1.93.0 (254b59607 2026-01-19)",
+    "cargo": "cargo 1.93.0 (083ac5135 2025-12-15)",
+    "node": "v25.3.0",
+    "pnpm": "10.29.1"
+  },
+  "resolution": {
+    "cargoLockSha256": "40016c54b483615aaca6875c4274a0a749fd3237b228fe1c840de7be96e98809",
+    "pnpmLockSha256": "608513dffc382d0f98f2d623d9ee8618fec66011a07efcabbd6fb362c140ba95",
+    "cargoLockGeneration": "generated once in current archive with cargo generate-lockfile, copied byte-for-byte to tag archive"
+  },
+  "benchmarkSources": {
+    "rustOpenModesSha256": "adaf8a2279ffe16c88624092718ec3ab38a227ca289b34912073776b1ad69628",
+    "nodeFocusedSha256": "8712fcf18bfe83bd0f62f673245827f391b9ace26390d38770cc8ace0af7f60f",
+    "identicalAcrossRefs": true
+  },
+  "fixtureManifest": "fixture-sha256.txt"
+}

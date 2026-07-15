@@ -1,5 +1,7 @@
 use super::*;
+use crate::workbook::budget::OpenBudget;
 use crate::workbook::open_options::OpenOptions;
+use crate::workbook::package_reader::{ArchiveAccess, PackageReader};
 
 /// VBA project relationship type URI.
 const VBA_PROJECT_REL_TYPE: &str =
@@ -150,7 +152,10 @@ impl Workbook {
         }
 
         let file = std::fs::File::open(file_path)?;
-        let mut archive = zip::ZipArchive::new(file).map_err(|e| Error::Zip(e.to_string()))?;
+        let outer_size = file.metadata()?.len();
+        let mut budget = OpenBudget::new(options.resolved_limits()?)?;
+        budget.check_outer_input(outer_size)?;
+        let mut archive = PackageReader::open(file, &mut budget)?;
         let mut wb = Self::from_archive(&mut archive, options)?;
         wb.package_source = Some(PackageSource::Path(file_path.to_path_buf()));
         wb.read_mode = options.read_mode;
@@ -158,34 +163,7 @@ impl Workbook {
     }
 
     /// Build a Workbook from an already-opened ZIP archive.
-    fn from_archive<R: std::io::Read + std::io::Seek>(
-        archive: &mut zip::ZipArchive<R>,
-        options: &OpenOptions,
-    ) -> Result<Self> {
-        // ZIP safety checks: entry count and total decompressed size.
-        if let Some(max_entries) = options.max_zip_entries {
-            let count = archive.len();
-            if count > max_entries {
-                return Err(Error::ZipEntryCountExceeded {
-                    count,
-                    limit: max_entries,
-                });
-            }
-        }
-        if let Some(max_size) = options.max_unzip_size {
-            let mut total_size: u64 = 0;
-            for i in 0..archive.len() {
-                let entry = archive.by_index(i).map_err(|e| Error::Zip(e.to_string()))?;
-                total_size = total_size.saturating_add(entry.size());
-                if total_size > max_size {
-                    return Err(Error::ZipSizeExceeded {
-                        size: total_size,
-                        limit: max_size,
-                    });
-                }
-            }
-        }
-
+    fn from_archive<A: ArchiveAccess>(archive: &mut A, options: &OpenOptions) -> Result<Self> {
         // Track all ZIP entry paths that are explicitly handled so that the
         // remaining entries can be preserved as unknown parts.
         let mut known_paths: HashSet<String> = HashSet::new();
@@ -684,11 +662,9 @@ impl Workbook {
         let mut unknown_parts: Vec<(String, Vec<u8>)> = Vec::new();
         let mut deferred_parts = crate::workbook::aux::DeferredAuxParts::new();
         for i in 0..archive.len() {
-            let Ok(entry) = archive.by_index(i) else {
+            let Ok(name) = archive.entry_name(i) else {
                 continue;
             };
-            let name = entry.name().to_string();
-            drop(entry);
             if !known_paths.contains(&name) {
                 if let Ok(bytes) = read_bytes_part(archive, &name) {
                     if skip_aux && crate::workbook::aux::classify_deferred_path(&name).is_some() {
@@ -723,6 +699,10 @@ impl Workbook {
                 // Ensure cells within a row are sorted by column number.
                 row.cells.sort_unstable_by_key(|c| c.col);
             }
+        }
+
+        if let Some(metadata) = archive.resource_violation() {
+            return Err(Error::ResourceLimitExceeded(metadata));
         }
 
         Ok(Self {
@@ -843,7 +823,11 @@ impl Workbook {
         }
 
         let cursor = std::io::Cursor::new(data);
-        let mut archive = zip::ZipArchive::new(cursor).map_err(|e| Error::Zip(e.to_string()))?;
+        let outer_size = u64::try_from(data.len()).unwrap_or(u64::MAX);
+        let mut budget = OpenBudget::new(options.resolved_limits()?)?;
+        budget.check_outer_input(outer_size)?;
+        budget.charge_retained(outer_size)?;
+        let mut archive = PackageReader::open(cursor, &mut budget)?;
         let mut wb = Self::from_archive(&mut archive, options)?;
         wb.package_source = Some(PackageSource::Buffer(data.into()));
         wb.read_mode = options.read_mode;
@@ -1027,13 +1011,21 @@ impl Workbook {
                 .filter(|relationship| relationship.rel_type == rel_types::VML_DRAWING)
                 .map(|relationship| resolve_relationship_target(&sheet_path, &relationship.target))
                 .collect();
-            let original_control_entries = self
-                .raw_sheet_xml
+            let controls_dirty = self
+                .sheet_controls_dirty
                 .get(sheet_idx)
-                .and_then(|raw| raw.as_deref())
-                .and_then(|raw| std::str::from_utf8(raw).ok())
-                .map(parse_worksheet_control_entries)
-                .unwrap_or_default();
+                .copied()
+                .unwrap_or(false);
+            let original_control_entries = if controls_dirty {
+                self.raw_sheet_xml
+                    .get(sheet_idx)
+                    .and_then(|raw| raw.as_deref())
+                    .and_then(|raw| std::str::from_utf8(raw).ok())
+                    .map(parse_worksheet_control_entries)
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
             let has_comments = self
                 .sheet_comments
                 .get(sheet_idx)
@@ -1043,11 +1035,6 @@ impl Workbook {
                 .sheet_form_controls
                 .get(sheet_idx)
                 .map(|v| !v.is_empty())
-                .unwrap_or(false);
-            let controls_dirty = self
-                .sheet_controls_dirty
-                .get(sheet_idx)
-                .copied()
                 .unwrap_or(false);
             let has_preserved_vml = self
                 .sheet_vml
@@ -2169,17 +2156,19 @@ const LARGE_BUF_CAPACITY: usize = 64 * 1024;
 /// that `read_to_string` + `from_str` would require. The BufReader
 /// capacity is scaled based on the uncompressed entry size, up to 64 KB,
 /// to reduce read-syscall overhead on large parts.
-pub(crate) fn read_xml_part<T: serde::de::DeserializeOwned, R: std::io::Read + std::io::Seek>(
-    archive: &mut zip::ZipArchive<R>,
+pub(crate) fn read_xml_part<T: serde::de::DeserializeOwned, A: ArchiveAccess>(
+    archive: &mut A,
     name: &str,
 ) -> Result<T> {
-    let entry = archive
-        .by_name(name)
-        .map_err(|e| Error::Zip(e.to_string()))?;
-    let size = entry.size() as usize;
-    let buf_cap = size.clamp(8192, LARGE_BUF_CAPACITY);
-    let reader = std::io::BufReader::with_capacity(buf_cap, entry);
-    quick_xml::de::from_reader(reader).map_err(|e| Error::XmlDeserialize(e.to_string()))
+    let result = {
+        let entry = archive.entry(name, true)?;
+        let reader = std::io::BufReader::with_capacity(LARGE_BUF_CAPACITY, entry);
+        quick_xml::de::from_reader(reader).map_err(|e| Error::XmlDeserialize(e.to_string()))
+    };
+    if let Some(metadata) = archive.resource_violation() {
+        return Err(Error::ResourceLimitExceeded(metadata));
+    }
+    result
 }
 
 pub(crate) fn deserialize_xml_bytes<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T> {
@@ -2199,24 +2188,11 @@ enum SharedStringTextTarget {
 
 /// Deserialize an SST while retaining whitespace that quick-xml's serde
 /// deserializer trims from text nodes.
-fn read_shared_strings_part<R: std::io::Read + std::io::Seek>(
-    archive: &mut zip::ZipArchive<R>,
-    name: &str,
-) -> Result<Option<Sst>> {
-    let entry = match archive.by_name(name) {
-        Ok(entry) => entry,
-        Err(zip::result::ZipError::FileNotFound) => return Ok(None),
-        Err(error) => return Err(Error::Zip(error.to_string())),
+fn read_shared_strings_part<A: ArchiveAccess>(archive: &mut A, name: &str) -> Result<Option<Sst>> {
+    let Some(bytes) = read_all_optional_part(archive, name, true, false)? else {
+        return Ok(None);
     };
-    let sst =
-        deserialize_shared_strings(std::io::BufReader::with_capacity(LARGE_BUF_CAPACITY, entry))?;
-
-    let entry = archive
-        .by_name(name)
-        .map_err(|error| Error::Zip(error.to_string()))?;
-    let raw_items =
-        scan_shared_string_text(std::io::BufReader::with_capacity(LARGE_BUF_CAPACITY, entry))?;
-    restore_shared_string_text(sst, raw_items).map(Some)
+    deserialize_shared_strings_from_bytes(&bytes).map(Some)
 }
 
 fn deserialize_shared_strings<R: std::io::BufRead>(reader: R) -> Result<Sst> {
@@ -2257,11 +2233,19 @@ fn restore_shared_string_text(mut sst: Sst, raw_items: Vec<RawSharedStringText>)
     Ok(sst)
 }
 
-#[cfg(test)]
 fn deserialize_shared_strings_from_bytes(bytes: &[u8]) -> Result<Sst> {
     let sst = deserialize_shared_strings(std::io::BufReader::new(bytes))?;
+    if !shared_strings_need_raw_scan(bytes) {
+        return Ok(sst);
+    }
     let raw_items = scan_shared_string_text(std::io::BufReader::new(bytes))?;
     restore_shared_string_text(sst, raw_items)
+}
+
+fn shared_strings_need_raw_scan(bytes: &[u8]) -> bool {
+    [b":space".as_slice(), b"<![CDATA[".as_slice()]
+        .iter()
+        .any(|marker| bytes.windows(marker.len()).any(|window| window == *marker))
 }
 
 fn scan_shared_string_text<R: std::io::BufRead>(reader: R) -> Result<Vec<RawSharedStringText>> {
@@ -2367,35 +2351,91 @@ fn scan_shared_string_text<R: std::io::BufRead>(reader: R) -> Result<Vec<RawShar
 }
 
 /// Read a ZIP entry as a raw string (no serde deserialization).
-pub(crate) fn read_string_part<R: std::io::Read + std::io::Seek>(
-    archive: &mut zip::ZipArchive<R>,
-    name: &str,
-) -> Result<String> {
-    let mut entry = archive
-        .by_name(name)
-        .map_err(|e| Error::Zip(e.to_string()))?;
-    let size_hint = entry.size() as usize;
-    let mut content = String::with_capacity(size_hint);
-    entry
-        .read_to_string(&mut content)
-        .map_err(|e| Error::Zip(e.to_string()))?;
-    Ok(content)
+pub(crate) fn read_string_part<A: ArchiveAccess>(archive: &mut A, name: &str) -> Result<String> {
+    let content = read_all_part(archive, name, is_xml_part(name), false)?;
+    String::from_utf8(content)
+        .map_err(|_| Error::XmlParse("XML part is not valid UTF-8".to_string()))
 }
 
 /// Read a ZIP entry as raw bytes.
-pub(crate) fn read_bytes_part<R: std::io::Read + std::io::Seek>(
-    archive: &mut zip::ZipArchive<R>,
+pub(crate) fn read_bytes_part<A: ArchiveAccess>(archive: &mut A, name: &str) -> Result<Vec<u8>> {
+    read_all_part(archive, name, is_xml_part(name), true)
+}
+
+fn read_all_part<A: ArchiveAccess>(
+    archive: &mut A,
     name: &str,
+    xml: bool,
+    retained: bool,
 ) -> Result<Vec<u8>> {
-    let mut entry = archive
-        .by_name(name)
-        .map_err(|e| Error::Zip(e.to_string()))?;
-    let size_hint = entry.size() as usize;
-    let mut content = Vec::with_capacity(size_hint);
-    entry
-        .read_to_end(&mut content)
-        .map_err(|e| Error::Zip(e.to_string()))?;
+    let mut content = Vec::new();
+    let read_result = {
+        let mut entry = archive.entry(name, xml)?;
+        let mut chunk = [0_u8; LARGE_BUF_CAPACITY];
+        loop {
+            let count = match entry.read(&mut chunk) {
+                Ok(0) => break Ok(()),
+                Ok(count) => count,
+                Err(error) => break Err(error),
+            };
+            content.try_reserve(count).map_err(|_| {
+                Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::OutOfMemory,
+                    "unable to reserve bounded workbook part buffer",
+                ))
+            })?;
+            content.extend_from_slice(&chunk[..count]);
+        }
+    };
+    if let Some(metadata) = archive.resource_violation() {
+        return Err(Error::ResourceLimitExceeded(metadata));
+    }
+    read_result.map_err(|error| Error::Zip(error.to_string()))?;
+    if retained {
+        archive.charge_retained(content.len() as u64)?;
+    }
     Ok(content)
+}
+
+fn read_all_optional_part<A: ArchiveAccess>(
+    archive: &mut A,
+    name: &str,
+    xml: bool,
+    retained: bool,
+) -> Result<Option<Vec<u8>>> {
+    let mut content = Vec::new();
+    let read_result = {
+        let Some(mut entry) = archive.entry_optional(name, xml)? else {
+            return Ok(None);
+        };
+        let mut chunk = [0_u8; LARGE_BUF_CAPACITY];
+        loop {
+            let count = match entry.read(&mut chunk) {
+                Ok(0) => break Ok(()),
+                Ok(count) => count,
+                Err(error) => break Err(error),
+            };
+            content.try_reserve(count).map_err(|_| {
+                Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::OutOfMemory,
+                    "unable to reserve bounded workbook part buffer",
+                ))
+            })?;
+            content.extend_from_slice(&chunk[..count]);
+        }
+    };
+    if let Some(metadata) = archive.resource_violation() {
+        return Err(Error::ResourceLimitExceeded(metadata));
+    }
+    read_result.map_err(|error| Error::Zip(error.to_string()))?;
+    if retained {
+        archive.charge_retained(content.len() as u64)?;
+    }
+    Ok(Some(content))
+}
+
+fn is_xml_part(name: &str) -> bool {
+    name.ends_with(".xml") || name.ends_with(".rels") || name.ends_with(".vml")
 }
 
 /// Serialize a worksheet with optional sparklines and legacy drawing injected
@@ -3575,6 +3615,31 @@ mod tests {
     }
 
     #[test]
+    fn shared_string_raw_scan_fast_path_preserves_signaled_text() {
+        let ordinary = br#"<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><si><t>ordinary text</t></si><si><r><t>rich text</t></r></si></sst>"#;
+        assert!(!shared_strings_need_raw_scan(ordinary));
+        let ordinary_sst = deserialize_shared_strings_from_bytes(ordinary).unwrap();
+        assert_eq!(
+            ordinary_sst.items[0].t.as_ref().unwrap().value,
+            "ordinary text"
+        );
+        assert_eq!(ordinary_sst.items[1].r[0].t.value, "rich text");
+
+        let single_quoted = br#"<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><si><x:t xml:space='preserve' xmlns:x="urn:test">  kept  </x:t></si></sst>"#;
+        assert!(shared_strings_need_raw_scan(single_quoted));
+        let single_quoted_sst = deserialize_shared_strings_from_bytes(single_quoted).unwrap();
+        assert_eq!(
+            single_quoted_sst.items[0].t.as_ref().unwrap().value,
+            "  kept  "
+        );
+
+        let cdata = br#"<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><si><t><![CDATA[  cdata  ]]></t></si></sst>"#;
+        assert!(shared_strings_need_raw_scan(cdata));
+        let cdata_sst = deserialize_shared_strings_from_bytes(cdata).unwrap();
+        assert_eq!(cdata_sst.items[0].t.as_ref().unwrap().value, "  cdata  ");
+    }
+
+    #[test]
     fn scan_shared_string_text_reads_from_buffered_stream() {
         struct ChunkedReader {
             bytes: Vec<u8>,
@@ -3635,6 +3700,119 @@ mod tests {
             sst.items[0].t.as_ref().unwrap().value,
             format!("{padding}value{padding}")
         );
+    }
+
+    #[test]
+    fn read_shared_strings_part_opens_and_reads_entry_once() {
+        struct CountingEntry<'archive> {
+            reader: std::io::Cursor<&'archive [u8]>,
+            actual_bytes: &'archive mut usize,
+        }
+
+        impl std::io::Read for CountingEntry<'_> {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                let count = self.reader.read(buffer)?;
+                *self.actual_bytes += count;
+                Ok(count)
+            }
+        }
+
+        struct CountingArchive {
+            bytes: Vec<u8>,
+            opens: usize,
+            actual_bytes: usize,
+        }
+
+        impl ArchiveAccess for CountingArchive {
+            type Entry<'entry>
+                = CountingEntry<'entry>
+            where
+                Self: 'entry;
+
+            fn len(&self) -> usize {
+                1
+            }
+
+            fn entry_name(&mut self, _index: usize) -> Result<String> {
+                Ok("xl/sharedStrings.xml".to_string())
+            }
+
+            fn entry<'entry>(
+                &'entry mut self,
+                name: &str,
+                _xml: bool,
+            ) -> Result<Self::Entry<'entry>> {
+                assert_eq!(name, "xl/sharedStrings.xml");
+                self.opens += 1;
+                Ok(CountingEntry {
+                    reader: std::io::Cursor::new(&self.bytes),
+                    actual_bytes: &mut self.actual_bytes,
+                })
+            }
+
+            fn entry_optional<'entry>(
+                &'entry mut self,
+                name: &str,
+                xml: bool,
+            ) -> Result<Option<Self::Entry<'entry>>> {
+                self.entry(name, xml).map(Some)
+            }
+
+            fn resource_violation(&mut self) -> Option<crate::resource::ResourceLimitError> {
+                None
+            }
+
+            fn charge_retained(&mut self, _amount: u64) -> Result<()> {
+                Ok(())
+            }
+        }
+
+        let bytes = format!(
+            "<sst xmlns=\"{}\"><si><t xml:space=\"preserve\"> value </t></si></sst>",
+            sheetkit_xml::namespaces::SPREADSHEET_ML
+        )
+        .into_bytes();
+        let mut archive = CountingArchive {
+            bytes,
+            opens: 0,
+            actual_bytes: 0,
+        };
+
+        let sst = read_shared_strings_part(&mut archive, "xl/sharedStrings.xml")
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(archive.opens, 1);
+        assert_eq!(archive.actual_bytes, archive.bytes.len());
+        assert_eq!(sst.items[0].t.as_ref().unwrap().value, " value ");
+    }
+
+    #[test]
+    fn clean_control_metadata_round_trips_without_rebuild() {
+        let mut workbook = Workbook::new();
+        workbook
+            .add_form_control(
+                "Sheet1",
+                crate::control::FormControlConfig::button("B2", "Run"),
+            )
+            .unwrap();
+        let first = workbook.save_to_buffer().unwrap();
+        let options = OpenOptions::new()
+            .read_mode(ReadMode::Eager)
+            .aux_parts(AuxParts::EagerLoad);
+        let reopened = Workbook::open_from_buffer_with_options(&first, &options).unwrap();
+
+        assert!(!reopened.sheet_controls_dirty[0]);
+        let second = reopened.save_to_buffer().unwrap();
+
+        let first_sheet = String::from_utf8(zip_part(&first, "xl/worksheets/sheet1.xml")).unwrap();
+        let second_sheet =
+            String::from_utf8(zip_part(&second, "xl/worksheets/sheet1.xml")).unwrap();
+        assert_eq!(
+            parse_worksheet_control_entries(&second_sheet),
+            parse_worksheet_control_entries(&first_sheet)
+        );
+        assert!(second_sheet.contains("<legacyDrawing r:id=\"rId2\"/>"));
     }
 
     #[test]
@@ -4821,7 +4999,10 @@ mod tests {
         // A basic workbook has at least 8 ZIP entries -- set limit to 2
         let opts = OpenOptions::new().max_zip_entries(2);
         let result = Workbook::open_from_buffer_with_options(&buf, &opts);
-        assert!(matches!(result, Err(Error::ZipEntryCountExceeded { .. })));
+        let Err(Error::ResourceLimitExceeded(metadata)) = result else {
+            panic!("expected an entry count resource error");
+        };
+        assert_eq!(metadata.dimension(), crate::ResourceDimension::EntryCount);
     }
 
     #[test]
@@ -4852,7 +5033,13 @@ mod tests {
         // Set a very small decompressed size limit
         let opts = OpenOptions::new().max_unzip_size(100);
         let result = Workbook::open_from_buffer_with_options(&buf, &opts);
-        assert!(matches!(result, Err(Error::ZipSizeExceeded { .. })));
+        let Err(Error::ResourceLimitExceeded(metadata)) = result else {
+            panic!("expected an aggregate declared bytes resource error");
+        };
+        assert_eq!(
+            metadata.dimension(),
+            crate::ResourceDimension::AggregateDeclaredBytes
+        );
     }
 
     #[test]

@@ -1,0 +1,30 @@
+
+===== tag ^open_readfast_latency/ =====
+    Finished `bench` profile [optimized] target(s) in 0.14s
+     Running benches/open_modes.rs (/tmp/sheetkit-u1-20260715/targets/tag/release/deps/open_modes-887357c68bd414a8)
+Gnuplot not found, using plotters backend
+Benchmarking open_readfast_latency/readfast/scale-1k
+Benchmarking open_readfast_latency/readfast/scale-1k: Warming up for 3.0000 s
+Benchmarking open_readfast_latency/readfast/scale-1k: Collecting 50 samples in estimated 6.3835 s (3825 iterations)
+Benchmarking open_readfast_latency/readfast/scale-1k: Analyzing
+open_readfast_latency/readfast/scale-1k
+                        time:   [1.8336 ms 2.0828 ms 2.3800 ms]
+Found 4 outliers among 50 measurements (8.00%)
+  4 (8.00%) high mild
+Benchmarking open_readfast_latency/readfast/scale-10k
+Benchmarking open_readfast_latency/readfast/scale-10k: Warming up for 3.0000 s
+Benchmarking open_readfast_latency/readfast/scale-10k: Collecting 20 samples in estimated 7.0059 s (420 iterations)
+Benchmarking open_readfast_latency/readfast/scale-10k: Analyzing
+open_readfast_latency/readfast/scale-10k
+                        time:   [14.785 ms 15.470 ms 16.602 ms]
+Found 3 outliers among 20 measurements (15.00%)
+  1 (5.00%) high mild
+  2 (10.00%) high severe
+Benchmarking open_readfast_latency/readfast/large-data
+Benchmarking open_readfast_latency/readfast/large-data: Warming up for 3.0000 s
+
+Warning: Unable to complete 10 samples in 5.0s. You may wish to increase target time to 8.0s or enable flat sampling.
+Benchmarking open_readfast_latency/readfast/large-data: Collecting 10 samples in estimated 8.0229 s (55 iterations)
+Benchmarking open_readfast_latency/readfast/large-data: Analyzing
+open_readfast_latency/readfast/large-data
+                        time:   [139.44 ms 144.24 ms 153.44 ms]

@@ -1,6 +1,7 @@
 #![deny(clippy::all)]
 
 mod conversions;
+mod error;
 mod stream;
 mod types;
 
@@ -22,6 +23,7 @@ use sheetkit_core::validation::DataValidationConfig;
 use sheetkit_core::workbook::WorkbookFormat;
 
 use crate::conversions::*;
+use crate::error::{map_core_error, OpenBufferTask, OpenPasswordTask, OpenPathTask};
 use crate::stream::JsStreamWriter;
 use crate::types::*;
 
@@ -49,24 +51,19 @@ impl Workbook {
 
     /// Open an existing .xlsx file from disk.
     #[napi(factory, js_name = "openSync")]
-    pub fn open_sync(path: String, options: Option<JsOpenOptions>) -> Result<Self> {
+    pub fn open_sync(env: Env, path: String, options: Option<JsOpenOptions>) -> Result<Self> {
         let opts = js_open_options_to_core(options.as_ref());
         let inner = sheetkit_core::workbook::Workbook::open_with_options(&path, &opts)
-            .map_err(|e| Error::from_reason(e.to_string()))?;
+            .map_err(|error| map_core_error(&env, error))?;
         Ok(Self { inner })
     }
 
     /// Open an existing .xlsx file from disk asynchronously.
-    #[napi(factory)]
-    pub async fn open(path: String, options: Option<JsOpenOptions>) -> Result<Self> {
+    #[allow(private_interfaces)]
+    #[napi]
+    pub fn open(path: String, options: Option<JsOpenOptions>) -> AsyncTask<OpenPathTask> {
         let opts = js_open_options_to_core(options.as_ref());
-        let inner = tokio::task::spawn_blocking(move || {
-            sheetkit_core::workbook::Workbook::open_with_options(&path, &opts)
-                .map_err(|e| Error::from_reason(e.to_string()))
-        })
-        .await
-        .unwrap_or_else(|e| Err(Error::from_reason(e.to_string())))?;
-        Ok(Self { inner })
+        OpenPathTask::new(path, opts).into_async_task()
     }
 
     /// Save the workbook to a .xlsx file.
@@ -96,45 +93,38 @@ impl Workbook {
 
     /// Open a workbook from an in-memory Buffer.
     #[napi(factory, js_name = "openBufferSync")]
-    pub fn open_buffer_sync(data: Buffer, options: Option<JsOpenOptions>) -> Result<Self> {
+    pub fn open_buffer_sync(
+        env: Env,
+        data: Buffer,
+        options: Option<JsOpenOptions>,
+    ) -> Result<Self> {
         let opts = js_open_options_to_core(options.as_ref());
         let inner = sheetkit_core::workbook::Workbook::open_from_buffer_with_options(&data, &opts)
-            .map_err(|e| Error::from_reason(e.to_string()))?;
+            .map_err(|error| map_core_error(&env, error))?;
         Ok(Self { inner })
     }
 
     /// Open a workbook from an in-memory Buffer asynchronously.
-    #[napi(factory)]
-    pub async fn open_buffer(data: Buffer, options: Option<JsOpenOptions>) -> Result<Self> {
+    #[allow(private_interfaces)]
+    #[napi]
+    pub fn open_buffer(data: Buffer, options: Option<JsOpenOptions>) -> AsyncTask<OpenBufferTask> {
         let opts = js_open_options_to_core(options.as_ref());
-        let buf: Vec<u8> = data.to_vec();
-        let inner = tokio::task::spawn_blocking(move || {
-            sheetkit_core::workbook::Workbook::open_from_buffer_with_options(&buf, &opts)
-                .map_err(|e| Error::from_reason(e.to_string()))
-        })
-        .await
-        .unwrap_or_else(|e| Err(Error::from_reason(e.to_string())))?;
-        Ok(Self { inner })
+        OpenBufferTask::new(data.to_vec(), opts).into_async_task()
     }
 
     /// Open an encrypted .xlsx file using a password.
     #[napi(factory, js_name = "openWithPasswordSync")]
-    pub fn open_with_password_sync(path: String, password: String) -> Result<Self> {
+    pub fn open_with_password_sync(env: Env, path: String, password: String) -> Result<Self> {
         let inner = sheetkit_core::workbook::Workbook::open_with_password(&path, &password)
-            .map_err(|e| Error::from_reason(e.to_string()))?;
+            .map_err(|error| map_core_error(&env, error))?;
         Ok(Self { inner })
     }
 
     /// Open an encrypted .xlsx file using a password asynchronously.
-    #[napi(factory)]
-    pub async fn open_with_password(path: String, password: String) -> Result<Self> {
-        let inner = tokio::task::spawn_blocking(move || {
-            sheetkit_core::workbook::Workbook::open_with_password(&path, &password)
-                .map_err(|e| Error::from_reason(e.to_string()))
-        })
-        .await
-        .unwrap_or_else(|e| Err(Error::from_reason(e.to_string())))?;
-        Ok(Self { inner })
+    #[allow(private_interfaces)]
+    #[napi]
+    pub fn open_with_password(path: String, password: String) -> AsyncTask<OpenPasswordTask> {
+        OpenPasswordTask::new(path, password).into_async_task()
     }
 
     /// Serialize the workbook to an in-memory Buffer.

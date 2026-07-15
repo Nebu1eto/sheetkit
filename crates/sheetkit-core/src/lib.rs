@@ -24,6 +24,7 @@ pub mod raw_transfer;
 pub mod raw_transfer_v2;
 pub mod raw_transfer_write;
 pub mod render;
+pub mod resource;
 pub mod rich_text;
 pub mod row;
 pub mod shape;
@@ -43,3 +44,7 @@ pub mod vba;
 pub mod vml;
 pub mod workbook;
 pub(crate) mod workbook_paths;
+
+pub use resource::{
+    ResourceCategory, ResourceDimension, ResourceLimitError, ResourceOperation, ResourceStage,
+};

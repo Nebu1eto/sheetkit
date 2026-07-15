@@ -1298,6 +1298,7 @@ pub(crate) fn js_open_options_to_core(
         sheets: js.sheets.clone(),
         max_unzip_size: js.max_unzip_size.map(|v| v as u64),
         max_zip_entries: js.max_zip_entries.map(|v| v as usize),
+        limits: defaults.limits,
         read_mode,
         aux_parts,
         date_interpretation,

@@ -31,6 +31,9 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace -- -D warnings && cargo clippy -p sheetkit --features cli -- -D warnings
 
+      - name: Clippy vendored ZIP fork
+        run: cargo clippy --manifest-path vendor/zip/Cargo.toml --all-targets -- -D warnings
+
       - name: Format check
         run: cargo fmt --check
 
@@ -41,6 +44,9 @@ jobs:
 
       - name: Test CLI
         run: cargo test -p sheetkit --features cli
+
+      - name: Test vendored ZIP fork
+        run: cargo test --manifest-path vendor/zip/Cargo.toml
 
       - name: Upload coverage artifact
         if: always()

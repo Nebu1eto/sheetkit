@@ -13,7 +13,7 @@ import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { cpus, totalmem } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Workbook } from "@sheetkit/node";
+import { type JsOpenOptions, Workbook } from "@sheetkit/node";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURES_DIR = join(__dirname, "fixtures");
@@ -46,7 +46,14 @@ const FIXTURES: FixtureSpec[] = [
   { name: "scale-10k.xlsx", label: "scale-10k" },
   { name: "scale-100k.xlsx", label: "scale-100k" },
   { name: "large-data.xlsx", label: "large-data" },
+  { name: "strings.xlsx", label: "strings" },
 ];
+
+const EXPLICIT_EAGER_OPTIONS = {
+  // Raw bridge options keep eager semantics stable across the three refs.
+  parseMode: "full",
+  auxParts: "eager",
+} satisfies JsOpenOptions;
 
 function fixturePath(name: string): string {
   return join(FIXTURES_DIR, name);
@@ -231,57 +238,61 @@ async function main(): Promise<void> {
 
   const allResults: BenchResult[] = [];
 
-  // 1. Open latency (path, sync)
-  console.log("--- openSync (path) ---");
+  // 1. Default lazy open latency (path, sync)
+  console.log("--- default lazy openSync (path) ---");
   for (const f of available) {
     const path = fixturePath(f.name);
-    const result = await measure(`openSync(${f.label})`, () => {
+    const result = await measure(`default-lazy-openSync(${f.label})`, () => {
       Workbook.openSync(path);
     });
-    allResults.push({ ...result, category: "openSync-path", fixture: f.label });
+    allResults.push({
+      ...result,
+      category: "open-default-lazy-path-sync",
+      fixture: f.label,
+    });
   }
   console.log("");
 
-  // 2. Open latency (path, async)
-  console.log("--- open (path, async) ---");
+  // 2. Default lazy open latency (path, async)
+  console.log("--- default lazy open (path, async) ---");
   for (const f of available) {
     const path = fixturePath(f.name);
-    const result = await measure(`open(${f.label})`, async () => {
+    const result = await measure(`default-lazy-open(${f.label})`, async () => {
       await Workbook.open(path);
     });
     allResults.push({
       ...result,
-      category: "open-path-async",
+      category: "open-default-lazy-path-async",
       fixture: f.label,
     });
   }
   console.log("");
 
-  // 3. Open latency (buffer, sync)
-  console.log("--- openBufferSync ---");
+  // 3. Default lazy open latency (buffer, sync)
+  console.log("--- default lazy openBufferSync ---");
   for (const f of available) {
     const buf = readFileSync(fixturePath(f.name));
-    const result = await measure(`openBufferSync(${f.label})`, () => {
+    const result = await measure(`default-lazy-openBufferSync(${f.label})`, () => {
       Workbook.openBufferSync(buf);
     });
     allResults.push({
       ...result,
-      category: "openBufferSync",
+      category: "open-default-lazy-buffer-sync",
       fixture: f.label,
     });
   }
   console.log("");
 
-  // 4. Open latency (buffer, async)
-  console.log("--- openBuffer (async) ---");
+  // 4. Default lazy open latency (buffer, async)
+  console.log("--- default lazy openBuffer (async) ---");
   for (const f of available) {
     const buf = readFileSync(fixturePath(f.name));
-    const result = await measure(`openBuffer(${f.label})`, async () => {
+    const result = await measure(`default-lazy-openBuffer(${f.label})`, async () => {
       await Workbook.openBuffer(buf);
     });
     allResults.push({
       ...result,
-      category: "openBuffer-async",
+      category: "open-default-lazy-buffer-async",
       fixture: f.label,
     });
   }
@@ -291,10 +302,12 @@ async function main(): Promise<void> {
   console.log("--- openSync vs open (comparison) ---");
   for (const f of available) {
     const syncResult = allResults.find(
-      (r) => r.category === "openSync-path" && r.fixture === f.label,
+      (r) =>
+        r.category === "open-default-lazy-path-sync" && r.fixture === f.label,
     );
     const asyncResult = allResults.find(
-      (r) => r.category === "open-path-async" && r.fixture === f.label,
+      (r) =>
+        r.category === "open-default-lazy-path-async" && r.fixture === f.label,
     );
     if (syncResult && asyncResult) {
       const ratio = asyncResult.median / syncResult.median;
@@ -364,16 +377,16 @@ async function main(): Promise<void> {
   }
   console.log("");
 
-  // 10. Lazy open latency (path, async)
-  console.log("--- open lazy (path, async) ---");
+  // 10. Explicit eager open latency (path, async)
+  console.log("--- explicit eager open (path, async) ---");
   for (const f of available) {
     const path = fixturePath(f.name);
-    const result = await measure(`open-lazy(${f.label})`, async () => {
-      await Workbook.open(path, { readMode: "lazy" });
+    const result = await measure(`explicit-eager-open(${f.label})`, async () => {
+      await Workbook.open(path, EXPLICIT_EAGER_OPTIONS);
     });
     allResults.push({
       ...result,
-      category: "open-lazy-path",
+      category: "open-explicit-eager-path-async",
       fixture: f.label,
     });
   }
@@ -395,14 +408,16 @@ async function main(): Promise<void> {
   }
   console.log("");
 
-  // 12. Lazy open vs eager open comparison
-  console.log("--- lazy vs eager open comparison ---");
+  // 12. Default lazy open vs explicit eager open comparison
+  console.log("--- default lazy vs explicit eager open comparison ---");
   for (const f of available) {
-    const eagerResult = allResults.find(
-      (r) => r.category === "open-path-async" && r.fixture === f.label,
-    );
     const lazyResult = allResults.find(
-      (r) => r.category === "open-lazy-path" && r.fixture === f.label,
+      (r) =>
+        r.category === "open-default-lazy-path-async" && r.fixture === f.label,
+    );
+    const eagerResult = allResults.find(
+      (r) =>
+        r.category === "open-explicit-eager-path-async" && r.fixture === f.label,
     );
     if (eagerResult && lazyResult) {
       const ratio = lazyResult.median / eagerResult.median;
@@ -466,18 +481,18 @@ async function main(): Promise<void> {
   }
   console.log("");
 
-  // 15. Copy-on-write save (lazy open + save without modifications)
-  console.log("--- copy-on-write save (lazy, no modifications) ---");
+  // 15. Copy-on-write save only (pre-opened lazy workbook, no modifications)
+  console.log("--- copy-on-write save only (lazy, no modifications) ---");
   for (const f of available) {
     const path = fixturePath(f.name);
     const tmpOut = join(__dirname, "output", `cow-save-${f.label}.xlsx`);
-    const result = await measure(`cow-save(${f.label})`, async () => {
-      const wb = await Workbook.open(path, { readMode: "lazy" });
+    const wb = await Workbook.open(path, { readMode: "lazy" });
+    const result = await measure(`cow-save-only(${f.label})`, () => {
       wb.saveSync(tmpOut);
     });
     allResults.push({
       ...result,
-      category: "cow-save-untouched",
+      category: "cow-save-only-untouched",
       fixture: f.label,
     });
     try {
@@ -489,19 +504,19 @@ async function main(): Promise<void> {
   }
   console.log("");
 
-  // 16. Copy-on-write save (lazy open + single cell edit + save)
-  console.log("--- copy-on-write save (lazy, single-cell edit) ---");
+  // 16. Copy-on-write save only (pre-opened lazy workbook, single-cell edit)
+  console.log("--- copy-on-write save only (lazy, single-cell edit) ---");
   for (const f of available) {
     const path = fixturePath(f.name);
     const tmpOut = join(__dirname, "output", `cow-edit-${f.label}.xlsx`);
-    const result = await measure(`cow-edit-save(${f.label})`, async () => {
-      const wb = await Workbook.open(path, { readMode: "lazy" });
-      wb.setCellValue("Sheet1", "A1", "edited");
+    const wb = await Workbook.open(path, { readMode: "lazy" });
+    wb.setCellValue("Sheet1", "A1", "edited");
+    const result = await measure(`cow-edit-save-only(${f.label})`, () => {
       wb.saveSync(tmpOut);
     });
     allResults.push({
       ...result,
-      category: "cow-save-edited",
+      category: "cow-save-only-edited",
       fixture: f.label,
     });
     try {

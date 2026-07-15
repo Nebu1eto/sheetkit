@@ -1,0 +1,194 @@
+{
+  "schemaVersion": 1,
+  "capturedAtUtc": "2026-07-15T13:19:45.099Z",
+  "refs": {
+    "tag": "f9eac5366eb83b6dd79d5dd6d03a8988b5c319a8",
+    "current": "150e57939ac816a9bfa86daa856b432a135e3ca9"
+  },
+  "sourceTransport": "git archive (no worktree)",
+  "tempRoot": "/tmp/sheetkit-u1-20260715",
+  "machine": {
+    "os": "macOS 26.5.2 (25F84)",
+    "kernel": "Darwin 25.5.0 arm64",
+    "cpu": "Apple M4 Pro",
+    "ramBytes": 25769803776
+  },
+  "toolchain": {
+    "rustc": "rustc 1.93.0 (254b59607 2026-01-19)",
+    "cargo": "cargo 1.93.0 (083ac5135 2025-12-15)",
+    "node": "v25.3.0",
+    "pnpm": "10.29.1"
+  },
+  "resolution": {
+    "cargoLockSha256": "40016c54b483615aaca6875c4274a0a749fd3237b228fe1c840de7be96e98809",
+    "pnpmLockSha256": "608513dffc382d0f98f2d623d9ee8618fec66011a07efcabbd6fb362c140ba95",
+    "cargoLockGeneration": "generated once in current archive with cargo generate-lockfile, copied byte-for-byte to tag archive"
+  },
+  "benchmarkSources": {
+    "rustOpenModesSha256": "adaf8a2279ffe16c88624092718ec3ab38a227ca289b34912073776b1ad69628",
+    "nodeFocusedSha256": "8712fcf18bfe83bd0f62f673245827f391b9ace26390d38770cc8ace0af7f60f",
+    "identicalAcrossRefs": true
+  },
+  "fixtureManifest": "fixture-sha256.txt",
+  "runs": {
+    "rustCriterion": {
+      "tag": {
+        "successfulScenarios": 9,
+        "blockedGroup": "save_latency",
+        "exitStatus": 101
+      },
+      "current": {
+        "successfulScenarios": 9,
+        "blockedGroup": "save_latency",
+        "exitStatus": 101
+      }
+    },
+    "nodeFocused": {
+      "tag": {
+        "successfulScenarios": 60,
+        "exitStatus": 0
+      },
+      "current": {
+        "successfulScenarios": 60,
+        "exitStatus": 0
+      }
+    },
+    "nodeAggregateProcessRss": {
+      "tag": {
+        "maximumResidentSetBytes": 3811000320,
+        "exitStatus": 0
+      },
+      "current": {
+        "maximumResidentSetBytes": 3453747200,
+        "exitStatus": 0
+      }
+    }
+  },
+  "limitations": [
+    "Node samples separate warmup from repeated warm measurements but do not time a distinct cold-open scenario.",
+    "Node per-scenario RSS is a before/after delta, not high-water RSS.",
+    "Rust save_latency is unavailable because the unchanged benchmark uses an extensionless temporary destination."
+  ],
+  "files": [
+    {
+      "path": "commands.md",
+      "bytes": 2504,
+      "sha256": "9ccb911bf1fbe80cdeab9b3da1583034e30c3ce2c08dc82173ccf7d1d579d3aa"
+    },
+    {
+      "path": "comparison.json",
+      "bytes": 19333,
+      "sha256": "13967313d3c43757e1debae2a279b26604c08431d36bf703de46be42279eb6ea"
+    },
+    {
+      "path": "fixture-sha256.txt",
+      "bytes": 988,
+      "sha256": "c4410eca9914fa3ca2a20199affe2d216b079620cb9952005dd278de67261d84"
+    },
+    {
+      "path": "fixtures.sha256",
+      "bytes": 988,
+      "sha256": "c4410eca9914fa3ca2a20199affe2d216b079620cb9952005dd278de67261d84"
+    },
+    {
+      "path": "metadata.json",
+      "bytes": 1237,
+      "sha256": "0a670378989ec1d6cf6ec1c791ea3ab3ff8d231dd5ca83daac81f70484eb7d39"
+    },
+    {
+      "path": "raw/current/node-bench-baseline.json",
+      "bytes": 26058,
+      "sha256": "e395bf04e675f8ba03414338e2cccb43193c42681b70dd3a4644839ea21daaf6"
+    },
+    {
+      "path": "raw/current/node-bench-baseline.process-rss.txt",
+      "bytes": 867,
+      "sha256": "254f81059ab9629a01f5160b05a0aa6f72a9045db9ce631c675befc4554a52c7"
+    },
+    {
+      "path": "raw/current/node-bench-baseline.stdout.txt",
+      "bytes": 16188,
+      "sha256": "46aff24c185a5b952b8ab5218e7fd04a787b1f660517b8a92d5547f245f1bc98"
+    },
+    {
+      "path": "raw/current/rust-criterion-estimates.json",
+      "bytes": 13001,
+      "sha256": "7bc147ca687709bf741d800ca4e43250b0a33bbed6959cf048f1d72528920470"
+    },
+    {
+      "path": "raw/current/rust-criterion-samples.json",
+      "bytes": 8834,
+      "sha256": "acfd8b265d5fcc5879e106477daf51b9a0ef48d86db3bea53520b6505751c411"
+    },
+    {
+      "path": "raw/current/rust-get_rows.stdout.txt",
+      "bytes": 1528,
+      "sha256": "97aa3d5cfa26ccb1d212ba04825b22057b6a9f259e9be5b01ab50a1b443d6ba2"
+    },
+    {
+      "path": "raw/current/rust-open_latency.stdout.txt",
+      "bytes": 1536,
+      "sha256": "38384440ed7b8d41fa618d347d9106ecfed73a0a99479b0d131928306b910cf3"
+    },
+    {
+      "path": "raw/current/rust-open_readfast_latency.stdout.txt",
+      "bytes": 1740,
+      "sha256": "ab5f3ae991f4f374fc882b683d3fff65893725213c9cb27cc3ddf75f9000c4f4"
+    },
+    {
+      "path": "raw/current/rust-save_latency.stdout.txt",
+      "bytes": 662,
+      "sha256": "cb3ac916d242f2ac0fb324bf645b79a8d6e175f6821a8b38bbdab2a023885433"
+    },
+    {
+      "path": "raw/tag/node-bench-baseline.json",
+      "bytes": 25962,
+      "sha256": "abf5989abb69d4ddf3df51a947bd9e6b23a4d597d10a9f2984aa4d437f69f5a7"
+    },
+    {
+      "path": "raw/tag/node-bench-baseline.process-rss.txt",
+      "bytes": 863,
+      "sha256": "5a228fb0e46d0b18e492214212e9555bb6a9b934992f785b36778ab32a462684"
+    },
+    {
+      "path": "raw/tag/node-bench-baseline.stdout.txt",
+      "bytes": 16180,
+      "sha256": "6b8bbaa992c4b542db5d18d7052be572afdf270e3f00a66bdd1391c08d1e1266"
+    },
+    {
+      "path": "raw/tag/rust-criterion-estimates.json",
+      "bytes": 13519,
+      "sha256": "d730f21d5fc6d31892e93101a754cc05f4ceaedb62ec9a793d2fdacfd9677e11"
+    },
+    {
+      "path": "raw/tag/rust-criterion-samples.json",
+      "bytes": 8858,
+      "sha256": "6db4ebc8f9c11cbe1a7e184e4db2325914315a8a3d1dc647a65400520f48717d"
+    },
+    {
+      "path": "raw/tag/rust-get_rows.stdout.txt",
+      "bytes": 1352,
+      "sha256": "5d80c06a867eafe7063b9bad8bd65e3e5bbf52bc760e6e7f02d1b9e34fc41736"
+    },
+    {
+      "path": "raw/tag/rust-open_latency.stdout.txt",
+      "bytes": 1667,
+      "sha256": "692d2ef6f4aea8443b0e29f15daf9e4052d547093939f9ed4cb1f2bbb6574354"
+    },
+    {
+      "path": "raw/tag/rust-open_readfast_latency.stdout.txt",
+      "bytes": 1800,
+      "sha256": "f2aeee4fb1fbdb2713ff871616ea09b9df6dc465d3c26f3e57a351bc10c687bb"
+    },
+    {
+      "path": "raw/tag/rust-save_latency.stdout.txt",
+      "bytes": 637,
+      "sha256": "5c4d5944118b2877f900d485f5ef41033e60ff384d6a07037dd6705b95a89549"
+    },
+    {
+      "path": "summary.md",
+      "bytes": 4935,
+      "sha256": "f2a537f91bf36095f05aa3396efcd07446bd5ef4e72cae628aaeed03258f1fc5"
+    }
+  ]
+}

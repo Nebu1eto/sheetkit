@@ -58,6 +58,41 @@ fn test_error_type_accessible() {
 }
 
 #[test]
+fn test_resource_error_contract_is_public_and_bounded() {
+    use sheetkit::{
+        ResourceCategory, ResourceDimension, ResourceLimitError, ResourceOperation, ResourceStage,
+    };
+
+    let metadata = ResourceLimitError::exceeded(
+        ResourceOperation::WorkbookOpen,
+        ResourceCategory::Archive,
+        ResourceDimension::EntryCount,
+        10,
+        11,
+        Some(ResourceStage::Inspect),
+    )
+    .unwrap();
+    let error = sheetkit::Error::ResourceLimitExceeded(metadata);
+
+    assert_eq!(error.code(), "resource_limit_exceeded");
+    assert_eq!(error.resource_category(), Some(ResourceCategory::Archive));
+    let metadata = error.resource_metadata().unwrap();
+    assert_eq!(metadata.operation_code(), "workbook_open");
+    assert_eq!(metadata.category_code(), "archive");
+    assert_eq!(metadata.dimension_code(), "entry_count");
+    assert_eq!(metadata.limit(), 10);
+    assert_eq!(metadata.observed(), 11);
+    assert_eq!(metadata.stage_code(), Some("inspect"));
+}
+
+#[test]
+fn test_open_limits_are_public_and_finite() {
+    let limits = sheetkit::OpenLimits::default();
+    assert_eq!(limits.archive_entries, 4_096);
+    assert!(limits.aggregate_actual_bytes > 0);
+}
+
+#[test]
 fn test_save_and_reopen_multiple_times() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("multi.xlsx");

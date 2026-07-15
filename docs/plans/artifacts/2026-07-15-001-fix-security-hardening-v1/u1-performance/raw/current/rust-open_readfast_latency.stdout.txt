@@ -1,0 +1,29 @@
+
+===== current ^open_readfast_latency/ =====
+    Finished `bench` profile [optimized] target(s) in 0.13s
+     Running benches/open_modes.rs (/tmp/sheetkit-u1-20260715/targets/current/release/deps/open_modes-887357c68bd414a8)
+Gnuplot not found, using plotters backend
+Benchmarking open_readfast_latency/readfast/scale-1k
+Benchmarking open_readfast_latency/readfast/scale-1k: Warming up for 3.0000 s
+Benchmarking open_readfast_latency/readfast/scale-1k: Collecting 50 samples in estimated 7.4188 s (3825 iterations)
+Benchmarking open_readfast_latency/readfast/scale-1k: Analyzing
+open_readfast_latency/readfast/scale-1k
+                        time:   [1.9659 ms 1.9947 ms 2.0223 ms]
+Found 1 outliers among 50 measurements (2.00%)
+  1 (2.00%) high severe
+Benchmarking open_readfast_latency/readfast/scale-10k
+Benchmarking open_readfast_latency/readfast/scale-10k: Warming up for 3.0000 s
+Benchmarking open_readfast_latency/readfast/scale-10k: Collecting 20 samples in estimated 9.9938 s (420 iterations)
+Benchmarking open_readfast_latency/readfast/scale-10k: Analyzing
+open_readfast_latency/readfast/scale-10k
+                        time:   [19.566 ms 20.207 ms 21.492 ms]
+Found 3 outliers among 20 measurements (15.00%)
+  3 (15.00%) high severe
+Benchmarking open_readfast_latency/readfast/large-data
+Benchmarking open_readfast_latency/readfast/large-data: Warming up for 3.0000 s
+Benchmarking open_readfast_latency/readfast/large-data: Collecting 10 samples in estimated 5.9312 s (30 iterations)
+Benchmarking open_readfast_latency/readfast/large-data: Analyzing
+open_readfast_latency/readfast/large-data
+                        time:   [183.19 ms 184.37 ms 185.70 ms]
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild

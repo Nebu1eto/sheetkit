@@ -1,0 +1,32 @@
+
+===== tag ^open_latency/ =====
+    Finished `bench` profile [optimized] target(s) in 0.18s
+     Running benches/open_modes.rs (/tmp/sheetkit-u1-20260715/targets/tag/release/deps/open_modes-887357c68bd414a8)
+Gnuplot not found, using plotters backend
+Benchmarking open_latency/full/scale-1k
+Benchmarking open_latency/full/scale-1k: Warming up for 3.0000 s
+Benchmarking open_latency/full/scale-1k: Collecting 50 samples in estimated 5.9812 s (3825 iterations)
+Benchmarking open_latency/full/scale-1k: Analyzing
+open_latency/full/scale-1k
+                        time:   [1.4446 ms 1.4635 ms 1.4848 ms]
+Found 4 outliers among 50 measurements (8.00%)
+  2 (4.00%) high mild
+  2 (4.00%) high severe
+Benchmarking open_latency/full/scale-10k
+Benchmarking open_latency/full/scale-10k: Warming up for 3.0000 s
+Benchmarking open_latency/full/scale-10k: Collecting 20 samples in estimated 6.0105 s (420 iterations)
+Benchmarking open_latency/full/scale-10k: Analyzing
+open_latency/full/scale-10k
+                        time:   [14.179 ms 14.443 ms 14.682 ms]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+Benchmarking open_latency/full/large-data
+Benchmarking open_latency/full/large-data: Warming up for 3.0000 s
+
+Warning: Unable to complete 10 samples in 5.0s. You may wish to increase target time to 7.5s or enable flat sampling.
+Benchmarking open_latency/full/large-data: Collecting 10 samples in estimated 7.4821 s (55 iterations)
+Benchmarking open_latency/full/large-data: Analyzing
+open_latency/full/large-data
+                        time:   [134.89 ms 152.79 ms 172.46 ms]
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high severe

@@ -1,0 +1,656 @@
+{
+  "schema_version": 1,
+  "revision": "150e57939ac816a9bfa86daa856b432a135e3ca9",
+  "tools": {
+    "python": "3.14.6",
+    "git": "2.55.0",
+    "platform": "Darwin 25.5.0 arm64",
+    "zip_parser": "Python standard-library zipfile"
+  },
+  "ratio_definition": "declared uncompressed bytes / compressed bytes; entries with zero compressed bytes are excluded",
+  "summary": {
+    "fixture_count": 14,
+    "zip_fixture_count": 13,
+    "cfb_fixture_count": 1,
+    "max_outer_bytes": 7582404,
+    "max_archive_entry_count": 17,
+    "max_aggregate_declared_uncompressed_bytes": 41770451,
+    "max_single_entry_declared_uncompressed_bytes": 34597993,
+    "max_observed_compression_ratio": 26.260155
+  },
+  "fixtures": [
+    {
+      "path": "benchmarks/node/fixtures/comments.xlsx",
+      "source_state": "ignored",
+      "sha256": "8503f33b3356db06268134adf94be6a1deebfd9ebebf1da9f34a79ae98eeee2b",
+      "outer_bytes": 176302,
+      "container": "zip",
+      "validity": "crc-ok",
+      "archive_entry_count": 11,
+      "aggregate_declared_uncompressed_bytes": 2233575,
+      "max_entry": {
+        "path": "xl/drawings/vmlDrawing1.vml",
+        "declared_uncompressed_bytes": 1456427
+      },
+      "max_observed_compression_ratio": {
+        "ratio": 19.626016,
+        "path": "xl/drawings/vmlDrawing1.vml",
+        "declared_uncompressed_bytes": 1456427,
+        "compressed_bytes": 74209
+      },
+      "xml_declared_uncompressed_bytes": 775557,
+      "largest_xml_parts": [
+        {
+          "path": "xl/worksheets/sheet1.xml",
+          "declared_uncompressed_bytes": 337411,
+          "compressed_bytes": 68058
+        },
+        {
+          "path": "xl/comments1.xml",
+          "declared_uncompressed_bytes": 297470,
+          "compressed_bytes": 18751
+        },
+        {
+          "path": "xl/sharedStrings.xml",
+          "declared_uncompressed_bytes": 136104,
+          "compressed_bytes": 11704
+        },
+        {
+          "path": "xl/theme/theme1.xml",
+          "declared_uncompressed_bytes": 2206,
+          "compressed_bytes": 619
+        },
+        {
+          "path": "[Content_Types].xml",
+          "declared_uncompressed_bytes": 1162,
+          "compressed_bytes": 333
+        }
+      ]
+    },
+    {
+      "path": "benchmarks/node/fixtures/data-validation.xlsx",
+      "source_state": "ignored",
+      "sha256": "fac6325af33add19416bae2e00ac2f71341aba94a527a180e34d170988598a03",
+      "outer_bytes": 289332,
+      "container": "zip",
+      "validity": "crc-ok",
+      "archive_entry_count": 8,
+      "aggregate_declared_uncompressed_bytes": 1601537,
+      "max_entry": {
+        "path": "xl/worksheets/sheet1.xml",
+        "declared_uncompressed_bytes": 1311534
+      },
+      "max_observed_compression_ratio": {
+        "ratio": 11.09087,
+        "path": "xl/sharedStrings.xml",
+        "declared_uncompressed_bytes": 284625,
+        "compressed_bytes": 25663
+      },
+      "xml_declared_uncompressed_bytes": 1600385,
+      "largest_xml_parts": [
+        {
+          "path": "xl/worksheets/sheet1.xml",
+          "declared_uncompressed_bytes": 1311534,
+          "compressed_bytes": 260723
+        },
+        {
+          "path": "xl/sharedStrings.xml",
+          "declared_uncompressed_bytes": 284625,
+          "compressed_bytes": 25663
+        },
+        {
+          "path": "xl/theme/theme1.xml",
+          "declared_uncompressed_bytes": 2206,
+          "compressed_bytes": 619
+        },
+        {
+          "path": "[Content_Types].xml",
+          "declared_uncompressed_bytes": 816,
+          "compressed_bytes": 291
+        },
+        {
+          "path": "xl/styles.xml",
+          "declared_uncompressed_bytes": 750,
+          "compressed_bytes": 367
+        }
+      ]
+    },
+    {
+      "path": "benchmarks/node/fixtures/formulas.xlsx",
+      "source_state": "ignored",
+      "sha256": "1e579b05a4f4f79490ac260abfd6de85d2463f9cc241d69136c83b6f6923eca4",
+      "outer_bytes": 577725,
+      "container": "zip",
+      "validity": "crc-ok",
+      "archive_entry_count": 8,
+      "aggregate_declared_uncompressed_bytes": 2797915,
+      "max_entry": {
+        "path": "xl/worksheets/sheet1.xml",
+        "declared_uncompressed_bytes": 2792223
+      },
+      "max_observed_compression_ratio": {
+        "ratio": 4.85953,
+        "path": "xl/worksheets/sheet1.xml",
+        "declared_uncompressed_bytes": 2792223,
+        "compressed_bytes": 574587
+      },
+      "xml_declared_uncompressed_bytes": 2796763,
+      "largest_xml_parts": [
+        {
+          "path": "xl/worksheets/sheet1.xml",
+          "declared_uncompressed_bytes": 2792223,
+          "compressed_bytes": 574587
+        },
+        {
+          "path": "xl/theme/theme1.xml",
+          "declared_uncompressed_bytes": 2206,
+          "compressed_bytes": 619
+        },
+        {
+          "path": "[Content_Types].xml",
+          "declared_uncompressed_bytes": 816,
+          "compressed_bytes": 291
+        },
+        {
+          "path": "xl/styles.xml",
+          "declared_uncompressed_bytes": 750,
+          "compressed_bytes": 367
+        },
+        {
+          "path": "xl/workbook.xml",
+          "declared_uncompressed_bytes": 454,
+          "compressed_bytes": 280
+        }
+      ]
+    },
+    {
+      "path": "benchmarks/node/fixtures/heavy-styles.xlsx",
+      "source_state": "ignored",
+      "sha256": "7f5955adb2347bf2743fc4f1009952ea1d44a52c27d444be675de037d3395452",
+      "outer_bytes": 364148,
+      "container": "zip",
+      "validity": "crc-ok",
+      "archive_entry_count": 8,
+      "aggregate_declared_uncompressed_bytes": 2323344,
+      "max_entry": {
+        "path": "xl/worksheets/sheet1.xml",
+        "declared_uncompressed_bytes": 2003293
+      },
+      "max_observed_compression_ratio": {
+        "ratio": 11.85105,
+        "path": "xl/sharedStrings.xml",
+        "declared_uncompressed_bytes": 313164,
+        "compressed_bytes": 26425
+      },
+      "xml_declared_uncompressed_bytes": 2322192,
+      "largest_xml_parts": [
+        {
+          "path": "xl/worksheets/sheet1.xml",
+          "declared_uncompressed_bytes": 2003293,
+          "compressed_bytes": 334385
+        },
+        {
+          "path": "xl/sharedStrings.xml",
+          "declared_uncompressed_bytes": 313164,
+          "compressed_bytes": 26425
+        },
+        {
+          "path": "xl/styles.xml",
+          "declared_uncompressed_bytes": 2259,
+          "compressed_bytes": 759
+        },
+        {
+          "path": "xl/theme/theme1.xml",
+          "declared_uncompressed_bytes": 2206,
+          "compressed_bytes": 619
+        },
+        {
+          "path": "[Content_Types].xml",
+          "declared_uncompressed_bytes": 816,
+          "compressed_bytes": 291
+        }
+      ]
+    },
+    {
+      "path": "benchmarks/node/fixtures/large-data.xlsx",
+      "source_state": "ignored",
+      "sha256": "fdd1ae3dc0272a66fde15cc898f8c8f82160ffbba5333beaa0db943c50591d72",
+      "outer_bytes": 7545411,
+      "container": "zip",
+      "validity": "crc-ok",
+      "archive_entry_count": 8,
+      "aggregate_declared_uncompressed_bytes": 40816309,
+      "max_entry": {
+        "path": "xl/worksheets/sheet1.xml",
+        "declared_uncompressed_bytes": 33465781
+      },
+      "max_observed_compression_ratio": {
+        "ratio": 11.900935,
+        "path": "xl/sharedStrings.xml",
+        "declared_uncompressed_bytes": 7345150,
+        "compressed_bytes": 617191
+      },
+      "xml_declared_uncompressed_bytes": 40815157,
+      "largest_xml_parts": [
+        {
+          "path": "xl/worksheets/sheet1.xml",
+          "declared_uncompressed_bytes": 33465781,
+          "compressed_bytes": 6925274
+        },
+        {
+          "path": "xl/sharedStrings.xml",
+          "declared_uncompressed_bytes": 7345150,
+          "compressed_bytes": 617191
+        },
+        {
+          "path": "xl/theme/theme1.xml",
+          "declared_uncompressed_bytes": 2206,
+          "compressed_bytes": 619
+        },
+        {
+          "path": "[Content_Types].xml",
+          "declared_uncompressed_bytes": 816,
+          "compressed_bytes": 291
+        },
+        {
+          "path": "xl/styles.xml",
+          "declared_uncompressed_bytes": 750,
+          "compressed_bytes": 367
+        }
+      ]
+    },
+    {
+      "path": "benchmarks/node/fixtures/merged-cells.xlsx",
+      "source_state": "ignored",
+      "sha256": "402f069ab427a5df5156a9c01e5c200c246d4a0cbf9b257736ee5512435e8d33",
+      "outer_bytes": 22791,
+      "container": "zip",
+      "validity": "crc-ok",
+      "archive_entry_count": 8,
+      "aggregate_declared_uncompressed_bytes": 109448,
+      "max_entry": {
+        "path": "xl/worksheets/sheet1.xml",
+        "declared_uncompressed_bytes": 99507
+      },
+      "max_observed_compression_ratio": {
+        "ratio": 10.028571,
+        "path": "xl/sharedStrings.xml",
+        "declared_uncompressed_bytes": 4563,
+        "compressed_bytes": 455
+      },
+      "xml_declared_uncompressed_bytes": 108296,
+      "largest_xml_parts": [
+        {
+          "path": "xl/worksheets/sheet1.xml",
+          "declared_uncompressed_bytes": 99507,
+          "compressed_bytes": 19390
+        },
+        {
+          "path": "xl/sharedStrings.xml",
+          "declared_uncompressed_bytes": 4563,
+          "compressed_bytes": 455
+        },
+        {
+          "path": "xl/theme/theme1.xml",
+          "declared_uncompressed_bytes": 2206,
+          "compressed_bytes": 619
+        },
+        {
+          "path": "[Content_Types].xml",
+          "declared_uncompressed_bytes": 816,
+          "compressed_bytes": 291
+        },
+        {
+          "path": "xl/styles.xml",
+          "declared_uncompressed_bytes": 750,
+          "compressed_bytes": 367
+        }
+      ]
+    },
+    {
+      "path": "benchmarks/node/fixtures/mixed-workload.xlsx",
+      "source_state": "ignored",
+      "sha256": "7a46e95042a98fe402b3bce34d8c1e3c45da25ed2e7e5c6635782c0230ee139e",
+      "outer_bytes": 412796,
+      "container": "zip",
+      "validity": "crc-ok",
+      "archive_entry_count": 13,
+      "aggregate_declared_uncompressed_bytes": 2580601,
+      "max_entry": {
+        "path": "xl/worksheets/sheet2.xml",
+        "declared_uncompressed_bytes": 996267
+      },
+      "max_observed_compression_ratio": {
+        "ratio": 26.260155,
+        "path": "xl/comments1.xml",
+        "declared_uncompressed_bytes": 84689,
+        "compressed_bytes": 3225
+      },
+      "xml_declared_uncompressed_bytes": 2168977,
+      "largest_xml_parts": [
+        {
+          "path": "xl/worksheets/sheet2.xml",
+          "declared_uncompressed_bytes": 996267,
+          "compressed_bytes": 186972
+        },
+        {
+          "path": "xl/worksheets/sheet1.xml",
+          "declared_uncompressed_bytes": 873581,
+          "compressed_bytes": 176669
+        },
+        {
+          "path": "xl/sharedStrings.xml",
+          "declared_uncompressed_bytes": 207687,
+          "compressed_bytes": 24516
+        },
+        {
+          "path": "xl/comments1.xml",
+          "declared_uncompressed_bytes": 84689,
+          "compressed_bytes": 3225
+        },
+        {
+          "path": "xl/theme/theme1.xml",
+          "declared_uncompressed_bytes": 2206,
+          "compressed_bytes": 619
+        }
+      ]
+    },
+    {
+      "path": "benchmarks/node/fixtures/multi-sheet.xlsx",
+      "source_state": "ignored",
+      "sha256": "4fbb49003c214420720b3d3f6360b392dd63fedc63edb35ba18c6372a09d8e7c",
+      "outer_bytes": 3771629,
+      "container": "zip",
+      "validity": "crc-ok",
+      "archive_entry_count": 17,
+      "aggregate_declared_uncompressed_bytes": 23716251,
+      "max_entry": {
+        "path": "xl/sharedStrings.xml",
+        "declared_uncompressed_bytes": 6770210
+      },
+      "max_observed_compression_ratio": {
+        "ratio": 11.262697,
+        "path": "xl/sharedStrings.xml",
+        "declared_uncompressed_bytes": 6770210,
+        "compressed_bytes": 601118
+      },
+      "xml_declared_uncompressed_bytes": 23713826,
+      "largest_xml_parts": [
+        {
+          "path": "xl/sharedStrings.xml",
+          "declared_uncompressed_bytes": 6770210,
+          "compressed_bytes": 601118
+        },
+        {
+          "path": "xl/worksheets/sheet10.xml",
+          "declared_uncompressed_bytes": 1711620,
+          "compressed_bytes": 319020
+        },
+        {
+          "path": "xl/worksheets/sheet9.xml",
+          "declared_uncompressed_bytes": 1709833,
+          "compressed_bytes": 319500
+        },
+        {
+          "path": "xl/worksheets/sheet8.xml",
+          "declared_uncompressed_bytes": 1708046,
+          "compressed_bytes": 319101
+        },
+        {
+          "path": "xl/worksheets/sheet7.xml",
+          "declared_uncompressed_bytes": 1706258,
+          "compressed_bytes": 319301
+        }
+      ]
+    },
+    {
+      "path": "benchmarks/node/fixtures/scale-100k.xlsx",
+      "source_state": "ignored",
+      "sha256": "13aa19cfbf08ccffe24be7302007accb377b8eb1e4247c4fd2f18f50f4cd97bd",
+      "outer_bytes": 7582404,
+      "container": "zip",
+      "validity": "crc-ok",
+      "archive_entry_count": 8,
+      "aggregate_declared_uncompressed_bytes": 41770451,
+      "max_entry": {
+        "path": "xl/worksheets/sheet1.xml",
+        "declared_uncompressed_bytes": 34597993
+      },
+      "max_observed_compression_ratio": {
+        "ratio": 9.346606,
+        "path": "xl/sharedStrings.xml",
+        "declared_uncompressed_bytes": 7167080,
+        "compressed_bytes": 766811
+      },
+      "xml_declared_uncompressed_bytes": 41769299,
+      "largest_xml_parts": [
+        {
+          "path": "xl/worksheets/sheet1.xml",
+          "declared_uncompressed_bytes": 34597993,
+          "compressed_bytes": 6812647
+        },
+        {
+          "path": "xl/sharedStrings.xml",
+          "declared_uncompressed_bytes": 7167080,
+          "compressed_bytes": 766811
+        },
+        {
+          "path": "xl/theme/theme1.xml",
+          "declared_uncompressed_bytes": 2206,
+          "compressed_bytes": 619
+        },
+        {
+          "path": "[Content_Types].xml",
+          "declared_uncompressed_bytes": 816,
+          "compressed_bytes": 291
+        },
+        {
+          "path": "xl/styles.xml",
+          "declared_uncompressed_bytes": 750,
+          "compressed_bytes": 367
+        }
+      ]
+    },
+    {
+      "path": "benchmarks/node/fixtures/scale-10k.xlsx",
+      "source_state": "ignored",
+      "sha256": "4c57df3e1850fec424c39e2dd6657cf804c76fb694a07a8718c7dbd261dfdfbe",
+      "outer_bytes": 744706,
+      "container": "zip",
+      "validity": "crc-ok",
+      "archive_entry_count": 8,
+      "aggregate_declared_uncompressed_bytes": 3942983,
+      "max_entry": {
+        "path": "xl/worksheets/sheet1.xml",
+        "declared_uncompressed_bytes": 3250533
+      },
+      "max_observed_compression_ratio": {
+        "ratio": 9.297069,
+        "path": "xl/sharedStrings.xml",
+        "declared_uncompressed_bytes": 687072,
+        "compressed_bytes": 73902
+      },
+      "xml_declared_uncompressed_bytes": 3941831,
+      "largest_xml_parts": [
+        {
+          "path": "xl/worksheets/sheet1.xml",
+          "declared_uncompressed_bytes": 3250533,
+          "compressed_bytes": 667858
+        },
+        {
+          "path": "xl/sharedStrings.xml",
+          "declared_uncompressed_bytes": 687072,
+          "compressed_bytes": 73902
+        },
+        {
+          "path": "xl/theme/theme1.xml",
+          "declared_uncompressed_bytes": 2206,
+          "compressed_bytes": 619
+        },
+        {
+          "path": "[Content_Types].xml",
+          "declared_uncompressed_bytes": 816,
+          "compressed_bytes": 291
+        },
+        {
+          "path": "xl/styles.xml",
+          "declared_uncompressed_bytes": 750,
+          "compressed_bytes": 367
+        }
+      ]
+    },
+    {
+      "path": "benchmarks/node/fixtures/scale-1k.xlsx",
+      "source_state": "ignored",
+      "sha256": "08d7a657973ac6c757b7af9dac36692378dddc76426df32fa25612973b5c0a29",
+      "outer_bytes": 76646,
+      "container": "zip",
+      "validity": "crc-ok",
+      "archive_entry_count": 8,
+      "aggregate_declared_uncompressed_bytes": 376188,
+      "max_entry": {
+        "path": "xl/worksheets/sheet1.xml",
+        "declared_uncompressed_bytes": 304746
+      },
+      "max_observed_compression_ratio": {
+        "ratio": 8.685774,
+        "path": "xl/sharedStrings.xml",
+        "declared_uncompressed_bytes": 66064,
+        "compressed_bytes": 7606
+      },
+      "xml_declared_uncompressed_bytes": 375036,
+      "largest_xml_parts": [
+        {
+          "path": "xl/worksheets/sheet1.xml",
+          "declared_uncompressed_bytes": 304746,
+          "compressed_bytes": 66094
+        },
+        {
+          "path": "xl/sharedStrings.xml",
+          "declared_uncompressed_bytes": 66064,
+          "compressed_bytes": 7606
+        },
+        {
+          "path": "xl/theme/theme1.xml",
+          "declared_uncompressed_bytes": 2206,
+          "compressed_bytes": 619
+        },
+        {
+          "path": "[Content_Types].xml",
+          "declared_uncompressed_bytes": 816,
+          "compressed_bytes": 291
+        },
+        {
+          "path": "xl/styles.xml",
+          "declared_uncompressed_bytes": 750,
+          "compressed_bytes": 367
+        }
+      ]
+    },
+    {
+      "path": "benchmarks/node/fixtures/strings.xlsx",
+      "source_state": "ignored",
+      "sha256": "30eaa89c478f53c1bb971c31e2bc7c95aef376fabd44d7a08c19acab46077db0",
+      "outer_bytes": 1402824,
+      "container": "zip",
+      "validity": "crc-ok",
+      "archive_entry_count": 8,
+      "aggregate_declared_uncompressed_bytes": 9811985,
+      "max_entry": {
+        "path": "xl/worksheets/sheet1.xml",
+        "declared_uncompressed_bytes": 7141119
+      },
+      "max_observed_compression_ratio": {
+        "ratio": 7.691563,
+        "path": "xl/sharedStrings.xml",
+        "declared_uncompressed_bytes": 2665488,
+        "compressed_bytes": 346547
+      },
+      "xml_declared_uncompressed_bytes": 9810833,
+      "largest_xml_parts": [
+        {
+          "path": "xl/worksheets/sheet1.xml",
+          "declared_uncompressed_bytes": 7141119,
+          "compressed_bytes": 1053331
+        },
+        {
+          "path": "xl/sharedStrings.xml",
+          "declared_uncompressed_bytes": 2665488,
+          "compressed_bytes": 346547
+        },
+        {
+          "path": "xl/theme/theme1.xml",
+          "declared_uncompressed_bytes": 2206,
+          "compressed_bytes": 619
+        },
+        {
+          "path": "[Content_Types].xml",
+          "declared_uncompressed_bytes": 816,
+          "compressed_bytes": 291
+        },
+        {
+          "path": "xl/styles.xml",
+          "declared_uncompressed_bytes": 750,
+          "compressed_bytes": 367
+        }
+      ]
+    },
+    {
+      "path": "crates/sheetkit-core/tests/fixtures/encryption/msoffcrypto-tool-v6.0.0/agile-password.xlsx",
+      "source_state": "tracked",
+      "sha256": "3f792e3902a615bf0e91771f3f3016b80d59098b8e492efcdc0752748e15b997",
+      "outer_bytes": 14848,
+      "container": "cfb-encrypted",
+      "validity": "recognized-cfb-magic",
+      "archive_metrics": null
+    },
+    {
+      "path": "crates/sheetkit-core/tests/fixtures/encryption/msoffcrypto-tool-v6.0.0/agile-plain.xlsx",
+      "source_state": "tracked",
+      "sha256": "4dd9dd0ccbfc7fb8769f1f3307830d3cc4c5042e32d619f4b2835fada89d13c6",
+      "outer_bytes": 8369,
+      "container": "zip",
+      "validity": "crc-ok",
+      "archive_entry_count": 10,
+      "aggregate_declared_uncompressed_bytes": 16398,
+      "max_entry": {
+        "path": "xl/theme/theme1.xml",
+        "declared_uncompressed_bytes": 8390
+      },
+      "max_observed_compression_ratio": {
+        "ratio": 4.486631,
+        "path": "xl/theme/theme1.xml",
+        "declared_uncompressed_bytes": 8390,
+        "compressed_bytes": 1870
+      },
+      "xml_declared_uncompressed_bytes": 15112,
+      "largest_xml_parts": [
+        {
+          "path": "xl/theme/theme1.xml",
+          "declared_uncompressed_bytes": 8390,
+          "compressed_bytes": 1870
+        },
+        {
+          "path": "xl/styles.xml",
+          "declared_uncompressed_bytes": 1775,
+          "compressed_bytes": 717
+        },
+        {
+          "path": "[Content_Types].xml",
+          "declared_uncompressed_bytes": 1168,
+          "compressed_bytes": 350
+        },
+        {
+          "path": "xl/worksheets/sheet1.xml",
+          "declared_uncompressed_bytes": 1151,
+          "compressed_bytes": 555
+        },
+        {
+          "path": "xl/workbook.xml",
+          "declared_uncompressed_bytes": 1038,
+          "compressed_bytes": 537
+        }
+      ]
+    }
+  ]
+}

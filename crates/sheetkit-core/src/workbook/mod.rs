@@ -102,15 +102,18 @@ use crate::workbook_paths::{
 
 #[path = "aux_parts.rs"]
 pub(crate) mod aux;
+pub(crate) mod budget;
 mod cell_ops;
 mod data;
 mod drawing;
 mod features;
 mod io;
 pub mod open_options;
+pub(crate) mod package_reader;
 mod sheet_ops;
 mod source;
 
+pub use budget::OpenLimits;
 pub use open_options::{AuxParts, DateInterpretation, OpenOptions, ReadMode};
 pub(crate) use source::PackageSource;
 

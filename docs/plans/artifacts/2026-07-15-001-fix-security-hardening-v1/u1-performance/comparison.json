@@ -1,0 +1,690 @@
+{
+  "schemaVersion": 1,
+  "purpose": "U1 pre-remediation dual baseline comparison",
+  "baselineRefs": {
+    "tag": "f9eac5366eb83b6dd79d5dd6d03a8988b5c319a8",
+    "current": "150e57939ac816a9bfa86daa856b432a135e3ca9"
+  },
+  "interpretation": {
+    "ratioDirection": "positive means current revision is slower/larger than v0.5.1 tag",
+    "remediationGate": "future hardened revisions must be compared independently to current and tag baselines",
+    "caveat": "existing focused runners do not provide fresh-process peak RSS or explicit cold/warm separation"
+  },
+  "rustCriterion": {
+    "successfulScenariosPerRevision": 9,
+    "blockedGroup": "save_latency",
+    "rows": [
+      {
+        "scenario": "get_rows/Sheet1/large-data",
+        "tagMeanNs": 22052860.013,
+        "currentMeanNs": 22237578.027,
+        "meanDeltaPct": 0.838,
+        "tagMeanCi95Ns": [
+          21644988.192,
+          22497414.746
+        ],
+        "currentMeanCi95Ns": [
+          21194526.507,
+          23857741.049
+        ]
+      },
+      {
+        "scenario": "get_rows/Sheet1/scale-10k",
+        "tagMeanNs": 2339266.625,
+        "currentMeanNs": 2367763.764,
+        "meanDeltaPct": 1.218,
+        "tagMeanCi95Ns": [
+          2317213.595,
+          2363382.518
+        ],
+        "currentMeanCi95Ns": [
+          2330686.507,
+          2411270.462
+        ]
+      },
+      {
+        "scenario": "get_rows/Sheet1/scale-1k",
+        "tagMeanNs": 224701.247,
+        "currentMeanNs": 222127.729,
+        "meanDeltaPct": -1.145,
+        "tagMeanCi95Ns": [
+          223780.285,
+          225660.61
+        ],
+        "currentMeanCi95Ns": [
+          220523.297,
+          224011.658
+        ]
+      },
+      {
+        "scenario": "open_latency/full/large-data",
+        "tagMeanNs": 144221749.147,
+        "currentMeanNs": 220286109.733,
+        "meanDeltaPct": 52.741,
+        "tagMeanCi95Ns": [
+          136493151.174,
+          155793479.254
+        ],
+        "currentMeanCi95Ns": [
+          204852820.922,
+          242816342.685
+        ]
+      },
+      {
+        "scenario": "open_latency/full/scale-10k",
+        "tagMeanNs": 14382535.525,
+        "currentMeanNs": 21339621.256,
+        "meanDeltaPct": 48.372,
+        "tagMeanCi95Ns": [
+          14164953.503,
+          14639200.361
+        ],
+        "currentMeanCi95Ns": [
+          20895604.97,
+          21866065.279
+        ]
+      },
+      {
+        "scenario": "open_latency/full/scale-1k",
+        "tagMeanNs": 1463405.344,
+        "currentMeanNs": 2065311.672,
+        "meanDeltaPct": 41.131,
+        "tagMeanCi95Ns": [
+          1447960.572,
+          1480267.458
+        ],
+        "currentMeanCi95Ns": [
+          2045774.765,
+          2088786.59
+        ]
+      },
+      {
+        "scenario": "open_readfast_latency/readfast/large-data",
+        "tagMeanNs": 149247810.717,
+        "currentMeanNs": 184367149.967,
+        "meanDeltaPct": 23.531,
+        "tagMeanCi95Ns": [
+          144206429.988,
+          153845653.787
+        ],
+        "currentMeanCi95Ns": [
+          183188120.8,
+          185700999.835
+        ]
+      },
+      {
+        "scenario": "open_readfast_latency/readfast/scale-10k",
+        "tagMeanNs": 16884981.503,
+        "currentMeanNs": 24220513.58,
+        "meanDeltaPct": 43.444,
+        "tagMeanCi95Ns": [
+          15353896.919,
+          18787840.212
+        ],
+        "currentMeanCi95Ns": [
+          20733219.566,
+          28511570.217
+        ]
+      },
+      {
+        "scenario": "open_readfast_latency/readfast/scale-1k",
+        "tagMeanNs": 1956311.391,
+        "currentMeanNs": 1936808.144,
+        "meanDeltaPct": -0.997,
+        "tagMeanCi95Ns": [
+          1780809.193,
+          2150121.33
+        ],
+        "currentMeanCi95Ns": [
+          1912663.503,
+          1964173.651
+        ]
+      }
+    ]
+  },
+  "nodeFocused": {
+    "scenariosPerRevision": 60,
+    "rows": [
+      {
+        "scenario": "openSync-path/scale-1k",
+        "tagMedianMs": 1.734,
+        "currentMedianMs": 2.141,
+        "medianDeltaPct": 23.472,
+        "tagRssMedianMb": 0.2,
+        "currentRssMedianMb": 0.5,
+        "rssDeltaPct": 150
+      },
+      {
+        "scenario": "openSync-path/scale-10k",
+        "tagMedianMs": 13.939,
+        "currentMedianMs": 18.777,
+        "medianDeltaPct": 34.708,
+        "tagRssMedianMb": 8.2,
+        "currentRssMedianMb": 7.7,
+        "rssDeltaPct": -6.098
+      },
+      {
+        "scenario": "openSync-path/scale-100k",
+        "tagMedianMs": 147.31,
+        "currentMedianMs": 191.264,
+        "medianDeltaPct": 29.838,
+        "tagRssMedianMb": 80,
+        "currentRssMedianMb": 81.2,
+        "rssDeltaPct": 1.5
+      },
+      {
+        "scenario": "openSync-path/large-data",
+        "tagMedianMs": 132.395,
+        "currentMedianMs": 176.432,
+        "medianDeltaPct": 33.262,
+        "tagRssMedianMb": 77.8,
+        "currentRssMedianMb": 89.3,
+        "rssDeltaPct": 14.781
+      },
+      {
+        "scenario": "open-path-async/scale-1k",
+        "tagMedianMs": 1.749,
+        "currentMedianMs": 2.273,
+        "medianDeltaPct": 29.96,
+        "tagRssMedianMb": 0,
+        "currentRssMedianMb": 0,
+        "rssDeltaPct": null
+      },
+      {
+        "scenario": "open-path-async/scale-10k",
+        "tagMedianMs": 13.373,
+        "currentMedianMs": 18.386,
+        "medianDeltaPct": 37.486,
+        "tagRssMedianMb": 0,
+        "currentRssMedianMb": 0.2,
+        "rssDeltaPct": null
+      },
+      {
+        "scenario": "open-path-async/scale-100k",
+        "tagMedianMs": 150.928,
+        "currentMedianMs": 195.666,
+        "medianDeltaPct": 29.642,
+        "tagRssMedianMb": 0,
+        "currentRssMedianMb": 44.1,
+        "rssDeltaPct": null
+      },
+      {
+        "scenario": "open-path-async/large-data",
+        "tagMedianMs": 137.236,
+        "currentMedianMs": 178.04,
+        "medianDeltaPct": 29.733,
+        "tagRssMedianMb": 0,
+        "currentRssMedianMb": 17.2,
+        "rssDeltaPct": null
+      },
+      {
+        "scenario": "openBufferSync/scale-1k",
+        "tagMedianMs": 1.759,
+        "currentMedianMs": 2.217,
+        "medianDeltaPct": 26.038,
+        "tagRssMedianMb": 0,
+        "currentRssMedianMb": 0,
+        "rssDeltaPct": null
+      },
+      {
+        "scenario": "openBufferSync/scale-10k",
+        "tagMedianMs": 16.556,
+        "currentMedianMs": 19.315,
+        "medianDeltaPct": 16.665,
+        "tagRssMedianMb": 6.8,
+        "currentRssMedianMb": 5.1,
+        "rssDeltaPct": -25
+      },
+      {
+        "scenario": "openBufferSync/scale-100k",
+        "tagMedianMs": 167.53,
+        "currentMedianMs": 200.113,
+        "medianDeltaPct": 19.449,
+        "tagRssMedianMb": 78,
+        "currentRssMedianMb": 65.4,
+        "rssDeltaPct": -16.154
+      },
+      {
+        "scenario": "openBufferSync/large-data",
+        "tagMedianMs": 148.391,
+        "currentMedianMs": 180.284,
+        "medianDeltaPct": 21.493,
+        "tagRssMedianMb": 77.4,
+        "currentRssMedianMb": 57,
+        "rssDeltaPct": -26.357
+      },
+      {
+        "scenario": "openBuffer-async/scale-1k",
+        "tagMedianMs": 1.965,
+        "currentMedianMs": 2.402,
+        "medianDeltaPct": 22.239,
+        "tagRssMedianMb": 0,
+        "currentRssMedianMb": 0,
+        "rssDeltaPct": null
+      },
+      {
+        "scenario": "openBuffer-async/scale-10k",
+        "tagMedianMs": 15.381,
+        "currentMedianMs": 19.059,
+        "medianDeltaPct": 23.913,
+        "tagRssMedianMb": 0,
+        "currentRssMedianMb": 0,
+        "rssDeltaPct": null
+      },
+      {
+        "scenario": "openBuffer-async/scale-100k",
+        "tagMedianMs": 168.35,
+        "currentMedianMs": 205.506,
+        "medianDeltaPct": 22.071,
+        "tagRssMedianMb": 0,
+        "currentRssMedianMb": 20.3,
+        "rssDeltaPct": null
+      },
+      {
+        "scenario": "openBuffer-async/large-data",
+        "tagMedianMs": 149.116,
+        "currentMedianMs": 179.546,
+        "medianDeltaPct": 20.407,
+        "tagRssMedianMb": 0,
+        "currentRssMedianMb": 0,
+        "rssDeltaPct": null
+      },
+      {
+        "scenario": "getRows/scale-1k",
+        "tagMedianMs": 6.68,
+        "currentMedianMs": 7.438,
+        "medianDeltaPct": 11.347,
+        "tagRssMedianMb": 1,
+        "currentRssMedianMb": 1,
+        "rssDeltaPct": 0
+      },
+      {
+        "scenario": "getRows/scale-10k",
+        "tagMedianMs": 61.994,
+        "currentMedianMs": 66.268,
+        "medianDeltaPct": 6.894,
+        "tagRssMedianMb": 17.9,
+        "currentRssMedianMb": 19.9,
+        "rssDeltaPct": 11.173
+      },
+      {
+        "scenario": "getRows/scale-100k",
+        "tagMedianMs": 638.804,
+        "currentMedianMs": 684.617,
+        "medianDeltaPct": 7.172,
+        "tagRssMedianMb": 194.9,
+        "currentRssMedianMb": 127.7,
+        "rssDeltaPct": -34.479
+      },
+      {
+        "scenario": "getRows/large-data",
+        "tagMedianMs": 612.035,
+        "currentMedianMs": 637.128,
+        "medianDeltaPct": 4.1,
+        "tagRssMedianMb": 175.8,
+        "currentRssMedianMb": 202.3,
+        "rssDeltaPct": 15.074
+      },
+      {
+        "scenario": "getRows-only/scale-1k",
+        "tagMedianMs": 1.002,
+        "currentMedianMs": 1.5,
+        "medianDeltaPct": 49.701,
+        "tagRssMedianMb": 0,
+        "currentRssMedianMb": 0,
+        "rssDeltaPct": null
+      },
+      {
+        "scenario": "getRows-only/scale-10k",
+        "tagMedianMs": 6.776,
+        "currentMedianMs": 7.502,
+        "medianDeltaPct": 10.714,
+        "tagRssMedianMb": 1.2,
+        "currentRssMedianMb": 1.2,
+        "rssDeltaPct": 0
+      },
+      {
+        "scenario": "getRows-only/scale-100k",
+        "tagMedianMs": 66.755,
+        "currentMedianMs": 74.482,
+        "medianDeltaPct": 11.575,
+        "tagRssMedianMb": 12.6,
+        "currentRssMedianMb": 12.6,
+        "rssDeltaPct": 0
+      },
+      {
+        "scenario": "getRows-only/large-data",
+        "tagMedianMs": 62.218,
+        "currentMedianMs": 67.262,
+        "medianDeltaPct": 8.107,
+        "tagRssMedianMb": 11.6,
+        "currentRssMedianMb": 0,
+        "rssDeltaPct": -100
+      },
+      {
+        "scenario": "getRowsRaw/scale-1k",
+        "tagMedianMs": 6.331,
+        "currentMedianMs": 7.431,
+        "medianDeltaPct": 17.375,
+        "tagRssMedianMb": 1.1,
+        "currentRssMedianMb": 1.1,
+        "rssDeltaPct": 0
+      },
+      {
+        "scenario": "getRowsRaw/scale-10k",
+        "tagMedianMs": 86.733,
+        "currentMedianMs": 66.61,
+        "medianDeltaPct": -23.201,
+        "tagRssMedianMb": 0,
+        "currentRssMedianMb": 18.9,
+        "rssDeltaPct": null
+      },
+      {
+        "scenario": "getRowsRaw/scale-100k",
+        "tagMedianMs": 623.615,
+        "currentMedianMs": 664.95,
+        "medianDeltaPct": 6.628,
+        "tagRssMedianMb": 0,
+        "currentRssMedianMb": 0,
+        "rssDeltaPct": null
+      },
+      {
+        "scenario": "getRowsRaw/large-data",
+        "tagMedianMs": 613.857,
+        "currentMedianMs": 641.595,
+        "medianDeltaPct": 4.519,
+        "tagRssMedianMb": 0,
+        "currentRssMedianMb": 0,
+        "rssDeltaPct": null
+      },
+      {
+        "scenario": "getRowsRaw-only/scale-1k",
+        "tagMedianMs": 1.308,
+        "currentMedianMs": 1.36,
+        "medianDeltaPct": 3.976,
+        "tagRssMedianMb": 0,
+        "currentRssMedianMb": 0,
+        "rssDeltaPct": null
+      },
+      {
+        "scenario": "getRowsRaw-only/scale-10k",
+        "tagMedianMs": 8.009,
+        "currentMedianMs": 9.077,
+        "medianDeltaPct": 13.335,
+        "tagRssMedianMb": 1.4,
+        "currentRssMedianMb": 0.5,
+        "rssDeltaPct": -64.286
+      },
+      {
+        "scenario": "getRowsRaw-only/scale-100k",
+        "tagMedianMs": 62.147,
+        "currentMedianMs": 64.225,
+        "medianDeltaPct": 3.344,
+        "tagRssMedianMb": 0,
+        "currentRssMedianMb": 12.6,
+        "rssDeltaPct": null
+      },
+      {
+        "scenario": "getRowsRaw-only/large-data",
+        "tagMedianMs": 51.334,
+        "currentMedianMs": 57.603,
+        "medianDeltaPct": 12.212,
+        "tagRssMedianMb": 11.6,
+        "currentRssMedianMb": 11.6,
+        "rssDeltaPct": 0
+      },
+      {
+        "scenario": "open-lazy-path/scale-1k",
+        "tagMedianMs": 1.898,
+        "currentMedianMs": 2.265,
+        "medianDeltaPct": 19.336,
+        "tagRssMedianMb": 0.5,
+        "currentRssMedianMb": 0,
+        "rssDeltaPct": -100
+      },
+      {
+        "scenario": "open-lazy-path/scale-10k",
+        "tagMedianMs": 13.95,
+        "currentMedianMs": 18.766,
+        "medianDeltaPct": 34.523,
+        "tagRssMedianMb": 0.1,
+        "currentRssMedianMb": 1.4,
+        "rssDeltaPct": 1300
+      },
+      {
+        "scenario": "open-lazy-path/scale-100k",
+        "tagMedianMs": 148.66,
+        "currentMedianMs": 209.508,
+        "medianDeltaPct": 40.931,
+        "tagRssMedianMb": 30.2,
+        "currentRssMedianMb": 21.3,
+        "rssDeltaPct": -29.47
+      },
+      {
+        "scenario": "open-lazy-path/large-data",
+        "tagMedianMs": 129.42,
+        "currentMedianMs": 178.724,
+        "medianDeltaPct": 38.096,
+        "tagRssMedianMb": 0,
+        "currentRssMedianMb": 17.2,
+        "rssDeltaPct": null
+      },
+      {
+        "scenario": "lazy-open-getRows/scale-1k",
+        "tagMedianMs": 6.543,
+        "currentMedianMs": 7.174,
+        "medianDeltaPct": 9.644,
+        "tagRssMedianMb": 0,
+        "currentRssMedianMb": 0,
+        "rssDeltaPct": null
+      },
+      {
+        "scenario": "lazy-open-getRows/scale-10k",
+        "tagMedianMs": 60.487,
+        "currentMedianMs": 66.212,
+        "medianDeltaPct": 9.465,
+        "tagRssMedianMb": 1.2,
+        "currentRssMedianMb": 5.3,
+        "rssDeltaPct": 341.667
+      },
+      {
+        "scenario": "lazy-open-getRows/scale-100k",
+        "tagMedianMs": 609.138,
+        "currentMedianMs": 652.361,
+        "medianDeltaPct": 7.096,
+        "tagRssMedianMb": 33.3,
+        "currentRssMedianMb": 0,
+        "rssDeltaPct": -100
+      },
+      {
+        "scenario": "lazy-open-getRows/large-data",
+        "tagMedianMs": 591.52,
+        "currentMedianMs": 619.087,
+        "medianDeltaPct": 4.66,
+        "tagRssMedianMb": 15,
+        "currentRssMedianMb": 0,
+        "rssDeltaPct": -100
+      },
+      {
+        "scenario": "openSheetReader/scale-1k",
+        "tagMedianMs": 7.784,
+        "currentMedianMs": 9.223,
+        "medianDeltaPct": 18.487,
+        "tagRssMedianMb": 0,
+        "currentRssMedianMb": 0,
+        "rssDeltaPct": null
+      },
+      {
+        "scenario": "openSheetReader/scale-10k",
+        "tagMedianMs": 75.08,
+        "currentMedianMs": 82.279,
+        "medianDeltaPct": 9.588,
+        "tagRssMedianMb": 0,
+        "currentRssMedianMb": 0,
+        "rssDeltaPct": null
+      },
+      {
+        "scenario": "openSheetReader/scale-100k",
+        "tagMedianMs": 776.752,
+        "currentMedianMs": 851.25,
+        "medianDeltaPct": 9.591,
+        "tagRssMedianMb": 0,
+        "currentRssMedianMb": 10.8,
+        "rssDeltaPct": null
+      },
+      {
+        "scenario": "openSheetReader/large-data",
+        "tagMedianMs": 757.221,
+        "currentMedianMs": 831.937,
+        "medianDeltaPct": 9.867,
+        "tagRssMedianMb": 0,
+        "currentRssMedianMb": 0,
+        "rssDeltaPct": null
+      },
+      {
+        "scenario": "getRowsBuffer-v1/scale-1k",
+        "tagMedianMs": 0.44,
+        "currentMedianMs": 0.403,
+        "medianDeltaPct": -8.409,
+        "tagRssMedianMb": 0,
+        "currentRssMedianMb": 0,
+        "rssDeltaPct": null
+      },
+      {
+        "scenario": "getRowsBufferV2/scale-1k",
+        "tagMedianMs": 0.259,
+        "currentMedianMs": 0.267,
+        "medianDeltaPct": 3.089,
+        "tagRssMedianMb": 0,
+        "currentRssMedianMb": 0,
+        "rssDeltaPct": null
+      },
+      {
+        "scenario": "getRowsBuffer-v1/scale-10k",
+        "tagMedianMs": 4.413,
+        "currentMedianMs": 4.237,
+        "medianDeltaPct": -3.988,
+        "tagRssMedianMb": 0.2,
+        "currentRssMedianMb": 0.1,
+        "rssDeltaPct": -50
+      },
+      {
+        "scenario": "getRowsBufferV2/scale-10k",
+        "tagMedianMs": 2.532,
+        "currentMedianMs": 2.391,
+        "medianDeltaPct": -5.569,
+        "tagRssMedianMb": 1.1,
+        "currentRssMedianMb": 1.2,
+        "rssDeltaPct": 9.091
+      },
+      {
+        "scenario": "getRowsBuffer-v1/scale-100k",
+        "tagMedianMs": 63.979,
+        "currentMedianMs": 67.294,
+        "medianDeltaPct": 5.181,
+        "tagRssMedianMb": 2,
+        "currentRssMedianMb": 3.1,
+        "rssDeltaPct": 55
+      },
+      {
+        "scenario": "getRowsBufferV2/scale-100k",
+        "tagMedianMs": 26.609,
+        "currentMedianMs": 27.998,
+        "medianDeltaPct": 5.22,
+        "tagRssMedianMb": 2.5,
+        "currentRssMedianMb": 12.6,
+        "rssDeltaPct": 404
+      },
+      {
+        "scenario": "getRowsBuffer-v1/large-data",
+        "tagMedianMs": 52.594,
+        "currentMedianMs": 56.58,
+        "medianDeltaPct": 7.579,
+        "tagRssMedianMb": 13.1,
+        "currentRssMedianMb": 13.1,
+        "rssDeltaPct": 0
+      },
+      {
+        "scenario": "getRowsBufferV2/large-data",
+        "tagMedianMs": 23.711,
+        "currentMedianMs": 25.276,
+        "medianDeltaPct": 6.6,
+        "tagRssMedianMb": 11.5,
+        "currentRssMedianMb": 6.8,
+        "rssDeltaPct": -40.87
+      },
+      {
+        "scenario": "cow-save-untouched/scale-1k",
+        "tagMedianMs": 3.308,
+        "currentMedianMs": 3.717,
+        "medianDeltaPct": 12.364,
+        "tagRssMedianMb": 0.1,
+        "currentRssMedianMb": 0,
+        "rssDeltaPct": -100
+      },
+      {
+        "scenario": "cow-save-untouched/scale-10k",
+        "tagMedianMs": 25.074,
+        "currentMedianMs": 31.446,
+        "medianDeltaPct": 25.413,
+        "tagRssMedianMb": 0,
+        "currentRssMedianMb": 0,
+        "rssDeltaPct": null
+      },
+      {
+        "scenario": "cow-save-untouched/scale-100k",
+        "tagMedianMs": 267.349,
+        "currentMedianMs": 331.43,
+        "medianDeltaPct": 23.969,
+        "tagRssMedianMb": 0,
+        "currentRssMedianMb": 0,
+        "rssDeltaPct": null
+      },
+      {
+        "scenario": "cow-save-untouched/large-data",
+        "tagMedianMs": 259.827,
+        "currentMedianMs": 313.219,
+        "medianDeltaPct": 20.549,
+        "tagRssMedianMb": 0,
+        "currentRssMedianMb": 0,
+        "rssDeltaPct": null
+      },
+      {
+        "scenario": "cow-save-edited/scale-1k",
+        "tagMedianMs": 8.324,
+        "currentMedianMs": 8.896,
+        "medianDeltaPct": 6.872,
+        "tagRssMedianMb": 0,
+        "currentRssMedianMb": 0,
+        "rssDeltaPct": null
+      },
+      {
+        "scenario": "cow-save-edited/scale-10k",
+        "tagMedianMs": 77.922,
+        "currentMedianMs": 84.292,
+        "medianDeltaPct": 8.175,
+        "tagRssMedianMb": 0.1,
+        "currentRssMedianMb": 0,
+        "rssDeltaPct": -100
+      },
+      {
+        "scenario": "cow-save-edited/scale-100k",
+        "tagMedianMs": 791.629,
+        "currentMedianMs": 925.016,
+        "medianDeltaPct": 16.85,
+        "tagRssMedianMb": 31.2,
+        "currentRssMedianMb": 62.1,
+        "rssDeltaPct": 99.038
+      },
+      {
+        "scenario": "cow-save-edited/large-data",
+        "tagMedianMs": 768.315,
+        "currentMedianMs": 961.57,
+        "medianDeltaPct": 25.153,
+        "tagRssMedianMb": 0,
+        "currentRssMedianMb": 0,
+        "rssDeltaPct": null
+      }
+    ]
+  }
+}

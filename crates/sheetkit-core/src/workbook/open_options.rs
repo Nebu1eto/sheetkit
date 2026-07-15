@@ -54,8 +54,8 @@ pub enum DateInterpretation {
 
 /// Options for controlling how a workbook is opened and parsed.
 ///
-/// All fields default to `None` (no limit). Read mode defaults to `Lazy`
-/// and auxiliary parts default to `Deferred`.
+/// Resource dimensions use finite secure defaults. Read mode defaults to
+/// `Lazy` and auxiliary parts default to `Deferred`.
 /// Use the builder-style setter methods for convenience.
 #[derive(Debug, Clone, Default)]
 pub struct OpenOptions {
@@ -69,14 +69,17 @@ pub struct OpenOptions {
     pub sheets: Option<Vec<String>>,
 
     /// Maximum total decompressed size of all ZIP entries in bytes.
-    /// Exceeding this limit returns [`Error::ZipSizeExceeded`].
-    /// Default when `None`: no limit.
+    /// Compatibility override for aggregate declared and actual ZIP bytes.
+    /// `None` uses the finite values in [`OpenLimits`](super::OpenLimits).
     pub max_unzip_size: Option<u64>,
 
     /// Maximum number of ZIP entries allowed.
-    /// Exceeding this limit returns [`Error::ZipEntryCountExceeded`].
-    /// Default when `None`: no limit.
+    /// Compatibility override for archive entry count.
+    /// `None` uses the finite value in [`OpenLimits`](super::OpenLimits).
     pub max_zip_entries: Option<usize>,
+
+    /// Independently configurable finite resource limits.
+    pub limits: super::OpenLimits,
 
     /// Read mode: `Lazy` (default) skips auxiliary parts for faster
     /// read-only workloads; `Eager` parses everything; `Stream` is
@@ -94,7 +97,7 @@ pub struct OpenOptions {
 }
 
 impl OpenOptions {
-    /// Create a new `OpenOptions` with defaults (no limits, lazy read, deferred aux parts).
+    /// Create options with finite secure limits, lazy read, and deferred parts.
     pub fn new() -> Self {
         Self::default()
     }
@@ -121,6 +124,66 @@ impl OpenOptions {
     pub fn max_zip_entries(mut self, count: usize) -> Self {
         self.max_zip_entries = Some(count);
         self
+    }
+
+    /// Override the outer input byte limit for this open operation.
+    pub fn max_outer_input_bytes(mut self, bytes: u64) -> Self {
+        self.limits.outer_input_bytes = bytes;
+        self
+    }
+
+    /// Override the declared byte limit for each archive entry.
+    pub fn max_entry_declared_bytes(mut self, bytes: u64) -> Self {
+        self.limits.entry_declared_bytes = bytes;
+        self
+    }
+
+    /// Override the actual byte limit for each archive entry.
+    pub fn max_entry_actual_bytes(mut self, bytes: u64) -> Self {
+        self.limits.entry_actual_bytes = bytes;
+        self
+    }
+
+    /// Override the aggregate declared archive byte limit.
+    pub fn max_aggregate_declared_bytes(mut self, bytes: u64) -> Self {
+        self.limits.aggregate_declared_bytes = bytes;
+        self
+    }
+
+    /// Override the aggregate actual archive byte limit.
+    pub fn max_aggregate_actual_bytes(mut self, bytes: u64) -> Self {
+        self.limits.aggregate_actual_bytes = bytes;
+        self
+    }
+
+    /// Override the per-entry expansion ratio limit.
+    pub fn max_compression_ratio(mut self, ratio: u64) -> Self {
+        self.limits.compression_ratio = ratio;
+        self
+    }
+
+    /// Override the actual byte limit for each XML part.
+    pub fn max_xml_part_bytes(mut self, bytes: u64) -> Self {
+        self.limits.xml_bytes = bytes;
+        self
+    }
+
+    /// Override the byte limit for raw package data retained after open.
+    pub fn max_retained_package_bytes(mut self, bytes: u64) -> Self {
+        self.limits.retained_package_bytes = bytes;
+        self
+    }
+
+    pub(crate) fn resolved_limits(&self) -> crate::error::Result<super::OpenLimits> {
+        let mut limits = self.limits;
+        if let Some(entries) = self.max_zip_entries {
+            limits.archive_entries = entries as u64;
+        }
+        if let Some(bytes) = self.max_unzip_size {
+            limits.aggregate_declared_bytes = bytes;
+            limits.aggregate_actual_bytes = bytes;
+        }
+        limits.validate()
     }
 
     /// Set the read mode. `Lazy` skips auxiliary parts for faster
@@ -192,6 +255,7 @@ mod tests {
         assert!(opts.sheets.is_none());
         assert!(opts.max_unzip_size.is_none());
         assert!(opts.max_zip_entries.is_none());
+        assert_eq!(opts.limits, crate::workbook::OpenLimits::default());
         assert_eq!(opts.read_mode, ReadMode::Lazy);
         assert!(opts.skip_aux_parts());
         assert_eq!(opts.date_interpretation, DateInterpretation::NumFmt);

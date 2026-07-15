@@ -162,6 +162,131 @@ export interface OpenOptions {
   dateInterpretation?: DateInterpretation;
 }
 
+const RESOURCE_OPERATIONS = [
+  'workbook_open',
+  'workbook_save',
+  'formula_parse',
+  'formula_calculate',
+  'data_traverse',
+  'render',
+  'export',
+  'encrypt',
+  'decrypt',
+  'macro_read',
+  'stream_read',
+  'stream_write',
+] as const;
+
+const RESOURCE_CATEGORIES = [
+  'archive',
+  'container',
+  'xml',
+  'formula',
+  'traversal',
+  'output',
+  'encryption',
+  'macro',
+  'streaming',
+  'structure',
+] as const;
+
+const RESOURCE_DIMENSIONS = [
+  'input_bytes',
+  'output_bytes',
+  'retained_bytes',
+  'entry_count',
+  'entry_declared_bytes',
+  'entry_actual_bytes',
+  'aggregate_declared_bytes',
+  'aggregate_actual_bytes',
+  'compression_ratio',
+  'xml_bytes',
+  'nesting_depth',
+  'token_count',
+  'node_count',
+  'range_cell_count',
+  'dependency_edge_count',
+  'operation_count',
+  'match_work',
+  'row_count',
+  'column_count',
+  'cell_count',
+  'stream_count',
+  'module_count',
+  'chunk_count',
+  'iteration_count',
+  'collection_count',
+] as const;
+
+const RESOURCE_STAGES = [
+  'inspect',
+  'read',
+  'parse',
+  'decode',
+  'validate',
+  'calculate',
+  'render',
+  'serialize',
+  'write',
+  'replace',
+] as const;
+
+/** Public operation that exhausted a finite resource budget. */
+export type ResourceOperation = (typeof RESOURCE_OPERATIONS)[number];
+
+/** Subsystem whose finite resource budget was exhausted. */
+export type ResourceCategory = (typeof RESOURCE_CATEGORIES)[number];
+
+/** Independently bounded resource dimension that was exhausted. */
+export type ResourceDimension = (typeof RESOURCE_DIMENSIONS)[number];
+
+/** Processing stage at which resource exhaustion was detected. */
+export type ResourceStage = (typeof RESOURCE_STAGES)[number];
+
+/** Stable machine-readable contract for bounded resource failures. */
+export interface ResourceLimitError extends Error {
+  readonly code: 'resource_limit_exceeded';
+  readonly operation: ResourceOperation;
+  readonly category: ResourceCategory;
+  readonly dimension: ResourceDimension;
+  readonly limit: bigint;
+  readonly observed: bigint;
+  readonly stage: ResourceStage | null;
+}
+
+function isClosedCode<const Values extends readonly string[]>(
+  values: Values,
+  value: unknown,
+): value is Values[number] {
+  return typeof value === 'string' && (values as readonly string[]).includes(value);
+}
+
+/** Returns whether a thrown value satisfies the stable resource-error contract. */
+export function isResourceLimitError(error: unknown): error is ResourceLimitError {
+  if (typeof error !== 'object' || error === null) return false;
+
+  try {
+    const candidate = error as Record<string, unknown>;
+    const { limit, observed, stage } = candidate;
+    const maxU64 = 18_446_744_073_709_551_615n;
+    return (
+      candidate.code === 'resource_limit_exceeded' &&
+      isClosedCode(RESOURCE_OPERATIONS, candidate.operation) &&
+      isClosedCode(RESOURCE_CATEGORIES, candidate.category) &&
+      isClosedCode(RESOURCE_DIMENSIONS, candidate.dimension) &&
+      typeof limit === 'bigint' &&
+      limit >= 0n &&
+      limit <= maxU64 &&
+      typeof observed === 'bigint' &&
+      observed > limit &&
+      observed <= maxU64 &&
+      (stage === null || isClosedCode(RESOURCE_STAGES, stage))
+    );
+  } catch {
+    return false;
+  }
+}
+
 /** Cached output associated with a formula expression. */
 export interface FormulaResultValue {
   valueType: 'empty' | 'string' | 'number' | 'boolean' | 'date' | 'error' | 'formula';

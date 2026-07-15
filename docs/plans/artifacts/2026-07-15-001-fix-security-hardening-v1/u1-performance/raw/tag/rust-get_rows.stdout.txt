@@ -1,0 +1,25 @@
+
+===== tag ^get_rows/ =====
+    Finished `bench` profile [optimized] target(s) in 0.13s
+     Running benches/open_modes.rs (/tmp/sheetkit-u1-20260715/targets/tag/release/deps/open_modes-887357c68bd414a8)
+Gnuplot not found, using plotters backend
+Benchmarking get_rows/Sheet1/scale-1k
+Benchmarking get_rows/Sheet1/scale-1k: Warming up for 3.0000 s
+Benchmarking get_rows/Sheet1/scale-1k: Collecting 50 samples in estimated 5.1742 s (23k iterations)
+Benchmarking get_rows/Sheet1/scale-1k: Analyzing
+get_rows/Sheet1/scale-1k
+                        time:   [224.27 µs 225.32 µs 226.28 µs]
+Benchmarking get_rows/Sheet1/scale-10k
+Benchmarking get_rows/Sheet1/scale-10k: Warming up for 3.0000 s
+Benchmarking get_rows/Sheet1/scale-10k: Collecting 20 samples in estimated 5.4126 s (2310 iterations)
+Benchmarking get_rows/Sheet1/scale-10k: Analyzing
+get_rows/Sheet1/scale-10k
+                        time:   [2.3222 ms 2.3549 ms 2.3862 ms]
+Found 1 outliers among 20 measurements (5.00%)
+  1 (5.00%) high mild
+Benchmarking get_rows/Sheet1/large-data
+Benchmarking get_rows/Sheet1/large-data: Warming up for 3.0000 s
+Benchmarking get_rows/Sheet1/large-data: Collecting 10 samples in estimated 6.0562 s (275 iterations)
+Benchmarking get_rows/Sheet1/large-data: Analyzing
+get_rows/Sheet1/large-data
+                        time:   [21.701 ms 22.156 ms 22.586 ms]

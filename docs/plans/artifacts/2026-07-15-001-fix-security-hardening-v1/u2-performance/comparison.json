@@ -1,0 +1,157 @@
+{
+  "schemaVersion": 1,
+  "status": "provisional_deferred_due_to_machine_load",
+  "verdict": null,
+  "workingTreeBase": "150e57939ac816a9bfa86daa856b432a135e3ca9",
+  "baselineRefs": {
+    "tag": "f9eac5366eb83b6dd79d5dd6d03a8988b5c319a8",
+    "preHardening": "150e57939ac816a9bfa86daa856b432a135e3ca9"
+  },
+  "rustDefaultLazy": [
+    {
+      "fixture": "scale-1k",
+      "meanMs": 1.418643,
+      "meanCi95Ms": [1.408140, 1.429273],
+      "tagMeanMs": 1.463405,
+      "tagDeltaPct": -3.06,
+      "preHardeningMeanMs": 2.065312,
+      "preHardeningDeltaPct": -31.31
+    },
+    {
+      "fixture": "scale-10k",
+      "meanMs": 14.926489,
+      "meanCi95Ms": [14.820273, 15.025861],
+      "tagMeanMs": 14.382536,
+      "tagDeltaPct": 3.78,
+      "preHardeningMeanMs": 21.339621,
+      "preHardeningDeltaPct": -30.05
+    },
+    {
+      "fixture": "scale-100k",
+      "meanMs": 166.662283,
+      "meanCi95Ms": [162.326590, 171.773290],
+      "tagMeanMs": null,
+      "tagDeltaPct": null,
+      "preHardeningMeanMs": null,
+      "preHardeningDeltaPct": null
+    },
+    {
+      "fixture": "large-data",
+      "meanMs": 152.877180,
+      "meanCi95Ms": [148.707656, 159.650518],
+      "tagMeanMs": 144.221749,
+      "tagDeltaPct": 6.00,
+      "preHardeningMeanMs": 220.286110,
+      "preHardeningDeltaPct": -30.60
+    },
+    {
+      "fixture": "strings",
+      "meanMs": 31.631819,
+      "meanCi95Ms": [30.788553, 32.584123],
+      "tagMeanMs": null,
+      "tagDeltaPct": null,
+      "preHardeningMeanMs": null,
+      "preHardeningDeltaPct": null
+    }
+  ],
+  "nodeDefaultLazyPath": [
+    {
+      "mode": "sync",
+      "fixture": "scale-1k",
+      "medianMs": 1.881,
+      "tagMedianMs": 1.734,
+      "tagDeltaPct": 8.48,
+      "preHardeningMedianMs": 2.141,
+      "preHardeningDeltaPct": -12.14
+    },
+    {
+      "mode": "sync",
+      "fixture": "scale-10k",
+      "medianMs": 16.341,
+      "tagMedianMs": 13.939,
+      "tagDeltaPct": 17.23,
+      "preHardeningMedianMs": 18.777,
+      "preHardeningDeltaPct": -12.97
+    },
+    {
+      "mode": "sync",
+      "fixture": "scale-100k",
+      "medianMs": 156.583,
+      "tagMedianMs": 147.310,
+      "tagDeltaPct": 6.29,
+      "preHardeningMedianMs": 191.264,
+      "preHardeningDeltaPct": -18.13
+    },
+    {
+      "mode": "sync",
+      "fixture": "large-data",
+      "medianMs": 144.889,
+      "tagMedianMs": 132.395,
+      "tagDeltaPct": 9.44,
+      "preHardeningMedianMs": 176.432,
+      "preHardeningDeltaPct": -17.88
+    },
+    {
+      "mode": "async",
+      "fixture": "scale-1k",
+      "medianMs": 1.631,
+      "tagMedianMs": 1.749,
+      "tagDeltaPct": -6.75,
+      "preHardeningMedianMs": 2.273,
+      "preHardeningDeltaPct": -28.24
+    },
+    {
+      "mode": "async",
+      "fixture": "scale-10k",
+      "medianMs": 15.081,
+      "tagMedianMs": 13.373,
+      "tagDeltaPct": 12.77,
+      "preHardeningMedianMs": 18.386,
+      "preHardeningDeltaPct": -17.98
+    },
+    {
+      "mode": "async",
+      "fixture": "scale-100k",
+      "medianMs": 157.566,
+      "tagMedianMs": 150.928,
+      "tagDeltaPct": 4.40,
+      "preHardeningMedianMs": 195.666,
+      "preHardeningDeltaPct": -19.47
+    },
+    {
+      "mode": "async",
+      "fixture": "large-data",
+      "medianMs": 140.439,
+      "tagMedianMs": 137.236,
+      "tagDeltaPct": 2.33,
+      "preHardeningMedianMs": 178.040,
+      "preHardeningDeltaPct": -21.12
+    }
+  ],
+  "nodeScale10kBufferCrossCheck": [
+    {
+      "mode": "sync",
+      "medianMs": 15.135,
+      "tagMedianMs": 16.556,
+      "tagDeltaPct": -8.58,
+      "preHardeningMedianMs": 19.315,
+      "preHardeningDeltaPct": -21.64
+    },
+    {
+      "mode": "async",
+      "medianMs": 14.991,
+      "tagMedianMs": 15.381,
+      "tagDeltaPct": -2.54,
+      "preHardeningMedianMs": 19.059,
+      "preHardeningDeltaPct": -21.34
+    }
+  ],
+  "requiredCleanRerun": {
+    "minimumSamplesPerRevisionAndMode": 20,
+    "order": "alternate tag and hardened fresh processes",
+    "separateDiagnostics": [
+      "File::metadata outer-size check",
+      "N-API success and structured-error bridge"
+    ]
+  }
+}

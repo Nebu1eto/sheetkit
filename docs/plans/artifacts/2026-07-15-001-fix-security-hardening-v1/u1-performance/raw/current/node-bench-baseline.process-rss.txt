@@ -1,0 +1,20 @@
+revision=current
+command=/usr/bin/time -l node --expose-gc --import tsx bench-baseline.ts
+       84.50 real        77.44 user         7.10 sys
+          3453747200  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+             2029041  page reclaims
+                 557  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                 223  voluntary context switches
+              184858  involuntary context switches
+       1500877820099  instructions retired
+        323465934094  cycles elapsed
+          7395959560  peak memory footprint

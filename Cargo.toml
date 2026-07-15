@@ -9,6 +9,7 @@ members = [
     "benchmarks/rust",
     "benchmarks/rust-comparison",
 ]
+exclude = ["vendor/zip"]
 
 [workspace.package]
 version = "0.5.1"
@@ -24,7 +25,7 @@ sheetkit-xml = { version = "0.5.1", path = "crates/sheetkit-xml" }
 sheetkit-core = { version = "0.5.1", path = "crates/sheetkit-core" }
 quick-xml = { version = "0.36", features = ["serialize", "overlapped-lists"] }
 serde = { version = "1.0", features = ["derive"] }
-zip = { version = "2.2", default-features = false, features = ["deflate"] }
+zip = { package = "sheetkit-zip", version = "=2.4.2-sheetkit.1", path = "vendor/zip", default-features = false, features = ["deflate"] }
 thiserror = "2.0"
 chrono = { version = "0.4", features = ["serde"] }
 regex = "1.10"

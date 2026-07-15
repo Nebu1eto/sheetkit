@@ -13,10 +13,13 @@ pub use sheetkit_core::defined_names::{DefinedNameInfo, DefinedNameScope};
 pub use sheetkit_core::doc_props::{AppProperties, CustomPropertyValue, DocProperties};
 pub use sheetkit_core::error::{Error, Result};
 pub use sheetkit_core::protection::WorkbookProtectionConfig;
+pub use sheetkit_core::resource::{
+    ResourceCategory, ResourceDimension, ResourceLimitError, ResourceOperation, ResourceStage,
+};
 pub use sheetkit_core::sheet::SheetProtectionConfig;
 pub use sheetkit_core::stream::StreamWriter;
 pub use sheetkit_core::workbook::{
-    AuxParts, DateInterpretation, OpenOptions, ReadMode, Workbook, WorkbookFormat,
+    AuxParts, DateInterpretation, OpenLimits, OpenOptions, ReadMode, Workbook, WorkbookFormat,
 };
 
 pub use sheetkit_core::cell::{

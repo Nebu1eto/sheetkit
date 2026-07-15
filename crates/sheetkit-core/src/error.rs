@@ -5,9 +5,15 @@
 
 use thiserror::Error;
 
+use crate::resource::{ResourceCategory, ResourceLimitError};
+
 /// The top-level error type for SheetKit.
 #[derive(Error, Debug)]
 pub enum Error {
+    /// A finite resource budget was exhausted.
+    #[error("{0}")]
+    ResourceLimitExceeded(#[from] ResourceLimitError),
+
     /// The given string is not a valid A1-style cell reference.
     #[error("invalid cell reference: {0}")]
     InvalidCellReference(String),
@@ -192,14 +198,6 @@ pub enum Error {
     #[error("unsupported file extension: {0}")]
     UnsupportedFileExtension(String),
 
-    /// The total decompressed size of the ZIP archive exceeds the safety limit.
-    #[error("ZIP decompressed size {size} bytes exceeds limit of {limit} bytes")]
-    ZipSizeExceeded { size: u64, limit: u64 },
-
-    /// The number of entries in the ZIP archive exceeds the safety limit.
-    #[error("ZIP entry count {count} exceeds limit of {limit}")]
-    ZipEntryCountExceeded { count: usize, limit: usize },
-
     /// The specified threaded comment was not found.
     #[error("threaded comment '{id}' not found")]
     ThreadedCommentNotFound { id: String },
@@ -217,12 +215,72 @@ pub enum Error {
     Internal(String),
 }
 
+impl Error {
+    /// Returns a stable machine-readable error code.
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::ResourceLimitExceeded(_) => ResourceLimitError::CODE,
+            _ => "sheetkit_error",
+        }
+    }
+
+    /// Returns structured resource metadata when this is a budget error.
+    pub const fn resource_metadata(&self) -> Option<&ResourceLimitError> {
+        match self {
+            Self::ResourceLimitExceeded(metadata) => Some(metadata),
+            _ => None,
+        }
+    }
+
+    /// Returns the closed resource category when this is a budget error.
+    pub const fn resource_category(&self) -> Option<ResourceCategory> {
+        match self.resource_metadata() {
+            Some(metadata) => Some(metadata.category()),
+            None => None,
+        }
+    }
+}
+
 /// A convenience alias used throughout the crate.
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resource_limit_metadata_rejects_non_exhaustion() {
+        assert!(crate::resource::ResourceLimitError::exceeded(
+            crate::resource::ResourceOperation::WorkbookOpen,
+            crate::resource::ResourceCategory::Archive,
+            crate::resource::ResourceDimension::EntryCount,
+            10,
+            10,
+            Some(crate::resource::ResourceStage::Inspect),
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn resource_limit_error_has_stable_bounded_output() {
+        let metadata = crate::resource::ResourceLimitError::exceeded(
+            crate::resource::ResourceOperation::WorkbookOpen,
+            crate::resource::ResourceCategory::Archive,
+            crate::resource::ResourceDimension::EntryCount,
+            10,
+            11,
+            Some(crate::resource::ResourceStage::Inspect),
+        )
+        .unwrap();
+        let error = Error::from(metadata);
+
+        assert_eq!(error.code(), "resource_limit_exceeded");
+        assert_eq!(
+            error.to_string(),
+            "resource limit exceeded: operation=workbook_open category=archive \
+             dimension=entry_count limit=10 observed=11 stage=inspect"
+        );
+    }
 
     #[test]
     fn test_error_display_invalid_cell_reference() {

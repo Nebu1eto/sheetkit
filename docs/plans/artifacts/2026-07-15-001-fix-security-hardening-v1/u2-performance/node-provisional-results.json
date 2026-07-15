@@ -1,0 +1,1813 @@
+{
+  "timestamp": "2026-07-15T14:07:37.217Z",
+  "platform": "darwin arm64",
+  "nodeVersion": "v25.3.0",
+  "cpu": "Apple M4 Pro",
+  "ramGb": 24,
+  "config": {
+    "warmupRuns": 1,
+    "benchRuns": 5
+  },
+  "results": [
+    {
+      "category": "open-default-lazy-path-sync",
+      "fixture": "scale-1k",
+      "label": "default-lazy-openSync(scale-1k)",
+      "min": 1.834,
+      "max": 1.925,
+      "median": 1.881,
+      "p95": 1.925,
+      "rssMedianMb": 0.1,
+      "timesMs": [
+        1.881,
+        1.834,
+        1.872,
+        1.925,
+        1.887
+      ],
+      "rssDeltas": [
+        0.2,
+        0.1,
+        0.1,
+        0.1,
+        0.6
+      ]
+    },
+    {
+      "category": "open-default-lazy-path-sync",
+      "fixture": "scale-10k",
+      "label": "default-lazy-openSync(scale-10k)",
+      "min": 15.821,
+      "max": 17.138,
+      "median": 16.341,
+      "p95": 17.138,
+      "rssMedianMb": 6,
+      "timesMs": [
+        17.138,
+        16.341,
+        16.378,
+        15.821,
+        16.238
+      ],
+      "rssDeltas": [
+        5.4,
+        6,
+        6.7,
+        6,
+        6.1
+      ]
+    },
+    {
+      "category": "open-default-lazy-path-sync",
+      "fixture": "scale-100k",
+      "label": "default-lazy-openSync(scale-100k)",
+      "min": 154.673,
+      "max": 161.646,
+      "median": 156.583,
+      "p95": 161.646,
+      "rssMedianMb": 80,
+      "timesMs": [
+        161.646,
+        158.288,
+        154.856,
+        156.583,
+        154.673
+      ],
+      "rssDeltas": [
+        80,
+        80.1,
+        80.9,
+        80,
+        80
+      ]
+    },
+    {
+      "category": "open-default-lazy-path-sync",
+      "fixture": "large-data",
+      "label": "default-lazy-openSync(large-data)",
+      "min": 144.237,
+      "max": 145.447,
+      "median": 144.889,
+      "p95": 145.447,
+      "rssMedianMb": 78.3,
+      "timesMs": [
+        145.447,
+        144.889,
+        144.237,
+        145.178,
+        144.549
+      ],
+      "rssDeltas": [
+        78.3,
+        78.3,
+        78.4,
+        78.3,
+        78.3
+      ]
+    },
+    {
+      "category": "open-default-lazy-path-sync",
+      "fixture": "strings",
+      "label": "default-lazy-openSync(strings)",
+      "min": 30.303,
+      "max": 31.642,
+      "median": 30.66,
+      "p95": 31.642,
+      "rssMedianMb": 15.5,
+      "timesMs": [
+        30.66,
+        30.303,
+        30.741,
+        30.347,
+        31.642
+      ],
+      "rssDeltas": [
+        13.5,
+        16,
+        16.4,
+        15.5,
+        14.8
+      ]
+    },
+    {
+      "category": "open-default-lazy-path-async",
+      "fixture": "scale-1k",
+      "label": "default-lazy-open(scale-1k)",
+      "min": 1.617,
+      "max": 1.848,
+      "median": 1.631,
+      "p95": 1.848,
+      "rssMedianMb": 0.1,
+      "timesMs": [
+        1.848,
+        1.673,
+        1.631,
+        1.62,
+        1.617
+      ],
+      "rssDeltas": [
+        0.1,
+        0,
+        0.1,
+        0.1,
+        0
+      ]
+    },
+    {
+      "category": "open-default-lazy-path-async",
+      "fixture": "scale-10k",
+      "label": "default-lazy-open(scale-10k)",
+      "min": 14.806,
+      "max": 15.43,
+      "median": 15.081,
+      "p95": 15.43,
+      "rssMedianMb": 0,
+      "timesMs": [
+        15.035,
+        14.806,
+        15.081,
+        15.43,
+        15.098
+      ],
+      "rssDeltas": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "category": "open-default-lazy-path-async",
+      "fixture": "scale-100k",
+      "label": "default-lazy-open(scale-100k)",
+      "min": 155.081,
+      "max": 159.235,
+      "median": 157.566,
+      "p95": 159.235,
+      "rssMedianMb": 33,
+      "timesMs": [
+        158.024,
+        159.235,
+        155.081,
+        155.92,
+        157.566
+      ],
+      "rssDeltas": [
+        39,
+        5,
+        33,
+        33,
+        33
+      ]
+    },
+    {
+      "category": "open-default-lazy-path-async",
+      "fixture": "large-data",
+      "label": "default-lazy-open(large-data)",
+      "min": 138.381,
+      "max": 142.852,
+      "median": 140.439,
+      "p95": 142.852,
+      "rssMedianMb": 4.8,
+      "timesMs": [
+        142.445,
+        140.308,
+        142.852,
+        138.381,
+        140.439
+      ],
+      "rssDeltas": [
+        49.5,
+        2.5,
+        0,
+        4.8,
+        33.6
+      ]
+    },
+    {
+      "category": "open-default-lazy-path-async",
+      "fixture": "strings",
+      "label": "default-lazy-open(strings)",
+      "min": 29.929,
+      "max": 31.12,
+      "median": 30.26,
+      "p95": 31.12,
+      "rssMedianMb": 3.5,
+      "timesMs": [
+        31.12,
+        30.411,
+        29.929,
+        30.038,
+        30.26
+      ],
+      "rssDeltas": [
+        0,
+        3.5,
+        3.5,
+        3.5,
+        3.5
+      ]
+    },
+    {
+      "category": "open-default-lazy-buffer-sync",
+      "fixture": "scale-1k",
+      "label": "default-lazy-openBufferSync(scale-1k)",
+      "min": 1.577,
+      "max": 1.713,
+      "median": 1.696,
+      "p95": 1.713,
+      "rssMedianMb": 0,
+      "timesMs": [
+        1.696,
+        1.713,
+        1.577,
+        1.618,
+        1.711
+      ],
+      "rssDeltas": [
+        0,
+        0,
+        0,
+        0.2,
+        0.1
+      ]
+    },
+    {
+      "category": "open-default-lazy-buffer-sync",
+      "fixture": "scale-10k",
+      "label": "default-lazy-openBufferSync(scale-10k)",
+      "min": 15.089,
+      "max": 15.209,
+      "median": 15.135,
+      "p95": 15.209,
+      "rssMedianMb": 2.7,
+      "timesMs": [
+        15.148,
+        15.209,
+        15.115,
+        15.135,
+        15.089
+      ],
+      "rssDeltas": [
+        3.1,
+        5.2,
+        1.6,
+        2.7,
+        2.6
+      ]
+    },
+    {
+      "category": "open-default-lazy-buffer-sync",
+      "fixture": "scale-100k",
+      "label": "default-lazy-openBufferSync(scale-100k)",
+      "min": 160.407,
+      "max": 167.692,
+      "median": 160.833,
+      "p95": 167.692,
+      "rssMedianMb": 66.4,
+      "timesMs": [
+        160.833,
+        160.738,
+        160.407,
+        167.692,
+        162.719
+      ],
+      "rssDeltas": [
+        27.8,
+        66.4,
+        35,
+        75.8,
+        75.8
+      ]
+    },
+    {
+      "category": "open-default-lazy-buffer-sync",
+      "fixture": "large-data",
+      "label": "default-lazy-openBufferSync(large-data)",
+      "min": 146.004,
+      "max": 150.466,
+      "median": 146.938,
+      "p95": 150.466,
+      "rssMedianMb": 73,
+      "timesMs": [
+        148.169,
+        146.651,
+        146.938,
+        146.004,
+        150.466
+      ],
+      "rssDeltas": [
+        68.5,
+        73,
+        73,
+        73.1,
+        73.1
+      ]
+    },
+    {
+      "category": "open-default-lazy-buffer-sync",
+      "fixture": "strings",
+      "label": "default-lazy-openBufferSync(strings)",
+      "min": 30.885,
+      "max": 31.776,
+      "median": 31.735,
+      "p95": 31.776,
+      "rssMedianMb": 13.7,
+      "timesMs": [
+        31.776,
+        30.885,
+        31.735,
+        31.346,
+        31.749
+      ],
+      "rssDeltas": [
+        12.3,
+        10.3,
+        13.7,
+        16,
+        14.6
+      ]
+    },
+    {
+      "category": "open-default-lazy-buffer-async",
+      "fixture": "scale-1k",
+      "label": "default-lazy-openBuffer(scale-1k)",
+      "min": 1.529,
+      "max": 3.337,
+      "median": 1.753,
+      "p95": 3.337,
+      "rssMedianMb": 0,
+      "timesMs": [
+        1.753,
+        1.675,
+        1.529,
+        1.792,
+        3.337
+      ],
+      "rssDeltas": [
+        0,
+        0,
+        0,
+        0,
+        0.5
+      ]
+    },
+    {
+      "category": "open-default-lazy-buffer-async",
+      "fixture": "scale-10k",
+      "label": "default-lazy-openBuffer(scale-10k)",
+      "min": 14.664,
+      "max": 15.62,
+      "median": 14.991,
+      "p95": 15.62,
+      "rssMedianMb": 0,
+      "timesMs": [
+        15.62,
+        15.146,
+        14.991,
+        14.664,
+        14.793
+      ],
+      "rssDeltas": [
+        4.1,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "category": "open-default-lazy-buffer-async",
+      "fixture": "scale-100k",
+      "label": "default-lazy-openBuffer(scale-100k)",
+      "min": 156.227,
+      "max": 175.32,
+      "median": 158.666,
+      "p95": 175.32,
+      "rssMedianMb": 49.2,
+      "timesMs": [
+        175.32,
+        158.666,
+        156.227,
+        159.686,
+        158.517
+      ],
+      "rssDeltas": [
+        46.8,
+        37,
+        49.6,
+        49.2,
+        53.8
+      ]
+    },
+    {
+      "category": "open-default-lazy-buffer-async",
+      "fixture": "large-data",
+      "label": "default-lazy-openBuffer(large-data)",
+      "min": 141.117,
+      "max": 150.895,
+      "median": 142.733,
+      "p95": 150.895,
+      "rssMedianMb": 22.2,
+      "timesMs": [
+        141.117,
+        141.808,
+        142.733,
+        150.895,
+        146.21
+      ],
+      "rssDeltas": [
+        11.1,
+        22.2,
+        52,
+        7.2,
+        49.9
+      ]
+    },
+    {
+      "category": "open-default-lazy-buffer-async",
+      "fixture": "strings",
+      "label": "default-lazy-openBuffer(strings)",
+      "min": 30.736,
+      "max": 33.014,
+      "median": 31.463,
+      "p95": 33.014,
+      "rssMedianMb": 0,
+      "timesMs": [
+        31.463,
+        33.014,
+        31.923,
+        30.736,
+        31.246
+      ],
+      "rssDeltas": [
+        0,
+        0,
+        0,
+        0.2,
+        0
+      ]
+    },
+    {
+      "category": "getRows",
+      "fixture": "scale-1k",
+      "label": "getRows(scale-1k)",
+      "min": 6.202,
+      "max": 7.367,
+      "median": 6.855,
+      "p95": 7.367,
+      "rssMedianMb": 1,
+      "timesMs": [
+        6.202,
+        7.367,
+        6.855,
+        6.988,
+        6.502
+      ],
+      "rssDeltas": [
+        1,
+        1.4,
+        0,
+        1,
+        0
+      ]
+    },
+    {
+      "category": "getRows",
+      "fixture": "scale-10k",
+      "label": "getRows(scale-10k)",
+      "min": 63.738,
+      "max": 68.441,
+      "median": 64.314,
+      "p95": 68.441,
+      "rssMedianMb": 5,
+      "timesMs": [
+        68.441,
+        63.738,
+        64.314,
+        63.934,
+        66.818
+      ],
+      "rssDeltas": [
+        0,
+        0,
+        8.5,
+        5,
+        17.3
+      ]
+    },
+    {
+      "category": "getRows",
+      "fixture": "scale-100k",
+      "label": "getRows(scale-100k)",
+      "min": 650.068,
+      "max": 672.659,
+      "median": 656.847,
+      "p95": 672.659,
+      "rssMedianMb": 197.8,
+      "timesMs": [
+        656.847,
+        672.659,
+        650.068,
+        651.374,
+        657.184
+      ],
+      "rssDeltas": [
+        0,
+        167.2,
+        197.8,
+        200.9,
+        209.1
+      ]
+    },
+    {
+      "category": "getRows",
+      "fixture": "large-data",
+      "label": "getRows(large-data)",
+      "min": 629.814,
+      "max": 639.157,
+      "median": 631.806,
+      "p95": 639.157,
+      "rssMedianMb": 181.1,
+      "timesMs": [
+        631.806,
+        639.157,
+        633.555,
+        629.814,
+        630.57
+      ],
+      "rssDeltas": [
+        181.1,
+        194,
+        164.8,
+        174.7,
+        199.9
+      ]
+    },
+    {
+      "category": "getRows",
+      "fixture": "strings",
+      "label": "getRows(strings)",
+      "min": 145.703,
+      "max": 147.953,
+      "median": 146.79,
+      "p95": 147.953,
+      "rssMedianMb": 43.5,
+      "timesMs": [
+        146.79,
+        147.68,
+        145.703,
+        146.666,
+        147.953
+      ],
+      "rssDeltas": [
+        43.5,
+        45.7,
+        45.7,
+        36.8,
+        11.6
+      ]
+    },
+    {
+      "category": "getRows-only",
+      "fixture": "scale-1k",
+      "label": "getRows-only(scale-1k)",
+      "min": 1.15,
+      "max": 1.455,
+      "median": 1.312,
+      "p95": 1.455,
+      "rssMedianMb": 0,
+      "timesMs": [
+        1.455,
+        1.312,
+        1.153,
+        1.374,
+        1.15
+      ],
+      "rssDeltas": [
+        0.1,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "category": "getRows-only",
+      "fixture": "scale-10k",
+      "label": "getRows-only(scale-10k)",
+      "min": 7.097,
+      "max": 7.919,
+      "median": 7.445,
+      "p95": 7.919,
+      "rssMedianMb": 1.2,
+      "timesMs": [
+        7.919,
+        7.416,
+        7.445,
+        7.75,
+        7.097
+      ],
+      "rssDeltas": [
+        1.3,
+        1.3,
+        0,
+        1.2,
+        1.2
+      ]
+    },
+    {
+      "category": "getRows-only",
+      "fixture": "scale-100k",
+      "label": "getRows-only(scale-100k)",
+      "min": 71.173,
+      "max": 72.993,
+      "median": 72.447,
+      "p95": 72.993,
+      "rssMedianMb": 0,
+      "timesMs": [
+        71.685,
+        72.993,
+        72.447,
+        72.941,
+        71.173
+      ],
+      "rssDeltas": [
+        12.6,
+        0,
+        0,
+        0,
+        11
+      ]
+    },
+    {
+      "category": "getRows-only",
+      "fixture": "large-data",
+      "label": "getRows-only(large-data)",
+      "min": 65.028,
+      "max": 71.847,
+      "median": 66.431,
+      "p95": 71.847,
+      "rssMedianMb": 0,
+      "timesMs": [
+        71.847,
+        66.431,
+        68.208,
+        65.028,
+        66.393
+      ],
+      "rssDeltas": [
+        1.2,
+        0,
+        0,
+        0,
+        7.2
+      ]
+    },
+    {
+      "category": "getRows-only",
+      "fixture": "strings",
+      "label": "getRows-only(strings)",
+      "min": 27.74,
+      "max": 28.84,
+      "median": 28.329,
+      "p95": 28.84,
+      "rssMedianMb": 0.2,
+      "timesMs": [
+        28.516,
+        28.329,
+        28.275,
+        27.74,
+        28.84
+      ],
+      "rssDeltas": [
+        0.2,
+        0,
+        6.7,
+        6.7,
+        0
+      ]
+    },
+    {
+      "category": "getRowsRaw",
+      "fixture": "scale-1k",
+      "label": "getRowsRaw(scale-1k)",
+      "min": 6.46,
+      "max": 7.412,
+      "median": 7.098,
+      "p95": 7.412,
+      "rssMedianMb": 1,
+      "timesMs": [
+        7.288,
+        6.955,
+        7.412,
+        7.098,
+        6.46
+      ],
+      "rssDeltas": [
+        1,
+        1.3,
+        1.1,
+        1,
+        1
+      ]
+    },
+    {
+      "category": "getRowsRaw",
+      "fixture": "scale-10k",
+      "label": "getRowsRaw(scale-10k)",
+      "min": 63.305,
+      "max": 67.791,
+      "median": 64.416,
+      "p95": 67.791,
+      "rssMedianMb": 0,
+      "timesMs": [
+        63.305,
+        64.416,
+        67.791,
+        64.518,
+        63.46
+      ],
+      "rssDeltas": [
+        0,
+        0,
+        0,
+        4.8,
+        0
+      ]
+    },
+    {
+      "category": "getRowsRaw",
+      "fixture": "scale-100k",
+      "label": "getRowsRaw(scale-100k)",
+      "min": 633.104,
+      "max": 714.425,
+      "median": 646.16,
+      "p95": 714.425,
+      "rssMedianMb": 0,
+      "timesMs": [
+        635.961,
+        633.104,
+        714.425,
+        657.778,
+        646.16
+      ],
+      "rssDeltas": [
+        0,
+        23.5,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "category": "getRowsRaw",
+      "fixture": "large-data",
+      "label": "getRowsRaw(large-data)",
+      "min": 619.405,
+      "max": 638.287,
+      "median": 625.63,
+      "p95": 638.287,
+      "rssMedianMb": 0,
+      "timesMs": [
+        625.22,
+        638.287,
+        619.405,
+        625.63,
+        629.016
+      ],
+      "rssDeltas": [
+        0,
+        0,
+        67.3,
+        151.8,
+        0
+      ]
+    },
+    {
+      "category": "getRowsRaw",
+      "fixture": "strings",
+      "label": "getRowsRaw(strings)",
+      "min": 145.973,
+      "max": 157.334,
+      "median": 153.606,
+      "p95": 157.334,
+      "rssMedianMb": 9.8,
+      "timesMs": [
+        157.334,
+        151.384,
+        154.407,
+        145.973,
+        153.606
+      ],
+      "rssDeltas": [
+        0,
+        19.4,
+        9.8,
+        30.5,
+        0
+      ]
+    },
+    {
+      "category": "getRowsRaw-only",
+      "fixture": "scale-1k",
+      "label": "getRowsRaw-only(scale-1k)",
+      "min": 0.771,
+      "max": 1.545,
+      "median": 1.437,
+      "p95": 1.545,
+      "rssMedianMb": 0,
+      "timesMs": [
+        1.437,
+        0.771,
+        1.545,
+        1.284,
+        1.527
+      ],
+      "rssDeltas": [
+        0,
+        0,
+        0,
+        0.1,
+        0
+      ]
+    },
+    {
+      "category": "getRowsRaw-only",
+      "fixture": "scale-10k",
+      "label": "getRowsRaw-only(scale-10k)",
+      "min": 8.529,
+      "max": 9.567,
+      "median": 8.846,
+      "p95": 9.567,
+      "rssMedianMb": 1.3,
+      "timesMs": [
+        9.567,
+        8.759,
+        8.529,
+        8.846,
+        9.216
+      ],
+      "rssDeltas": [
+        1.3,
+        1.2,
+        1.3,
+        0,
+        1.3
+      ]
+    },
+    {
+      "category": "getRowsRaw-only",
+      "fixture": "scale-100k",
+      "label": "getRowsRaw-only(scale-100k)",
+      "min": 78.351,
+      "max": 182.01,
+      "median": 83.661,
+      "p95": 182.01,
+      "rssMedianMb": 0,
+      "timesMs": [
+        83.661,
+        94.738,
+        78.351,
+        79.812,
+        182.01
+      ],
+      "rssDeltas": [
+        0,
+        13.5,
+        2.1,
+        0,
+        0
+      ]
+    },
+    {
+      "category": "getRowsRaw-only",
+      "fixture": "large-data",
+      "label": "getRowsRaw-only(large-data)",
+      "min": 59.197,
+      "max": 86.565,
+      "median": 61.694,
+      "p95": 86.565,
+      "rssMedianMb": 12.9,
+      "timesMs": [
+        60.005,
+        86.565,
+        61.694,
+        59.197,
+        62.258
+      ],
+      "rssDeltas": [
+        14.3,
+        12.9,
+        11.7,
+        11.6,
+        13.7
+      ]
+    },
+    {
+      "category": "getRowsRaw-only",
+      "fixture": "strings",
+      "label": "getRowsRaw-only(strings)",
+      "min": 30.242,
+      "max": 35.679,
+      "median": 33.421,
+      "p95": 35.679,
+      "rssMedianMb": 6.9,
+      "timesMs": [
+        35.679,
+        30.499,
+        33.421,
+        30.242,
+        34.376
+      ],
+      "rssDeltas": [
+        9.5,
+        7,
+        6.7,
+        6.9,
+        6.7
+      ]
+    },
+    {
+      "category": "open-explicit-eager-path-async",
+      "fixture": "scale-1k",
+      "label": "explicit-eager-open(scale-1k)",
+      "min": 5.977,
+      "max": 11.17,
+      "median": 6.219,
+      "p95": 11.17,
+      "rssMedianMb": 0.2,
+      "timesMs": [
+        11.17,
+        6.219,
+        6.008,
+        5.977,
+        6.553
+      ],
+      "rssDeltas": [
+        15.5,
+        0.2,
+        0.2,
+        0,
+        0.9
+      ]
+    },
+    {
+      "category": "open-explicit-eager-path-async",
+      "fixture": "scale-10k",
+      "label": "explicit-eager-open(scale-10k)",
+      "min": 58.893,
+      "max": 60.118,
+      "median": 59.4,
+      "p95": 60.118,
+      "rssMedianMb": 6.2,
+      "timesMs": [
+        59.721,
+        60.118,
+        59.349,
+        58.893,
+        59.4
+      ],
+      "rssDeltas": [
+        9.2,
+        5.2,
+        6.2,
+        6.2,
+        6.2
+      ]
+    },
+    {
+      "category": "open-explicit-eager-path-async",
+      "fixture": "scale-100k",
+      "label": "explicit-eager-open(scale-100k)",
+      "min": 606.378,
+      "max": 618.507,
+      "median": 612.086,
+      "p95": 618.507,
+      "rssMedianMb": 33.2,
+      "timesMs": [
+        616.637,
+        606.378,
+        618.507,
+        612.086,
+        608.304
+      ],
+      "rssDeltas": [
+        78.7,
+        34.2,
+        14,
+        33.2,
+        32.2
+      ]
+    },
+    {
+      "category": "open-explicit-eager-path-async",
+      "fixture": "large-data",
+      "label": "explicit-eager-open(large-data)",
+      "min": 585.449,
+      "max": 605.863,
+      "median": 594.155,
+      "p95": 605.863,
+      "rssMedianMb": 38.7,
+      "timesMs": [
+        598.989,
+        585.449,
+        593.474,
+        594.155,
+        605.863
+      ],
+      "rssDeltas": [
+        46.2,
+        38.7,
+        51.5,
+        30.8,
+        0
+      ]
+    },
+    {
+      "category": "open-explicit-eager-path-async",
+      "fixture": "strings",
+      "label": "explicit-eager-open(strings)",
+      "min": 122.364,
+      "max": 125.502,
+      "median": 124.102,
+      "p95": 125.502,
+      "rssMedianMb": 7.6,
+      "timesMs": [
+        125.502,
+        124.102,
+        124.221,
+        122.364,
+        123.05
+      ],
+      "rssDeltas": [
+        9.2,
+        7.6,
+        1.2,
+        15.4,
+        6.8
+      ]
+    },
+    {
+      "category": "lazy-open-getRows",
+      "fixture": "scale-1k",
+      "label": "lazy+getRows(scale-1k)",
+      "min": 6.39,
+      "max": 9.504,
+      "median": 7.429,
+      "p95": 9.504,
+      "rssMedianMb": 0.4,
+      "timesMs": [
+        9.504,
+        7.55,
+        6.39,
+        6.591,
+        7.429
+      ],
+      "rssDeltas": [
+        0.5,
+        0.7,
+        0,
+        0,
+        0.4
+      ]
+    },
+    {
+      "category": "lazy-open-getRows",
+      "fixture": "scale-10k",
+      "label": "lazy+getRows(scale-10k)",
+      "min": 62.814,
+      "max": 65.908,
+      "median": 65.11,
+      "p95": 65.908,
+      "rssMedianMb": 2.6,
+      "timesMs": [
+        65.908,
+        65.296,
+        65.11,
+        62.814,
+        63.134
+      ],
+      "rssDeltas": [
+        8.3,
+        2.6,
+        5.4,
+        0.1,
+        0
+      ]
+    },
+    {
+      "category": "lazy-open-getRows",
+      "fixture": "scale-100k",
+      "label": "lazy+getRows(scale-100k)",
+      "min": 629.909,
+      "max": 681.487,
+      "median": 644.732,
+      "p95": 681.487,
+      "rssMedianMb": 0,
+      "timesMs": [
+        681.487,
+        673.034,
+        644.732,
+        642.531,
+        629.909
+      ],
+      "rssDeltas": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "category": "lazy-open-getRows",
+      "fixture": "large-data",
+      "label": "lazy+getRows(large-data)",
+      "min": 597.42,
+      "max": 605.368,
+      "median": 602.614,
+      "p95": 605.368,
+      "rssMedianMb": 0,
+      "timesMs": [
+        603.343,
+        602.614,
+        605.368,
+        597.42,
+        599.948
+      ],
+      "rssDeltas": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "category": "lazy-open-getRows",
+      "fixture": "strings",
+      "label": "lazy+getRows(strings)",
+      "min": 138.954,
+      "max": 144.478,
+      "median": 141.231,
+      "p95": 144.478,
+      "rssMedianMb": 0.3,
+      "timesMs": [
+        144.478,
+        138.954,
+        139.216,
+        142.731,
+        141.231
+      ],
+      "rssDeltas": [
+        0.3,
+        0,
+        2.6,
+        1.9,
+        0
+      ]
+    },
+    {
+      "category": "openSheetReader",
+      "fixture": "scale-1k",
+      "label": "openSheetReader(scale-1k)",
+      "min": 8.175,
+      "max": 10.484,
+      "median": 8.452,
+      "p95": 10.484,
+      "rssMedianMb": 0,
+      "timesMs": [
+        10.484,
+        8.175,
+        8.483,
+        8.342,
+        8.452
+      ],
+      "rssDeltas": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "category": "openSheetReader",
+      "fixture": "scale-10k",
+      "label": "openSheetReader(scale-10k)",
+      "min": 80.236,
+      "max": 82.306,
+      "median": 81.238,
+      "p95": 82.306,
+      "rssMedianMb": 0,
+      "timesMs": [
+        81.238,
+        81.772,
+        80.236,
+        82.306,
+        81.034
+      ],
+      "rssDeltas": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "category": "openSheetReader",
+      "fixture": "scale-100k",
+      "label": "openSheetReader(scale-100k)",
+      "min": 815.741,
+      "max": 838.3,
+      "median": 825.931,
+      "p95": 838.3,
+      "rssMedianMb": 0,
+      "timesMs": [
+        825.931,
+        822.518,
+        831.866,
+        838.3,
+        815.741
+      ],
+      "rssDeltas": [
+        0.1,
+        1.1,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "category": "openSheetReader",
+      "fixture": "large-data",
+      "label": "openSheetReader(large-data)",
+      "min": 803.403,
+      "max": 812.985,
+      "median": 811.504,
+      "p95": 812.985,
+      "rssMedianMb": 0,
+      "timesMs": [
+        812.007,
+        804.954,
+        803.403,
+        811.504,
+        812.985
+      ],
+      "rssDeltas": [
+        8.9,
+        25.1,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "category": "openSheetReader",
+      "fixture": "strings",
+      "label": "openSheetReader(strings)",
+      "min": 177.489,
+      "max": 180.952,
+      "median": 179.92,
+      "p95": 180.952,
+      "rssMedianMb": 0,
+      "timesMs": [
+        179.317,
+        177.489,
+        180.952,
+        179.92,
+        180.249
+      ],
+      "rssDeltas": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "category": "getRowsBuffer-v1",
+      "fixture": "scale-1k",
+      "label": "getRowsBuffer-v1(scale-1k)",
+      "min": 0.346,
+      "max": 0.517,
+      "median": 0.396,
+      "p95": 0.517,
+      "rssMedianMb": 0,
+      "timesMs": [
+        0.361,
+        0.517,
+        0.396,
+        0.452,
+        0.346
+      ],
+      "rssDeltas": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "category": "getRowsBufferV2",
+      "fixture": "scale-1k",
+      "label": "getRowsBufferV2(scale-1k)",
+      "min": 0.236,
+      "max": 0.345,
+      "median": 0.318,
+      "p95": 0.345,
+      "rssMedianMb": 0,
+      "timesMs": [
+        0.345,
+        0.318,
+        0.319,
+        0.236,
+        0.245
+      ],
+      "rssDeltas": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "category": "getRowsBuffer-v1",
+      "fixture": "scale-10k",
+      "label": "getRowsBuffer-v1(scale-10k)",
+      "min": 4.044,
+      "max": 4.957,
+      "median": 4.211,
+      "p95": 4.957,
+      "rssMedianMb": 1.3,
+      "timesMs": [
+        4.957,
+        4.333,
+        4.141,
+        4.211,
+        4.044
+      ],
+      "rssDeltas": [
+        1.3,
+        1.3,
+        0.5,
+        1.8,
+        1.3
+      ]
+    },
+    {
+      "category": "getRowsBufferV2",
+      "fixture": "scale-10k",
+      "label": "getRowsBufferV2(scale-10k)",
+      "min": 2.12,
+      "max": 2.838,
+      "median": 2.364,
+      "p95": 2.838,
+      "rssMedianMb": 1.2,
+      "timesMs": [
+        2.364,
+        2.12,
+        2.838,
+        2.476,
+        2.328
+      ],
+      "rssDeltas": [
+        1.5,
+        0.3,
+        1.2,
+        0.9,
+        1.2
+      ]
+    },
+    {
+      "category": "getRowsBuffer-v1",
+      "fixture": "scale-100k",
+      "label": "getRowsBuffer-v1(scale-100k)",
+      "min": 64.528,
+      "max": 72.609,
+      "median": 68.972,
+      "p95": 72.609,
+      "rssMedianMb": 5.9,
+      "timesMs": [
+        72.609,
+        64.528,
+        68.972,
+        65.715,
+        70.544
+      ],
+      "rssDeltas": [
+        1.4,
+        5.9,
+        5.9,
+        6,
+        5.9
+      ]
+    },
+    {
+      "category": "getRowsBufferV2",
+      "fixture": "scale-100k",
+      "label": "getRowsBufferV2(scale-100k)",
+      "min": 28.279,
+      "max": 30.684,
+      "median": 29.195,
+      "p95": 30.684,
+      "rssMedianMb": 4.6,
+      "timesMs": [
+        29.195,
+        28.316,
+        28.279,
+        29.549,
+        30.684
+      ],
+      "rssDeltas": [
+        4.6,
+        3.8,
+        3.8,
+        12.8,
+        20.5
+      ]
+    },
+    {
+      "category": "getRowsBuffer-v1",
+      "fixture": "large-data",
+      "label": "getRowsBuffer-v1(large-data)",
+      "min": 52.775,
+      "max": 59.203,
+      "median": 56.461,
+      "p95": 59.203,
+      "rssMedianMb": 2.2,
+      "timesMs": [
+        52.775,
+        56.461,
+        59.203,
+        56.239,
+        56.955
+      ],
+      "rssDeltas": [
+        5.5,
+        0.3,
+        0,
+        2.2,
+        4.4
+      ]
+    },
+    {
+      "category": "getRowsBufferV2",
+      "fixture": "large-data",
+      "label": "getRowsBufferV2(large-data)",
+      "min": 24.163,
+      "max": 28.228,
+      "median": 26.739,
+      "p95": 28.228,
+      "rssMedianMb": 0.6,
+      "timesMs": [
+        26.303,
+        26.739,
+        28.228,
+        27.297,
+        24.163
+      ],
+      "rssDeltas": [
+        2.3,
+        1.3,
+        0.6,
+        0.1,
+        0.3
+      ]
+    },
+    {
+      "category": "getRowsBuffer-v1",
+      "fixture": "strings",
+      "label": "getRowsBuffer-v1(strings)",
+      "min": 12.241,
+      "max": 13.962,
+      "median": 13.333,
+      "p95": 13.962,
+      "rssMedianMb": 0,
+      "timesMs": [
+        12.866,
+        13.809,
+        13.333,
+        13.962,
+        12.241
+      ],
+      "rssDeltas": [
+        0,
+        0,
+        3.8,
+        0,
+        3.8
+      ]
+    },
+    {
+      "category": "getRowsBufferV2",
+      "fixture": "strings",
+      "label": "getRowsBufferV2(strings)",
+      "min": 9.196,
+      "max": 10.162,
+      "median": 9.815,
+      "p95": 10.162,
+      "rssMedianMb": 6.7,
+      "timesMs": [
+        9.986,
+        10.162,
+        9.196,
+        9.461,
+        9.815
+      ],
+      "rssDeltas": [
+        6.7,
+        0,
+        6.7,
+        0,
+        6.7
+      ]
+    },
+    {
+      "category": "cow-save-only-untouched",
+      "fixture": "scale-1k",
+      "label": "cow-save-only(scale-1k)",
+      "min": 1.35,
+      "max": 1.563,
+      "median": 1.48,
+      "p95": 1.563,
+      "rssMedianMb": 0,
+      "timesMs": [
+        1.35,
+        1.563,
+        1.485,
+        1.399,
+        1.48
+      ],
+      "rssDeltas": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "category": "cow-save-only-untouched",
+      "fixture": "scale-10k",
+      "label": "cow-save-only(scale-10k)",
+      "min": 11.708,
+      "max": 12.847,
+      "median": 12.545,
+      "p95": 12.847,
+      "rssMedianMb": 0,
+      "timesMs": [
+        12.001,
+        12.847,
+        11.708,
+        12.788,
+        12.545
+      ],
+      "rssDeltas": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "category": "cow-save-only-untouched",
+      "fixture": "scale-100k",
+      "label": "cow-save-only(scale-100k)",
+      "min": 119.287,
+      "max": 124.258,
+      "median": 121.161,
+      "p95": 124.258,
+      "rssMedianMb": 0,
+      "timesMs": [
+        121.161,
+        121.255,
+        119.287,
+        124.258,
+        119.844
+      ],
+      "rssDeltas": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "category": "cow-save-only-untouched",
+      "fixture": "large-data",
+      "label": "cow-save-only(large-data)",
+      "min": 125.444,
+      "max": 130.784,
+      "median": 127.477,
+      "p95": 130.784,
+      "rssMedianMb": 0,
+      "timesMs": [
+        130.784,
+        129.548,
+        127.477,
+        125.444,
+        126.867
+      ],
+      "rssDeltas": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "category": "cow-save-only-untouched",
+      "fixture": "strings",
+      "label": "cow-save-only(strings)",
+      "min": 26.501,
+      "max": 27.867,
+      "median": 26.726,
+      "p95": 27.867,
+      "rssMedianMb": 0,
+      "timesMs": [
+        26.501,
+        27.042,
+        27.867,
+        26.621,
+        26.726
+      ],
+      "rssDeltas": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "category": "cow-save-only-edited",
+      "fixture": "scale-1k",
+      "label": "cow-edit-save-only(scale-1k)",
+      "min": 2.646,
+      "max": 2.9,
+      "median": 2.812,
+      "p95": 2.9,
+      "rssMedianMb": 0,
+      "timesMs": [
+        2.9,
+        2.646,
+        2.763,
+        2.812,
+        2.835
+      ],
+      "rssDeltas": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "category": "cow-save-only-edited",
+      "fixture": "scale-10k",
+      "label": "cow-edit-save-only(scale-10k)",
+      "min": 25.308,
+      "max": 32.041,
+      "median": 25.453,
+      "p95": 32.041,
+      "rssMedianMb": 0,
+      "timesMs": [
+        25.453,
+        32.041,
+        26.438,
+        25.308,
+        25.386
+      ],
+      "rssDeltas": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "category": "cow-save-only-edited",
+      "fixture": "scale-100k",
+      "label": "cow-edit-save-only(scale-100k)",
+      "min": 245.675,
+      "max": 254.598,
+      "median": 252.293,
+      "p95": 254.598,
+      "rssMedianMb": 0,
+      "timesMs": [
+        254.598,
+        245.675,
+        249.009,
+        252.293,
+        252.718
+      ],
+      "rssDeltas": [
+        33,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "category": "cow-save-only-edited",
+      "fixture": "large-data",
+      "label": "cow-edit-save-only(large-data)",
+      "min": 240.673,
+      "max": 254.402,
+      "median": 250.295,
+      "p95": 254.402,
+      "rssMedianMb": 0,
+      "timesMs": [
+        247.597,
+        253.314,
+        250.295,
+        240.673,
+        254.402
+      ],
+      "rssDeltas": [
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "category": "cow-save-only-edited",
+      "fixture": "strings",
+      "label": "cow-edit-save-only(strings)",
+      "min": 56.942,
+      "max": 60.264,
+      "median": 57.531,
+      "p95": 60.264,
+      "rssMedianMb": 0,
+      "timesMs": [
+        59.283,
+        57.194,
+        60.264,
+        57.531,
+        56.942
+      ],
+      "rssDeltas": [
+        0.1,
+        0,
+        0,
+        0,
+        0
+      ]
+    }
+  ]
+}
