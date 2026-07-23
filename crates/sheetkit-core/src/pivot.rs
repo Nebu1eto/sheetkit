@@ -371,20 +371,28 @@ pub(crate) fn build_pivot_cache_parts(
     for (column, name) in field_names.iter().enumerate() {
         let mut strings = Vec::<String>::new();
         let mut numbers = Vec::<f64>::new();
+        let mut string_indexes = std::collections::HashMap::<&str, u32>::new();
+        let mut number_indexes = std::collections::HashMap::<u64, u32>::new();
         let mut contains_blank = false;
         for row in &values {
             match &row[column] {
                 CacheValue::String(value, blank) => {
                     contains_blank |= *blank;
-                    if !strings.contains(value) {
+                    if let std::collections::hash_map::Entry::Vacant(entry) =
+                        string_indexes.entry(value.as_str())
+                    {
+                        let index = strings.len() as u32;
+                        entry.insert(index);
                         strings.push(value.clone());
                     }
                 }
                 CacheValue::Number(value) => {
-                    if !numbers
-                        .iter()
-                        .any(|existing| existing.to_bits() == value.to_bits())
+                    let key = value.to_bits();
+                    if let std::collections::hash_map::Entry::Vacant(entry) =
+                        number_indexes.entry(key)
                     {
+                        let index = numbers.len() as u32;
+                        entry.insert(index);
                         numbers.push(*value);
                     }
                 }
@@ -394,16 +402,12 @@ pub(crate) fn build_pivot_cache_parts(
         let indexes = values
             .iter()
             .map(|row| match &row[column] {
-                CacheValue::String(value, _) => strings
-                    .iter()
-                    .position(|existing| existing == value)
-                    .unwrap_or(0) as u32,
+                CacheValue::String(value, _) => {
+                    string_indexes.get(value.as_str()).copied().unwrap_or(0)
+                }
                 CacheValue::Number(value) => {
-                    (strings.len()
-                        + numbers
-                            .iter()
-                            .position(|existing| existing.to_bits() == value.to_bits())
-                            .unwrap_or(0)) as u32
+                    strings.len() as u32
+                        + number_indexes.get(&value.to_bits()).copied().unwrap_or(0)
                 }
             })
             .collect::<Vec<_>>();
@@ -809,6 +813,91 @@ mod tests {
             .records
             .iter()
             .all(|record| { record.index_fields.len() == 2 && record.number_fields.is_empty() }));
+    }
+
+    #[test]
+    fn pivot_cache_indexes_preserve_first_seen_order_across_value_types() {
+        use crate::cell::CellValue;
+
+        let field_names = vec!["Mixed".to_string()];
+        let rows = vec![
+            vec![CellValue::String("B".to_string())],
+            vec![CellValue::Number(2.0)],
+            vec![CellValue::String("A".to_string())],
+            vec![CellValue::Number(1.0)],
+            vec![CellValue::String("B".to_string())],
+            vec![CellValue::Number(2.0)],
+        ];
+
+        let (definition, records, item_counts) =
+            build_pivot_cache_parts("Sheet1", "A1:A7", &field_names, &rows, "rId1".to_string());
+        let items = definition.cache_fields.fields[0]
+            .shared_items
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            items
+                .string_items
+                .iter()
+                .map(|item| item.value.as_str())
+                .collect::<Vec<_>>(),
+            vec!["B", "A"]
+        );
+        assert_eq!(
+            items
+                .number_items
+                .iter()
+                .map(|item| item.value)
+                .collect::<Vec<_>>(),
+            vec![2.0, 1.0]
+        );
+        assert_eq!(item_counts, vec![4]);
+        assert_eq!(
+            records
+                .records
+                .iter()
+                .map(|record| record.index_fields[0].v)
+                .collect::<Vec<_>>(),
+            vec![0, 2, 1, 3, 0, 2]
+        );
+    }
+
+    #[test]
+    fn pivot_cache_indexes_fifty_thousand_unique_values() {
+        let field_names = vec!["Text".to_string(), "Number".to_string()];
+        let rows = (0..50_000)
+            .map(|index| {
+                vec![
+                    crate::cell::CellValue::String(format!("value-{index:05}")),
+                    crate::cell::CellValue::Number(f64::from(index)),
+                ]
+            })
+            .collect::<Vec<_>>();
+
+        let (definition, records, item_counts) = build_pivot_cache_parts(
+            "Sheet1",
+            "A1:B50001",
+            &field_names,
+            &rows,
+            "rId1".to_string(),
+        );
+        let items = definition.cache_fields.fields[0]
+            .shared_items
+            .as_ref()
+            .unwrap();
+        let number_items = definition.cache_fields.fields[1]
+            .shared_items
+            .as_ref()
+            .unwrap();
+        assert_eq!(item_counts, vec![50_000, 50_000]);
+        assert_eq!(items.string_items.len(), 50_000);
+        assert_eq!(items.string_items[0].value, "value-00000");
+        assert_eq!(items.string_items[49_999].value, "value-49999");
+        assert_eq!(number_items.number_items.len(), 50_000);
+        assert_eq!(number_items.number_items[0].value, 0.0);
+        assert_eq!(number_items.number_items[49_999].value, 49_999.0);
+        assert_eq!(records.records[0].index_fields[0].v, 0);
+        assert_eq!(records.records[49_999].index_fields[0].v, 49_999);
     }
 
     #[test]

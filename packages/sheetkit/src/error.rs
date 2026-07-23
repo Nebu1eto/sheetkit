@@ -1,4 +1,6 @@
-use napi::bindgen_prelude::{AsyncTask, BigInt, JsObjectValue, ToNapiValue};
+use std::sync::Arc;
+
+use napi::bindgen_prelude::{AsyncTask, BigInt, Buffer, JsObjectValue, ToNapiValue};
 use napi::{Env, Error, Result, Status, Task};
 use napi_derive::napi;
 use sheetkit_core::resource::ResourceLimitError;
@@ -44,11 +46,7 @@ pub(crate) fn map_core_error(env: &Env, error: sheetkit_core::error::Error) -> E
     }
 }
 
-fn reject_task_error(
-    env: Env,
-    metadata: Option<ResourceLimitError>,
-    error: Error,
-) -> Result<Workbook> {
+fn reject_task_error<T>(env: Env, metadata: Option<ResourceLimitError>, error: Error) -> Result<T> {
     match metadata {
         Some(metadata) => Err(create_resource_limit_error(
             &env,
@@ -56,6 +54,153 @@ fn reject_task_error(
             error.reason.clone(),
         )?),
         None => Err(error),
+    }
+}
+
+pub(crate) struct SavePathTask {
+    workbook: Arc<sheetkit_core::workbook::Workbook>,
+    path: String,
+    limits: sheetkit_core::save::SaveLimits,
+    resource_error: Option<ResourceLimitError>,
+}
+
+impl SavePathTask {
+    pub(crate) fn new(
+        workbook: Arc<sheetkit_core::workbook::Workbook>,
+        path: String,
+        limits: sheetkit_core::save::SaveLimits,
+    ) -> Self {
+        Self {
+            workbook,
+            path,
+            limits,
+            resource_error: None,
+        }
+    }
+
+    pub(crate) fn into_async_task(self) -> AsyncTask<Self> {
+        AsyncTask::new(self)
+    }
+}
+
+#[napi]
+impl Task for SavePathTask {
+    type Output = ();
+    type JsValue = ();
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        self.workbook
+            .save_with_limits(&self.path, self.limits)
+            .map_err(|error| {
+                self.resource_error = error.resource_metadata().copied();
+                Error::from_reason(error.to_string())
+            })
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+
+    fn reject(&mut self, env: Env, error: Error) -> Result<Self::JsValue> {
+        reject_task_error(env, self.resource_error, error)
+    }
+}
+
+pub(crate) struct WriteBufferTask {
+    workbook: Arc<sheetkit_core::workbook::Workbook>,
+    limits: sheetkit_core::save::SaveLimits,
+    resource_error: Option<ResourceLimitError>,
+}
+
+impl WriteBufferTask {
+    pub(crate) fn new(
+        workbook: Arc<sheetkit_core::workbook::Workbook>,
+        limits: sheetkit_core::save::SaveLimits,
+    ) -> Self {
+        Self {
+            workbook,
+            limits,
+            resource_error: None,
+        }
+    }
+
+    pub(crate) fn into_async_task(self) -> AsyncTask<Self> {
+        AsyncTask::new(self)
+    }
+}
+
+pub(crate) struct SavePasswordTask {
+    workbook: Arc<sheetkit_core::workbook::Workbook>,
+    path: String,
+    password: String,
+    limits: sheetkit_core::crypt::CryptLimits,
+    resource_error: Option<ResourceLimitError>,
+}
+
+impl SavePasswordTask {
+    pub(crate) fn new(
+        workbook: Arc<sheetkit_core::workbook::Workbook>,
+        path: String,
+        password: String,
+        limits: sheetkit_core::crypt::CryptLimits,
+    ) -> Self {
+        Self {
+            workbook,
+            path,
+            password,
+            limits,
+            resource_error: None,
+        }
+    }
+
+    pub(crate) fn into_async_task(self) -> AsyncTask<Self> {
+        AsyncTask::new(self)
+    }
+}
+
+#[napi]
+impl Task for SavePasswordTask {
+    type Output = ();
+    type JsValue = ();
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        self.workbook
+            .save_with_password_with_limits(&self.path, &self.password, self.limits)
+            .map_err(|error| {
+                self.resource_error = error.resource_metadata().copied();
+                Error::from_reason(error.to_string())
+            })
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(output)
+    }
+
+    fn reject(&mut self, env: Env, error: Error) -> Result<Self::JsValue> {
+        reject_task_error(env, self.resource_error, error)
+    }
+}
+
+#[napi]
+impl Task for WriteBufferTask {
+    type Output = Vec<u8>;
+    type JsValue = Buffer;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        self.workbook
+            .save_to_buffer_with_limits(self.limits)
+            .map_err(|error| {
+                self.resource_error = error.resource_metadata().copied();
+                Error::from_reason(error.to_string())
+            })
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        Ok(Buffer::from(output))
+    }
+
+    fn reject(&mut self, env: Env, error: Error) -> Result<Self::JsValue> {
+        reject_task_error(env, self.resource_error, error)
     }
 }
 
@@ -94,7 +239,7 @@ impl Task for OpenPathTask {
     }
 
     fn resolve(&mut self, _env: Env, inner: Self::Output) -> Result<Self::JsValue> {
-        Ok(Workbook { inner })
+        Ok(Workbook::from_core(inner))
     }
 
     fn reject(&mut self, env: Env, error: Error) -> Result<Self::JsValue> {
@@ -136,7 +281,7 @@ impl Task for OpenBufferTask {
     }
 
     fn resolve(&mut self, _env: Env, inner: Self::Output) -> Result<Self::JsValue> {
-        Ok(Workbook { inner })
+        Ok(Workbook::from_core(inner))
     }
 
     fn reject(&mut self, env: Env, error: Error) -> Result<Self::JsValue> {
@@ -147,14 +292,20 @@ impl Task for OpenBufferTask {
 pub(crate) struct OpenPasswordTask {
     path: String,
     password: String,
+    options: sheetkit_core::workbook::OpenOptions,
     resource_error: Option<ResourceLimitError>,
 }
 
 impl OpenPasswordTask {
-    pub(crate) fn new(path: String, password: String) -> Self {
+    pub(crate) fn new(
+        path: String,
+        password: String,
+        options: sheetkit_core::workbook::OpenOptions,
+    ) -> Self {
         Self {
             path,
             password,
+            options,
             resource_error: None,
         }
     }
@@ -170,16 +321,71 @@ impl Task for OpenPasswordTask {
     type JsValue = Workbook;
 
     fn compute(&mut self) -> Result<Self::Output> {
-        sheetkit_core::workbook::Workbook::open_with_password(&self.path, &self.password).map_err(
-            |error| {
-                self.resource_error = error.resource_metadata().copied();
-                Error::from_reason(error.to_string())
-            },
+        sheetkit_core::workbook::Workbook::open_with_password_with_options(
+            &self.path,
+            &self.password,
+            &self.options,
         )
+        .map_err(|error| {
+            self.resource_error = error.resource_metadata().copied();
+            Error::from_reason(error.to_string())
+        })
     }
 
     fn resolve(&mut self, _env: Env, inner: Self::Output) -> Result<Self::JsValue> {
-        Ok(Workbook { inner })
+        Ok(Workbook::from_core(inner))
+    }
+
+    fn reject(&mut self, env: Env, error: Error) -> Result<Self::JsValue> {
+        reject_task_error(env, self.resource_error, error)
+    }
+}
+
+pub(crate) struct OpenBufferPasswordTask {
+    data: Vec<u8>,
+    password: String,
+    options: sheetkit_core::workbook::OpenOptions,
+    resource_error: Option<ResourceLimitError>,
+}
+
+impl OpenBufferPasswordTask {
+    pub(crate) fn new(
+        data: Vec<u8>,
+        password: String,
+        options: sheetkit_core::workbook::OpenOptions,
+    ) -> Self {
+        Self {
+            data,
+            password,
+            options,
+            resource_error: None,
+        }
+    }
+
+    pub(crate) fn into_async_task(self) -> AsyncTask<Self> {
+        AsyncTask::new(self)
+    }
+}
+
+#[napi]
+impl Task for OpenBufferPasswordTask {
+    type Output = sheetkit_core::workbook::Workbook;
+    type JsValue = Workbook;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        sheetkit_core::workbook::Workbook::open_from_buffer_with_password_with_options(
+            &self.data,
+            &self.password,
+            &self.options,
+        )
+        .map_err(|error| {
+            self.resource_error = error.resource_metadata().copied();
+            Error::from_reason(error.to_string())
+        })
+    }
+
+    fn resolve(&mut self, _env: Env, inner: Self::Output) -> Result<Self::JsValue> {
+        Ok(Workbook::from_core(inner))
     }
 
     fn reject(&mut self, env: Env, error: Error) -> Result<Self::JsValue> {

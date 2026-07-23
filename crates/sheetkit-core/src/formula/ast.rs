@@ -37,6 +37,44 @@ pub enum Expr {
     Paren(Box<Expr>),
 }
 
+impl Expr {
+    /// Return `(nodes, recursive nesting, binary-chain depth)` iteratively.
+    ///
+    /// Binary branches are tracked independently because the parser builds
+    /// them iteratively; function, unary, and parenthesized nodes consume the
+    /// recursive-parser nesting budget.
+    pub(crate) fn structural_metrics(&self) -> (u64, u64, u64) {
+        let mut nodes = 0_u64;
+        let mut max_depth = 0_u64;
+        let mut max_binary_chain = 0_u64;
+        let mut stack = vec![(self, 1_u64, 0_u64)];
+
+        while let Some((expr, depth, parent_binary_chain)) = stack.pop() {
+            nodes = nodes.saturating_add(1);
+            max_depth = max_depth.max(depth);
+            match expr {
+                Self::Function { args, .. } => {
+                    for arg in args.iter().rev() {
+                        stack.push((arg, depth.saturating_add(1), 0));
+                    }
+                }
+                Self::BinaryOp { left, right, .. } => {
+                    let chain = parent_binary_chain.saturating_add(1);
+                    max_binary_chain = max_binary_chain.max(chain);
+                    stack.push((right, depth, 0));
+                    stack.push((left, depth, chain));
+                }
+                Self::UnaryOp { operand, .. } | Self::Paren(operand) => {
+                    stack.push((operand, depth.saturating_add(1), 0));
+                }
+                _ => {}
+            }
+        }
+
+        (nodes, max_depth, max_binary_chain)
+    }
+}
+
 /// A cell reference with optional absolute markers.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CellReference {

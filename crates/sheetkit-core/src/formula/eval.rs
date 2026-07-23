@@ -4,16 +4,15 @@
 //! [`CellDataProvider`] trait. Supports arithmetic, comparison, string
 //! concatenation, cell/range references, and built-in function calls.
 
-use std::collections::{HashMap, HashSet};
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap, HashSet};
 
 use crate::cell::CellValue;
 use crate::error::{Error, Result};
 use crate::formula::ast::{BinaryOperator, CellReference, Expr, UnaryOperator};
+use crate::formula::budget::FormulaBudget;
 use crate::formula::functions;
 use crate::utils::cell_ref::{column_name_to_number, column_number_to_name};
-
-/// Maximum recursion depth for nested formula evaluation.
-const MAX_EVAL_DEPTH: usize = 256;
 
 /// Provides cell data for formula evaluation.
 pub trait CellDataProvider {
@@ -74,16 +73,23 @@ pub struct Evaluator<'a> {
     eval_stack: HashSet<(String, u32, u32)>,
     depth: usize,
     position: (u32, u32),
+    budget: FormulaBudget,
 }
 
 impl<'a> Evaluator<'a> {
     /// Create a new evaluator backed by the given data provider.
     pub fn new(provider: &'a dyn CellDataProvider) -> Self {
+        Self::with_budget(provider, FormulaBudget::secure_calculation())
+    }
+
+    /// Create an evaluator that shares an existing calculation budget.
+    pub fn with_budget(provider: &'a dyn CellDataProvider, budget: FormulaBudget) -> Self {
         Self {
             provider,
             eval_stack: HashSet::new(),
             depth: 0,
             position: (1, 1),
+            budget,
         }
     }
 
@@ -99,14 +105,24 @@ impl<'a> Evaluator<'a> {
 
     /// Evaluate an AST expression node.
     pub fn eval_expr(&mut self, expr: &Expr) -> Result<CellValue> {
+        self.budget.charge_evaluation_steps(1)?;
         self.depth += 1;
-        if self.depth > MAX_EVAL_DEPTH {
+        if let Err(error) = self.budget.check_evaluation_depth(self.depth as u64) {
             self.depth -= 1;
-            return Err(Error::FormulaError(
-                "maximum evaluation depth exceeded".to_string(),
-            ));
+            return Err(error);
         }
-        let result = self.eval_inner(expr);
+        let result = self.eval_inner(expr).and_then(|value| {
+            let output_bytes = match &value {
+                CellValue::String(value) | CellValue::Error(value) => value.len() as u64,
+                CellValue::RichString(runs) => runs
+                    .iter()
+                    .map(|run| run.text.len() as u64)
+                    .fold(0_u64, u64::saturating_add),
+                _ => 0,
+            };
+            self.budget.charge_output_bytes(output_bytes)?;
+            Ok(value)
+        });
         self.depth -= 1;
         result
     }
@@ -182,7 +198,20 @@ impl<'a> Evaluator<'a> {
         let max_col = start_col.max(end_col);
         let min_row = start_row.min(end_row);
         let max_row = start_row.max(end_row);
+        let width = u64::from(max_col - min_col)
+            .checked_add(1)
+            .ok_or_else(|| Error::Internal("formula range width overflow".to_string()))?;
+        let height = u64::from(max_row - min_row)
+            .checked_add(1)
+            .ok_or_else(|| Error::Internal("formula range height overflow".to_string()))?;
+        let area = width.saturating_mul(height);
+        self.budget.charge_range_cells(area)?;
         let mut values = Vec::new();
+        let capacity = usize::try_from(area)
+            .map_err(|_| Error::Internal("formula range capacity overflow".to_string()))?;
+        values
+            .try_reserve_exact(capacity)
+            .map_err(|_| Error::Internal("formula range allocation failed".to_string()))?;
         for r in min_row..=max_row {
             for c in min_col..=max_col {
                 values.push(self.resolve_cell(sheet, c, r)?);
@@ -194,6 +223,21 @@ impl<'a> Evaluator<'a> {
     /// Return the current sheet name from the provider.
     pub fn current_sheet(&self) -> &str {
         self.provider.current_sheet()
+    }
+
+    /// Charge wildcard or criteria matching work before performing it.
+    pub fn charge_match_work(&self, amount: u64) -> Result<()> {
+        self.budget.charge_match_work(amount)
+    }
+
+    /// Charge analytically known loop or helper work before executing it.
+    pub fn charge_evaluation_work(&self, amount: u64) -> Result<()> {
+        self.budget.charge_evaluation_steps(amount)
+    }
+
+    /// Check analytically known string output before reserving it.
+    pub fn check_output_bytes(&self, amount: u64) -> Result<()> {
+        self.budget.check_output_bytes(amount)
     }
 
     // -- Private helpers --
@@ -242,8 +286,8 @@ impl<'a> Evaluator<'a> {
         match cell_value {
             CellValue::Formula { ref expr, .. } => {
                 self.eval_stack.insert(key.clone());
-                let parsed = crate::formula::parser::parse_formula(expr)?;
-                let result = self.eval_expr(&parsed);
+                let result = crate::formula::parser::parse_formula_with_budget(expr, &self.budget)
+                    .and_then(|parsed| self.eval_expr(&parsed));
                 self.eval_stack.remove(&key);
                 result
             }
@@ -498,89 +542,118 @@ pub struct CellCoord {
 pub fn build_dependency_graph(
     formula_cells: &[(CellCoord, String)],
 ) -> Result<HashMap<CellCoord, Vec<CellCoord>>> {
+    let budget = FormulaBudget::secure_calculation();
     let parsed_cells = formula_cells
         .iter()
         .map(|(coord, formula_str)| {
-            crate::formula::parser::parse_formula(formula_str).map(|expr| (coord.clone(), expr))
+            crate::formula::parser::parse_formula_with_budget(formula_str, &budget)
+                .map(|expr| (coord.clone(), expr))
         })
         .collect::<Result<Vec<_>>>()?;
-    Ok(build_dependency_graph_from_parsed(&parsed_cells))
+    build_dependency_graph_from_parsed_with_budget(&parsed_cells, &budget)
 }
 
 /// Build a dependency graph from formula cells that have already been parsed.
 /// Returns a map from each formula cell to the cells it depends on.
 pub fn build_dependency_graph_from_parsed(
     formula_cells: &[(CellCoord, Expr)],
-) -> HashMap<CellCoord, Vec<CellCoord>> {
+) -> Result<HashMap<CellCoord, Vec<CellCoord>>> {
+    let budget = FormulaBudget::secure_calculation();
+    build_dependency_graph_from_parsed_with_budget(formula_cells, &budget)
+}
+
+/// Build a dependency graph while charging an existing calculation budget.
+pub(crate) fn build_dependency_graph_from_parsed_with_budget(
+    formula_cells: &[(CellCoord, Expr)],
+    budget: &FormulaBudget,
+) -> Result<HashMap<CellCoord, Vec<CellCoord>>> {
     let mut deps: HashMap<CellCoord, Vec<CellCoord>> = HashMap::new();
+    deps.try_reserve(formula_cells.len())
+        .map_err(|_| Error::Internal("formula graph allocation failed".to_string()))?;
     for (coord, expr) in formula_cells {
-        let refs = extract_cell_refs(expr, &coord.sheet);
+        let refs = extract_cell_refs(expr, &coord.sheet, budget)?;
         deps.insert(coord.clone(), refs);
     }
-    deps
+    Ok(deps)
 }
 
 /// Extract all cell references from a parsed expression.
-fn extract_cell_refs(expr: &Expr, current_sheet: &str) -> Vec<CellCoord> {
+fn extract_cell_refs(
+    expr: &Expr,
+    current_sheet: &str,
+    budget: &FormulaBudget,
+) -> Result<Vec<CellCoord>> {
     let mut refs = Vec::new();
-    collect_refs(expr, current_sheet, &mut refs);
-    refs
-}
-
-fn collect_refs(expr: &Expr, current_sheet: &str, refs: &mut Vec<CellCoord>) {
-    match expr {
-        Expr::CellRef(cell_ref) => {
-            let sheet = cell_ref
-                .sheet
-                .as_deref()
-                .unwrap_or(current_sheet)
-                .to_string();
-            if let Ok(col) = column_name_to_number(&cell_ref.col) {
-                refs.push(CellCoord {
-                    sheet,
-                    col,
-                    row: cell_ref.row,
-                });
+    let mut stack = vec![expr];
+    while let Some(expr) = stack.pop() {
+        match expr {
+            Expr::CellRef(cell_ref) => {
+                let sheet = cell_ref
+                    .sheet
+                    .as_deref()
+                    .unwrap_or(current_sheet)
+                    .to_string();
+                if let Ok(col) = column_name_to_number(&cell_ref.col) {
+                    budget.charge_dependency_edges(1)?;
+                    refs.try_reserve(1).map_err(|_| {
+                        Error::Internal("formula graph allocation failed".to_string())
+                    })?;
+                    refs.push(CellCoord {
+                        sheet,
+                        col,
+                        row: cell_ref.row,
+                    });
+                }
             }
-        }
-        Expr::Range { start, end } => {
-            let sheet = start.sheet.as_deref().unwrap_or(current_sheet).to_string();
-            if let (Ok(start_col), Ok(end_col)) = (
-                column_name_to_number(&start.col),
-                column_name_to_number(&end.col),
-            ) {
-                let min_col = start_col.min(end_col);
-                let max_col = start_col.max(end_col);
-                let min_row = start.row.min(end.row);
-                let max_row = start.row.max(end.row);
-                for r in min_row..=max_row {
-                    for c in min_col..=max_col {
-                        refs.push(CellCoord {
-                            sheet: sheet.clone(),
-                            col: c,
-                            row: r,
-                        });
+            Expr::Range { start, end } => {
+                let sheet = start.sheet.as_deref().unwrap_or(current_sheet).to_string();
+                if let (Ok(start_col), Ok(end_col)) = (
+                    column_name_to_number(&start.col),
+                    column_name_to_number(&end.col),
+                ) {
+                    let min_col = start_col.min(end_col);
+                    let max_col = start_col.max(end_col);
+                    let min_row = start.row.min(end.row);
+                    let max_row = start.row.max(end.row);
+                    let width = u64::from(max_col - min_col).checked_add(1).ok_or_else(|| {
+                        Error::Internal("formula range width overflow".to_string())
+                    })?;
+                    let height = u64::from(max_row - min_row).checked_add(1).ok_or_else(|| {
+                        Error::Internal("formula range height overflow".to_string())
+                    })?;
+                    let area = width.saturating_mul(height);
+                    budget.charge_dependency_edges(area)?;
+                    let capacity = usize::try_from(area).map_err(|_| {
+                        Error::Internal("formula graph capacity overflow".to_string())
+                    })?;
+                    refs.try_reserve(capacity).map_err(|_| {
+                        Error::Internal("formula graph allocation failed".to_string())
+                    })?;
+                    for r in min_row..=max_row {
+                        for c in min_col..=max_col {
+                            refs.push(CellCoord {
+                                sheet: sheet.clone(),
+                                col: c,
+                                row: r,
+                            });
+                        }
                     }
                 }
             }
-        }
-        Expr::Function { args, .. } => {
-            for arg in args {
-                collect_refs(arg, current_sheet, refs);
+            Expr::Function { args, .. } => {
+                for arg in args.iter().rev() {
+                    stack.push(arg);
+                }
             }
+            Expr::BinaryOp { left, right, .. } => {
+                stack.push(right);
+                stack.push(left);
+            }
+            Expr::UnaryOp { operand, .. } | Expr::Paren(operand) => stack.push(operand),
+            _ => {}
         }
-        Expr::BinaryOp { left, right, .. } => {
-            collect_refs(left, current_sheet, refs);
-            collect_refs(right, current_sheet, refs);
-        }
-        Expr::UnaryOp { operand, .. } => {
-            collect_refs(operand, current_sheet, refs);
-        }
-        Expr::Paren(inner) => {
-            collect_refs(inner, current_sheet, refs);
-        }
-        _ => {}
     }
+    Ok(refs)
 }
 
 /// Topological sort of formula cells based on dependencies.
@@ -590,10 +663,30 @@ pub fn topological_sort(
     formula_cells: &[CellCoord],
     deps: &HashMap<CellCoord, Vec<CellCoord>>,
 ) -> Result<Vec<CellCoord>> {
-    let formula_set: HashSet<CellCoord> = formula_cells.iter().cloned().collect();
+    let budget = FormulaBudget::secure_calculation();
+    topological_sort_with_budget(formula_cells, deps, &budget)
+}
+
+/// Deterministically sort formula cells while charging queue operations.
+pub(crate) fn topological_sort_with_budget(
+    formula_cells: &[CellCoord],
+    deps: &HashMap<CellCoord, Vec<CellCoord>>,
+    budget: &FormulaBudget,
+) -> Result<Vec<CellCoord>> {
+    let mut formula_set: HashSet<CellCoord> = HashSet::new();
+    formula_set
+        .try_reserve(formula_cells.len())
+        .map_err(|_| Error::Internal("formula ordering allocation failed".to_string()))?;
+    formula_set.extend(formula_cells.iter().cloned());
 
     let mut in_degree: HashMap<CellCoord, usize> = HashMap::new();
     let mut dependents: HashMap<CellCoord, Vec<CellCoord>> = HashMap::new();
+    in_degree
+        .try_reserve(formula_cells.len())
+        .map_err(|_| Error::Internal("formula ordering allocation failed".to_string()))?;
+    dependents
+        .try_reserve(formula_cells.len())
+        .map_err(|_| Error::Internal("formula ordering allocation failed".to_string()))?;
 
     for cell in formula_cells {
         in_degree.entry(cell.clone()).or_insert(0);
@@ -604,26 +697,36 @@ pub fn topological_sort(
         in_degree.insert(cell.clone(), dep_count);
         for dep in cell_deps {
             if formula_set.contains(dep) {
-                dependents
-                    .entry(dep.clone())
-                    .or_default()
-                    .push(cell.clone());
+                let entries = dependents.entry(dep.clone()).or_default();
+                entries.try_reserve(1).map_err(|_| {
+                    Error::Internal("formula ordering allocation failed".to_string())
+                })?;
+                entries.push(cell.clone());
             }
         }
     }
 
     // Kahn's algorithm
-    let mut queue: Vec<CellCoord> = in_degree
-        .iter()
-        .filter(|(_, &deg)| deg == 0)
-        .map(|(cell, _)| cell.clone())
-        .collect();
-    queue.sort_by(|a, b| (&a.sheet, a.row, a.col).cmp(&(&b.sheet, b.row, b.col)));
+    let mut queue: BinaryHeap<Reverse<(String, u32, u32)>> = BinaryHeap::new();
+    queue
+        .try_reserve(formula_cells.len())
+        .map_err(|_| Error::Internal("formula ordering allocation failed".to_string()))?;
+    for (cell, degree) in &in_degree {
+        if *degree == 0 {
+            budget.charge_ready_queue_ops(1)?;
+            queue.push(Reverse((cell.sheet.clone(), cell.row, cell.col)));
+        }
+    }
 
     let mut sorted = Vec::new();
+    sorted
+        .try_reserve_exact(formula_cells.len())
+        .map_err(|_| Error::Internal("formula ordering allocation failed".to_string()))?;
     let mut visited = 0;
 
-    while let Some(cell) = queue.pop() {
+    while let Some(Reverse((sheet, row, col))) = queue.pop() {
+        budget.charge_ready_queue_ops(1)?;
+        let cell = CellCoord { sheet, col, row };
         sorted.push(cell.clone());
         visited += 1;
         if let Some(cell_dependents) = dependents.get(&cell) {
@@ -631,12 +734,12 @@ pub fn topological_sort(
                 if let Some(deg) = in_degree.get_mut(dep) {
                     *deg -= 1;
                     if *deg == 0 {
-                        queue.push(dep.clone());
+                        budget.charge_ready_queue_ops(1)?;
+                        queue.push(Reverse((dep.sheet.clone(), dep.row, dep.col)));
                     }
                 }
             }
         }
-        queue.sort_by(|a, b| (&b.sheet, b.row, b.col).cmp(&(&a.sheet, a.row, a.col)));
     }
 
     if visited != formula_cells.len() {
@@ -652,10 +755,181 @@ pub fn topological_sort(
 mod tests {
     use super::*;
     use crate::formula::ast::{BinaryOperator, CellReference, Expr, UnaryOperator};
+    use crate::formula::budget::{FormulaBudget, FormulaLimits};
     use crate::formula::parser::parse_formula;
 
     fn make_snapshot() -> CellSnapshot {
         CellSnapshot::new("Sheet1".to_string())
+    }
+
+    struct CountingProvider(std::cell::Cell<u64>);
+
+    impl CellDataProvider for CountingProvider {
+        fn get_cell(&self, _sheet: &str, _col: u32, _row: u32) -> CellValue {
+            self.0.set(self.0.get() + 1);
+            CellValue::Empty
+        }
+
+        fn current_sheet(&self) -> &str {
+            "Sheet1"
+        }
+    }
+
+    #[test]
+    fn range_budget_is_checked_before_provider_calls() {
+        let provider = CountingProvider(std::cell::Cell::new(0));
+        let limits = FormulaLimits {
+            operation_range_cells: 4,
+            ..FormulaLimits::secure_default()
+        };
+        let budget = FormulaBudget::for_calculation(limits).unwrap();
+        let mut evaluator = Evaluator::with_budget(&provider, budget);
+        let start = CellReference {
+            col: "A".to_string(),
+            row: 1,
+            abs_col: false,
+            abs_row: false,
+            sheet: None,
+        };
+        let end = CellReference {
+            col: "B".to_string(),
+            row: 2,
+            abs_col: false,
+            abs_row: false,
+            sheet: None,
+        };
+
+        assert_eq!(evaluator.expand_range(&start, &end).unwrap().len(), 4);
+        assert_eq!(provider.0.get(), 4);
+        let error = evaluator.expand_range(&start, &start).unwrap_err();
+        assert_eq!(
+            error.resource_metadata().unwrap().dimension_code(),
+            "range_cell_count"
+        );
+        assert_eq!(provider.0.get(), 4);
+    }
+
+    #[test]
+    fn ready_queue_budget_is_cumulative_and_deterministic() {
+        let a = CellCoord {
+            sheet: "Sheet1".to_string(),
+            col: 1,
+            row: 1,
+        };
+        let b = CellCoord {
+            sheet: "Sheet1".to_string(),
+            col: 2,
+            row: 1,
+        };
+        let deps = HashMap::from([(a.clone(), vec![]), (b.clone(), vec![])]);
+        let limits = FormulaLimits {
+            operation_ready_queue_ops: 4,
+            ..FormulaLimits::secure_default()
+        };
+        let budget = FormulaBudget::for_calculation(limits).unwrap();
+        assert_eq!(
+            topological_sort_with_budget(&[b.clone(), a.clone()], &deps, &budget).unwrap(),
+            vec![a.clone(), b.clone()]
+        );
+
+        let limits = FormulaLimits {
+            operation_ready_queue_ops: 3,
+            ..FormulaLimits::secure_default()
+        };
+        let budget = FormulaBudget::for_calculation(limits).unwrap();
+        let error = topological_sort_with_budget(&[a, b], &deps, &budget).unwrap_err();
+        assert_eq!(
+            error.resource_metadata().unwrap().dimension_code(),
+            "operation_count"
+        );
+    }
+
+    #[test]
+    fn large_independent_graph_has_exact_bounded_queue_work() {
+        let cells: Vec<CellCoord> = (1..=1_024)
+            .rev()
+            .map(|row| CellCoord {
+                sheet: "Sheet1".to_string(),
+                col: 1,
+                row,
+            })
+            .collect();
+        let deps: HashMap<CellCoord, Vec<CellCoord>> = cells
+            .iter()
+            .cloned()
+            .map(|cell| (cell, Vec::new()))
+            .collect();
+        let limits = FormulaLimits {
+            operation_ready_queue_ops: 2_048,
+            ..FormulaLimits::secure_default()
+        };
+        let budget = FormulaBudget::for_calculation(limits).unwrap();
+        let sorted = topological_sort_with_budget(&cells, &deps, &budget).unwrap();
+        assert_eq!((sorted[0].row, sorted[1_023].row), (1, 1_024));
+
+        let limits = FormulaLimits {
+            operation_ready_queue_ops: 2_047,
+            ..FormulaLimits::secure_default()
+        };
+        let budget = FormulaBudget::for_calculation(limits).unwrap();
+        let error = topological_sort_with_budget(&cells, &deps, &budget).unwrap_err();
+        let metadata = error.resource_metadata().unwrap();
+        assert_eq!((metadata.limit(), metadata.observed()), (2_047, 2_048));
+    }
+
+    #[test]
+    fn dependency_edge_boundaries_are_exact() {
+        let coord = CellCoord {
+            sheet: "Sheet1".to_string(),
+            col: 1,
+            row: 1,
+        };
+        let expression = parse_formula("SUM(A1,B1,C1,D1)").unwrap();
+        let limits = FormulaLimits {
+            operation_dependency_edges: 4,
+            ..FormulaLimits::secure_default()
+        };
+        let budget = FormulaBudget::for_calculation(limits).unwrap();
+        let graph = build_dependency_graph_from_parsed_with_budget(
+            &[(coord.clone(), expression.clone())],
+            &budget,
+        )
+        .unwrap();
+        assert_eq!(graph[&coord].len(), 4);
+
+        let limits = FormulaLimits {
+            operation_dependency_edges: 3,
+            ..FormulaLimits::secure_default()
+        };
+        let budget = FormulaBudget::for_calculation(limits).unwrap();
+        let error = build_dependency_graph_from_parsed_with_budget(&[(coord, expression)], &budget)
+            .unwrap_err();
+        let metadata = error.resource_metadata().unwrap();
+        assert_eq!((metadata.limit(), metadata.observed()), (3, 4));
+        assert_eq!(metadata.dimension_code(), "dependency_edge_count");
+    }
+
+    #[test]
+    fn dependency_range_is_rejected_before_materialization() {
+        let limits = FormulaLimits {
+            operation_range_cells: 0,
+            operation_dependency_edges: 4,
+            ..FormulaLimits::secure_default()
+        };
+        let budget = FormulaBudget::for_calculation(limits).unwrap();
+        let coord = CellCoord {
+            sheet: "Sheet1".to_string(),
+            col: 1,
+            row: 1,
+        };
+        let expression = parse_formula("A1:C2").unwrap();
+
+        let error = build_dependency_graph_from_parsed_with_budget(&[(coord, expression)], &budget)
+            .unwrap_err();
+
+        let metadata = error.resource_metadata().unwrap();
+        assert_eq!(metadata.dimension_code(), "dependency_edge_count");
+        assert_eq!((metadata.limit(), metadata.observed()), (4, 6));
     }
 
     // -- Literal evaluation --
@@ -1160,15 +1434,13 @@ mod tests {
         let snap = make_snapshot();
         // Build a deeply nested expression: ((((... (1) ...))))
         let mut expr = Expr::Number(1.0);
-        for _ in 0..300 {
+        for _ in 0..1_025 {
             expr = Expr::Paren(Box::new(expr));
         }
-        let result = evaluate(&expr, &snap);
-        assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("maximum evaluation depth"));
+        let error = evaluate(&expr, &snap).unwrap_err();
+        let metadata = error.resource_metadata().unwrap();
+        assert_eq!(metadata.dimension_code(), "nesting_depth");
+        assert_eq!((metadata.limit(), metadata.observed()), (1_024, 1_025));
     }
 
     // -- Function evaluation --
@@ -1350,7 +1622,8 @@ mod tests {
     #[test]
     fn test_extract_cell_refs_from_nested_expr() {
         let expr = parse_formula("A1+SUM(B1:B3,C1)").unwrap();
-        let refs = extract_cell_refs(&expr, "Sheet1");
+        let budget = FormulaBudget::secure_calculation();
+        let refs = extract_cell_refs(&expr, "Sheet1", &budget).unwrap();
         assert!(refs.contains(&coord("Sheet1", 1, 1))); // A1
         assert!(refs.contains(&coord("Sheet1", 2, 1))); // B1
         assert!(refs.contains(&coord("Sheet1", 2, 2))); // B2

@@ -223,10 +223,11 @@ Options for controlling how a workbook is opened and parsed. All fields are opti
 |---|---|---|---|---|
 | `read_mode` / `readMode` | `ReadMode` | `'lazy' \| 'eager' \| 'stream'?` | `'lazy'` | Controls how much of the file is parsed during open. |
 | `aux_parts` / `auxParts` | `AuxParts` | `'deferred' \| 'eager'?` | `'deferred'` | Controls when auxiliary parts (comments, charts, images) are parsed. |
-| `sheet_rows` / `sheetRows` | `Option<u32>` | `number?` | unlimited | Maximum number of rows to read per sheet. Rows beyond this limit are discarded. |
+| `sheet_rows` / `sheetRows` | `Option<u32>` | `number?` | no row filter | Maximum number of rows to read per sheet. Rows beyond this limit are discarded; the finite open limits still apply when omitted. |
 | `sheets` | `Option<Vec<String>>` | `string[]?` | all | Only parse sheets whose names are in this list. Unselected sheets exist in the workbook but contain no data. |
-| `max_unzip_size` / `maxUnzipSize` | `Option<u64>` | `number?` | unlimited | Maximum total decompressed size of the ZIP archive in bytes. Prevents zip bombs. |
-| `max_zip_entries` / `maxZipEntries` | `Option<usize>` | `number?` | unlimited | Maximum number of entries in the ZIP archive. Prevents zip bombs. |
+| `max_unzip_size` / `maxUnzipSize` | `Option<u64>` | `number?` | 512 MiB | Compatibility override for aggregate declared and actual ZIP bytes. |
+| `max_zip_entries` / `maxZipEntries` | `Option<usize>` | `number?` | 4,096 | Compatibility override for the archive entry limit. |
+| `limits` | `OpenLimits` | `JsOpenLimits?` | finite secure defaults | Independent limits for input, entries, XML, compression ratio, and retained package bytes. |
 | `date_interpretation` / `dateInterpretation` | `DateInterpretation` | `'cellType' \| 'numFmt'?` | `'numFmt'` | Controls how date-formatted number cells are surfaced while reading. |
 
 #### ReadMode

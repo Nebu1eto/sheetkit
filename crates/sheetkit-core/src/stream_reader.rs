@@ -9,20 +9,89 @@
 //! [`SharedStringTable`]. Cell types (string, number, boolean, date, formula,
 //! error, inline string) are handled according to the OOXML specification.
 
-use std::io::BufRead;
+use std::fs::File;
+use std::io::{BufRead, Read};
 
 use quick_xml::events::Event;
 use quick_xml::name::QName;
 
 use crate::cell::CellValue;
 use crate::error::{Error, Result};
+use crate::resource::{
+    ResourceCategory, ResourceDimension, ResourceLimitError, ResourceOperation, ResourceStage,
+};
 use crate::sst::SharedStringTable;
 use crate::utils::cell_ref::cell_name_to_coordinates;
 use crate::utils::constants::{MAX_COLUMNS, MAX_ROWS};
 use crate::workbook::open_options::DateInterpretation;
 
+/// Maximum number of rows returned by one streaming-reader batch.
+pub const MAX_STREAM_BATCH_ROWS: usize = 100_000;
+
+/// Workbook-owned input used by [`crate::workbook::Workbook::open_sheet_reader`].
+///
+/// Clean in-memory XML is borrowed directly. Package-backed or dirty XML is
+/// read through an anonymous disk spool so reader construction never needs a
+/// second sheet-sized allocation.
+#[doc(hidden)]
+pub enum SheetReaderInput<'a> {
+    Borrowed(std::io::Cursor<&'a [u8]>),
+    Spool(std::io::BufReader<File>),
+}
+
+impl Read for SheetReaderInput<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            Self::Borrowed(reader) => reader.read(buffer),
+            Self::Spool(reader) => reader.read(buffer),
+        }
+    }
+}
+
+impl BufRead for SheetReaderInput<'_> {
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        match self {
+            Self::Borrowed(reader) => reader.fill_buf(),
+            Self::Spool(reader) => reader.fill_buf(),
+        }
+    }
+
+    fn consume(&mut self, amount: usize) {
+        match self {
+            Self::Borrowed(reader) => reader.consume(amount),
+            Self::Spool(reader) => reader.consume(amount),
+        }
+    }
+}
+
+enum OwnedSheetReaderInput {
+    Spool(std::io::BufReader<File>),
+}
+
+impl Read for OwnedSheetReaderInput {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            Self::Spool(reader) => reader.read(buffer),
+        }
+    }
+}
+
+impl BufRead for OwnedSheetReaderInput {
+    fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+        match self {
+            Self::Spool(reader) => reader.fill_buf(),
+        }
+    }
+
+    fn consume(&mut self, amount: usize) {
+        match self {
+            Self::Spool(reader) => reader.consume(amount),
+        }
+    }
+}
+
 /// A single row produced by the streaming reader.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct StreamRow {
     /// 1-based row number.
     pub row_number: u32,
@@ -107,11 +176,11 @@ impl<'a, R: BufRead> SheetStreamReader<'a, R> {
     /// Read the next batch of rows. Returns an empty `Vec` when there are no
     /// more rows to read.
     pub fn next_batch(&mut self, batch_size: usize) -> Result<Vec<StreamRow>> {
+        let mut rows = prepare_batch(batch_size)?;
         if self.done {
-            return Ok(Vec::new());
+            return Ok(rows);
         }
 
-        let mut rows = Vec::with_capacity(batch_size);
         let mut buf = Vec::with_capacity(4096);
 
         loop {
@@ -313,7 +382,7 @@ impl<'a, R: BufRead> SheetStreamReader<'a, R> {
 /// avoiding any borrowed references. The parsing logic delegates to the same
 /// free functions used by the borrowed reader.
 pub struct OwnedSheetStreamReader {
-    reader: quick_xml::Reader<std::io::BufReader<std::io::Cursor<Vec<u8>>>>,
+    reader: quick_xml::Reader<OwnedSheetReaderInput>,
     sst: SharedStringTable,
     done: bool,
     row_limit: Option<u32>,
@@ -324,15 +393,15 @@ pub struct OwnedSheetStreamReader {
 }
 
 impl OwnedSheetStreamReader {
-    /// Create a new owned streaming reader.
-    ///
-    /// `xml_bytes` is the raw worksheet XML. `sst` is a read-only clone of
-    /// the shared string table. Configuration is applied via builder
-    /// methods ([`Self::row_limit`], [`Self::date_promotion`]).
-    pub fn new(xml_bytes: Vec<u8>, sst: SharedStringTable) -> Self {
-        let cursor = std::io::Cursor::new(xml_bytes);
-        let buf_reader = std::io::BufReader::new(cursor);
-        let mut reader = quick_xml::Reader::from_reader(buf_reader);
+    pub(crate) fn from_spool(file: File, sst: SharedStringTable) -> Self {
+        Self::from_input(
+            OwnedSheetReaderInput::Spool(std::io::BufReader::new(file)),
+            sst,
+        )
+    }
+
+    fn from_input(source: OwnedSheetReaderInput, sst: SharedStringTable) -> Self {
+        let mut reader = quick_xml::Reader::from_reader(source);
         reader.config_mut().trim_text(false);
         Self {
             reader,
@@ -379,11 +448,11 @@ impl OwnedSheetStreamReader {
     /// Read the next batch of rows. Returns an empty `Vec` when there are no
     /// more rows to read.
     pub fn next_batch(&mut self, batch_size: usize) -> Result<Vec<StreamRow>> {
+        let mut rows = prepare_batch(batch_size)?;
         if self.done {
-            return Ok(Vec::new());
+            return Ok(rows);
         }
 
-        let mut rows = Vec::with_capacity(batch_size);
         let mut buf = Vec::with_capacity(4096);
 
         loop {
@@ -571,6 +640,45 @@ impl OwnedSheetStreamReader {
         }
         Ok(text)
     }
+}
+
+fn prepare_batch(batch_size: usize) -> Result<Vec<StreamRow>> {
+    let batch_size = validate_stream_batch_size(batch_size)?;
+    let mut rows = Vec::new();
+    rows.try_reserve_exact(batch_size)
+        .map_err(|_| Error::Internal("stream batch allocation failed".to_string()))?;
+    Ok(rows)
+}
+
+/// Validate one requested stream batch size against the shared finite policy.
+///
+/// Language bindings should call this before workbook lookup or reader state
+/// changes so the exact same zero and upper boundaries apply everywhere.
+pub fn validate_stream_batch_size(batch_size: usize) -> Result<usize> {
+    if batch_size == 0 {
+        return Err(Error::InvalidArgument(
+            "stream batch size must be greater than zero".to_string(),
+        ));
+    }
+
+    let observed = u64::try_from(batch_size).unwrap_or(u64::MAX);
+    let limit = MAX_STREAM_BATCH_ROWS as u64;
+    if observed > limit {
+        let Some(metadata) = ResourceLimitError::exceeded(
+            ResourceOperation::StreamRead,
+            ResourceCategory::Streaming,
+            ResourceDimension::RowCount,
+            limit,
+            observed,
+            Some(ResourceStage::Validate),
+        ) else {
+            return Err(Error::Internal(
+                "invalid stream batch resource-limit state".to_string(),
+            ));
+        };
+        return Err(Error::ResourceLimitExceeded(metadata));
+    }
+    Ok(batch_size)
 }
 
 /// Extract the `r` (row number) attribute from a `<row>` element.

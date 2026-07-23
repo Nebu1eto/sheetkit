@@ -1,6 +1,6 @@
 {
   "name": "@sheetkit/node",
-  "version": "0.5.1",
+  "version": "1.0.0",
   "license": "MIT OR Apache-2.0",
   "type": "module",
   "main": "./index.js",
@@ -47,6 +47,7 @@
     "build": "pnpm build:napi && pnpm typecheck && pnpm build:ts",
     "build:debug": "napi build --platform --js binding.js --dts binding.d.ts",
     "typecheck": "tsc --noEmit",
+    "typecheck:declarations": "tsc -p __test__/declarations/tsconfig.json",
     "prepublishOnly": "napi prepublish -t npm",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -54,17 +55,17 @@
   },
   "devDependencies": {
     "@napi-rs/cli": "^3.5.1",
-    "@types/node": "^25.2.2",
+    "@types/node": "^24.0.0",
     "tsdown": "^0.20.3"
   },
   "optionalDependencies": {
-    "@sheetkit/node-darwin-arm64": "0.5.1",
-    "@sheetkit/node-darwin-x64": "0.5.1",
-    "@sheetkit/node-linux-arm64-gnu": "0.5.1",
-    "@sheetkit/node-linux-arm64-musl": "0.5.1",
-    "@sheetkit/node-linux-x64-gnu": "0.5.1",
-    "@sheetkit/node-linux-x64-musl": "0.5.1",
-    "@sheetkit/node-win32-arm64-msvc": "0.5.1",
-    "@sheetkit/node-win32-x64-msvc": "0.5.1"
+    "@sheetkit/node-darwin-arm64": "1.0.0",
+    "@sheetkit/node-darwin-x64": "1.0.0",
+    "@sheetkit/node-linux-arm64-gnu": "1.0.0",
+    "@sheetkit/node-linux-arm64-musl": "1.0.0",
+    "@sheetkit/node-linux-x64-gnu": "1.0.0",
+    "@sheetkit/node-linux-x64-musl": "1.0.0",
+    "@sheetkit/node-win32-arm64-msvc": "1.0.0",
+    "@sheetkit/node-win32-x64-msvc": "1.0.0"
   }
 }

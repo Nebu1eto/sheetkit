@@ -976,9 +976,11 @@ wb.fromJSON("Sheet1", data, { startCell: "B2", writeHeaders: true });
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `separator` | `string` | `","` | Field separator |
+| `delimiter` | `string` | `","` | Field delimiter |
+| `quote` | `string` | `"\""` | Quote character |
 | `lineEnding` | `string` | `"\n"` | Line ending |
-| `escapeFormulas` | `boolean` | `false` | Prefix cells starting with `=`, `+`, `-`, or `@` with a tab character to prevent formula injection in downstream tools |
+| `formulaPolicy` | `'spreadsheet-safe' \| 'raw-exchange'` | `'spreadsheet-safe'` | Neutralize formula-capable text by default; raw exchange requires an explicit opt-in |
+| `limits` | `TraversalLimits?` | finite secure defaults | Bounds traversal and returned UTF-8 output bytes |
 
 **ToHTMLOptions:**
 

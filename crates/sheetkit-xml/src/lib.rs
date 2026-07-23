@@ -13,6 +13,7 @@
 //! - [`styles`] - `xl/styles.xml` structures
 //! - [`shared_strings`] - `xl/sharedStrings.xml` structures
 
+pub mod cell_ref;
 pub mod chart;
 pub mod comments;
 pub mod content_types;

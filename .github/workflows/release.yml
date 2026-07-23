@@ -93,11 +93,6 @@ jobs:
         with:
           tool: cargo-zigbuild
 
-      - name: Setup toolchain
-        run: ${{ matrix.settings.setup }}
-        if: ${{ matrix.settings.setup }}
-        shell: bash
-
       - uses: pnpm/action-setup@v4
 
       - uses: actions/setup-node@v4

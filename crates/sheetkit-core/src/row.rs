@@ -9,8 +9,9 @@ use sheetkit_xml::worksheet::{CellTypeTag, Row, WorksheetXml};
 use crate::cell::CellValue;
 use crate::error::{Error, Result};
 use crate::sst::SharedStringTable;
-use crate::utils::cell_ref::{cell_name_to_coordinates, coordinates_to_cell_name};
-use crate::utils::constants::{MAX_ROWS, MAX_ROW_HEIGHT};
+use crate::traversal::{check_limit, TraversalLimits};
+use crate::utils::cell_ref::{cell_name_to_coordinates, compact_cell_ref};
+use crate::utils::constants::{MAX_COLUMNS, MAX_ROWS, MAX_ROW_HEIGHT};
 
 /// Get all rows with their data from a worksheet.
 ///
@@ -29,7 +30,83 @@ pub fn get_rows(
     sst: &SharedStringTable,
     style_is_date: &[bool],
 ) -> Result<Vec<(u32, Vec<(u32, CellValue)>)>> {
+    get_rows_with_limits(ws, sst, style_is_date, TraversalLimits::default())
+}
+
+/// Gets sparse rows while bounding counts and retained cloned values.
+#[allow(clippy::type_complexity)]
+pub fn get_rows_with_limits(
+    ws: &WorksheetXml,
+    sst: &SharedStringTable,
+    style_is_date: &[bool],
+    limits: TraversalLimits,
+) -> Result<Vec<(u32, Vec<(u32, CellValue)>)>> {
+    let mut row_count = 0u64;
+    let mut column_count = 0u64;
+    let mut cell_count = 0u64;
+    let mut retained_bytes = 0u64;
+    let mut occupied_columns = [false; MAX_COLUMNS as usize];
+
+    for row in &ws.sheet_data.rows {
+        if row.cells.is_empty() {
+            continue;
+        }
+        row_count = row_count.saturating_add(1);
+        check_limit(
+            crate::resource::ResourceDimension::RowCount,
+            limits.max_rows(),
+            row_count,
+        )?;
+        retained_bytes = retained_bytes.saturating_add(
+            u64::try_from(std::mem::size_of::<(u32, Vec<(u32, CellValue)>)>()).unwrap_or(u64::MAX),
+        );
+
+        for cell in &row.cells {
+            let col_num = if cell.col > 0 {
+                cell.col
+            } else {
+                cell_name_to_coordinates(cell.r.as_str())?.0
+            };
+            if col_num == 0 || col_num > MAX_COLUMNS {
+                return Err(Error::InvalidColumnNumber(col_num));
+            }
+            let column_slot = usize::try_from(col_num - 1)
+                .map_err(|_| Error::Internal("column index is not addressable".to_string()))?;
+            if !occupied_columns[column_slot] {
+                occupied_columns[column_slot] = true;
+                column_count = column_count.saturating_add(1);
+                check_limit(
+                    crate::resource::ResourceDimension::ColumnCount,
+                    limits.max_columns(),
+                    column_count,
+                )?;
+            }
+            cell_count = cell_count.saturating_add(1);
+            check_limit(
+                crate::resource::ResourceDimension::CellCount,
+                limits.max_cells(),
+                cell_count,
+            )?;
+            retained_bytes = retained_bytes
+                .saturating_add(
+                    u64::try_from(std::mem::size_of::<(u32, CellValue)>()).unwrap_or(u64::MAX),
+                )
+                .saturating_add(cell_cloned_payload_bytes(cell, sst));
+            check_limit(
+                crate::resource::ResourceDimension::RetainedBytes,
+                limits.max_output_bytes(),
+                retained_bytes,
+            )?;
+        }
+    }
+
     let mut result = Vec::new();
+    result
+        .try_reserve_exact(
+            usize::try_from(row_count)
+                .map_err(|_| Error::Internal("row result size is not addressable".to_string()))?,
+        )
+        .map_err(|_| Error::Internal("row result allocation failed".to_string()))?;
 
     for row in &ws.sheet_data.rows {
         if row.cells.is_empty() {
@@ -37,6 +114,9 @@ pub fn get_rows(
         }
 
         let mut cells = Vec::new();
+        cells
+            .try_reserve_exact(row.cells.len())
+            .map_err(|_| Error::Internal("cell result allocation failed".to_string()))?;
         for cell in &row.cells {
             let col_num = if cell.col > 0 {
                 cell.col
@@ -51,6 +131,38 @@ pub fn get_rows(
     }
 
     Ok(result)
+}
+
+pub(crate) fn cell_cloned_payload_bytes(
+    cell: &sheetkit_xml::worksheet::Cell,
+    sst: &SharedStringTable,
+) -> u64 {
+    let mut bytes = cell
+        .f
+        .as_ref()
+        .and_then(|formula| formula.value.as_ref())
+        .map_or(0u64, |value| u64::try_from(value.len()).unwrap_or(u64::MAX));
+    if cell.f.is_some() {
+        bytes = bytes
+            .saturating_add(u64::try_from(std::mem::size_of::<CellValue>()).unwrap_or(u64::MAX));
+    }
+    let value_bytes = match (cell.t, cell.v.as_deref()) {
+        (CellTypeTag::SharedString, Some(index)) => index
+            .parse::<usize>()
+            .ok()
+            .and_then(|index| sst.get(index))
+            .map_or(0u64, |value| u64::try_from(value.len()).unwrap_or(u64::MAX)),
+        (CellTypeTag::FormulaString | CellTypeTag::Error, Some(value)) => {
+            u64::try_from(value.len()).unwrap_or(u64::MAX)
+        }
+        (CellTypeTag::InlineString, _) => cell
+            .is
+            .as_ref()
+            .and_then(|value| value.t.as_ref())
+            .map_or(0u64, |value| u64::try_from(value.len()).unwrap_or(u64::MAX)),
+        _ => 0,
+    };
+    bytes.saturating_add(value_bytes)
 }
 
 /// Look up a shared string by index string. Returns `CellValue::Empty` if the
@@ -87,11 +199,29 @@ pub fn parse_cell_type_value(
         let expr = f.value.clone().unwrap_or_default();
         let cached = match (cell_type, value) {
             (CellTypeTag::Boolean, Some(v)) => Some(Box::new(CellValue::Bool(v == "1"))),
-            (CellTypeTag::Error, Some(v)) => Some(Box::new(CellValue::Error(v.to_string()))),
+            (CellTypeTag::Error, Some(v)) => Some(Box::new(classify_error_value(v))),
+            (CellTypeTag::FormulaString, Some(v)) => {
+                Some(Box::new(CellValue::String(v.to_string())))
+            }
+            (CellTypeTag::SharedString, Some(v)) => Some(Box::new(resolve_sst_value(sst, v))),
+            (CellTypeTag::InlineString, _) => Some(Box::new(CellValue::String(
+                inline_str
+                    .and_then(|value| value.t.clone())
+                    .unwrap_or_default(),
+            ))),
+            (CellTypeTag::None | CellTypeTag::Number, Some(v)) => {
+                v.parse::<f64>().ok().map(|number| {
+                    Box::new(if promote_number_to_date {
+                        CellValue::Date(number)
+                    } else {
+                        CellValue::Number(number)
+                    })
+                })
+            }
             (_, Some(v)) => v
                 .parse::<f64>()
                 .ok()
-                .map(|n| Box::new(CellValue::Number(n))),
+                .map(|number| Box::new(CellValue::Number(number))),
             _ => None,
         };
         return CellValue::Formula {
@@ -103,7 +233,7 @@ pub fn parse_cell_type_value(
     match (cell_type, value) {
         (CellTypeTag::SharedString, Some(v)) => resolve_sst_value(sst, v),
         (CellTypeTag::Boolean, Some(v)) => CellValue::Bool(v == "1"),
-        (CellTypeTag::Error, Some(v)) => CellValue::Error(v.to_string()),
+        (CellTypeTag::Error, Some(v)) => classify_error_value(v),
         (CellTypeTag::InlineString, _) => {
             let s = inline_str.and_then(|is| is.t.clone()).unwrap_or_default();
             CellValue::String(s)
@@ -120,6 +250,14 @@ pub fn parse_cell_type_value(
             Err(_) => CellValue::Empty,
         },
         _ => CellValue::Empty,
+    }
+}
+
+fn classify_error_value(value: &str) -> CellValue {
+    if crate::output::is_excel_error_token(value) {
+        CellValue::Error(value.to_string())
+    } else {
+        CellValue::String(value.to_string())
     }
 }
 
@@ -365,7 +503,7 @@ pub fn get_row_style(ws: &WorksheetXml, row: u32) -> u32 {
 fn shift_row_cells(row: &mut Row, new_row_num: u32) -> Result<()> {
     for cell in row.cells.iter_mut() {
         let (col, _) = cell_name_to_coordinates(cell.r.as_str())?;
-        cell.r = coordinates_to_cell_name(col, new_row_num)?.into();
+        cell.r = compact_cell_ref(col, new_row_num)?;
         cell.col = col;
     }
     Ok(())
@@ -418,7 +556,7 @@ mod tests {
                     outline_level: None,
                     cells: vec![
                         Cell {
-                            r: "A1".into(),
+                            r: "A1".try_into().unwrap(),
                             col: 1,
                             s: None,
                             t: CellTypeTag::None,
@@ -427,7 +565,7 @@ mod tests {
                             is: None,
                         },
                         Cell {
-                            r: "B1".into(),
+                            r: "B1".try_into().unwrap(),
                             col: 2,
                             s: None,
                             t: CellTypeTag::None,
@@ -447,7 +585,7 @@ mod tests {
                     custom_height: None,
                     outline_level: None,
                     cells: vec![Cell {
-                        r: "A2".into(),
+                        r: "A2".try_into().unwrap(),
                         col: 1,
                         s: None,
                         t: CellTypeTag::None,
@@ -466,7 +604,7 @@ mod tests {
                     custom_height: None,
                     outline_level: None,
                     cells: vec![Cell {
-                        r: "C5".into(),
+                        r: "C5".try_into().unwrap(),
                         col: 3,
                         s: None,
                         t: CellTypeTag::None,
@@ -478,6 +616,80 @@ mod tests {
             ],
         };
         ws
+    }
+
+    #[test]
+    fn bounded_rows_charge_repeated_shared_strings_before_cloning() {
+        let mut sst = SharedStringTable::new();
+        sst.add(&"x".repeat(1_024));
+        let mut ws = WorksheetXml::default();
+        ws.sheet_data.rows.push(Row {
+            r: 1,
+            spans: None,
+            s: None,
+            custom_format: None,
+            ht: None,
+            hidden: None,
+            custom_height: None,
+            outline_level: None,
+            cells: vec![
+                Cell {
+                    r: "A1".try_into().unwrap(),
+                    col: 1,
+                    s: None,
+                    t: CellTypeTag::SharedString,
+                    v: Some("0".to_string()),
+                    f: None,
+                    is: None,
+                },
+                Cell {
+                    r: "B1".try_into().unwrap(),
+                    col: 2,
+                    s: None,
+                    t: CellTypeTag::SharedString,
+                    v: Some("0".to_string()),
+                    f: None,
+                    is: None,
+                },
+            ],
+        });
+        let exact = u64::try_from(std::mem::size_of::<(u32, Vec<(u32, CellValue)>)>()).unwrap()
+            + 2 * (u64::try_from(std::mem::size_of::<(u32, CellValue)>()).unwrap() + 1_024);
+        let exact_limits = TraversalLimits::new(1, 2, 2, exact).unwrap();
+
+        let bounded = get_rows_with_limits(&ws, &sst, &[], exact_limits).unwrap();
+        assert_eq!(bounded, get_rows(&ws, &sst, &[]).unwrap());
+
+        let error = get_rows_with_limits(
+            &ws,
+            &sst,
+            &[],
+            TraversalLimits::new(1, 2, 2, exact - 1).unwrap(),
+        )
+        .unwrap_err();
+        let Error::ResourceLimitExceeded(metadata) = error else {
+            panic!("expected resource limit error");
+        };
+        assert_eq!(
+            metadata.dimension(),
+            crate::ResourceDimension::RetainedBytes
+        );
+        assert_eq!(metadata.limit(), exact - 1);
+        assert_eq!(metadata.observed(), exact);
+
+        let error = get_rows_with_limits(
+            &ws,
+            &sst,
+            &[],
+            TraversalLimits::new(1, 1, 2, exact).unwrap(),
+        )
+        .unwrap_err();
+        let Error::ResourceLimitExceeded(metadata) = error else {
+            panic!("expected resource limit error");
+        };
+        assert_eq!(metadata.dimension(), crate::ResourceDimension::ColumnCount);
+        assert_eq!(metadata.limit(), 1);
+        assert_eq!(metadata.observed(), 2);
     }
 
     #[test]
@@ -895,7 +1107,7 @@ mod tests {
                 outline_level: None,
                 cells: vec![
                     Cell {
-                        r: "A1".into(),
+                        r: "A1".try_into().unwrap(),
                         col: 1,
                         s: None,
                         t: CellTypeTag::SharedString,
@@ -904,7 +1116,7 @@ mod tests {
                         is: None,
                     },
                     Cell {
-                        r: "B1".into(),
+                        r: "B1".try_into().unwrap(),
                         col: 2,
                         s: None,
                         t: CellTypeTag::SharedString,
@@ -940,7 +1152,7 @@ mod tests {
                 outline_level: None,
                 cells: vec![
                     Cell {
-                        r: "A1".into(),
+                        r: "A1".try_into().unwrap(),
                         col: 1,
                         s: None,
                         t: CellTypeTag::SharedString,
@@ -949,7 +1161,7 @@ mod tests {
                         is: None,
                     },
                     Cell {
-                        r: "B1".into(),
+                        r: "B1".try_into().unwrap(),
                         col: 2,
                         s: None,
                         t: CellTypeTag::None,
@@ -958,7 +1170,7 @@ mod tests {
                         is: None,
                     },
                     Cell {
-                        r: "C1".into(),
+                        r: "C1".try_into().unwrap(),
                         col: 3,
                         s: None,
                         t: CellTypeTag::Boolean,
@@ -967,7 +1179,7 @@ mod tests {
                         is: None,
                     },
                     Cell {
-                        r: "D1".into(),
+                        r: "D1".try_into().unwrap(),
                         col: 4,
                         s: None,
                         t: CellTypeTag::Error,
@@ -1002,7 +1214,7 @@ mod tests {
                     custom_height: None,
                     outline_level: None,
                     cells: vec![Cell {
-                        r: "A1".into(),
+                        r: "A1".try_into().unwrap(),
                         col: 1,
                         s: None,
                         t: CellTypeTag::None,
@@ -1033,7 +1245,7 @@ mod tests {
                     custom_height: None,
                     outline_level: None,
                     cells: vec![Cell {
-                        r: "A3".into(),
+                        r: "A3".try_into().unwrap(),
                         col: 1,
                         s: None,
                         t: CellTypeTag::None,
@@ -1067,7 +1279,7 @@ mod tests {
                 custom_height: None,
                 outline_level: None,
                 cells: vec![Cell {
-                    r: "A1".into(),
+                    r: "A1".try_into().unwrap(),
                     col: 1,
                     s: None,
                     t: CellTypeTag::None,
@@ -1096,6 +1308,87 @@ mod tests {
     }
 
     #[test]
+    fn test_formula_cached_results_preserve_cell_types() {
+        let formula = sheetkit_xml::worksheet::CellFormula {
+            t: None,
+            reference: None,
+            si: None,
+            value: Some("A1".to_string()),
+        };
+        let sst = SharedStringTable::new();
+
+        let cases = [
+            (CellTypeTag::Boolean, "1", false, CellValue::Bool(true)),
+            (
+                CellTypeTag::Error,
+                "#N/A",
+                false,
+                CellValue::Error("#N/A".to_string()),
+            ),
+            (
+                CellTypeTag::FormulaString,
+                "=dangerous text",
+                false,
+                CellValue::String("=dangerous text".to_string()),
+            ),
+            (
+                CellTypeTag::Number,
+                "45292",
+                true,
+                CellValue::Date(45_292.0),
+            ),
+        ];
+
+        for (cell_type, value, promote_number_to_date, expected) in cases {
+            let resolved = parse_cell_type_value(
+                cell_type,
+                Some(value),
+                Some(&formula),
+                None,
+                &sst,
+                promote_number_to_date,
+            );
+            assert_eq!(
+                resolved,
+                CellValue::Formula {
+                    expr: "A1".to_string(),
+                    result: Some(Box::new(expected)),
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn test_invalid_error_payloads_are_classified_as_text() {
+        let formula = sheetkit_xml::worksheet::CellFormula {
+            t: None,
+            reference: None,
+            si: None,
+            value: Some("A1".to_string()),
+        };
+        let sst = SharedStringTable::new();
+
+        assert_eq!(
+            parse_cell_type_value(CellTypeTag::Error, Some("=direct"), None, None, &sst, false,),
+            CellValue::String("=direct".to_string())
+        );
+        assert_eq!(
+            parse_cell_type_value(
+                CellTypeTag::Error,
+                Some("+cached"),
+                Some(&formula),
+                None,
+                &sst,
+                false,
+            ),
+            CellValue::Formula {
+                expr: "A1".to_string(),
+                result: Some(Box::new(CellValue::String("+cached".to_string()))),
+            }
+        );
+    }
+
+    #[test]
     fn test_get_rows_with_inline_string() {
         let mut ws = WorksheetXml::default();
         ws.sheet_data = SheetData {
@@ -1109,7 +1402,7 @@ mod tests {
                 custom_height: None,
                 outline_level: None,
                 cells: vec![Cell {
-                    r: "A1".into(),
+                    r: "A1".try_into().unwrap(),
                     col: 1,
                     s: None,
                     t: CellTypeTag::InlineString,

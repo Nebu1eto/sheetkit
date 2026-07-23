@@ -1,0 +1,170 @@
+{
+  "schema_version": 1,
+  "artifact": "sheetkit-formula-calibration",
+  "revision": "150e57939ac816a9bfa86daa856b432a135e3ca9",
+  "status": "tentative-u4-calibration",
+  "measurement_type": "static-structure-only",
+  "runtime_measurements_recorded": false,
+  "scope": {
+    "source_files_scanned": 34,
+    "source_roots": [
+      "crates/sheetkit-core/src formula-bearing test modules",
+      "crates/sheetkit-core/tests",
+      "packages/sheetkit/__test__",
+      "examples",
+      "benchmarks source",
+      "benchmarks/node/fixtures/*.xlsx"
+    ],
+    "source_formula_occurrences": 365,
+    "benchmark_fixture_formula_cells": 58007,
+    "all_occurrences": 58372,
+    "parser_valid_occurrences": 58360,
+    "parser_invalid_occurrences": 12,
+    "distinct_parser_valid_formulas": 58276,
+    "valid_by_kind": {
+      "core_test": 289,
+      "node_test": 44,
+      "example": 2,
+      "benchmark_source": 25,
+      "benchmark_fixture": 58000
+    }
+  },
+  "definitions": {
+    "lexical_token": "A maximal number, identifier or reference fragment, string literal, or error literal is one token; each operator and punctuation mark is one token; whitespace is ignored.",
+    "ast_depth": "The root is depth 1; every function argument, binary child, unary operand, and parenthesized inner expression adds 1.",
+    "binary_chain_depth": "The maximum number of consecutive left-associated BinaryOp nodes.",
+    "expanded_range_cells": "The checked rectangular area of every parsed range, summed per formula or operation.",
+    "dependency_reference_edge": "One expanded cell reference emitted by the current dependency extractor; duplicate references are charged independently.",
+    "ready_queue_operation": "One queue push or one queue pop in Kahn topological ordering.",
+    "matcher_work_unit": "One wildcard matcher state transition, character comparison, or backtrack transition.",
+    "output_byte": "One UTF-8 byte added to a formula-produced string; operation totals are cumulative even when intermediate values are released."
+  },
+  "corpus_digests": {
+    "input_path_sha256_manifest": "237de740f1abcd4274a6dfea839fc5b84c925995c65d3cf4dcfcdc584abb697f",
+    "all_occurrences_sha256": "78cf59fd1d633c709882aba65c307d84b30eef4db9cf5fe7d88dd3f9d6da2fc6",
+    "valid_occurrences_sha256": "596c76f38605177b268634f1f13c4b791a8888903de2377fd00dc10ce9084545",
+    "invalid_occurrences_sha256": "1e9bcccf217f1ead12495857b3a820dcc559eeabfd3a2f1c984243106d02163f"
+  },
+  "tooling": {
+    "command": "python3 /tmp/sheetkit-formula-calibration/scan.py /Users/Nebuleto/Workspace/sheetkit /tmp/sheetkit-formula-calibration/target/debug/sheetkit-formula-calibration",
+    "scanner_sha256": "1ec3a4c6b2ccbc8e7c5181a5c27336e23b36721dd2a0495f246522b782dd0783",
+    "metrics_source_sha256": "877d5fc655956c62a98a2ee50a77cdee829c095030a6adc9a9b3226a6518cc10",
+    "metrics_cargo_toml_sha256": "217e31d45bc45b4006417a1135adf13aec30c78d76b0c94a5922ebd9c69cd566",
+    "metrics_cargo_lock_sha256": "2ad0b8a190f82108d7d54a228c9d159cbef2b0e7d812a89db5c72d661516a247",
+    "parser_source_sha256": "cf0cfd14449a0740b0ebfff524888e340aa5309c7e8b754e60ccaf2154c40622",
+    "ast_source_sha256": "f8297f642266be232c1d216d4ddc92760e5da32de3cff992c5ec012981168e06"
+  },
+  "key_input_hashes": {
+    "benchmarks/node/fixtures/formulas.xlsx": "1e579b05a4f4f79490ac260abfd6de85d2463f9cc241d69136c83b6f6923eca4",
+    "benchmarks/node/fixtures/mixed-workload.xlsx": "7a46e95042a98fe402b3bce34d8c1e3c45da25ed2e7e5c6635782c0230ee139e",
+    "benchmarks/node/generate-fixtures.ts": "6a10410a7eb3e9fdd3aa9069d2533e017ddd73f8aa62655ce1ec210df50d2f29",
+    "crates/sheetkit-core/src/formula/functions/text.rs": "2db302405df49525f2de5b19c3d414a54a585493aa75073243ea67da1f0f4449",
+    "packages/sheetkit/__test__/index.spec.ts": "defd73346bcf6056d8d378804553b6d5e3fcc79e249ae7ca1ccb8d6441f1edc1"
+  },
+  "valid_per_formula_maxima": {
+    "input_bytes": 65,
+    "lexical_tokens": 29,
+    "ast_nodes": 10,
+    "ast_depth": 5,
+    "binary_chain_depth": 4,
+    "expanded_range_cells": 20,
+    "dependency_reference_edges": 20,
+    "wildcard_pattern_bytes": 3
+  },
+  "maxima_examples": {
+    "input_bytes": "\"Engineering,Sales,Marketing,Finance,HR,Legal,Operations,Support\"",
+    "lexical_tokens": "sheet1!A2+'다른 시트'!A2+A2+\"A2\"+LOG10(A2)",
+    "ast_nodes": "FV(0.06/12,10,-200,-500,1)",
+    "ast_depth_and_binary_chain": "A1+$A$1+Other!A1+Other!A2+Other!$A$1",
+    "expanded_range_cells": "SUM(A1:A10,MAX(B1:B10))",
+    "wildcard_pattern": "SEARCH(\"A*C\",\"ABCABC\")"
+  },
+  "fixture_graphs": {
+    "benchmarks/node/fixtures/formulas.xlsx": {
+      "formula_cells_total": 50000,
+      "formula_cells_parser_valid": 50000,
+      "total_input_bytes": 798980,
+      "total_lexical_tokens": 280000,
+      "total_ast_nodes": 180000,
+      "dependency_reference_edges": 100000,
+      "internal_formula_edges": 0,
+      "initial_ready_cells": 50000,
+      "ready_queue_pushes": 50000,
+      "ready_queue_pops": 50000,
+      "ready_queue_ops": 100000,
+      "max_cached_formula_output_bytes": null
+    },
+    "benchmarks/node/fixtures/mixed-workload.xlsx": {
+      "formula_cells_total": 8007,
+      "formula_cells_parser_valid": 8000,
+      "formula_cells_parser_invalid": 7,
+      "total_valid_input_bytes": 84489,
+      "total_valid_lexical_tokens": 32000,
+      "total_valid_ast_nodes": 30000,
+      "dependency_reference_edges": 13000,
+      "internal_formula_edges": 3000,
+      "initial_ready_cells": 5000,
+      "ready_queue_pushes": 8000,
+      "ready_queue_pops": 8000,
+      "ready_queue_ops": 16000,
+      "max_cached_formula_output_bytes": null
+    }
+  },
+  "invalid_fixture_sensitivity": {
+    "description": "Seven Summary formulas in mixed-workload.xlsx incorrectly retain a leading equals sign and are invalid for the current parser contract. Removing exactly that one byte only for sensitivity analysis yields ordinary ranges of 2000 or 3000 cells.",
+    "formula_count": 7,
+    "formulas": [
+      { "cell": "Summary!B3", "stored": "=COUNTA(Sheet1!A3:A3002)", "normalized_range_cells": 3000 },
+      { "cell": "Summary!B4", "stored": "=SUM(Sheet1!E3:E3002)", "normalized_range_cells": 3000 },
+      { "cell": "Summary!B5", "stored": "=AVERAGE(Sheet1!E3:E3002)", "normalized_range_cells": 3000 },
+      { "cell": "Summary!B6", "stored": "=MAX(Sheet1!E3:E3002)", "normalized_range_cells": 3000 },
+      { "cell": "Summary!B7", "stored": "=COUNTA(Employees!A2:A2001)", "normalized_range_cells": 2000 },
+      { "cell": "Summary!B8", "stored": "=AVERAGE(Employees!G2:G2001)", "normalized_range_cells": 2000 },
+      { "cell": "Summary!B9", "stored": "=SUM(Employees!I2:I2001)", "normalized_range_cells": 2000 }
+    ],
+    "max_single_range_cells_after_normalization": 3000,
+    "total_range_cells_after_normalization": 18000,
+    "included_in_valid_maxima": false
+  },
+  "output_evidence": {
+    "largest_accepted_string_result_explicitly_asserted_in_formula_tests_bytes": 6,
+    "accepted_example": "REPT(\"AB\",3)",
+    "rejected_requested_character_count": 32768,
+    "rejected_example": "REPT(\"AB\",16384)",
+    "benchmark_formula_cached_outputs_present": false,
+    "official_excel_cell_character_limit": 32767,
+    "official_excel_formula_character_limit": 8192,
+    "official_excel_function_nesting_limit": 64,
+    "official_source": "https://support.microsoft.com/en-us/office/excel-specifications-and-limits-1672b34d-7043-467e-8e27-269d656771c3"
+  },
+  "tentative_limits": {
+    "per_formula": {
+      "input_bytes": { "default": 32768, "hard_ceiling": 65536 },
+      "nesting_depth": { "default": 64, "hard_ceiling": 128 },
+      "binary_chain_depth": { "default": 512, "hard_ceiling": 4096 },
+      "lexical_tokens": { "default": 16384, "hard_ceiling": 65536 },
+      "ast_nodes": { "default": 16384, "hard_ceiling": 32768 },
+      "single_string_output_bytes": { "default": 131068, "hard_ceiling": 131068 },
+      "single_string_output_characters": { "default": 32767, "hard_ceiling": 32767 }
+    },
+    "per_operation_cumulative": {
+      "formula_input_bytes": { "default": 4194304, "hard_ceiling": 33554432 },
+      "lexical_tokens": { "default": 1048576, "hard_ceiling": 8388608 },
+      "ast_nodes": { "default": 1048576, "hard_ceiling": 8388608 },
+      "expanded_range_cells": { "default": 131072, "hard_ceiling": 1048576 },
+      "dependency_edges": { "default": 524288, "hard_ceiling": 4194304 },
+      "ready_queue_ops": { "default": 524288, "hard_ceiling": 4194304 },
+      "evaluation_steps": { "default": 1048576, "hard_ceiling": 8388608 },
+      "matcher_work": { "default": 1048576, "hard_ceiling": 16777216 },
+      "output_bytes": { "default": 16777216, "hard_ceiling": 67108864 }
+    }
+  },
+  "limitations": [
+    "No wall-clock latency, peak RSS, allocation count, or stack high-water measurement was made.",
+    "The current parser exposes no tokenizer; lexical token counts use the artifact definition rather than an internal parser event count.",
+    "Generated formula arguments in Rust and TypeScript source are represented by their expanded workspace workbook cells when available; dynamic unit-test values are not a complete runtime trace.",
+    "The corpus has no valid deep nesting, wide binary chain, large valid range, large output, adversarial wildcard, or high-iteration numeric fixture.",
+    "Evaluation-step, matcher-work, and output-byte defaults are provisional safety values without measured normal-workload headroom and require U4/U5/U9 boundary fixtures before U12 freeze.",
+    "The formula limit must be checked before proportional allocation or recursion and charged to one operation-owned budget; helper calls must not reset cumulative dimensions."
+  ]
+}

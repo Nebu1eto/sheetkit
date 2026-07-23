@@ -6,7 +6,18 @@ use crate::cell::CellValue;
 use crate::error::Result;
 use crate::formula::ast::Expr;
 use crate::formula::eval::{coerce_to_number, Evaluator};
-use crate::formula::functions::check_arg_count;
+use crate::formula::functions::{check_arg_count, finite_number_or_num_error};
+
+fn checked_truncated_i32(value: f64) -> Option<i32> {
+    if !value.is_finite() {
+        return None;
+    }
+    let truncated = value.trunc();
+    if truncated < f64::from(i32::MIN) || truncated > f64::from(i32::MAX) {
+        return None;
+    }
+    Some(truncated as i32)
+}
 
 /// FV(rate, nper, pmt, [pv], [type])
 pub fn fn_fv(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
@@ -210,16 +221,28 @@ pub fn fn_db(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("DB", args, 4, 5)?;
     let cost = coerce_to_number(&ctx.eval_expr(&args[0])?)?;
     let salvage = coerce_to_number(&ctx.eval_expr(&args[1])?)?;
-    let life = coerce_to_number(&ctx.eval_expr(&args[2])?)? as i32;
-    let period = coerce_to_number(&ctx.eval_expr(&args[3])?)? as i32;
-    let month = if args.len() > 4 {
-        coerce_to_number(&ctx.eval_expr(&args[4])?)? as i32
+    let life_value = coerce_to_number(&ctx.eval_expr(&args[2])?)?;
+    let period_value = coerce_to_number(&ctx.eval_expr(&args[3])?)?;
+    let month_value = if args.len() > 4 {
+        coerce_to_number(&ctx.eval_expr(&args[4])?)?
     } else {
-        12
+        12.0
+    };
+    let (Some(life), Some(period), Some(month)) = (
+        checked_truncated_i32(life_value),
+        checked_truncated_i32(period_value),
+        checked_truncated_i32(month_value),
+    ) else {
+        return Ok(CellValue::Error("#NUM!".to_string()));
+    };
+    let Some(last_period) = life.checked_add(1) else {
+        return Ok(CellValue::Error("#NUM!".to_string()));
     };
     if life <= 0
         || period <= 0
-        || period > life + 1
+        || period > last_period
+        || !cost.is_finite()
+        || !salvage.is_finite()
         || cost < 0.0
         || salvage < 0.0
         || !(1..=12).contains(&month)
@@ -231,8 +254,15 @@ pub fn fn_db(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     }
     let rate = (1.0 - (salvage / cost).powf(1.0 / life as f64)) * 1000.0;
     let rate = rate.round() / 1000.0;
+    if !rate.is_finite() {
+        return Ok(CellValue::Error("#NUM!".to_string()));
+    }
+    ctx.charge_evaluation_work(u64::try_from(period.saturating_sub(2).max(0)).unwrap_or(u64::MAX))?;
     let mut total_depreciation = 0.0;
     let first_year_dep = cost * rate * month as f64 / 12.0;
+    if !first_year_dep.is_finite() {
+        return Ok(CellValue::Error("#NUM!".to_string()));
+    }
     if period == 1 {
         return Ok(CellValue::Number(first_year_dep));
     }
@@ -240,16 +270,19 @@ pub fn fn_db(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     for p in 2..period {
         let dep = (cost - total_depreciation) * rate;
         total_depreciation += dep;
+        if !dep.is_finite() || !total_depreciation.is_finite() {
+            return Ok(CellValue::Error("#NUM!".to_string()));
+        }
         if p > life {
             break;
         }
     }
-    if period == life + 1 {
+    if period == last_period {
         let dep = (cost - total_depreciation) * rate * (12 - month) as f64 / 12.0;
-        return Ok(CellValue::Number(dep));
+        return finite_number_or_num_error(dep);
     }
     let dep = (cost - total_depreciation) * rate;
-    Ok(CellValue::Number(dep))
+    finite_number_or_num_error(dep)
 }
 
 /// DDB(cost, salvage, life, period, [factor])
@@ -264,23 +297,45 @@ pub fn fn_ddb(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     } else {
         2.0
     };
-    if life <= 0.0 || period <= 0.0 || period > life || cost < 0.0 || salvage < 0.0 || factor <= 0.0
+    let Some(period_count) = checked_truncated_i32(period) else {
+        return Ok(CellValue::Error("#NUM!".to_string()));
+    };
+    if !cost.is_finite()
+        || !salvage.is_finite()
+        || !life.is_finite()
+        || !factor.is_finite()
+        || life <= 0.0
+        || period <= 0.0
+        || period > life
+        || cost < 0.0
+        || salvage < 0.0
+        || factor <= 0.0
     {
         return Ok(CellValue::Error("#NUM!".to_string()));
     }
     let rate = factor / life;
     let rate = rate.min(1.0);
+    if !rate.is_finite() {
+        return Ok(CellValue::Error("#NUM!".to_string()));
+    }
+    ctx.charge_evaluation_work(u64::try_from(period_count).unwrap_or(u64::MAX))?;
     let mut total_dep = 0.0;
-    for p in 1..=(period as i32) {
+    for p in 1..=period_count {
         let current_value = cost - total_dep;
         let mut dep = current_value * rate;
         if current_value - dep < salvage {
             dep = (current_value - salvage).max(0.0);
         }
-        if p == period as i32 {
+        if !dep.is_finite() {
+            return Ok(CellValue::Error("#NUM!".to_string()));
+        }
+        if p == period_count {
             return Ok(CellValue::Number(dep));
         }
         total_dep += dep;
+        if !total_dep.is_finite() {
+            return Ok(CellValue::Error("#NUM!".to_string()));
+        }
     }
     Ok(CellValue::Number(0.0))
 }
@@ -378,22 +433,48 @@ pub fn fn_cumipmt(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     let rate = coerce_to_number(&ctx.eval_expr(&args[0])?)?;
     let nper = coerce_to_number(&ctx.eval_expr(&args[1])?)?;
     let pv = coerce_to_number(&ctx.eval_expr(&args[2])?)?;
-    let start = coerce_to_number(&ctx.eval_expr(&args[3])?)? as i32;
-    let end = coerce_to_number(&ctx.eval_expr(&args[4])?)? as i32;
-    let pmt_type = coerce_to_number(&ctx.eval_expr(&args[5])?)? as i32;
-    if rate <= 0.0
+    let start_value = coerce_to_number(&ctx.eval_expr(&args[3])?)?;
+    let end_value = coerce_to_number(&ctx.eval_expr(&args[4])?)?;
+    let pmt_type_value = coerce_to_number(&ctx.eval_expr(&args[5])?)?;
+    let (Some(start), Some(end), Some(pmt_type)) = (
+        checked_truncated_i32(start_value),
+        checked_truncated_i32(end_value),
+        checked_truncated_i32(pmt_type_value),
+    ) else {
+        return Ok(CellValue::Error("#NUM!".to_string()));
+    };
+    if !rate.is_finite()
+        || !nper.is_finite()
+        || !pv.is_finite()
+        || rate <= 0.0
         || nper <= 0.0
         || pv <= 0.0
         || start < 1
         || end < 1
         || start > end
+        || f64::from(end) > nper
         || (pmt_type != 0 && pmt_type != 1)
     {
         return Ok(CellValue::Error("#NUM!".to_string()));
     }
+    let Some(period_count) = i64::from(end)
+        .checked_sub(i64::from(start))
+        .and_then(|distance| distance.checked_add(1))
+        .and_then(|count| u64::try_from(count).ok())
+    else {
+        return Ok(CellValue::Error("#NUM!".to_string()));
+    };
+    ctx.charge_evaluation_work(period_count)?;
     let mut total = 0.0;
     for per in start..=end {
-        total += calc_ipmt(rate, per as f64, nper, pv, 0.0, pmt_type);
+        let interest = calc_ipmt(rate, per as f64, nper, pv, 0.0, pmt_type);
+        if !interest.is_finite() {
+            return Ok(CellValue::Error("#NUM!".to_string()));
+        }
+        total += interest;
+        if !total.is_finite() {
+            return Ok(CellValue::Error("#NUM!".to_string()));
+        }
     }
     Ok(CellValue::Number(total))
 }
@@ -404,24 +485,59 @@ pub fn fn_cumprinc(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     let rate = coerce_to_number(&ctx.eval_expr(&args[0])?)?;
     let nper = coerce_to_number(&ctx.eval_expr(&args[1])?)?;
     let pv = coerce_to_number(&ctx.eval_expr(&args[2])?)?;
-    let start = coerce_to_number(&ctx.eval_expr(&args[3])?)? as i32;
-    let end = coerce_to_number(&ctx.eval_expr(&args[4])?)? as i32;
-    let pmt_type = coerce_to_number(&ctx.eval_expr(&args[5])?)? as i32;
+    let start_value = coerce_to_number(&ctx.eval_expr(&args[3])?)?;
+    let end_value = coerce_to_number(&ctx.eval_expr(&args[4])?)?;
+    let pmt_type_value = coerce_to_number(&ctx.eval_expr(&args[5])?)?;
+    let period_values_are_valid = start_value.is_finite()
+        && end_value.is_finite()
+        && start_value >= 1.0
+        && end_value >= 1.0
+        && start_value <= f64::from(i32::MAX)
+        && end_value <= f64::from(i32::MAX);
+    let payment_type_is_valid = pmt_type_value.is_finite()
+        && pmt_type_value >= f64::from(i32::MIN)
+        && pmt_type_value <= f64::from(i32::MAX);
+    if !period_values_are_valid || !payment_type_is_valid {
+        return Ok(CellValue::Error("#NUM!".to_string()));
+    }
+    let start = start_value as i32;
+    let end = end_value as i32;
+    let pmt_type = pmt_type_value as i32;
     if rate <= 0.0
+        || !rate.is_finite()
         || nper <= 0.0
+        || !nper.is_finite()
         || pv <= 0.0
-        || start < 1
-        || end < 1
+        || !pv.is_finite()
         || start > end
+        || f64::from(end) > nper
         || (pmt_type != 0 && pmt_type != 1)
     {
         return Ok(CellValue::Error("#NUM!".to_string()));
     }
+    let Some(period_count) = i64::from(end)
+        .checked_sub(i64::from(start))
+        .and_then(|distance| distance.checked_add(1))
+        .and_then(|count| u64::try_from(count).ok())
+    else {
+        return Ok(CellValue::Error("#NUM!".to_string()));
+    };
+    ctx.charge_evaluation_work(period_count)?;
     let pmt = calc_pmt(rate, nper, pv, 0.0, pmt_type);
+    if !pmt.is_finite() {
+        return Ok(CellValue::Error("#NUM!".to_string()));
+    }
     let mut total = 0.0;
     for per in start..=end {
         let ipmt = calc_ipmt(rate, per as f64, nper, pv, 0.0, pmt_type);
-        total += pmt - ipmt;
+        let principal = pmt - ipmt;
+        if !ipmt.is_finite() || !principal.is_finite() {
+            return Ok(CellValue::Error("#NUM!".to_string()));
+        }
+        total += principal;
+        if !total.is_finite() {
+            return Ok(CellValue::Error("#NUM!".to_string()));
+        }
     }
     Ok(CellValue::Number(total))
 }

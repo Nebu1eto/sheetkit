@@ -53,6 +53,11 @@ SheetKit is a high-performance SpreadsheetML library for Rust and TypeScript. Th
   - Streaming reader migration
   - Raw buffer V2
   - Copy-on-write save
+- [Migration: v0.5.1 to 1.0](./migration-v1.md)
+  - Finite resource policies and structured errors
+  - Sparse traversal and output policies
+  - Formula, save, encryption, macro, and OOXML changes
+  - Upgrade verification checklist
 
 ---
 
@@ -72,7 +77,7 @@ Add `sheetkit` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-sheetkit = "0.5.1"
+sheetkit = "1.0.0"
 ```
 
 ### Node.js

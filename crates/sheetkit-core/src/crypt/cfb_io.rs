@@ -9,16 +9,49 @@ use std::io::{Cursor, Read as _, Write as _};
 
 use crate::error::{Error, Result};
 
-/// Read the EncryptionInfo and EncryptedPackage streams from CFB data.
-pub fn read_cfb_streams(data: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
-    let cursor = Cursor::new(data);
-    let mut cfb =
-        cfb::CompoundFile::open(cursor).map_err(|e| Error::Internal(format!("CFB error: {e}")))?;
+use super::CryptBudget;
 
-    let info_data = read_stream(&mut cfb, "/EncryptionInfo")?;
-    let encrypted_package = read_stream(&mut cfb, "/EncryptedPackage")?;
+/// A bounded reader for the streams required to decrypt an Office container.
+pub(crate) struct CfbReader<'data> {
+    compound: cfb::CompoundFile<Cursor<&'data [u8]>>,
+    encrypted_package_len: u64,
+}
 
-    Ok((info_data, encrypted_package))
+impl<'data> CfbReader<'data> {
+    pub(crate) fn open(data: &'data [u8], budget: &CryptBudget) -> Result<Self> {
+        budget.check_outer_cfb(data.len() as u64)?;
+        let cursor = Cursor::new(data);
+        let compound = cfb::CompoundFile::open(cursor)
+            .map_err(|_| Error::Internal("invalid CFB container".to_string()))?;
+
+        let mut stream_count = 0u64;
+        let mut stream_declared_bytes = 0u64;
+        for entry in compound.walk().filter(|entry| entry.is_stream()) {
+            stream_count = stream_count.saturating_add(1);
+            budget.check_stream_count(stream_count)?;
+            stream_declared_bytes = stream_declared_bytes.saturating_add(entry.len());
+            budget.check_stream_declared(stream_declared_bytes)?;
+        }
+
+        let encrypted_package_len = stream_len(&compound, "/EncryptedPackage")?;
+        budget.check_encrypted_package(encrypted_package_len)?;
+        let encryption_info_len = stream_len(&compound, "/EncryptionInfo")?;
+        budget.check_encryption_info_input(encryption_info_len)?;
+
+        Ok(Self {
+            compound,
+            encrypted_package_len,
+        })
+    }
+
+    pub(crate) fn read_encryption_info(&mut self, budget: &mut CryptBudget) -> Result<Vec<u8>> {
+        read_stream(&mut self.compound, "/EncryptionInfo", budget)
+    }
+
+    pub(crate) fn read_encrypted_package(&mut self, budget: &mut CryptBudget) -> Result<Vec<u8>> {
+        budget.check_encrypted_package(self.encrypted_package_len)?;
+        read_stream(&mut self.compound, "/EncryptedPackage", budget)
+    }
 }
 
 /// Write EncryptionInfo and EncryptedPackage streams into a new CFB container.
@@ -66,15 +99,45 @@ pub fn write_cfb_streams(
 fn read_stream<R: std::io::Read + std::io::Seek>(
     cfb: &mut cfb::CompoundFile<R>,
     path: &str,
+    budget: &mut CryptBudget,
 ) -> Result<Vec<u8>> {
-    let mut stream = cfb
+    let declared = stream_len(cfb, path)?;
+    let stream = cfb
         .open_stream(path)
-        .map_err(|e| Error::Internal(format!("CFB stream '{path}': {e}")))?;
+        .map_err(|_| Error::Internal("invalid required CFB stream".to_string()))?;
+    let read_limit = budget.remaining_stream_read().saturating_add(1);
+    let reserve_len = declared.min(read_limit);
+    let reserve_len = usize::try_from(reserve_len)
+        .map_err(|_| Error::Internal("CFB stream length exceeds platform limits".to_string()))?;
     let mut data = Vec::new();
+    data.try_reserve_exact(reserve_len)
+        .map_err(|_| Error::Internal("unable to reserve CFB stream buffer".to_string()))?;
     stream
+        .take(read_limit)
         .read_to_end(&mut data)
-        .map_err(|e| Error::Internal(format!("CFB read '{path}': {e}")))?;
+        .map_err(|_| Error::Internal("invalid required CFB stream data".to_string()))?;
+    budget.charge_stream_read(data.len() as u64)?;
+    if data.len() as u64 != declared {
+        return Err(Error::Internal(
+            "required CFB stream is truncated".to_string(),
+        ));
+    }
     Ok(data)
+}
+
+fn stream_len<R: std::io::Read + std::io::Seek>(
+    cfb: &cfb::CompoundFile<R>,
+    path: &str,
+) -> Result<u64> {
+    let entry = cfb
+        .entry(path)
+        .map_err(|_| Error::Internal("missing required CFB stream".to_string()))?;
+    if !entry.is_stream() {
+        return Err(Error::Internal(
+            "required CFB object is not a stream".to_string(),
+        ));
+    }
+    Ok(entry.len())
 }
 
 #[cfg(test)]
@@ -105,7 +168,14 @@ mod tests {
         let cfb_bytes = write_cfb_streams(&info, package_data).unwrap();
 
         // Verify we can read it back
-        let (info_data, pkg_data) = read_cfb_streams(&cfb_bytes).unwrap();
+        let mut budget = super::super::CryptBudget::new(
+            crate::ResourceOperation::Decrypt,
+            super::super::CryptLimits::default(),
+        )
+        .unwrap();
+        let mut reader = CfbReader::open(&cfb_bytes, &budget).unwrap();
+        let info_data = reader.read_encryption_info(&mut budget).unwrap();
+        let pkg_data = reader.read_encrypted_package(&mut budget).unwrap();
 
         // EncryptionInfo starts with version header (8 bytes) + XML
         assert!(info_data.len() > 8);

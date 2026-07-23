@@ -8,6 +8,366 @@
 use std::io::{Cursor, Read as _};
 
 use crate::error::{Error, Result};
+use crate::resource::{
+    ResourceCategory, ResourceDimension, ResourceLimitError, ResourceOperation, ResourceStage,
+};
+
+const MIB: u64 = 1024 * 1024;
+const MAX_WARNINGS: usize = 32;
+
+/// Finite limits applied to one VBA extraction operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VbaLimits {
+    /// Maximum size of the input CFB container.
+    pub input_bytes: u64,
+    /// Maximum number of streams in the CFB container.
+    pub cfb_stream_count: u64,
+    /// Maximum size declared by one CFB stream.
+    pub cfb_stream_declared_bytes: u64,
+    /// Maximum sum of sizes declared by CFB streams.
+    pub cfb_aggregate_declared_bytes: u64,
+    /// Maximum bytes read from one CFB stream.
+    pub cfb_stream_read_bytes: u64,
+    /// Maximum cumulative bytes read from CFB streams.
+    pub cfb_aggregate_read_bytes: u64,
+    /// Maximum compressed bytes submitted to VBA decompression.
+    pub compressed_bytes: u64,
+    /// Maximum number of VBA modules.
+    pub module_count: u64,
+    /// Maximum number of compressed chunks processed.
+    pub chunk_count: u64,
+    /// Maximum decoded bytes produced by one module or the `dir` stream.
+    pub module_decoded_bytes: u64,
+    /// Maximum cumulative bytes produced by VBA decompression.
+    pub aggregate_decoded_bytes: u64,
+    /// Maximum bytes retained in names, source strings, and warnings.
+    pub retained_bytes: u64,
+    /// Maximum UTF-8 bytes returned in extracted module fields.
+    pub output_bytes: u64,
+}
+
+impl Default for VbaLimits {
+    fn default() -> Self {
+        Self {
+            input_bytes: 64 * MIB,
+            cfb_stream_count: 1_024,
+            cfb_stream_declared_bytes: 32 * MIB,
+            cfb_aggregate_declared_bytes: 64 * MIB,
+            cfb_stream_read_bytes: 32 * MIB,
+            cfb_aggregate_read_bytes: 64 * MIB,
+            compressed_bytes: 64 * MIB,
+            module_count: 1_024,
+            chunk_count: 65_536,
+            module_decoded_bytes: 16 * MIB,
+            aggregate_decoded_bytes: 64 * MIB,
+            retained_bytes: 64 * MIB,
+            output_bytes: 64 * MIB,
+        }
+    }
+}
+
+impl VbaLimits {
+    /// Largest supported finite values. These ceilings cannot be disabled.
+    pub const fn hard_ceiling() -> Self {
+        Self {
+            input_bytes: 1024 * MIB,
+            cfb_stream_count: 65_536,
+            cfb_stream_declared_bytes: 512 * MIB,
+            cfb_aggregate_declared_bytes: 1024 * MIB,
+            cfb_stream_read_bytes: 512 * MIB,
+            cfb_aggregate_read_bytes: 1024 * MIB,
+            compressed_bytes: 1024 * MIB,
+            module_count: 16_384,
+            chunk_count: 1_048_576,
+            module_decoded_bytes: 256 * MIB,
+            aggregate_decoded_bytes: 1024 * MIB,
+            retained_bytes: 1024 * MIB,
+            output_bytes: 1024 * MIB,
+        }
+    }
+
+    fn validate(self) -> Result<Self> {
+        let ceiling = Self::hard_ceiling();
+        for (dimension, value, maximum) in [
+            (
+                ResourceDimension::InputBytes,
+                self.input_bytes,
+                ceiling.input_bytes,
+            ),
+            (
+                ResourceDimension::StreamCount,
+                self.cfb_stream_count,
+                ceiling.cfb_stream_count,
+            ),
+            (
+                ResourceDimension::EntryDeclaredBytes,
+                self.cfb_stream_declared_bytes,
+                ceiling.cfb_stream_declared_bytes,
+            ),
+            (
+                ResourceDimension::AggregateDeclaredBytes,
+                self.cfb_aggregate_declared_bytes,
+                ceiling.cfb_aggregate_declared_bytes,
+            ),
+            (
+                ResourceDimension::EntryActualBytes,
+                self.cfb_stream_read_bytes,
+                ceiling.cfb_stream_read_bytes,
+            ),
+            (
+                ResourceDimension::AggregateActualBytes,
+                self.cfb_aggregate_read_bytes,
+                ceiling.cfb_aggregate_read_bytes,
+            ),
+            (
+                ResourceDimension::InputBytes,
+                self.compressed_bytes,
+                ceiling.compressed_bytes,
+            ),
+            (
+                ResourceDimension::ModuleCount,
+                self.module_count,
+                ceiling.module_count,
+            ),
+            (
+                ResourceDimension::ChunkCount,
+                self.chunk_count,
+                ceiling.chunk_count,
+            ),
+            (
+                ResourceDimension::OutputBytes,
+                self.module_decoded_bytes,
+                ceiling.module_decoded_bytes,
+            ),
+            (
+                ResourceDimension::OutputBytes,
+                self.aggregate_decoded_bytes,
+                ceiling.aggregate_decoded_bytes,
+            ),
+            (
+                ResourceDimension::RetainedBytes,
+                self.retained_bytes,
+                ceiling.retained_bytes,
+            ),
+            (
+                ResourceDimension::OutputBytes,
+                self.output_bytes,
+                ceiling.output_bytes,
+            ),
+        ] {
+            if value == 0 || value > maximum {
+                return Err(vba_limit(
+                    dimension,
+                    maximum,
+                    value.max(maximum.saturating_add(1)),
+                    ResourceStage::Validate,
+                ));
+            }
+        }
+        Ok(self)
+    }
+}
+
+struct VbaBudget {
+    limits: VbaLimits,
+    stream_count: u64,
+    aggregate_declared: u64,
+    aggregate_read: u64,
+    compressed: u64,
+    modules: u64,
+    chunks: u64,
+    aggregate_decoded: u64,
+    retained: u64,
+    output: u64,
+}
+
+impl VbaBudget {
+    fn new(limits: VbaLimits) -> Result<Self> {
+        Ok(Self {
+            limits: limits.validate()?,
+            stream_count: 0,
+            aggregate_declared: 0,
+            aggregate_read: 0,
+            compressed: 0,
+            modules: 0,
+            chunks: 0,
+            aggregate_decoded: 0,
+            retained: 0,
+            output: 0,
+        })
+    }
+
+    fn check_input(&self, observed: u64) -> Result<()> {
+        check_vba_limit(
+            ResourceDimension::InputBytes,
+            self.limits.input_bytes,
+            observed,
+            ResourceStage::Inspect,
+        )
+    }
+
+    fn inspect_stream(&mut self, declared: u64) -> Result<()> {
+        self.stream_count = checked_total(self.stream_count, 1);
+        check_vba_limit(
+            ResourceDimension::StreamCount,
+            self.limits.cfb_stream_count,
+            self.stream_count,
+            ResourceStage::Inspect,
+        )?;
+        check_vba_limit(
+            ResourceDimension::EntryDeclaredBytes,
+            self.limits.cfb_stream_declared_bytes,
+            declared,
+            ResourceStage::Inspect,
+        )?;
+        let aggregate = checked_total(self.aggregate_declared, declared);
+        check_vba_limit(
+            ResourceDimension::AggregateDeclaredBytes,
+            self.limits.cfb_aggregate_declared_bytes,
+            aggregate,
+            ResourceStage::Inspect,
+        )?;
+        self.aggregate_declared = aggregate;
+        Ok(())
+    }
+
+    fn charge_stream_read(&mut self, stream_total: u64, amount: u64) -> Result<u64> {
+        let stream_total = checked_total(stream_total, amount);
+        check_vba_limit(
+            ResourceDimension::EntryActualBytes,
+            self.limits.cfb_stream_read_bytes,
+            stream_total,
+            ResourceStage::Read,
+        )?;
+        let aggregate = checked_total(self.aggregate_read, amount);
+        check_vba_limit(
+            ResourceDimension::AggregateActualBytes,
+            self.limits.cfb_aggregate_read_bytes,
+            aggregate,
+            ResourceStage::Read,
+        )?;
+        self.aggregate_read = aggregate;
+        Ok(stream_total)
+    }
+
+    fn charge_compressed(&mut self, amount: u64) -> Result<()> {
+        let observed = checked_total(self.compressed, amount);
+        check_vba_limit(
+            ResourceDimension::InputBytes,
+            self.limits.compressed_bytes,
+            observed,
+            ResourceStage::Decode,
+        )?;
+        self.compressed = observed;
+        Ok(())
+    }
+
+    fn charge_module(&mut self) -> Result<()> {
+        let observed = checked_total(self.modules, 1);
+        check_vba_limit(
+            ResourceDimension::ModuleCount,
+            self.limits.module_count,
+            observed,
+            ResourceStage::Parse,
+        )?;
+        self.modules = observed;
+        Ok(())
+    }
+
+    fn charge_chunk(&mut self) -> Result<()> {
+        let observed = checked_total(self.chunks, 1);
+        check_vba_limit(
+            ResourceDimension::ChunkCount,
+            self.limits.chunk_count,
+            observed,
+            ResourceStage::Decode,
+        )?;
+        self.chunks = observed;
+        Ok(())
+    }
+
+    fn check_decoded(&self, module_total: u64, amount: u64) -> Result<(u64, u64)> {
+        let module_total = checked_total(module_total, amount);
+        check_vba_limit(
+            ResourceDimension::OutputBytes,
+            self.limits.module_decoded_bytes,
+            module_total,
+            ResourceStage::Decode,
+        )?;
+        let aggregate = checked_total(self.aggregate_decoded, amount);
+        check_vba_limit(
+            ResourceDimension::OutputBytes,
+            self.limits.aggregate_decoded_bytes,
+            aggregate,
+            ResourceStage::Decode,
+        )?;
+        Ok((module_total, aggregate))
+    }
+
+    fn commit_decoded(&mut self, aggregate: u64) {
+        self.aggregate_decoded = aggregate;
+    }
+
+    fn charge_retained(&mut self, amount: u64) -> Result<()> {
+        let observed = checked_total(self.retained, amount);
+        check_vba_limit(
+            ResourceDimension::RetainedBytes,
+            self.limits.retained_bytes,
+            observed,
+            ResourceStage::Decode,
+        )?;
+        self.retained = observed;
+        Ok(())
+    }
+
+    fn charge_output(&mut self, amount: u64) -> Result<()> {
+        let observed = checked_total(self.output, amount);
+        check_vba_limit(
+            ResourceDimension::OutputBytes,
+            self.limits.output_bytes,
+            observed,
+            ResourceStage::Decode,
+        )?;
+        self.output = observed;
+        Ok(())
+    }
+}
+
+fn checked_total(current: u64, amount: u64) -> u64 {
+    current.saturating_add(amount)
+}
+
+fn check_vba_limit(
+    dimension: ResourceDimension,
+    limit: u64,
+    observed: u64,
+    stage: ResourceStage,
+) -> Result<()> {
+    if observed > limit {
+        return Err(vba_limit(dimension, limit, observed, stage));
+    }
+    Ok(())
+}
+
+fn vba_limit(
+    dimension: ResourceDimension,
+    limit: u64,
+    observed: u64,
+    stage: ResourceStage,
+) -> Error {
+    let metadata = ResourceLimitError::exceeded(
+        ResourceOperation::MacroRead,
+        ResourceCategory::Macro,
+        dimension,
+        limit,
+        observed,
+        Some(stage),
+    );
+    match metadata {
+        Some(metadata) => Error::ResourceLimitExceeded(metadata),
+        None => Error::Internal("invalid VBA resource limit state".to_string()),
+    }
+}
 
 /// Classification of a VBA module.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,6 +404,7 @@ pub struct VbaProject {
 }
 
 /// Offset entry parsed from the `dir` stream for a single module.
+#[derive(Debug)]
 struct ModuleEntry {
     name: String,
     stream_name: String,
@@ -52,6 +413,7 @@ struct ModuleEntry {
 }
 
 /// Parsed metadata from the `dir` stream.
+#[derive(Debug)]
 struct DirInfo {
     entries: Vec<ModuleEntry>,
     codepage: u16,
@@ -66,63 +428,100 @@ struct DirInfo {
 /// non-fatal warnings (e.g., modules that could not be read or
 /// decompressed, unsupported codepages).
 pub fn extract_vba_modules(vba_bin: &[u8]) -> Result<VbaProject> {
+    extract_vba_modules_with_limits(vba_bin, VbaLimits::default())
+}
+
+/// Validates a raw VBA project against finite input and hard-ceiling limits.
+pub(crate) fn validate_vba_input(vba_bin: &[u8], limits: VbaLimits) -> Result<()> {
+    let budget = VbaBudget::new(limits)?;
+    budget.check_input(u64::try_from(vba_bin.len()).unwrap_or(u64::MAX))
+}
+
+/// Extract VBA modules using explicit finite limits.
+pub fn extract_vba_modules_with_limits(vba_bin: &[u8], limits: VbaLimits) -> Result<VbaProject> {
+    validate_vba_input(vba_bin, limits)?;
+    let mut budget = VbaBudget::new(limits)?;
     let cursor = Cursor::new(vba_bin);
     let mut cfb = cfb::CompoundFile::open(cursor)
-        .map_err(|e| Error::Internal(format!("failed to open VBA project as CFB: {e}")))?;
+        .map_err(|_| Error::Internal("failed to open VBA project as CFB".to_string()))?;
+
+    for entry in cfb.walk() {
+        if entry.is_stream() {
+            budget.inspect_stream(entry.len())?;
+        }
+    }
 
     // Find the VBA storage root. Typically `/VBA` or could be nested.
     let vba_prefix = find_vba_prefix(&mut cfb)?;
 
     // Read the `dir` stream to get module entries.
     let dir_path = format!("{vba_prefix}dir");
-    let dir_data = read_cfb_stream(&mut cfb, &dir_path)?;
+    let dir_data = read_cfb_stream(&mut cfb, &dir_path, &mut budget)?;
 
     // The dir stream is compressed using MS-OVBA compression.
-    let decompressed_dir = decompress_vba_stream(&dir_data)?;
+    let decompressed_dir = decompress_vba_stream_budgeted(&dir_data, &mut budget)?;
 
     // Parse module entries and codepage from the decompressed dir stream.
-    let dir_info = parse_dir_stream(&decompressed_dir)?;
+    let dir_info = parse_dir_stream_budgeted(&decompressed_dir, &mut budget)?;
 
-    let mut modules = Vec::with_capacity(dir_info.entries.len());
+    let mut modules = Vec::new();
+    modules
+        .try_reserve(dir_info.entries.len())
+        .map_err(|_| Error::Internal("VBA allocation failed".to_string()))?;
     let mut warnings = Vec::new();
+    warnings
+        .try_reserve(MAX_WARNINGS + 1)
+        .map_err(|_| Error::Internal("VBA allocation failed".to_string()))?;
 
     for entry in dir_info.entries {
         let stream_path = format!("{vba_prefix}{}", entry.stream_name);
-        let compressed_data = match read_cfb_stream(&mut cfb, &stream_path) {
+        let compressed_data = match read_cfb_stream(&mut cfb, &stream_path, &mut budget) {
             Ok(data) => data,
-            Err(e) => {
-                warnings.push(format!(
-                    "skipped module '{}': failed to read stream '{}': {}",
-                    entry.name, stream_path, e
-                ));
+            Err(Error::ResourceLimitExceeded(metadata)) => {
+                return Err(Error::ResourceLimitExceeded(metadata));
+            }
+            Err(_) => {
+                push_warning(
+                    &mut warnings,
+                    "module skipped: stream read failed",
+                    &mut budget,
+                )?;
                 continue;
             }
         };
 
         // The module stream has text_offset bytes of "performance cache"
         // (compiled code) followed by compressed source code.
-        if (entry.text_offset as usize) > compressed_data.len() {
-            warnings.push(format!(
-                "skipped module '{}': text_offset {} exceeds stream length {}",
-                entry.name,
-                entry.text_offset,
-                compressed_data.len()
-            ));
+        let text_offset = usize::try_from(entry.text_offset)
+            .map_err(|_| Error::Internal("invalid VBA module offset".to_string()))?;
+        if text_offset > compressed_data.len() {
+            push_warning(
+                &mut warnings,
+                "module skipped: invalid source offset",
+                &mut budget,
+            )?;
             continue;
         }
-        let source_compressed = &compressed_data[entry.text_offset as usize..];
-        let source_bytes = match decompress_vba_stream(source_compressed) {
+        let source_compressed = &compressed_data[text_offset..];
+        let source_bytes = match decompress_vba_stream_budgeted(source_compressed, &mut budget) {
             Ok(b) => b,
-            Err(e) => {
-                warnings.push(format!(
-                    "skipped module '{}': decompression failed: {}",
-                    entry.name, e
-                ));
+            Err(Error::ResourceLimitExceeded(metadata)) => {
+                return Err(Error::ResourceLimitExceeded(metadata));
+            }
+            Err(_) => {
+                push_warning(
+                    &mut warnings,
+                    "module skipped: decompression failed",
+                    &mut budget,
+                )?;
                 continue;
             }
         };
 
-        let source_code = decode_source_bytes(&source_bytes, dir_info.codepage, &mut warnings);
+        let source_code =
+            decode_source_bytes(&source_bytes, dir_info.codepage, &mut warnings, &mut budget)?;
+        budget.charge_retained(u64::try_from(entry.name.len()).unwrap_or(u64::MAX))?;
+        budget.charge_output(u64::try_from(entry.name.len()).unwrap_or(u64::MAX))?;
 
         modules.push(VbaModule {
             name: entry.name,
@@ -134,25 +533,121 @@ pub fn extract_vba_modules(vba_bin: &[u8]) -> Result<VbaProject> {
     Ok(VbaProject { modules, warnings })
 }
 
+fn push_warning(
+    warnings: &mut Vec<String>,
+    warning: &'static str,
+    budget: &mut VbaBudget,
+) -> Result<()> {
+    if warnings.len() < MAX_WARNINGS {
+        let len = u64::try_from(warning.len()).unwrap_or(u64::MAX);
+        budget.charge_output(len)?;
+        budget.charge_retained(len)?;
+        warnings.push(warning.to_string());
+    } else if warnings.len() == MAX_WARNINGS {
+        const OMITTED: &str = "additional VBA warnings omitted";
+        let len = u64::try_from(OMITTED.len()).unwrap_or(u64::MAX);
+        budget.charge_output(len)?;
+        budget.charge_retained(len)?;
+        warnings.push(OMITTED.to_string());
+    }
+    Ok(())
+}
+
 /// Decode source bytes using the specified codepage.
 ///
 /// Supports common codepages: 1252 (Western European), 932 (Japanese Shift-JIS),
 /// 949 (Korean), 936 (Simplified Chinese GBK), 65001 (UTF-8).
 /// For unrecognized codepages, falls back to UTF-8 lossy and emits a warning.
-fn decode_source_bytes(bytes: &[u8], codepage: u16, warnings: &mut Vec<String>) -> String {
+fn decode_source_bytes(
+    bytes: &[u8],
+    codepage: u16,
+    warnings: &mut Vec<String>,
+    budget: &mut VbaBudget,
+) -> Result<String> {
+    let decoded_len = decoded_source_len(bytes, codepage);
+    budget.charge_output(decoded_len)?;
+    budget.charge_retained(decoded_len)?;
+    let capacity = usize::try_from(decoded_len)
+        .map_err(|_| Error::Internal("VBA allocation failed".to_string()))?;
     match codepage {
-        65001 | 0 => String::from_utf8_lossy(bytes).into_owned(),
-        1252 => decode_single_byte(bytes, &WINDOWS_1252_HIGH),
-        932 => decode_shift_jis(bytes),
-        949 => decode_euc_kr(bytes),
-        936 => decode_gbk(bytes),
+        65001 | 0 => decode_utf8_lossy(bytes, capacity),
+        1252 => decode_single_byte(bytes, &WINDOWS_1252_HIGH, capacity),
+        932 => decode_shift_jis(bytes, capacity),
+        949 => decode_double_byte_lossy(bytes, capacity),
+        936 => decode_double_byte_lossy(bytes, capacity),
         _ => {
-            warnings.push(format!(
-                "unsupported codepage {codepage}, falling back to UTF-8 lossy"
-            ));
-            String::from_utf8_lossy(bytes).into_owned()
+            push_warning(
+                warnings,
+                "unsupported codepage; used UTF-8 lossy decoding",
+                budget,
+            )?;
+            decode_utf8_lossy(bytes, capacity)
         }
     }
+}
+
+fn decoded_source_len(bytes: &[u8], codepage: u16) -> u64 {
+    let length = match codepage {
+        65001 | 0 => utf8_lossy_len(bytes),
+        1252 => bytes.iter().fold(0_usize, |total, &byte| {
+            let width = if byte < 0x80 {
+                1
+            } else {
+                WINDOWS_1252_HIGH[usize::from(byte - 0x80)].len_utf8()
+            };
+            total.saturating_add(width)
+        }),
+        932 => shift_jis_lossy_len(bytes),
+        949 | 936 => double_byte_lossy_len(bytes),
+        _ => utf8_lossy_len(bytes),
+    };
+    u64::try_from(length).unwrap_or(u64::MAX)
+}
+
+fn utf8_lossy_len(mut bytes: &[u8]) -> usize {
+    let mut length = 0_usize;
+    while !bytes.is_empty() {
+        match std::str::from_utf8(bytes) {
+            Ok(valid) => return length.saturating_add(valid.len()),
+            Err(error) => {
+                length = length
+                    .saturating_add(error.valid_up_to())
+                    .saturating_add('�'.len_utf8());
+                match error.error_len() {
+                    Some(invalid) => bytes = &bytes[error.valid_up_to() + invalid..],
+                    None => return length,
+                }
+            }
+        }
+    }
+    length
+}
+
+fn decode_utf8_lossy(mut bytes: &[u8], capacity: usize) -> Result<String> {
+    let mut output = String::new();
+    output
+        .try_reserve(capacity)
+        .map_err(|_| Error::Internal("VBA allocation failed".to_string()))?;
+    while !bytes.is_empty() {
+        match std::str::from_utf8(bytes) {
+            Ok(valid) => {
+                output.push_str(valid);
+                break;
+            }
+            Err(error) => {
+                let valid = &bytes[..error.valid_up_to()];
+                let valid = std::str::from_utf8(valid)
+                    .map_err(|_| Error::Internal("invalid VBA decode state".to_string()))?;
+                output.push_str(valid);
+                output.push('�');
+                match error.error_len() {
+                    Some(invalid) => bytes = &bytes[error.valid_up_to() + invalid..],
+                    None => break,
+                }
+            }
+        }
+    }
+    Ok(output)
 }
 
 /// Windows-1252 high-byte mapping (0x80..0xFF).
@@ -177,8 +672,10 @@ static WINDOWS_1252_HIGH: [char; 128] = [
 ];
 
 /// Decode bytes using a single-byte codepage with the given high-byte table.
-fn decode_single_byte(bytes: &[u8], high_table: &[char; 128]) -> String {
-    let mut out = String::with_capacity(bytes.len());
+fn decode_single_byte(bytes: &[u8], high_table: &[char; 128], capacity: usize) -> Result<String> {
+    let mut out = String::new();
+    out.try_reserve(capacity)
+        .map_err(|_| Error::Internal("VBA allocation failed".to_string()))?;
     for &b in bytes {
         if b < 0x80 {
             out.push(b as char);
@@ -186,14 +683,16 @@ fn decode_single_byte(bytes: &[u8], high_table: &[char; 128]) -> String {
             out.push(high_table[(b - 0x80) as usize]);
         }
     }
-    out
+    Ok(out)
 }
 
 /// Decode Shift-JIS (codepage 932) bytes to a String.
 /// Uses a best-effort approach: valid multi-byte sequences are decoded,
 /// invalid bytes are replaced with the Unicode replacement character.
-fn decode_shift_jis(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len());
+fn decode_shift_jis(bytes: &[u8], capacity: usize) -> Result<String> {
+    let mut out = String::new();
+    out.try_reserve(capacity)
+        .map_err(|_| Error::Internal("VBA allocation failed".to_string()))?;
     let mut i = 0;
     while i < bytes.len() {
         let b = bytes[i];
@@ -217,13 +716,36 @@ fn decode_shift_jis(bytes: &[u8]) -> String {
             i += 1;
         }
     }
-    out
+    Ok(out)
 }
 
-/// Decode EUC-KR / codepage 949 bytes to a String.
-/// Best-effort: ASCII bytes pass through, multi-byte sequences use replacement.
-fn decode_euc_kr(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len());
+fn shift_jis_lossy_len(bytes: &[u8]) -> usize {
+    let mut length = 0_usize;
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b < 0x80 {
+            length = length.saturating_add(1);
+            i += 1;
+        } else if b == 0x80 || b == 0xA0 || b >= 0xFD || (0xA1..=0xDF).contains(&b) {
+            length = length.saturating_add(3);
+            i += 1;
+        } else if i + 1 < bytes.len() {
+            length = length.saturating_add(3);
+            i += 2;
+        } else {
+            length = length.saturating_add(3);
+            i += 1;
+        }
+    }
+    length
+}
+
+/// Decode a best-effort two-byte codepage such as EUC-KR or GBK.
+fn decode_double_byte_lossy(bytes: &[u8], capacity: usize) -> Result<String> {
+    let mut out = String::new();
+    out.try_reserve(capacity)
+        .map_err(|_| Error::Internal("VBA allocation failed".to_string()))?;
     let mut i = 0;
     while i < bytes.len() {
         let b = bytes[i];
@@ -238,41 +760,30 @@ fn decode_euc_kr(bytes: &[u8]) -> String {
             i += 1;
         }
     }
-    out
+    Ok(out)
 }
 
-/// Decode GBK / codepage 936 bytes to a String.
-/// Best-effort: ASCII bytes pass through, multi-byte sequences use replacement.
-fn decode_gbk(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len());
+fn double_byte_lossy_len(bytes: &[u8]) -> usize {
+    let mut length = 0_usize;
     let mut i = 0;
     while i < bytes.len() {
-        let b = bytes[i];
-        if b < 0x80 {
-            out.push(b as char);
+        if bytes[i] < 0x80 {
+            length = length.saturating_add(1);
             i += 1;
-        } else if i + 1 < bytes.len() {
-            out.push('\u{FFFD}');
-            i += 2;
         } else {
-            out.push('\u{FFFD}');
-            i += 1;
+            length = length.saturating_add(3);
+            i = i.saturating_add(2).min(bytes.len());
         }
     }
-    out
+    length
 }
 
 /// Find the VBA storage prefix inside the CFB container.
 /// Returns the path prefix ending with a separator (e.g. "VBA/").
 fn find_vba_prefix(cfb: &mut cfb::CompoundFile<Cursor<&[u8]>>) -> Result<String> {
-    // Collect all entries first to avoid borrow issues.
-    let entries: Vec<String> = cfb
-        .walk()
-        .map(|e| e.path().to_string_lossy().into_owned())
-        .collect();
-
     // Look for a "dir" stream under a VBA storage.
-    for entry_path in &entries {
+    for entry in cfb.walk() {
+        let entry_path = entry.path().to_string_lossy();
         let normalized = entry_path.replace('\\', "/");
         if normalized.ends_with("/dir") || normalized.ends_with("/DIR") {
             let prefix = &normalized[..normalized.len() - 3];
@@ -294,14 +805,50 @@ fn find_vba_prefix(cfb: &mut cfb::CompoundFile<Cursor<&[u8]>>) -> Result<String>
 }
 
 /// Read a stream from the CFB container as raw bytes.
-fn read_cfb_stream(cfb: &mut cfb::CompoundFile<Cursor<&[u8]>>, path: &str) -> Result<Vec<u8>> {
+fn read_cfb_stream(
+    cfb: &mut cfb::CompoundFile<Cursor<&[u8]>>,
+    path: &str,
+    budget: &mut VbaBudget,
+) -> Result<Vec<u8>> {
+    let declared = cfb
+        .entry(path)
+        .map_err(|_| Error::Internal("failed to inspect VBA CFB stream".to_string()))?
+        .len();
+    check_vba_limit(
+        ResourceDimension::EntryDeclaredBytes,
+        budget.limits.cfb_stream_declared_bytes,
+        declared,
+        ResourceStage::Inspect,
+    )?;
+    let capacity = usize::try_from(declared.min(8192)).map_err(|_| {
+        vba_limit(
+            ResourceDimension::EntryDeclaredBytes,
+            budget.limits.cfb_stream_declared_bytes,
+            declared,
+            ResourceStage::Inspect,
+        )
+    })?;
     let mut stream = cfb
         .open_stream(path)
-        .map_err(|e| Error::Internal(format!("failed to open CFB stream '{path}': {e}")))?;
+        .map_err(|_| Error::Internal("failed to open VBA CFB stream".to_string()))?;
     let mut data = Vec::new();
-    stream
-        .read_to_end(&mut data)
-        .map_err(|e| Error::Internal(format!("failed to read CFB stream '{path}': {e}")))?;
+    data.try_reserve(capacity)
+        .map_err(|_| Error::Internal("VBA allocation failed".to_string()))?;
+    let mut buffer = [0_u8; 8192];
+    let mut stream_total = 0_u64;
+    loop {
+        let read = stream
+            .read(&mut buffer)
+            .map_err(|_| Error::Internal("failed to read VBA CFB stream".to_string()))?;
+        if read == 0 {
+            break;
+        }
+        let amount = u64::try_from(read).unwrap_or(u64::MAX);
+        stream_total = budget.charge_stream_read(stream_total, amount)?;
+        data.try_reserve(read)
+            .map_err(|_| Error::Internal("VBA allocation failed".to_string()))?;
+        data.extend_from_slice(&buffer[..read]);
+    }
     Ok(data)
 }
 
@@ -312,21 +859,28 @@ fn read_cfb_stream(cfb: &mut cfb::CompoundFile<Cursor<&[u8]>>, path: &str) -> Re
 /// - Sequence of compressed chunks, each starting with a 2-byte header
 /// - Each chunk contains a mix of literal bytes and copy tokens
 pub fn decompress_vba_stream(data: &[u8]) -> Result<Vec<u8>> {
+    let mut budget = VbaBudget::new(VbaLimits::default())?;
+    decompress_vba_stream_budgeted(data, &mut budget)
+}
+
+fn decompress_vba_stream_budgeted(data: &[u8], budget: &mut VbaBudget) -> Result<Vec<u8>> {
+    budget.charge_compressed(u64::try_from(data.len()).unwrap_or(u64::MAX))?;
     if data.is_empty() {
         return Ok(Vec::new());
     }
 
     if data[0] != 0x01 {
-        return Err(Error::Internal(format!(
-            "invalid VBA compression signature: expected 0x01, got 0x{:02X}",
-            data[0]
-        )));
+        return Err(Error::Internal(
+            "invalid VBA compression signature".to_string(),
+        ));
     }
 
-    let mut output = Vec::with_capacity(data.len() * 2);
+    let mut output = Vec::new();
     let mut pos = 1; // skip signature byte
+    let mut module_total = 0_u64;
 
     while pos < data.len() {
+        budget.charge_chunk()?;
         if pos + 1 >= data.len() {
             return Err(Error::Internal(
                 "truncated VBA compressed chunk header".to_string(),
@@ -349,7 +903,14 @@ pub fn decompress_vba_stream(data: &[u8]) -> Result<Vec<u8>> {
         if !is_compressed {
             // Uncompressed chunk: raw bytes (4096 bytes max)
             let raw_end = chunk_end.min(pos + 4096);
+            let amount = u64::try_from(raw_end - pos).unwrap_or(u64::MAX);
+            let (next_module, next_aggregate) = budget.check_decoded(module_total, amount)?;
+            output
+                .try_reserve(raw_end - pos)
+                .map_err(|_| Error::Internal("VBA allocation failed".to_string()))?;
             output.extend_from_slice(&data[pos..raw_end]);
+            module_total = next_module;
+            budget.commit_decoded(next_aggregate);
             pos = chunk_end;
             continue;
         }
@@ -376,7 +937,13 @@ pub fn decompress_vba_stream(data: &[u8]) -> Result<Vec<u8>> {
                             "VBA literal exceeds decompressed chunk size".to_string(),
                         ));
                     }
+                    let (next_module, next_aggregate) = budget.check_decoded(module_total, 1)?;
+                    output
+                        .try_reserve(1)
+                        .map_err(|_| Error::Internal("VBA allocation failed".to_string()))?;
                     output.push(data[pos]);
+                    module_total = next_module;
+                    budget.commit_decoded(next_aggregate);
                     pos += 1;
                 } else {
                     // Copy token (2 bytes, little-endian)
@@ -396,21 +963,26 @@ pub fn decompress_vba_stream(data: &[u8]) -> Result<Vec<u8>> {
                     let offset = (((token & offset_mask) >> (16 - bit_count)) + 1) as usize;
 
                     if offset == 0 || offset > decompressed_current {
-                        return Err(Error::Internal(format!(
-                            "invalid VBA copy token offset {offset} at chunk position {decompressed_current}"
-                        )));
+                        return Err(Error::Internal("invalid VBA copy token offset".to_string()));
                     }
                     if decompressed_current + length > 4096 {
-                        return Err(Error::Internal(format!(
-                            "VBA copy token exceeds decompressed chunk size: {} bytes",
-                            decompressed_current + length
-                        )));
+                        return Err(Error::Internal(
+                            "VBA copy token exceeds decompressed chunk size".to_string(),
+                        ));
                     }
 
+                    let amount = u64::try_from(length).unwrap_or(u64::MAX);
+                    let (next_module, next_aggregate) =
+                        budget.check_decoded(module_total, amount)?;
+                    output
+                        .try_reserve(length)
+                        .map_err(|_| Error::Internal("VBA allocation failed".to_string()))?;
                     for _ in 0..length {
                         let byte = output[output.len() - offset];
                         output.push(byte);
                     }
+                    module_total = next_module;
+                    budget.commit_decoded(next_aggregate);
                 }
             }
         }
@@ -461,7 +1033,13 @@ fn offset_bit_count(decompressed_current: usize) -> u16 {
 /// is present, we refine the type to `Document`, `ThisWorkbook`, or `Class`
 /// based on the module name (since OOXML does not distinguish these subtypes
 /// at the record level).
+#[cfg(test)]
 fn parse_dir_stream(data: &[u8]) -> Result<DirInfo> {
+    let mut budget = VbaBudget::new(VbaLimits::default())?;
+    parse_dir_stream_budgeted(data, &mut budget)
+}
+
+fn parse_dir_stream_budgeted(data: &[u8], budget: &mut VbaBudget) -> Result<DirInfo> {
     let mut pos = 0;
     let mut modules = Vec::new();
     let mut codepage: u16 = 1252; // Default to Windows-1252
@@ -473,7 +1051,7 @@ fn parse_dir_stream(data: &[u8]) -> Result<DirInfo> {
     let mut current_type = VbaModuleType::Standard;
     let mut in_module = false;
 
-    while pos + 6 <= data.len() {
+    while data.len().saturating_sub(pos) >= 6 {
         let record_id = u16::from_le_bytes([data[pos], data[pos + 1]]);
         let record_size =
             u32::from_le_bytes([data[pos + 2], data[pos + 3], data[pos + 4], data[pos + 5]])
@@ -482,21 +1060,19 @@ fn parse_dir_stream(data: &[u8]) -> Result<DirInfo> {
 
         let payload_size = if record_id == 0x0009 {
             if record_size != 4 {
-                return Err(Error::Internal(format!(
-                    "invalid PROJECTVERSION declared size {record_size}"
-                )));
+                return Err(Error::Internal(
+                    "invalid PROJECTVERSION declared size".to_string(),
+                ));
             }
             6
         } else {
             record_size
         };
-        if pos + payload_size > data.len() {
-            return Err(Error::Internal(format!(
-                "truncated VBA dir record 0x{record_id:04X}"
-            )));
-        }
-
-        let record_data = &data[pos..pos + payload_size];
+        let payload_end = pos
+            .checked_add(payload_size)
+            .filter(|&end| end <= data.len())
+            .ok_or_else(|| Error::Internal("truncated VBA dir record".to_string()))?;
+        let record_data = &data[pos..payload_end];
 
         match record_id {
             // PROJECTCODEPAGE
@@ -512,6 +1088,10 @@ fn parse_dir_stream(data: &[u8]) -> Result<DirInfo> {
                     if let (Some(name), Some(stream)) =
                         (current_name.take(), current_stream_name.take())
                     {
+                        budget.charge_module()?;
+                        modules
+                            .try_reserve(1)
+                            .map_err(|_| Error::Internal("VBA allocation failed".to_string()))?;
                         let refined_type = refine_module_type(&current_type, &name);
                         modules.push(ModuleEntry {
                             name,
@@ -522,6 +1102,7 @@ fn parse_dir_stream(data: &[u8]) -> Result<DirInfo> {
                     }
                 }
                 in_module = true;
+                budget.charge_retained(u64::try_from(record_data.len()).unwrap_or(u64::MAX))?;
                 current_name = Some(String::from_utf8_lossy(record_data).into_owned());
                 current_stream_name = None;
                 current_offset = 0;
@@ -534,10 +1115,18 @@ fn parse_dir_stream(data: &[u8]) -> Result<DirInfo> {
                 // byte indicates a truncated record and is safely ignored.
                 if record_size >= 2 {
                     let even_len = record_data.len() & !1;
-                    let u16_data: Vec<u16> = record_data[..even_len]
-                        .chunks_exact(2)
-                        .map(|c| u16::from_le_bytes([c[0], c[1]]))
-                        .collect();
+                    budget.charge_retained(
+                        u64::try_from(even_len)
+                            .unwrap_or(u64::MAX)
+                            .saturating_mul(2),
+                    )?;
+                    let mut u16_data = Vec::new();
+                    u16_data
+                        .try_reserve(even_len / 2)
+                        .map_err(|_| Error::Internal("VBA allocation failed".to_string()))?;
+                    for chunk in record_data[..even_len].chunks_exact(2) {
+                        u16_data.push(u16::from_le_bytes([chunk[0], chunk[1]]));
+                    }
                     let name = String::from_utf16_lossy(&u16_data);
                     // Remove trailing null if present
                     let name = name.trim_end_matches('\0').to_string();
@@ -548,21 +1137,30 @@ fn parse_dir_stream(data: &[u8]) -> Result<DirInfo> {
             }
             // MODULESTREAMNAME
             0x001A => {
+                budget.charge_retained(u64::try_from(record_data.len()).unwrap_or(u64::MAX))?;
                 current_stream_name = Some(String::from_utf8_lossy(record_data).into_owned());
                 // The MODULENAMEUNICODE record for stream name follows with id 0x0032
                 // We handle it inline: skip the unicode record
-                if pos + record_size + 6 <= data.len() {
-                    let next_id =
-                        u16::from_le_bytes([data[pos + record_size], data[pos + record_size + 1]]);
+                if let Some(next_header) = pos
+                    .checked_add(record_size)
+                    .filter(|&start| data.len().saturating_sub(start) >= 6)
+                {
+                    let next_id = u16::from_le_bytes([data[next_header], data[next_header + 1]]);
                     if next_id == 0x0032 {
                         let next_size = u32::from_le_bytes([
-                            data[pos + record_size + 2],
-                            data[pos + record_size + 3],
-                            data[pos + record_size + 4],
-                            data[pos + record_size + 5],
+                            data[next_header + 2],
+                            data[next_header + 3],
+                            data[next_header + 4],
+                            data[next_header + 5],
                         ]) as usize;
                         // Skip the unicode stream name record
-                        pos += record_size + 6 + next_size;
+                        pos = next_header
+                            .checked_add(6)
+                            .and_then(|start| start.checked_add(next_size))
+                            .filter(|&end| end <= data.len())
+                            .ok_or_else(|| {
+                                Error::Internal("truncated VBA dir record".to_string())
+                            })?;
                         continue;
                     }
                 }
@@ -597,12 +1195,16 @@ fn parse_dir_stream(data: &[u8]) -> Result<DirInfo> {
             _ => {}
         }
 
-        pos += payload_size;
+        pos = payload_end;
     }
 
     // Save the last module if present
     if in_module {
         if let (Some(name), Some(stream)) = (current_name, current_stream_name) {
+            budget.charge_module()?;
+            modules
+                .try_reserve(1)
+                .map_err(|_| Error::Internal("VBA allocation failed".to_string()))?;
             let refined_type = refine_module_type(&current_type, &name);
             modules.push(ModuleEntry {
                 name,
@@ -654,6 +1256,94 @@ mod tests {
         assert!(result.is_err());
         let err_msg = result.unwrap_err().to_string();
         assert!(err_msg.contains("invalid VBA compression signature"));
+    }
+
+    fn two_uncompressed_chunks() -> Vec<u8> {
+        vec![0x01, 0x00, 0x00, b'a', 0x00, 0x00, b'b']
+    }
+
+    #[test]
+    fn test_chunk_limit_accepts_exact_and_rejects_plus_one() {
+        let data = two_uncompressed_chunks();
+        let mut limits = VbaLimits {
+            chunk_count: 2,
+            ..VbaLimits::default()
+        };
+        let mut budget = VbaBudget::new(limits).unwrap();
+        assert_eq!(
+            decompress_vba_stream_budgeted(&data, &mut budget).unwrap(),
+            b"ab"
+        );
+
+        limits.chunk_count = 1;
+        let mut budget = VbaBudget::new(limits).unwrap();
+        let error = decompress_vba_stream_budgeted(&data, &mut budget).unwrap_err();
+        assert_eq!(
+            error.resource_metadata().unwrap().dimension(),
+            ResourceDimension::ChunkCount
+        );
+    }
+
+    #[test]
+    fn test_decoded_limits_are_cumulative_and_cannot_reset() {
+        let data = vec![0x01, 0x00, 0x00, b'a'];
+        let limits = VbaLimits {
+            module_decoded_bytes: 1,
+            aggregate_decoded_bytes: 1,
+            ..VbaLimits::default()
+        };
+        let mut budget = VbaBudget::new(limits).unwrap();
+        assert_eq!(
+            decompress_vba_stream_budgeted(&data, &mut budget).unwrap(),
+            b"a"
+        );
+        let error = decompress_vba_stream_budgeted(&data, &mut budget).unwrap_err();
+        assert_eq!(
+            error.resource_metadata().unwrap().dimension(),
+            ResourceDimension::OutputBytes
+        );
+
+        let limits = VbaLimits {
+            module_decoded_bytes: 1,
+            ..VbaLimits::default()
+        };
+        let too_large = vec![0x01, 0x01, 0x00, b'a', b'b'];
+        let mut budget = VbaBudget::new(limits).unwrap();
+        let error = decompress_vba_stream_budgeted(&too_large, &mut budget).unwrap_err();
+        assert_eq!(
+            error.resource_metadata().unwrap().dimension(),
+            ResourceDimension::OutputBytes
+        );
+    }
+
+    #[test]
+    fn test_module_limit_counts_all_dir_entries() {
+        let mut dir = Vec::new();
+        for name in [b"First".as_slice(), b"Second".as_slice()] {
+            write_dir_record(&mut dir, 0x0019, name);
+            write_dir_record(&mut dir, 0x001A, name);
+        }
+
+        let mut limits = VbaLimits {
+            module_count: 2,
+            ..VbaLimits::default()
+        };
+        let mut budget = VbaBudget::new(limits).unwrap();
+        assert_eq!(
+            parse_dir_stream_budgeted(&dir, &mut budget)
+                .unwrap()
+                .entries
+                .len(),
+            2
+        );
+
+        limits.module_count = 1;
+        let mut budget = VbaBudget::new(limits).unwrap();
+        let error = parse_dir_stream_budgeted(&dir, &mut budget).unwrap_err();
+        assert_eq!(
+            error.resource_metadata().unwrap().dimension(),
+            ResourceDimension::ModuleCount
+        );
     }
 
     #[test]
@@ -772,7 +1462,7 @@ mod tests {
     #[test]
     fn test_copy_token_rejects_offset_beyond_current_chunk() {
         let error = decompress_vba_stream(&compressed_copy_stream(b"x", 2, 3)).unwrap_err();
-        assert!(error.to_string().contains("offset 2"));
+        assert!(error.to_string().contains("invalid VBA copy token offset"));
     }
 
     #[test]
@@ -997,7 +1687,8 @@ mod tests {
         let opts = crate::workbook::OpenOptions::new()
             .read_mode(crate::workbook::ReadMode::Eager)
             .aux_parts(crate::workbook::AuxParts::EagerLoad);
-        let wb = crate::workbook::Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
+        let mut wb = crate::workbook::Workbook::open_from_buffer_with_options(&buf, &opts).unwrap();
+        wb.set_format(crate::workbook::WorkbookFormat::Xlsm);
         let saved_buf = wb.save_to_buffer().unwrap();
 
         // Re-open and verify VBA is preserved

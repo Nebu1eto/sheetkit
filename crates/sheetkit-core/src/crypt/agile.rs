@@ -6,6 +6,11 @@
 
 use crate::error::{Error, Result};
 
+#[cfg(test)]
+use super::EncryptionInfoLimits;
+use super::{CryptBudget, CryptLimits, EncryptionInfoBudget};
+use crate::resource::ResourceOperation;
+
 /// Segment size for Agile Encryption data processing.
 const SEGMENT_SIZE: usize = 4096;
 const PASSWORD_KEY_ENCRYPTOR_URI: &str =
@@ -147,8 +152,10 @@ pub struct KeyEncryptor {
     pub encrypted_key_value: Vec<u8>,
 }
 
-/// Parse Agile EncryptionInfo from the XML data (after version header).
-pub fn parse_agile_encryption_info(xml_data: &[u8]) -> Result<AgileEncryptionInfo> {
+pub(crate) fn parse_agile_encryption_info_with_budget(
+    xml_data: &[u8],
+    budget: &mut EncryptionInfoBudget,
+) -> Result<AgileEncryptionInfo> {
     use quick_xml::events::Event;
     use quick_xml::Reader;
 
@@ -164,19 +171,21 @@ pub fn parse_agile_encryption_info(xml_data: &[u8]) -> Result<AgileEncryptionInf
     loop {
         match reader.read_event_into(&mut buf) {
             Ok(Event::Empty(ref e)) | Ok(Event::Start(ref e)) => {
-                let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                budget.charge_element()?;
+                let qualified_name = e.name();
+                let name = qualified_name.as_ref();
 
-                if name == "keyData" {
-                    key_data = Some(parse_key_data_attrs(e)?);
-                } else if name == "dataIntegrity" {
-                    data_integrity = Some(parse_data_integrity_attrs(e)?);
-                } else if name == "keyEncryptor" {
+                if name == b"keyData" {
+                    key_data = Some(parse_key_data_attrs(e, budget)?);
+                } else if name == b"dataIntegrity" {
+                    data_integrity = Some(parse_data_integrity_attrs(e, budget)?);
+                } else if name == b"keyEncryptor" {
                     password_context =
-                        attribute(e, "uri").as_deref() == Some(PASSWORD_KEY_ENCRYPTOR_URI);
+                        attribute_eq(e, b"uri", PASSWORD_KEY_ENCRYPTOR_URI.as_bytes());
                 } else if password_context
-                    && (name.ends_with("encryptedKey") || name == "p:encryptedKey")
+                    && (name.ends_with(b"encryptedKey") || name == b"p:encryptedKey")
                 {
-                    key_encryptors.push(parse_key_encryptor_attrs(e)?);
+                    key_encryptors.push(parse_key_encryptor_attrs(e, budget)?);
                 }
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"keyEncryptor" => {
@@ -205,6 +214,21 @@ pub fn parse_agile_encryption_info(xml_data: &[u8]) -> Result<AgileEncryptionInf
         data_integrity,
         key_encryptors,
     })
+}
+
+#[cfg(test)]
+fn parse_agile_encryption_info(xml_data: &[u8]) -> Result<AgileEncryptionInfo> {
+    parse_agile_encryption_info_with_limits(xml_data, EncryptionInfoLimits::default())
+}
+
+#[cfg(test)]
+fn parse_agile_encryption_info_with_limits(
+    xml_data: &[u8],
+    limits: EncryptionInfoLimits,
+) -> Result<AgileEncryptionInfo> {
+    let mut budget = EncryptionInfoBudget::new(limits)?;
+    budget.check_input(xml_data.len() as u64)?;
+    parse_agile_encryption_info_with_budget(xml_data, &mut budget)
 }
 
 /// Serialize AgileEncryptionInfo back to XML.
@@ -314,7 +338,26 @@ fn derive_key_agile(
 /// Verify a password against Agile Encryption encryptor data.
 /// Returns the decrypted secret key on success.
 pub fn verify_password_agile(password: &str, encryptor: &KeyEncryptor) -> Result<Vec<u8>> {
+    verify_password_agile_with_limits(password, encryptor, CryptLimits::default())
+}
+
+/// Verify an Agile password using explicit finite KDF limits.
+pub fn verify_password_agile_with_limits(
+    password: &str,
+    encryptor: &KeyEncryptor,
+    limits: CryptLimits,
+) -> Result<Vec<u8>> {
+    let mut budget = CryptBudget::new(ResourceOperation::Decrypt, limits)?;
+    verify_password_agile_with_budget(password, encryptor, &mut budget)
+}
+
+pub(crate) fn verify_password_agile_with_budget(
+    password: &str,
+    encryptor: &KeyEncryptor,
+    budget: &mut CryptBudget,
+) -> Result<Vec<u8>> {
     let (hash, key_len) = password_encryptor_parameters(encryptor)?;
+    budget.reserve_kdf(u64::from(encryptor.spin_count), 3)?;
     // Derive key for verifier hash input
     let key_verifier_input = derive_key_agile(
         password,
@@ -463,6 +506,27 @@ pub fn encrypt_package_agile(
     data: &[u8],
     password: &str,
 ) -> Result<(Vec<u8>, AgileEncryptionInfo)> {
+    encrypt_package_agile_with_limits(data, password, CryptLimits::default())
+}
+
+/// Encrypt package bytes using explicit finite KDF limits.
+pub fn encrypt_package_agile_with_limits(
+    data: &[u8],
+    password: &str,
+    limits: CryptLimits,
+) -> Result<(Vec<u8>, AgileEncryptionInfo)> {
+    let mut budget = CryptBudget::new(ResourceOperation::Encrypt, limits)?;
+    budget.check_encrypted_package(data.len() as u64)?;
+    let result = encrypt_package_agile_with_budget(data, password, &mut budget)?;
+    budget.check_encrypted_package(result.0.len() as u64)?;
+    Ok(result)
+}
+
+pub(crate) fn encrypt_package_agile_with_budget(
+    data: &[u8],
+    password: &str,
+    budget: &mut CryptBudget,
+) -> Result<(Vec<u8>, AgileEncryptionInfo)> {
     use rand::Rng;
 
     let mut rng = rand::thread_rng();
@@ -479,6 +543,7 @@ pub fn encrypt_package_agile(
     rng.fill(&mut verifier_hash_input);
 
     let spin_count = 100_000u32;
+    budget.reserve_kdf(u64::from(spin_count), 3)?;
 
     // Build KeyData
     let key_data = KeyData {
@@ -828,17 +893,47 @@ fn generate_random_bytes(len: usize) -> Vec<u8> {
 
 // -- XML attribute parsing helpers --
 
-fn attribute(e: &quick_xml::events::BytesStart<'_>, name: &str) -> Option<String> {
-    e.attributes().flatten().find_map(|attr| {
-        (attr.key.as_ref() == name.as_bytes())
-            .then(|| String::from_utf8_lossy(&attr.value).into_owned())
-    })
+fn attribute_eq(e: &quick_xml::events::BytesStart<'_>, name: &[u8], expected: &[u8]) -> bool {
+    e.attributes()
+        .flatten()
+        .any(|attr| attr.key.as_ref() == name && attr.value.as_ref() == expected)
 }
 
-fn parse_key_data_attrs(e: &quick_xml::events::BytesStart<'_>) -> Result<KeyData> {
-    use base64::Engine;
-    let b64 = base64::engine::general_purpose::STANDARD;
+fn parse_u32_attribute(value: &[u8]) -> u32 {
+    std::str::from_utf8(value)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0)
+}
 
+fn retain_string_attribute(value: &[u8], budget: &mut EncryptionInfoBudget) -> Result<String> {
+    let value = std::str::from_utf8(value)
+        .map_err(|_| Error::Internal("invalid EncryptionInfo attribute".to_string()))?;
+    budget.reserve_decoded_attributes(value.len() as u64)?;
+    Ok(value.to_owned())
+}
+
+fn decode_base64_attribute(value: &[u8], budget: &mut EncryptionInfoBudget) -> Result<Vec<u8>> {
+    use base64::Engine;
+
+    let padding = value.iter().rev().take_while(|byte| **byte == b'=').count();
+    let decoded_len = value
+        .len()
+        .saturating_add(3)
+        .checked_div(4)
+        .unwrap_or(0)
+        .saturating_mul(3)
+        .saturating_sub(padding.min(2));
+    budget.reserve_decoded_attributes(decoded_len as u64)?;
+    base64::engine::general_purpose::STANDARD
+        .decode(value)
+        .map_err(|_| Error::Internal("invalid base64 EncryptionInfo attribute".to_string()))
+}
+
+fn parse_key_data_attrs(
+    e: &quick_xml::events::BytesStart<'_>,
+    budget: &mut EncryptionInfoBudget,
+) -> Result<KeyData> {
     let mut kd = KeyData {
         salt_size: 0,
         block_size: 0,
@@ -851,49 +946,39 @@ fn parse_key_data_attrs(e: &quick_xml::events::BytesStart<'_>) -> Result<KeyData
     };
 
     for attr in e.attributes().flatten() {
-        let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
-        let val = String::from_utf8_lossy(&attr.value).to_string();
-        match key.as_str() {
-            "saltSize" => kd.salt_size = val.parse().unwrap_or(0),
-            "blockSize" => kd.block_size = val.parse().unwrap_or(0),
-            "keyBits" => kd.key_bits = val.parse().unwrap_or(0),
-            "hashSize" => kd.hash_size = val.parse().unwrap_or(0),
-            "cipherAlgorithm" => kd.cipher_algorithm = val,
-            "cipherChaining" => kd.cipher_chaining = val,
-            "hashAlgorithm" => kd.hash_algorithm = val,
-            "saltValue" => {
-                kd.salt_value = b64
-                    .decode(&val)
-                    .map_err(|e| Error::Internal(format!("base64 decode error: {e}")))?;
-            }
+        let value = attr.value.as_ref();
+        match attr.key.as_ref() {
+            b"saltSize" => kd.salt_size = parse_u32_attribute(value),
+            b"blockSize" => kd.block_size = parse_u32_attribute(value),
+            b"keyBits" => kd.key_bits = parse_u32_attribute(value),
+            b"hashSize" => kd.hash_size = parse_u32_attribute(value),
+            b"cipherAlgorithm" => kd.cipher_algorithm = retain_string_attribute(value, budget)?,
+            b"cipherChaining" => kd.cipher_chaining = retain_string_attribute(value, budget)?,
+            b"hashAlgorithm" => kd.hash_algorithm = retain_string_attribute(value, budget)?,
+            b"saltValue" => kd.salt_value = decode_base64_attribute(value, budget)?,
             _ => {}
         }
     }
     Ok(kd)
 }
 
-fn parse_data_integrity_attrs(e: &quick_xml::events::BytesStart<'_>) -> Result<DataIntegrity> {
-    use base64::Engine;
-    let b64 = base64::engine::general_purpose::STANDARD;
-
+fn parse_data_integrity_attrs(
+    e: &quick_xml::events::BytesStart<'_>,
+    budget: &mut EncryptionInfoBudget,
+) -> Result<DataIntegrity> {
     let mut di = DataIntegrity {
         encrypted_hmac_key: Vec::new(),
         encrypted_hmac_value: Vec::new(),
     };
 
     for attr in e.attributes().flatten() {
-        let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
-        let val = String::from_utf8_lossy(&attr.value).to_string();
-        match key.as_str() {
-            "encryptedHmacKey" => {
-                di.encrypted_hmac_key = b64
-                    .decode(&val)
-                    .map_err(|e| Error::Internal(format!("base64 decode error: {e}")))?;
+        let value = attr.value.as_ref();
+        match attr.key.as_ref() {
+            b"encryptedHmacKey" => {
+                di.encrypted_hmac_key = decode_base64_attribute(value, budget)?;
             }
-            "encryptedHmacValue" => {
-                di.encrypted_hmac_value = b64
-                    .decode(&val)
-                    .map_err(|e| Error::Internal(format!("base64 decode error: {e}")))?;
+            b"encryptedHmacValue" => {
+                di.encrypted_hmac_value = decode_base64_attribute(value, budget)?;
             }
             _ => {}
         }
@@ -901,10 +986,10 @@ fn parse_data_integrity_attrs(e: &quick_xml::events::BytesStart<'_>) -> Result<D
     Ok(di)
 }
 
-fn parse_key_encryptor_attrs(e: &quick_xml::events::BytesStart<'_>) -> Result<KeyEncryptor> {
-    use base64::Engine;
-    let b64 = base64::engine::general_purpose::STANDARD;
-
+fn parse_key_encryptor_attrs(
+    e: &quick_xml::events::BytesStart<'_>,
+    budget: &mut EncryptionInfoBudget,
+) -> Result<KeyEncryptor> {
     let mut ke = KeyEncryptor {
         spin_count: 0,
         salt_size: 0,
@@ -921,36 +1006,25 @@ fn parse_key_encryptor_attrs(e: &quick_xml::events::BytesStart<'_>) -> Result<Ke
     };
 
     for attr in e.attributes().flatten() {
-        let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
-        let val = String::from_utf8_lossy(&attr.value).to_string();
-        match key.as_str() {
-            "spinCount" => ke.spin_count = val.parse().unwrap_or(0),
-            "saltSize" => ke.salt_size = val.parse().unwrap_or(0),
-            "blockSize" => ke.block_size = val.parse().unwrap_or(0),
-            "keyBits" => ke.key_bits = val.parse().unwrap_or(0),
-            "hashSize" => ke.hash_size = val.parse().unwrap_or(0),
-            "cipherAlgorithm" => ke.cipher_algorithm = val,
-            "cipherChaining" => ke.cipher_chaining = val,
-            "hashAlgorithm" => ke.hash_algorithm = val,
-            "saltValue" => {
-                ke.salt_value = b64
-                    .decode(&val)
-                    .map_err(|e| Error::Internal(format!("base64 decode error: {e}")))?;
+        let value = attr.value.as_ref();
+        match attr.key.as_ref() {
+            b"spinCount" => ke.spin_count = parse_u32_attribute(value),
+            b"saltSize" => ke.salt_size = parse_u32_attribute(value),
+            b"blockSize" => ke.block_size = parse_u32_attribute(value),
+            b"keyBits" => ke.key_bits = parse_u32_attribute(value),
+            b"hashSize" => ke.hash_size = parse_u32_attribute(value),
+            b"cipherAlgorithm" => ke.cipher_algorithm = retain_string_attribute(value, budget)?,
+            b"cipherChaining" => ke.cipher_chaining = retain_string_attribute(value, budget)?,
+            b"hashAlgorithm" => ke.hash_algorithm = retain_string_attribute(value, budget)?,
+            b"saltValue" => ke.salt_value = decode_base64_attribute(value, budget)?,
+            b"encryptedVerifierHashInput" => {
+                ke.encrypted_verifier_hash_input = decode_base64_attribute(value, budget)?;
             }
-            "encryptedVerifierHashInput" => {
-                ke.encrypted_verifier_hash_input = b64
-                    .decode(&val)
-                    .map_err(|e| Error::Internal(format!("base64 decode error: {e}")))?;
+            b"encryptedVerifierHashValue" => {
+                ke.encrypted_verifier_hash_value = decode_base64_attribute(value, budget)?;
             }
-            "encryptedVerifierHashValue" => {
-                ke.encrypted_verifier_hash_value = b64
-                    .decode(&val)
-                    .map_err(|e| Error::Internal(format!("base64 decode error: {e}")))?;
-            }
-            "encryptedKeyValue" => {
-                ke.encrypted_key_value = b64
-                    .decode(&val)
-                    .map_err(|e| Error::Internal(format!("base64 decode error: {e}")))?;
+            b"encryptedKeyValue" => {
+                ke.encrypted_key_value = decode_base64_attribute(value, budget)?;
             }
             _ => {}
         }
@@ -962,6 +1036,70 @@ fn parse_key_encryptor_attrs(e: &quick_xml::events::BytesStart<'_>) -> Result<Ke
 #[allow(clippy::explicit_counter_loop)]
 mod tests {
     use super::*;
+    use crate::resource::{ResourceDimension, ResourceStage};
+
+    fn minimal_encryption_info(extra: &str) -> Vec<u8> {
+        format!(
+            r#"<encryption><keyData saltSize="16" blockSize="16" keyBits="256" hashSize="64" cipherAlgorithm="AES" cipherChaining="ChainingModeCBC" hashAlgorithm="SHA512" saltValue="AAAAAAAAAAAAAAAAAAAAAA=="/><dataIntegrity encryptedHmacKey="AA==" encryptedHmacValue="AA=="/>{extra}</encryption>"#
+        )
+        .into_bytes()
+    }
+
+    #[test]
+    fn encryption_info_element_limit_accepts_exact_and_rejects_plus_one() {
+        let xml = minimal_encryption_info("");
+        let exact = EncryptionInfoLimits {
+            element_count: 3,
+            ..EncryptionInfoLimits::default()
+        };
+        parse_agile_encryption_info_with_limits(&xml, exact).unwrap();
+
+        let rejected = EncryptionInfoLimits {
+            element_count: 2,
+            ..EncryptionInfoLimits::default()
+        };
+        let error = parse_agile_encryption_info_with_limits(&xml, rejected).unwrap_err();
+        let metadata = error.resource_metadata().expect("resource metadata");
+        assert_eq!(metadata.dimension(), ResourceDimension::NodeCount);
+        assert_eq!(metadata.limit(), 2);
+        assert_eq!(metadata.observed(), 3);
+        assert_eq!(metadata.stage(), Some(ResourceStage::Parse));
+    }
+
+    #[test]
+    fn encryption_info_decoded_attribute_limit_rejects_before_decode() {
+        let xml = minimal_encryption_info("");
+        let calibrated =
+            parse_agile_encryption_info_with_limits(&xml, EncryptionInfoLimits::default()).unwrap();
+        let retained = calibrated.key_data.cipher_algorithm.len()
+            + calibrated.key_data.cipher_chaining.len()
+            + calibrated.key_data.hash_algorithm.len()
+            + calibrated.key_data.salt_value.len()
+            + calibrated.data_integrity.encrypted_hmac_key.len()
+            + calibrated.data_integrity.encrypted_hmac_value.len();
+
+        parse_agile_encryption_info_with_limits(
+            &xml,
+            EncryptionInfoLimits {
+                decoded_attribute_bytes: retained as u64,
+                ..EncryptionInfoLimits::default()
+            },
+        )
+        .unwrap();
+        let error = parse_agile_encryption_info_with_limits(
+            &xml,
+            EncryptionInfoLimits {
+                decoded_attribute_bytes: retained as u64 - 1,
+                ..EncryptionInfoLimits::default()
+            },
+        )
+        .unwrap_err();
+        let metadata = error.resource_metadata().expect("resource metadata");
+        assert_eq!(metadata.dimension(), ResourceDimension::RetainedBytes);
+        assert_eq!(metadata.limit(), retained as u64 - 1);
+        assert!(metadata.observed() > metadata.limit());
+        assert_eq!(metadata.stage(), Some(ResourceStage::Decode));
+    }
 
     #[test]
     fn test_derive_key_agile_produces_correct_length() {

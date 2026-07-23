@@ -13,7 +13,8 @@ A Rust library for reading and writing Excel (.xlsx) files, with Node.js binding
 
 한국어 버전은 [README.ko.md](https://github.com/Nebu1eto/sheetkit/blob/main/README.ko.md)를 참조하세요.
 
-> **Warning**: SheetKit is experimental. APIs may change without notice. This project is under active development.
+SheetKit 1.0 follows semantic versioning. When upgrading from v0.5.1, read the
+[1.0 migration guide](https://sheetkit.dev/guide/migration-v1).
 
 Quick links:
 - [Docs](https://sheetkit.dev/)
@@ -65,7 +66,7 @@ import { Workbook } from "@sheetkit/node";
 const wb = new Workbook();
 wb.setCellValue("Sheet1", "A1", "Hello");
 wb.setCellValue("Sheet1", "B1", 42);
-wb.save("output.xlsx");
+await wb.save("output.xlsx");
 ```
 
 ## Installation
@@ -80,7 +81,7 @@ Or add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-sheetkit = "0.5.1"
+sheetkit = "1.0.0"
 ```
 
 [View on crates.io](https://crates.io/crates/sheetkit)
@@ -112,6 +113,9 @@ SheetKit's Node.js bindings use [napi-rs](https://napi.rs/), which is compatible
 **[Documentation Site](https://sheetkit.dev/)** | [Korean (한국어)](https://sheetkit.dev/ko/)
 
 See the [docs/](https://github.com/Nebu1eto/sheetkit/tree/main/docs) folder for documentation source files.
+
+Users migrating from v0.5.1 should read the
+[1.0 migration guide](docs/guide/migration-v1.md).
 
 ## Acknowledgements
 

@@ -44,6 +44,10 @@ fn test_workbook_default_trait() {
 fn test_public_api_reexports() {
     // Verify all public types are accessible
     let _wb = sheetkit::Workbook::new();
+    let limits = sheetkit::TraversalLimits::default();
+    let options =
+        sheetkit::TraversalOptions::new(sheetkit::TraversalMode::Dense).with_limits(limits);
+    assert_eq!(options.limits(), limits);
     let _col = sheetkit::utils::column_name_to_number("A").unwrap();
     let _name = sheetkit::utils::column_number_to_name(1).unwrap();
     let _coords = sheetkit::utils::cell_name_to_coordinates("A1").unwrap();

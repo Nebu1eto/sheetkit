@@ -265,7 +265,7 @@ mod tests {
         assert!(err.to_string().contains("invalid cell reference"));
 
         let err = merge_cells(&mut ws, "A1", "ZZZ").unwrap_err();
-        assert!(err.to_string().contains("no row number"));
+        assert!(matches!(err, Error::InvalidCellReference(_)));
     }
 
     #[test]

@@ -42,11 +42,19 @@ jobs:
       - name: Test with coverage
         run: cargo llvm-cov --workspace --lcov --output-path lcov.info
 
+      - name: Test encryption features
+        run: |
+          cargo test --workspace --features sheetkit-core/encryption
+          cargo test -p sheetkit --features encryption
+
       - name: Test CLI
         run: cargo test -p sheetkit --features cli
 
       - name: Test vendored ZIP fork
         run: cargo test --manifest-path vendor/zip/Cargo.toml
+
+      - name: Replay security fuzz corpus
+        run: cargo test -p sheetkit-core --test security_fuzz_corpus_replay
 
       - name: Upload coverage artifact
         if: always()
@@ -84,5 +92,11 @@ jobs:
       - name: Build (napi + typecheck + tsdown)
         run: pnpm --filter @sheetkit/node build
 
+      - name: Typecheck generated declarations
+        run: pnpm --filter @sheetkit/node typecheck:declarations
+
       - name: Test
         run: pnpm test
+
+      - name: Build documentation
+        run: pnpm docs:build

@@ -22,6 +22,7 @@ use nom::{
 };
 
 use super::ast::{BinaryOperator, CellReference, Expr, UnaryOperator};
+use super::budget::{FormulaBudget, FormulaLimits};
 use crate::error::{Error, Result};
 
 /// Parse an Excel formula string into an AST expression.
@@ -32,17 +33,175 @@ use crate::error::{Error, Result};
 ///
 /// Returns an error if the formula string cannot be parsed.
 pub fn parse_formula(input: &str) -> Result<Expr> {
+    let budget = FormulaBudget::for_parse(FormulaLimits::secure_default())?;
+    parse_formula_with_budget(input, &budget)
+}
+
+/// Parse a formula while charging an existing operation budget.
+pub(crate) fn parse_formula_with_budget(input: &str, budget: &FormulaBudget) -> Result<Expr> {
+    let input_bytes = input.len() as u64;
+    budget.check_input(input_bytes)?;
     let trimmed = input.trim();
     if trimmed.is_empty() {
         return Err(Error::Internal("empty formula".to_string()));
     }
+    let (tokens, parenthesis_depth, unary_depth, binary_operators) = lexical_metrics(trimmed);
+    budget.check_nesting(parenthesis_depth.saturating_add(1))?;
+    budget.check_nesting(unary_depth.saturating_add(1))?;
+    budget.check_binary_chain(binary_operators)?;
+    budget.charge_lexical(input_bytes, tokens)?;
+
     match parse_expr(trimmed) {
-        Ok(("", expr)) => Ok(expr),
+        Ok(("", expr)) => {
+            let (nodes, depth, binary_chain) = expr.structural_metrics();
+            budget.charge_ast(nodes, depth, binary_chain)?;
+            Ok(expr)
+        }
         Ok((remaining, _)) => Err(Error::Internal(format!(
             "unexpected trailing input: {remaining}"
         ))),
         Err(e) => Err(Error::Internal(format!("formula parse error: {e}"))),
     }
+}
+
+fn lexical_metrics(input: &str) -> (u64, u64, u64, u64) {
+    let mut tokens = 0_u64;
+    let mut parenthesis_depth = 0_u64;
+    let mut max_parenthesis_depth = 0_u64;
+    let mut unary_run = 0_u64;
+    let mut max_unary_run = 0_u64;
+    let mut max_binary_chain = 0_u64;
+    let mut binary_chains = [0_u64; 129];
+    let mut expects_operand = [true; 129];
+    let mut frame = 0_usize;
+    let mut chars = input.char_indices().peekable();
+
+    while let Some((_, ch)) = chars.next() {
+        if ch.is_whitespace() {
+            continue;
+        }
+        tokens = tokens.saturating_add(1);
+        match ch {
+            '"' => {
+                while let Some((_, current)) = chars.next() {
+                    if current == '"' {
+                        if chars.peek().is_some_and(|(_, next)| *next == '"') {
+                            chars.next();
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                unary_run = 0;
+                expects_operand[frame] = false;
+            }
+            '\'' => {
+                while let Some((_, current)) = chars.next() {
+                    if current == '\'' {
+                        if chars.peek().is_some_and(|(_, next)| *next == '\'') {
+                            chars.next();
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                if chars.peek().is_some_and(|(_, next)| *next == '!') {
+                    chars.next();
+                }
+                unary_run = 0;
+                expects_operand[frame] = false;
+            }
+            '(' => {
+                parenthesis_depth = parenthesis_depth.saturating_add(1);
+                max_parenthesis_depth = max_parenthesis_depth.max(parenthesis_depth);
+                if frame < 128 {
+                    frame += 1;
+                    binary_chains[frame] = 0;
+                    expects_operand[frame] = true;
+                }
+                unary_run = 0;
+            }
+            ')' => {
+                parenthesis_depth = parenthesis_depth.saturating_sub(1);
+                max_binary_chain = max_binary_chain.max(binary_chains[frame]);
+                frame = frame.saturating_sub(1);
+                expects_operand[frame] = false;
+                unary_run = 0;
+            }
+            '+' | '-' => {
+                if expects_operand[frame] {
+                    unary_run = unary_run.saturating_add(1);
+                    max_unary_run = max_unary_run.max(unary_run);
+                } else {
+                    binary_chains[frame] = binary_chains[frame].saturating_add(1);
+                    max_binary_chain = max_binary_chain.max(binary_chains[frame]);
+                    expects_operand[frame] = true;
+                    unary_run = 0;
+                }
+            }
+            '#' => {
+                while chars.peek().is_some_and(|(_, next)| {
+                    next.is_alphanumeric() || matches!(*next, '#' | '/' | '!' | '?')
+                }) {
+                    chars.next();
+                }
+                unary_run = 0;
+                expects_operand[frame] = false;
+            }
+            c if c.is_alphanumeric() || matches!(c, '_' | '$' | '.') => {
+                while chars.peek().is_some_and(|(_, next)| {
+                    next.is_alphanumeric()
+                        || matches!(*next, '_' | '$' | '.' | '\'' | '!' | '?' | '#')
+                }) {
+                    chars.next();
+                }
+                unary_run = 0;
+                expects_operand[frame] = false;
+            }
+            '<' | '>' => {
+                binary_chains[frame] = binary_chains[frame].saturating_add(1);
+                max_binary_chain = max_binary_chain.max(binary_chains[frame]);
+                if chars
+                    .peek()
+                    .is_some_and(|(_, next)| matches!(*next, '=' | '>'))
+                {
+                    chars.next();
+                }
+                unary_run = 0;
+                expects_operand[frame] = true;
+            }
+            '*' | '/' | '^' | '&' | '=' => {
+                binary_chains[frame] = binary_chains[frame].saturating_add(1);
+                max_binary_chain = max_binary_chain.max(binary_chains[frame]);
+                unary_run = 0;
+                expects_operand[frame] = true;
+            }
+            ',' => {
+                max_binary_chain = max_binary_chain.max(binary_chains[frame]);
+                binary_chains[frame] = 0;
+                expects_operand[frame] = true;
+                unary_run = 0;
+            }
+            ':' => {
+                expects_operand[frame] = true;
+                unary_run = 0;
+            }
+            '%' => {
+                expects_operand[frame] = false;
+                unary_run = unary_run.saturating_add(1);
+                max_unary_run = max_unary_run.max(unary_run);
+            }
+            _ => unary_run = 0,
+        }
+    }
+    max_binary_chain = max_binary_chain.max(binary_chains[frame]);
+
+    (
+        tokens,
+        max_parenthesis_depth,
+        max_unary_run,
+        max_binary_chain,
+    )
 }
 
 /// Wraps a parser to consume optional surrounding whitespace.
@@ -441,6 +600,160 @@ fn fold_binary(first: Expr, rest: Vec<(BinaryOperator, Expr)>) -> Expr {
 mod tests {
     use super::*;
     use crate::formula::ast::{BinaryOperator, CellReference, Expr, UnaryOperator};
+
+    #[test]
+    fn formula_limits_reject_deep_recursive_inputs_before_parsing() {
+        let exact = format!("{}1{}", "(".repeat(63), ")".repeat(63));
+        assert!(parse_formula(&exact).is_ok());
+
+        let over = format!("{}1{}", "(".repeat(64), ")".repeat(64));
+        let error = parse_formula(&over).unwrap_err();
+        assert_eq!(
+            error.resource_metadata().unwrap().dimension_code(),
+            "nesting_depth"
+        );
+
+        let unary_over = format!("{}1", "-".repeat(64));
+        let error = parse_formula(&unary_over).unwrap_err();
+        assert_eq!(
+            error.resource_metadata().unwrap().dimension_code(),
+            "nesting_depth"
+        );
+
+        let postfix_exact = format!("1{}", "%".repeat(63));
+        assert!(parse_formula(&postfix_exact).is_ok());
+        let postfix_over = format!("1{}", "%".repeat(64));
+        assert_eq!(
+            parse_formula(&postfix_over)
+                .unwrap_err()
+                .resource_metadata()
+                .unwrap()
+                .dimension_code(),
+            "nesting_depth"
+        );
+
+        let nested = |depth: usize| {
+            let mut formula = "'Odd)(Sheet'!A1".to_string();
+            for _ in 0..depth {
+                formula = format!("SUM({formula})");
+            }
+            formula
+        };
+        assert!(parse_formula(&nested(63)).is_ok());
+        assert_eq!(
+            parse_formula(&nested(64))
+                .unwrap_err()
+                .resource_metadata()
+                .unwrap()
+                .dimension_code(),
+            "nesting_depth"
+        );
+    }
+
+    #[test]
+    fn formula_input_and_binary_chain_boundaries_are_exact() {
+        let exact_input = format!("\"{}\"", "a".repeat(32_766));
+        assert!(parse_formula(&exact_input).is_ok());
+        let over_input = format!("\"{}\"", "a".repeat(32_767));
+        let error = parse_formula(&over_input).unwrap_err();
+        assert_eq!(
+            error.resource_metadata().unwrap().dimension_code(),
+            "input_bytes"
+        );
+        let padded = format!("{}1", " ".repeat(32_768));
+        assert_eq!(
+            parse_formula(&padded)
+                .unwrap_err()
+                .resource_metadata()
+                .unwrap()
+                .dimension_code(),
+            "input_bytes"
+        );
+
+        let exact_chain = std::iter::repeat_n("1", 513).collect::<Vec<_>>().join("+");
+        assert!(parse_formula(&exact_chain).is_ok());
+        let over_chain = std::iter::repeat_n("1", 514).collect::<Vec<_>>().join("+");
+        let error = parse_formula(&over_chain).unwrap_err();
+        assert_eq!(
+            error.resource_metadata().unwrap().dimension_code(),
+            "nesting_depth"
+        );
+
+        let independent_args = std::iter::repeat_n("1+1", 513)
+            .collect::<Vec<_>>()
+            .join(",");
+        assert!(parse_formula(&format!("F({independent_args})")).is_ok());
+    }
+
+    #[test]
+    fn token_and_ast_node_boundaries_are_exact() {
+        let exact = FormulaLimits {
+            per_formula_tokens: 3,
+            per_formula_ast_nodes: 3,
+            operation_tokens: 3,
+            operation_ast_nodes: 3,
+            ..FormulaLimits::secure_default()
+        };
+        let budget = FormulaBudget::for_parse(exact).unwrap();
+        assert!(parse_formula_with_budget("1+1", &budget).is_ok());
+
+        let token_over = FormulaLimits {
+            per_formula_tokens: 2,
+            ..FormulaLimits::secure_default()
+        };
+        let budget = FormulaBudget::for_parse(token_over).unwrap();
+        let error = parse_formula_with_budget("1+1", &budget).unwrap_err();
+        assert_eq!(
+            error.resource_metadata().unwrap().dimension_code(),
+            "token_count"
+        );
+        assert_eq!(error.resource_metadata().unwrap().observed(), 3);
+
+        let node_over = FormulaLimits {
+            per_formula_ast_nodes: 2,
+            ..FormulaLimits::secure_default()
+        };
+        let budget = FormulaBudget::for_parse(node_over).unwrap();
+        let error = parse_formula_with_budget("1+1", &budget).unwrap_err();
+        assert_eq!(
+            error.resource_metadata().unwrap().dimension_code(),
+            "node_count"
+        );
+        assert_eq!(error.resource_metadata().unwrap().observed(), 3);
+
+        let independent = FormulaLimits {
+            per_formula_nesting_depth: 1,
+            per_formula_binary_chain_depth: 1,
+            ..FormulaLimits::secure_default()
+        };
+        let budget = FormulaBudget::for_parse(independent).unwrap();
+        assert!(parse_formula_with_budget("1+2", &budget).is_ok());
+
+        let chain_over = FormulaLimits {
+            per_formula_binary_chain_depth: 0,
+            ..FormulaLimits::secure_default()
+        };
+        let budget = FormulaBudget::for_parse(chain_over).unwrap();
+        let error = parse_formula_with_budget("1+2", &budget).unwrap_err();
+        let metadata = error.resource_metadata().unwrap();
+        assert_eq!(metadata.dimension_code(), "nesting_depth");
+        assert_eq!((metadata.limit(), metadata.observed()), (0, 1));
+    }
+
+    #[test]
+    fn shared_parse_budget_cannot_be_reset_between_calls() {
+        let limits = FormulaLimits {
+            operation_input_bytes: 3,
+            ..FormulaLimits::secure_default()
+        };
+        let budget = FormulaBudget::for_parse(limits).unwrap();
+        assert!(parse_formula_with_budget("1", &budget).is_ok());
+        assert!(parse_formula_with_budget("22", &budget).is_ok());
+        let error = parse_formula_with_budget("3", &budget).unwrap_err();
+        let metadata = error.resource_metadata().unwrap();
+        assert_eq!(metadata.dimension_code(), "input_bytes");
+        assert_eq!((metadata.limit(), metadata.observed()), (3, 4));
+    }
 
     #[test]
     fn test_parse_integer() {

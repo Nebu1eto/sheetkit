@@ -2719,6 +2719,84 @@ describe('SheetData', () => {
     expect(sd.colCount).toBe(0);
   });
 
+  it('rejects malformed structure before constructing public views', () => {
+    expect(() => new SheetData(Buffer.alloc(5))).toThrow('truncated header');
+
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'first');
+    wb.setCellValue('Sheet1', 'B1', 'second');
+    wb.setCellValue('Sheet1', 'A2', 'third');
+    const valid = Buffer.from(wb.getRowsBuffer('Sheet1'));
+
+    const invalidVersion = Buffer.from(valid);
+    invalidVersion.writeUInt16LE(99, 4);
+
+    const oversizedRows = Buffer.from(valid);
+    oversizedRows.writeUInt32LE(0xffffffff, 6);
+
+    const invalidRow = Buffer.from(valid);
+    invalidRow.writeUInt32LE(1_048_577, 16);
+
+    const duplicateRow = Buffer.from(valid);
+    duplicateRow.writeUInt32LE(1, 24);
+
+    const invalidColumns = Buffer.from(valid);
+    invalidColumns.writeUInt32LE((16_384 << 16) | 1, 12);
+
+    const nonzeroFirstStringOffset = Buffer.from(valid);
+    const validStringTable = 16 + nonzeroFirstStringOffset.readUInt32LE(6) * 8;
+    nonzeroFirstStringOffset.writeUInt32LE(1, validStringTable + 8);
+
+    const malformedUtf8 = Buffer.from(valid);
+    const utf8StringTable = 16 + malformedUtf8.readUInt32LE(6) * 8;
+    const utf8StringCount = malformedUtf8.readUInt32LE(utf8StringTable);
+    const utf8BlobStart = utf8StringTable + 8 + utf8StringCount * 4;
+    malformedUtf8[utf8BlobStart] = 0xff;
+
+    const duplicateCell = Buffer.from(valid);
+    const rowCount = duplicateCell.readUInt32LE(6);
+    const stringTable = 16 + rowCount * 8;
+    const stringCount = duplicateCell.readUInt32LE(stringTable);
+    const blobSize = duplicateCell.readUInt32LE(stringTable + 4);
+    const cellData = stringTable + 8 + stringCount * 4 + blobSize;
+    const firstColumn = duplicateCell.readUInt16LE(cellData + 2);
+    duplicateCell.writeUInt16LE(firstColumn, cellData + 2 + 11);
+
+    const v2Source = new Workbook();
+    v2Source.setCellValue('Sheet1', 'A1', true);
+    v2Source.setCellValue('Sheet1', 'B1', false);
+    const validV2 = Buffer.from(v2Source.getRowsBufferV2('Sheet1'));
+    const duplicateV2Cell = Buffer.from(validV2);
+    const v2CellData = 16 + duplicateV2Cell.readUInt32LE(6) * 8;
+    const firstV2Column = duplicateV2Cell.readUInt16LE(v2CellData + 2);
+    duplicateV2Cell.writeUInt16LE(firstV2Column, v2CellData + 2 + 4);
+
+    const emptySentinelV2 = Buffer.from(validV2);
+    emptySentinelV2.writeUInt32LE(0xffffffff, 20);
+    const truncatedV2 = validV2.subarray(0, validV2.length - 1);
+
+    for (const [buffer, message] of [
+      [invalidVersion, 'unsupported version'],
+      [oversizedRows, 'truncated row index'],
+      [invalidRow, 'row number is out of range'],
+      [duplicateRow, 'row numbers must be strictly increasing'],
+      [invalidColumns, 'column range is out of bounds'],
+      [nonzeroFirstStringOffset, 'first string offset must be zero'],
+      [malformedUtf8, 'malformed UTF-8 string'],
+      [duplicateCell, 'cell columns must be strictly increasing'],
+      [duplicateV2Cell, 'cell columns must be strictly increasing'],
+      [emptySentinelV2, 'v2 row cannot use an empty-row sentinel'],
+      [truncatedV2, 'truncated v2 cell payload'],
+    ] as const) {
+      expect(() => new SheetData(buffer), `SheetData: ${message}`).toThrow(message);
+      expect(() => decodeRowsBuffer(buffer), `decodeRowsBuffer: ${message}`).toThrow(message);
+    }
+
+    for (let length = 16; length < valid.length; length++) {
+      expect(() => new SheetData(valid.subarray(0, length))).toThrow('Invalid buffer');
+    }
+  });
+
   it('should return correct rowCount and colCount', () => {
     const wb = new Workbook();
     wb.setCellValue('Sheet1', 'A1', 'a');
@@ -2862,7 +2940,7 @@ describe('decodeRowsBuffer', () => {
   it('should return empty array for null or empty buffer', () => {
     expect(decodeRowsBuffer(null)).toEqual([]);
     expect(decodeRowsBuffer(Buffer.alloc(0))).toEqual([]);
-    expect(decodeRowsBuffer(Buffer.alloc(5))).toEqual([]);
+    expect(() => decodeRowsBuffer(Buffer.alloc(5))).toThrow('truncated header');
   });
 
   it('rejects malformed versions, sections, and offsets before decoding', () => {
@@ -2879,7 +2957,9 @@ describe('decodeRowsBuffer', () => {
     descendingOffsets.writeUInt32LE(2, stringTable);
     descendingOffsets.writeUInt32LE(4, stringTable + 8);
     descendingOffsets.writeUInt32LE(3, stringTable + 12);
-    expect(() => decodeRowsBuffer(descendingOffsets)).toThrow('string offsets');
+    expect(() => decodeRowsBuffer(descendingOffsets)).toThrow(
+      'Invalid buffer: first string offset must be zero',
+    );
 
     const oversizedRows = Buffer.from(valid);
     oversizedRows.writeUInt32LE(0xffffffff, 6);
@@ -2893,7 +2973,7 @@ describe('decodeRowsBuffer', () => {
   it('rejects malformed v1 dense and sparse cell tags and string indexes', () => {
     const denseSource = new Workbook();
     denseSource.setCellValue('Sheet1', 'A1', 'value');
-    const dense = Buffer.from(denseSource.getRowsBuffer('Sheet1'));
+    const dense = Buffer.from(denseSource.getRowsBuffer('Sheet1', { mode: 'dense' }));
     const denseStringTable = 16 + 8;
     const denseStringCount = dense.readUInt32LE(denseStringTable);
     const denseBlobSize = dense.readUInt32LE(denseStringTable + 4);
@@ -3146,15 +3226,22 @@ describe('toJSON', () => {
       { Key: 'number', Value: 42 },
       { Key: 'text', Value: 'hello' },
       { Key: 'bool', Value: true },
-      { Key: 'empty', Value: null },
+      { Key: 'empty' },
     ]);
   });
 
-  it('should handle rows shorter than header', () => {
+  it('should omit sparse cells missing from a row', () => {
     const wb = new Workbook();
     wb.setSheetData('Sheet1', [['A', 'B', 'C'], ['only_one']]);
     const result = wb.toJSON('Sheet1');
-    expect(result).toEqual([{ A: 'only_one', B: null, C: null }]);
+    expect(result).toEqual([{ A: 'only_one' }]);
+
+    expect(
+      wb.toJSON('Sheet1', {
+        mode: 'dense',
+        limits: { maxRows: 2, maxColumns: 3, maxCells: 6, maxOutputBytes: 1_024 },
+      }),
+    ).toEqual([{ A: 'only_one', B: null, C: null }]);
   });
 
   it('should handle single-row sheet (header only)', () => {
@@ -3223,8 +3310,8 @@ describe('toCSV', () => {
       ['Name', 'Age'],
       ['Alice', 30],
     ]);
-    const csv = wb.toCSV('Sheet1', { delimiter: '\t', lineEnding: '\r\n' });
-    expect(csv).toBe('Name\tAge\r\nAlice\t30');
+    const csv = wb.toCSV('Sheet1', { delimiter: ';', lineEnding: '\r\n' });
+    expect(csv).toBe('Name;Age\r\nAlice;30');
   });
 
   it('should return empty string for empty sheet', () => {
@@ -3233,11 +3320,16 @@ describe('toCSV', () => {
     expect(csv).toBe('');
   });
 
-  it('should handle boolean and null values', () => {
+  it('should compact sparse null cells and retain them in dense mode', () => {
     const wb = new Workbook();
     wb.setSheetData('Sheet1', [[true, false, null, 0]]);
-    const csv = wb.toCSV('Sheet1');
-    expect(csv).toBe('true,false,,0');
+    expect(wb.toCSV('Sheet1')).toBe('true,false,0');
+    expect(
+      wb.toCSV('Sheet1', {
+        mode: 'dense',
+        limits: { maxRows: 1, maxColumns: 4, maxCells: 4, maxOutputBytes: 1_024 },
+      }),
+    ).toBe('true,false,,0');
   });
 
   it('should escape custom quote character', () => {
@@ -3247,25 +3339,31 @@ describe('toCSV', () => {
     expect(csv).toBe("'it''s a test',normal");
   });
 
-  it('should escape formula-like values when escapeFormulas is true', () => {
+  it('should escape formula-like values by default', () => {
     const wb = new Workbook();
     wb.setSheetData('Sheet1', [['=cmd|calc', '+1', '-1', '@SUM(A1)', 'safe']]);
-    const csv = wb.toCSV('Sheet1', { escapeFormulas: true });
-    expect(csv).toBe('\t=cmd|calc,\t+1,\t-1,\t@SUM(A1),safe');
+    const csv = wb.toCSV('Sheet1');
+    expect(csv).toBe("'=cmd|calc,'+1,'-1,'@SUM(A1),safe");
   });
 
-  it('should not escape formulas by default', () => {
+  it('should preserve formulas only with raw-exchange policy', () => {
     const wb = new Workbook();
     wb.setSheetData('Sheet1', [['=SUM(A1)']]);
-    const csv = wb.toCSV('Sheet1');
+    const csv = wb.toCSV('Sheet1', { formulaPolicy: 'raw-exchange' });
     expect(csv).toBe('=SUM(A1)');
   });
 
-  it('should preserve absolute column offsets for data starting at C', () => {
+  it('should compact absolute column offsets unless dense mode is admitted', () => {
     const wb = new Workbook();
     wb.setSheetData('Sheet1', [['=SUM(A1)', 'value']], 'C1');
 
-    expect(wb.toCSV('Sheet1', { escapeFormulas: true })).toBe(',,\t=SUM(A1),value');
+    expect(wb.toCSV('Sheet1')).toBe("'=SUM(A1),value");
+    expect(
+      wb.toCSV('Sheet1', {
+        mode: 'dense',
+        limits: { maxRows: 1, maxColumns: 2, maxCells: 2, maxOutputBytes: 1_024 },
+      }),
+    ).toBe(",,'=SUM(A1),value");
   });
 });
 
@@ -5618,9 +5716,8 @@ describe('decodeRowsRawBuffer', () => {
     expect(raw.totalCells).toBe(0);
   });
 
-  it('should return empty result for tiny buffer', () => {
-    const raw = decodeRowsRawBuffer(Buffer.alloc(5));
-    expect(raw.totalRows).toBe(0);
+  it('should reject a truncated buffer header', () => {
+    expect(() => decodeRowsRawBuffer(Buffer.alloc(5))).toThrow('truncated header');
   });
 
   it('should decode the same data as decodeRowsBuffer', () => {
@@ -5758,9 +5855,8 @@ describe('decodeRowsIterator', () => {
     expect(items).toEqual([]);
   });
 
-  it('should return empty iterator for tiny buffer', () => {
-    const items = [...decodeRowsIterator(Buffer.alloc(5))];
-    expect(items).toEqual([]);
+  it('should reject a truncated iterator buffer header', () => {
+    expect(() => [...decodeRowsIterator(Buffer.alloc(5))]).toThrow('truncated header');
   });
 
   it('should yield the same rows as decodeRowsBuffer', () => {
@@ -6079,6 +6175,17 @@ describe('v2 decodeRowsRawBuffer', () => {
         ci++;
       }
     }
+  });
+
+  it('rejects malformed UTF-8 before returning raw output', () => {
+    const workbook = new Workbook();
+    workbook.setCellValue('Sheet1', 'A1', 'valid');
+    const buffer = Buffer.from(workbook.getRowsBufferV2('Sheet1'));
+    const cellData = 16 + buffer.readUInt32LE(6) * 8;
+    const stringPayload = cellData + 2 + 3;
+    buffer[stringPayload + 4] = 0xff;
+
+    expect(() => decodeRowsRawBuffer(buffer)).toThrow('malformed UTF-8 string');
   });
 });
 

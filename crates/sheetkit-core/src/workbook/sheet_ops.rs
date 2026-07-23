@@ -423,8 +423,20 @@ impl Workbook {
         if self.raw_sheet_xml.len() < self.worksheets.len() {
             self.raw_sheet_xml.push(None);
         }
+        if self.raw_sheet_extensions.len() < self.worksheets.len() {
+            self.raw_sheet_extensions.push(None);
+        }
         if self.sheet_dirty.len() < self.worksheets.len() {
             self.sheet_dirty.push(true);
+        }
+        if self.sheet_included.len() < self.worksheets.len() {
+            self.sheet_included.push(true);
+        }
+        if self.sheet_materialized.len() < self.worksheets.len() {
+            self.sheet_materialized.push(true);
+        }
+        if self.sheet_package_backed.len() < self.worksheets.len() {
+            self.sheet_package_backed.push(false);
         }
         if self.sheet_threaded_comments.len() < self.worksheets.len() {
             self.sheet_threaded_comments.push(None);
@@ -540,7 +552,11 @@ impl Workbook {
         self.sheet_sparklines_hydrated.remove(idx);
         self.sheet_vml.remove(idx);
         self.raw_sheet_xml.remove(idx);
+        self.raw_sheet_extensions.remove(idx);
         self.sheet_dirty.remove(idx);
+        self.sheet_included.remove(idx);
+        self.sheet_materialized.remove(idx);
+        self.sheet_package_backed.remove(idx);
         self.sheet_threaded_comments.remove(idx);
         self.sheet_form_controls.remove(idx);
         self.sheet_controls_dirty.remove(idx);
@@ -1010,7 +1026,23 @@ impl Workbook {
         );
         debug_assert_eq!(self.sheet_vml.len(), n, "sheet_vml desync");
         debug_assert_eq!(self.raw_sheet_xml.len(), n, "raw_sheet_xml desync");
+        debug_assert_eq!(
+            self.raw_sheet_extensions.len(),
+            n,
+            "raw_sheet_extensions desync"
+        );
         debug_assert_eq!(self.sheet_dirty.len(), n, "sheet_dirty desync");
+        debug_assert_eq!(self.sheet_included.len(), n, "sheet_included desync");
+        debug_assert_eq!(
+            self.sheet_materialized.len(),
+            n,
+            "sheet_materialized desync"
+        );
+        debug_assert_eq!(
+            self.sheet_package_backed.len(),
+            n,
+            "sheet_package_backed desync"
+        );
         debug_assert_eq!(
             self.sheet_threaded_comments.len(),
             n,
@@ -1054,6 +1086,7 @@ impl Workbook {
         // operate on complete source state.
         self.hydrate_owned_parts_for_copy(src_idx)?;
         self.hydrate_sparklines_for_sheet(src_idx);
+        self.ensure_hydrated(src_idx)?;
 
         let cloned_streamed = self
             .streamed_sheets
@@ -1443,7 +1476,12 @@ impl Workbook {
                 .and_then(crate::control::strip_form_control_shapes_from_vml),
         );
         self.raw_sheet_xml.push(None);
+        self.raw_sheet_extensions
+            .push(self.raw_sheet_extensions[src_idx].clone());
         self.sheet_dirty.push(true);
+        self.sheet_included.push(true);
+        self.sheet_materialized.push(true);
+        self.sheet_package_backed.push(false);
         let mut occupied_thread_ids: std::collections::HashSet<String> = self
             .sheet_threaded_comments
             .iter()
@@ -1547,13 +1585,23 @@ impl Workbook {
     /// The sheet will be added to the workbook when the StreamWriter is applied
     /// via [`apply_stream_writer`](Self::apply_stream_writer).
     pub fn new_stream_writer(&self, sheet_name: &str) -> Result<crate::stream::StreamWriter> {
+        self.new_stream_writer_with_limits(sheet_name, crate::save::StreamLimits::default())
+    }
+
+    /// Create a [`StreamWriter`](crate::stream::StreamWriter) with explicit
+    /// finite row, cell, XML, and output limits.
+    pub fn new_stream_writer_with_limits(
+        &self,
+        sheet_name: &str,
+        limits: crate::save::StreamLimits,
+    ) -> Result<crate::stream::StreamWriter> {
         crate::sheet::validate_sheet_name(sheet_name)?;
         if self.worksheets.iter().any(|(n, _)| n == sheet_name) {
             return Err(Error::SheetAlreadyExists {
                 name: sheet_name.to_string(),
             });
         }
-        Ok(crate::stream::StreamWriter::new(sheet_name))
+        crate::stream::StreamWriter::try_new_with_limits(sheet_name, limits)
     }
 
     /// Apply a completed [`StreamWriter`](crate::stream::StreamWriter) to the
@@ -1734,9 +1782,19 @@ impl Workbook {
     /// least one cell are included (sparse).
     #[allow(clippy::type_complexity)]
     pub fn get_rows(&self, sheet: &str) -> Result<Vec<(u32, Vec<(u32, CellValue)>)>> {
+        self.get_rows_with_limits(sheet, crate::traversal::TraversalLimits::default())
+    }
+
+    /// Gets sparse rows with explicit finite materialization limits.
+    #[allow(clippy::type_complexity)]
+    pub fn get_rows_with_limits(
+        &self,
+        sheet: &str,
+        limits: crate::traversal::TraversalLimits,
+    ) -> Result<Vec<(u32, Vec<(u32, CellValue)>)>> {
         let ws = self.worksheet_ref(sheet)?;
         let style_is_date = self.computed_style_is_date();
-        crate::row::get_rows(ws, &self.sst_runtime, &style_is_date)
+        crate::row::get_rows_with_limits(ws, &self.sst_runtime, &style_is_date, limits)
     }
 
     /// Get all columns with their data from a sheet.
@@ -1745,9 +1803,19 @@ impl Workbook {
     /// Only columns that have data are included (sparse).
     #[allow(clippy::type_complexity)]
     pub fn get_cols(&self, sheet: &str) -> Result<Vec<(String, Vec<(u32, CellValue)>)>> {
+        self.get_cols_with_limits(sheet, crate::traversal::TraversalLimits::default())
+    }
+
+    /// Gets sparse columns with explicit finite materialization limits.
+    #[allow(clippy::type_complexity)]
+    pub fn get_cols_with_limits(
+        &self,
+        sheet: &str,
+        limits: crate::traversal::TraversalLimits,
+    ) -> Result<Vec<(String, Vec<(u32, CellValue)>)>> {
         let ws = self.worksheet_ref(sheet)?;
         let style_is_date = self.computed_style_is_date();
-        crate::col::get_cols(ws, &self.sst_runtime, &style_is_date)
+        crate::col::get_cols_with_limits(ws, &self.sst_runtime, &style_is_date, limits)
     }
 
     /// Set the width of a column.
@@ -1975,7 +2043,16 @@ impl Workbook {
             }
         }
         for (owner_sheet_idx, sparklines) in self.sheet_sparklines.iter().enumerate() {
-            let Some(Some(raw)) = self.raw_sheet_xml.get(owner_sheet_idx) else {
+            let Some(raw) = self
+                .raw_sheet_xml
+                .get(owner_sheet_idx)
+                .and_then(Option::as_deref)
+                .or_else(|| {
+                    self.raw_sheet_extensions
+                        .get(owner_sheet_idx)
+                        .and_then(Option::as_deref)
+                })
+            else {
                 continue;
             };
             let mut replacements = Vec::new();
@@ -2350,6 +2427,15 @@ impl Workbook {
             if let Some(bytes) = self.raw_sheet_xml.get(sheet_idx).and_then(Option::as_deref) {
                 return io::deserialize_worksheet_xml(bytes);
             }
+            if self
+                .sheet_package_backed
+                .get(sheet_idx)
+                .copied()
+                .unwrap_or(false)
+                && !self.sheet_included.get(sheet_idx).copied().unwrap_or(true)
+            {
+                return self.deserialize_package_sheet(sheet_idx);
+            }
         }
         Ok(self.worksheet_ref_by_index(sheet_idx)?.clone())
     }
@@ -2669,7 +2755,20 @@ impl Workbook {
                 .push((tag.to_string(), old, new));
         }
         for (owner_sheet_idx, replacements) in replacements_by_owner {
-            let Some(Some(raw)) = self.raw_sheet_xml.get(owner_sheet_idx) else {
+            let raw_is_full = self
+                .raw_sheet_xml
+                .get(owner_sheet_idx)
+                .is_some_and(Option::is_some);
+            let Some(raw) = self
+                .raw_sheet_xml
+                .get(owner_sheet_idx)
+                .and_then(Option::as_deref)
+                .or_else(|| {
+                    self.raw_sheet_extensions
+                        .get(owner_sheet_idx)
+                        .and_then(Option::as_deref)
+                })
+            else {
                 continue;
             };
             let patched = replace_raw_element_texts(
@@ -2677,7 +2776,11 @@ impl Workbook {
                 replacements,
                 &self.sheet_part_path(owner_sheet_idx),
             )?;
-            self.raw_sheet_xml[owner_sheet_idx] = Some(patched);
+            if raw_is_full {
+                self.raw_sheet_xml[owner_sheet_idx] = Some(patched);
+            } else {
+                self.raw_sheet_extensions[owner_sheet_idx] = Some(patched);
+            }
         }
 
         let mut shifted_table = false;
@@ -4334,8 +4437,8 @@ mod tests {
         let mut workbook = Workbook::open_from_buffer(&bytes).unwrap();
         workbook.hydrate_sparklines_for_sheet(0);
         assert_eq!(workbook.sheet_sparklines[0][0].location, "B2");
-        let raw = String::from_utf8(workbook.raw_sheet_xml[0].clone().unwrap()).unwrap();
-        workbook.raw_sheet_xml[0] = Some(
+        let raw = String::from_utf8(workbook.raw_sheet_extensions[0].clone().unwrap()).unwrap();
+        workbook.raw_sheet_extensions[0] = Some(
             raw.replace("<xm:sqref>B2</xm:sqref>", "<xm:sqref>B2:B2</xm:sqref>")
                 .into_bytes(),
         );
@@ -4363,8 +4466,9 @@ mod tests {
             .unwrap();
         let bytes = source.save_to_buffer().unwrap();
         let mut workbook = Workbook::open_from_buffer(&bytes).unwrap();
-        let raw = String::from_utf8(workbook.raw_sheet_xml[0].clone().unwrap()).unwrap();
-        workbook.raw_sheet_xml[0] = Some(
+        workbook.hydrate_sparklines_for_sheet(0);
+        let raw = String::from_utf8(workbook.raw_sheet_extensions[0].clone().unwrap()).unwrap();
+        workbook.raw_sheet_extensions[0] = Some(
             raw.replace(
                 "</x14:sparklineGroup>",
                 "<x14:colorSeries rgb=\"FF112233\"/><x14:colorAxis rgb=\"FF445566\"/><x14:displayEmptyCellsAs val=\"span\"/></x14:sparklineGroup>",
@@ -5409,6 +5513,22 @@ mod tests {
         assert_eq!(cols[1].0, "B");
         assert_eq!(cols[1].1[0], (1, CellValue::Number(42.0)));
         assert_eq!(cols[1].1[1], (2, CellValue::Number(30.0)));
+    }
+
+    #[test]
+    fn test_workbook_get_cols_with_limits() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", "first").unwrap();
+        wb.set_cell_value("Sheet1", "B2", "second").unwrap();
+
+        let exact = crate::traversal::TraversalLimits::new(2, 2, 2, 1_024).unwrap();
+        assert_eq!(wb.get_cols_with_limits("Sheet1", exact).unwrap().len(), 2);
+
+        let rejected = crate::traversal::TraversalLimits::new(1, 2, 2, 1_024).unwrap();
+        assert!(matches!(
+            wb.get_cols_with_limits("Sheet1", rejected),
+            Err(Error::ResourceLimitExceeded(_))
+        ));
     }
 
     #[test]

@@ -1,3 +1,4 @@
+import { isProxy } from 'node:util/types';
 import type {
   JsAppProperties,
   JsCellEntry,
@@ -6,6 +7,7 @@ import type {
   JsCommentConfig,
   JsConditionalFormatEntry,
   JsConditionalFormatRule,
+  JsCryptLimits,
   JsDataValidationConfig,
   JsDefinedNameConfig,
   JsDefinedNameInfo,
@@ -28,17 +30,20 @@ import type {
   JsRenderOptions,
   JsRichTextRun,
   JsRowData,
+  JsSaveLimits,
   JsShapeConfig,
   JsSheetProtectionConfig,
   JsSheetViewOptions,
   JsSlicerConfig,
   JsSlicerInfo,
   JsSparklineConfig,
+  JsStreamLimits,
   JsStyle,
   JsTableConfig,
   JsTableInfo,
   JsThreadedCommentData,
   JsThreadedCommentInput,
+  JsVbaLimits,
   JsVbaProject,
   JsWorkbookProtectionConfig,
 } from './binding.js';
@@ -52,7 +57,7 @@ import { decodeRowsBuffer, decodeRowsIterator, decodeRowsRawBuffer } from './buf
 import type { CellTypeName, CellValue as SheetDataCellValue } from './sheet-data.js';
 import { SheetData } from './sheet-data.js';
 
-export type { DateValue } from './sheet-data.js';
+export type { DateValue, OccupiedCell, OccupiedRow } from './sheet-data.js';
 
 import type { DateValue } from './sheet-data.js';
 
@@ -70,6 +75,7 @@ export type {
   JsConditionalFormatEntry,
   JsConditionalFormatRule,
   JsConditionalStyle,
+  JsCryptLimits,
   JsDataValidationConfig,
   JsDefinedNameConfig,
   JsDefinedNameInfo,
@@ -78,6 +84,7 @@ export type {
   JsFontStyle,
   JsFormControlConfig,
   JsFormControlInfo,
+  JsFormulaLimits,
   JsHeaderFooter,
   JsHyperlinkInfo,
   JsHyperlinkOptions,
@@ -98,18 +105,21 @@ export type {
   JsRichTextRun,
   JsRowCell,
   JsRowData,
+  JsSaveLimits,
   JsShapeConfig,
   JsSheetProtectionConfig,
   JsSheetViewOptions,
   JsSlicerConfig,
   JsSlicerInfo,
   JsSparklineConfig,
+  JsStreamLimits,
   JsStyle,
   JsTableColumn,
   JsTableConfig,
   JsTableInfo,
   JsThreadedCommentData,
   JsThreadedCommentInput,
+  JsVbaLimits,
   JsVbaModule,
   JsVbaProject,
   JsView3DConfig,
@@ -122,7 +132,7 @@ export type ReadMode = 'lazy' | 'stream' | 'eager';
 /**
  * Auxiliary parts loading policy.
  * - "deferred": auxiliary parts (comments, charts, images, etc.) are not parsed during open.
- * - "eager": all parts are parsed during open (backward-compatible default).
+ * - "eager": all parts are parsed during open.
  */
 export type AuxParts = 'deferred' | 'eager';
 
@@ -139,18 +149,113 @@ export type AuxParts = 'deferred' | 'eager';
  */
 export type DateInterpretation = 'cellType' | 'numFmt';
 
+/** Worksheet traversal layout. Dense traversal is available only for v1 buffers. */
+export type TraversalMode = 'sparse' | 'dense';
+
+/** Finite resource limits for one worksheet traversal. */
+export interface TraversalLimits {
+  /** Maximum occupied rows in sparse mode or spanned rows in dense mode. */
+  maxRows?: number;
+  /** Maximum occupied or spanned columns. */
+  maxColumns?: number;
+  /** Maximum occupied cells in sparse mode or spanned cells in dense mode. */
+  maxCells?: number;
+  /** Maximum binary output size in bytes. */
+  maxOutputBytes?: number;
+}
+
+/** Options shared by worksheet row traversal and export methods. */
+export interface TraversalOptions {
+  /** Sparse by default. Dense is an explicit, finite v1 compatibility mode. */
+  mode?: TraversalMode;
+  /** Per-operation finite limits. Omitted fields use secure finite defaults. */
+  limits?: TraversalLimits;
+}
+
+/** Finite limits for encrypted Office containers and password derivation. */
+export interface CryptLimits {
+  outerCfbBytes?: number;
+  namedStreamCount?: number;
+  namedStreamDeclaredBytes?: number;
+  namedStreamReadBytes?: number;
+  encryptedPackageBytes?: number;
+  kdfIterations?: number;
+  kdfWork?: number;
+}
+
+/** Finite limits for one workbook save operation. */
+export interface SaveLimits {
+  outputBytes?: number;
+  xmlPartBytes?: number;
+  rowCount?: number;
+  cellCount?: number;
+}
+
+/** Finite limits for one streaming worksheet writer. */
+export interface StreamLimits {
+  rowCount?: number;
+  cellCount?: number;
+  rowXmlBytes?: number;
+  outputBytes?: number;
+  configCount?: number;
+  configBytes?: number;
+}
+
+/** Finite limits for VBA project loading and module extraction. */
+export interface VbaLimits {
+  inputBytes?: number;
+  cfbStreamCount?: number;
+  cfbStreamDeclaredBytes?: number;
+  cfbAggregateDeclaredBytes?: number;
+  cfbStreamReadBytes?: number;
+  cfbAggregateReadBytes?: number;
+  compressedBytes?: number;
+  moduleCount?: number;
+  chunkCount?: number;
+  moduleDecodedBytes?: number;
+  aggregateDecodedBytes?: number;
+  retainedBytes?: number;
+  outputBytes?: number;
+}
+
+/** Finite limits for one formula parse, mutation, or calculation operation. */
+export interface FormulaLimits {
+  perFormulaInputBytes?: number;
+  perFormulaNestingDepth?: number;
+  perFormulaBinaryChainDepth?: number;
+  perFormulaTokens?: number;
+  perFormulaAstNodes?: number;
+  operationInputBytes?: number;
+  operationTokens?: number;
+  operationAstNodes?: number;
+  operationRangeCells?: number;
+  operationDependencyEdges?: number;
+  operationReadyQueueOps?: number;
+  operationEvaluationSteps?: number;
+  operationMatchWork?: number;
+  operationOutputBytes?: number;
+}
+
 /** Options for controlling how a workbook is opened and parsed. */
 export interface OpenOptions {
+  /** Maximum bytes accepted from the outer ZIP or encrypted container. */
+  maxOuterInputBytes?: number;
+  /** Maximum bytes read from one XML part, including lazy hydration. */
+  maxXmlPartBytes?: number;
   /** Read mode: "lazy" (recommended for read-only), "eager", or "stream". Default: "lazy". */
   readMode?: ReadMode;
   /** Only parse sheets whose names are in this list. Omit to parse all sheets. */
   sheets?: string[];
-  /** Maximum number of rows to read per sheet. Omit for unlimited. */
+  /** Maximum rows read per sheet. Omit to use the worksheet format maximum. */
   sheetRows?: number;
   /** Maximum total decompressed size of all ZIP entries in bytes. */
   maxUnzipSize?: number;
   /** Maximum number of ZIP entries allowed. */
   maxZipEntries?: number;
+  /** Finite encrypted-container and password-derivation limits. */
+  cryptLimits?: CryptLimits | JsCryptLimits;
+  /** Finite VBA project loading limits. */
+  vbaLimits?: VbaLimits | JsVbaLimits;
   /** Auxiliary parts loading policy. Default: "deferred". */
   auxParts?: AuxParts;
   /**
@@ -166,6 +271,7 @@ const RESOURCE_OPERATIONS = [
   'workbook_open',
   'workbook_save',
   'formula_parse',
+  'formula_mutate',
   'formula_calculate',
   'data_traverse',
   'render',
@@ -254,6 +360,13 @@ export interface ResourceLimitError extends Error {
   readonly stage: ResourceStage | null;
 }
 
+function createResourceLimitError(
+  message: string,
+  metadata: Omit<ResourceLimitError, keyof Error>,
+): ResourceLimitError {
+  return Object.assign(new Error(message), metadata);
+}
+
 function isClosedCode<const Values extends readonly string[]>(
   values: Values,
   value: unknown,
@@ -328,27 +441,35 @@ function toNativeCellValue(value: CellValueInput): NativeCellValueInput {
   return value as NativeCellValueInput;
 }
 
-export interface ToJsonOptions {
+export interface ToJsonOptions extends TraversalOptions {
   /** Use first row as keys (true), or provide custom key names. */
   header?: boolean | string[];
 }
 
-export interface ToCsvOptions {
+/** Policy for text that spreadsheet applications may interpret as a formula. */
+export type CsvFormulaPolicy = 'spreadsheet-safe' | 'raw-exchange';
+
+/** Maximum UTF-8 bytes returned by one CSV serialization. */
+export const MAX_CSV_OUTPUT_BYTES = 64 * 1024 * 1024;
+
+const CSV_TRANSFER_BASE_BYTES = 64;
+const CSV_TRANSFER_OVERHEAD_FACTOR = 21;
+const DEFAULT_CSV_TRANSFER_BYTES = 512 * 1024 * 1024;
+
+export interface ToCsvOptions extends TraversalOptions {
+  /** Traversal limits; maxOutputBytes bounds the returned UTF-8 CSV. */
+  limits?: TraversalLimits;
   /** Field delimiter. Default: "," */
   delimiter?: string;
   /** Quote character. Default: '"' */
   quote?: string;
   /** Line ending. Default: "\n" */
   lineEnding?: string;
-  /**
-   * When true, prefix cell values starting with `=`, `+`, `-`, or `@` with
-   * a tab character to prevent formula injection when the CSV is opened in
-   * a spreadsheet application. Default: false.
-   */
-  escapeFormulas?: boolean;
+  /** Formula-capable text policy. Default: "spreadsheet-safe". */
+  formulaPolicy?: CsvFormulaPolicy;
 }
 
-export interface ToHtmlOptions {
+export interface ToHtmlOptions extends TraversalOptions {
   /** CSS class name for the table element. */
   className?: string;
 }
@@ -358,12 +479,535 @@ export interface FromJsonOptions {
   header?: boolean | string[];
   /** Top-left cell to start writing. Default: "A1" */
   startCell?: string;
+  /** Per-operation finite import limits. Omitted fields use secure defaults. */
+  limits?: FromJsonLimits;
+}
+
+/** Finite limits for one `fromJSON` import operation. */
+export interface FromJsonLimits {
+  /** Maximum number of data and header rows written. */
+  maxRows?: number;
+  /** Maximum number of distinct imported columns. */
+  maxColumns?: number;
+  /** Maximum number of coordinate-bearing cells staged for one import. */
+  maxCells?: number;
+  /** Maximum logical bytes retained by the import staging representation. */
+  maxRetainedBytes?: number;
+}
+
+const EXCEL_MAX_ROWS = 1_048_576;
+const EXCEL_MAX_COLUMNS = 16_384;
+const DEFAULT_FROM_JSON_MAX_CELLS = 10_000_000;
+const HARD_FROM_JSON_MAX_CELLS = 100_000_000;
+const DEFAULT_FROM_JSON_MAX_RETAINED_BYTES = 512 * 1_024 * 1_024;
+const HARD_FROM_JSON_MAX_RETAINED_BYTES = 2 * 1_024 * 1_024 * 1_024;
+const FROM_JSON_KEY_OVERHEAD_BYTES = 16;
+const FROM_JSON_ENTRY_OVERHEAD_BYTES = 64;
+const MAX_FROM_JSON_CELL_STRING_BYTES = 32_767;
+const MAX_FROM_JSON_DATE_ISO_BYTES = 64;
+
+interface ResolvedFromJsonLimits {
+  maxRows: number;
+  maxColumns: number;
+  maxCells: number;
+  maxRetainedBytes: number;
+}
+
+function fromJsonLimitError(
+  dimension: 'row_count' | 'column_count' | 'cell_count' | 'retained_bytes',
+  limit: number,
+  observed: number,
+): ResourceLimitError {
+  return createResourceLimitError('JSON import resource limit exceeded', {
+    code: 'resource_limit_exceeded',
+    operation: 'data_traverse',
+    category: 'structure',
+    dimension,
+    limit: BigInt(limit),
+    observed: BigInt(Math.max(observed, limit + 1)),
+    stage: 'validate',
+  });
+}
+
+function resolveFromJsonLimit(
+  value: number | undefined,
+  fallback: number,
+  hardLimit: number,
+  dimension: 'row_count' | 'column_count' | 'cell_count' | 'retained_bytes',
+): number {
+  if (value === undefined) return fallback;
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new TypeError('JSON import limits must be non-negative safe integers');
+  }
+  if (value === 0) throw fromJsonLimitError(dimension, 0, 1);
+  if (value > hardLimit) throw fromJsonLimitError(dimension, hardLimit, value);
+  return value;
+}
+
+function resolveFromJsonLimits(limits: FromJsonLimits | undefined): ResolvedFromJsonLimits {
+  if (
+    limits !== undefined &&
+    (typeof limits !== 'object' || limits === null || Array.isArray(limits))
+  ) {
+    throw new TypeError('JSON import limits must be an object');
+  }
+  return {
+    maxRows: resolveFromJsonLimit(limits?.maxRows, EXCEL_MAX_ROWS, EXCEL_MAX_ROWS, 'row_count'),
+    maxColumns: resolveFromJsonLimit(
+      limits?.maxColumns,
+      EXCEL_MAX_COLUMNS,
+      EXCEL_MAX_COLUMNS,
+      'column_count',
+    ),
+    maxCells: resolveFromJsonLimit(
+      limits?.maxCells,
+      DEFAULT_FROM_JSON_MAX_CELLS,
+      HARD_FROM_JSON_MAX_CELLS,
+      'cell_count',
+    ),
+    maxRetainedBytes: resolveFromJsonLimit(
+      limits?.maxRetainedBytes,
+      DEFAULT_FROM_JSON_MAX_RETAINED_BYTES,
+      HARD_FROM_JSON_MAX_RETAINED_BYTES,
+      'retained_bytes',
+    ),
+  };
+}
+
+function checkFromJsonLimit(
+  dimension: 'row_count' | 'column_count' | 'cell_count' | 'retained_bytes',
+  limit: number,
+  observed: number,
+): void {
+  if (observed > limit) throw fromJsonLimitError(dimension, limit, observed);
+}
+
+function checkedFromJsonAdd(
+  current: number,
+  additional: number,
+  limit: number,
+  dimension: 'cell_count' | 'retained_bytes',
+): number {
+  const observed = current + additional;
+  if (!Number.isSafeInteger(observed)) {
+    throw fromJsonLimitError(dimension, limit, limit + 1);
+  }
+  checkFromJsonLimit(dimension, limit, observed);
+  return observed;
+}
+
+interface OwnDataProperty {
+  present: boolean;
+  value: unknown;
+}
+
+interface JsonCellSnapshot {
+  value: JsCellEntry['value'];
+  retainedBytes: number;
+}
+
+function ownDataProperty(value: Record<string, unknown>, key: string): OwnDataProperty {
+  const descriptor = Object.getOwnPropertyDescriptor(value, key);
+  if (descriptor === undefined) return { present: false, value: undefined };
+  if (!('value' in descriptor)) throw new TypeError('JSON values must use data properties');
+  return { present: true, value: descriptor.value };
+}
+
+function snapshotDateValue(value: unknown, knownKind?: 'date'): JsonCellSnapshot {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new TypeError('Invalid JSON cell value');
+  }
+  const candidate = value as Record<string, unknown>;
+  const kind = knownKind ?? ownDataProperty(candidate, 'type').value;
+  const serial = ownDataProperty(candidate, 'serial');
+  const iso = ownDataProperty(candidate, 'iso');
+  if (
+    kind !== 'date' ||
+    typeof serial.value !== 'number' ||
+    !Number.isFinite(serial.value) ||
+    (iso.value !== null && iso.value !== undefined && typeof iso.value !== 'string')
+  ) {
+    throw new TypeError('Invalid JSON cell value');
+  }
+  const isoBytes = typeof iso.value === 'string' ? Buffer.byteLength(iso.value) : 0;
+  if (isoBytes > MAX_FROM_JSON_DATE_ISO_BYTES) {
+    throw new TypeError('Invalid JSON cell value');
+  }
+  return {
+    value: Object.freeze({
+      type: 'date',
+      serial: serial.value,
+      iso: typeof iso.value === 'string' ? iso.value : undefined,
+    }) as JsCellEntry['value'],
+    retainedBytes: 16 + isoBytes,
+  };
+}
+
+function snapshotFormulaResult(value: unknown): {
+  value: Record<string, unknown>;
+  retainedBytes: number;
+} {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new TypeError('Invalid JSON formula result');
+  }
+  const candidate = value as Record<string, unknown>;
+  const valueType = ownDataProperty(candidate, 'valueType');
+  const stringValue = ownDataProperty(candidate, 'value');
+  const numberValue = ownDataProperty(candidate, 'numberValue');
+  const boolValue = ownDataProperty(candidate, 'boolValue');
+  const date = ownDataProperty(candidate, 'date');
+  const hasValue = stringValue.present && stringValue.value !== undefined;
+  const hasNumber = numberValue.present && numberValue.value !== undefined;
+  const hasBoolean = boolValue.present && boolValue.value !== undefined;
+  const hasDate = date.present && date.value !== undefined;
+
+  switch (valueType.value) {
+    case 'empty':
+      if (hasValue || hasNumber || hasBoolean || hasDate) {
+        throw new TypeError('Invalid JSON formula result');
+      }
+      return { value: Object.freeze({ valueType: 'empty' }), retainedBytes: 0 };
+    case 'boolean':
+      if (typeof boolValue.value !== 'boolean' || hasValue || hasNumber || hasDate) {
+        throw new TypeError('Invalid JSON formula result');
+      }
+      return {
+        value: Object.freeze({ valueType: 'boolean', boolValue: boolValue.value }),
+        retainedBytes: 1,
+      };
+    case 'number':
+      if (
+        typeof numberValue.value !== 'number' ||
+        !Number.isFinite(numberValue.value) ||
+        hasValue ||
+        hasBoolean ||
+        hasDate
+      ) {
+        throw new TypeError('Invalid JSON formula result');
+      }
+      return {
+        value: Object.freeze({ valueType: 'number', numberValue: numberValue.value }),
+        retainedBytes: 8,
+      };
+    case 'date': {
+      if (hasValue || hasNumber || hasBoolean || !hasDate) {
+        throw new TypeError('Invalid JSON formula result');
+      }
+      const snapshot = snapshotDateValue(date.value);
+      return {
+        value: Object.freeze({ valueType: 'date', date: snapshot.value }),
+        retainedBytes: snapshot.retainedBytes,
+      };
+    }
+    case 'error':
+    case 'string': {
+      if (typeof stringValue.value !== 'string' || hasNumber || hasBoolean || hasDate) {
+        throw new TypeError('Invalid JSON formula result');
+      }
+      const bytes = Buffer.byteLength(stringValue.value);
+      if (bytes > MAX_FROM_JSON_CELL_STRING_BYTES) {
+        throw new TypeError('JSON cell string exceeds the Excel limit');
+      }
+      return {
+        value: Object.freeze({ valueType: valueType.value, value: stringValue.value }),
+        retainedBytes: bytes,
+      };
+    }
+    default:
+      throw new TypeError('Invalid JSON formula result');
+  }
+}
+
+function snapshotJsonCellValue(value: unknown): JsonCellSnapshot {
+  if (value === undefined || value === null) return { value: null, retainedBytes: 0 };
+  if (typeof value === 'string') {
+    const bytes = Buffer.byteLength(value);
+    if (bytes > MAX_FROM_JSON_CELL_STRING_BYTES) {
+      throw new TypeError('JSON cell string exceeds the Excel limit');
+    }
+    return { value, retainedBytes: bytes };
+  }
+  if (typeof value === 'boolean') return { value, retainedBytes: 1 };
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) throw new TypeError('Invalid JSON cell value');
+    return { value, retainedBytes: 8 };
+  }
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw new TypeError('Invalid JSON cell value');
+  }
+
+  const candidate = value as Record<string, unknown>;
+  const kind = ownDataProperty(candidate, 'type');
+  if (kind.value === 'date') return snapshotDateValue(candidate, 'date');
+  if (kind.value !== 'formula') throw new TypeError('Invalid JSON cell value');
+
+  const formula = ownDataProperty(candidate, 'formula');
+  const result = ownDataProperty(candidate, 'result');
+  if (typeof formula.value !== 'string') throw new TypeError('Invalid JSON cell value');
+  const resultSnapshot = result.value === undefined ? null : snapshotFormulaResult(result.value);
+  return {
+    value: Object.freeze({
+      type: 'formula',
+      formula: formula.value,
+      result: resultSnapshot?.value,
+    }) as JsCellEntry['value'],
+    retainedBytes: Buffer.byteLength(formula.value) + (resultSnapshot?.retainedBytes ?? 0),
+  };
+}
+
+function isJsonRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function* jsonRecordKeys(record: Record<string, unknown>): Generator<string> {
+  if (isProxy(record)) {
+    throw new TypeError('JSON import rows must be plain objects');
+  }
+  const prototype = Object.getPrototypeOf(record);
+  if (prototype !== null && prototype !== Object.prototype) {
+    throw new TypeError('JSON import rows must be plain objects');
+  }
+  if (prototype === Object.prototype) {
+    for (const _key in Object.prototype) {
+      throw new TypeError('JSON import rows require an unmodified object prototype');
+    }
+  }
+  for (const key in record) {
+    yield key;
+  }
+}
+
+function jsonRecordValue(record: Record<string, unknown>, key: string): unknown {
+  const descriptor = Object.getOwnPropertyDescriptor(record, key);
+  if (descriptor === undefined || !descriptor.enumerable || !('value' in descriptor)) {
+    throw new TypeError('JSON import rows must use enumerable data properties');
+  }
+  return descriptor.value;
+}
+
+function jsonArrayLength(value: unknown[]): number {
+  const descriptor = Object.getOwnPropertyDescriptor(value, 'length');
+  if (
+    descriptor === undefined ||
+    !('value' in descriptor) ||
+    !Number.isSafeInteger(descriptor.value) ||
+    descriptor.value < 0
+  ) {
+    throw new TypeError('Invalid JSON array');
+  }
+  return descriptor.value;
+}
+
+function jsonArrayElement(value: unknown[], index: number): unknown {
+  const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+  if (descriptor === undefined || !descriptor.enumerable || !('value' in descriptor)) {
+    throw new TypeError('JSON arrays must use dense data properties');
+  }
+  return descriptor.value;
 }
 
 function cellValueToString(v: SheetDataCellValue): string {
   if (v === null || v === undefined) return '';
   if (typeof v === 'object' && v.type === 'date') return v.iso ?? String(v.serial);
   return String(v);
+}
+
+function isFormulaLeadingCharacter(character: string): boolean {
+  const codePoint = character.codePointAt(0);
+  return (
+    character === '\uFEFF' ||
+    /\s/u.test(character) ||
+    (codePoint !== undefined && (codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f)))
+  );
+}
+
+function isFormulaCapableText(value: string): boolean {
+  for (const character of value) {
+    if (isFormulaLeadingCharacter(character)) continue;
+    return '=+-@'.includes(character);
+  }
+  return false;
+}
+
+function csvFormulaPolicy(value: CsvFormulaPolicy | undefined): CsvFormulaPolicy {
+  const policy = value ?? 'spreadsheet-safe';
+  if (policy !== 'spreadsheet-safe' && policy !== 'raw-exchange') {
+    throw new TypeError('formulaPolicy must be "spreadsheet-safe" or "raw-exchange"');
+  }
+  return policy;
+}
+
+function validateCsvSyntax(
+  delimiter: string,
+  quote: string,
+  lineEnding: string,
+  formulaPolicy: CsvFormulaPolicy,
+): void {
+  if ([...delimiter].length !== 1 || [...quote].length !== 1) {
+    throw new TypeError('delimiter and quote must each be one character');
+  }
+  const isControl = (value: string): boolean => {
+    const codePoint = value.codePointAt(0);
+    return (
+      codePoint === undefined ||
+      codePoint <= 0x1f ||
+      codePoint === 0x7f ||
+      (codePoint >= 0x80 && codePoint <= 0x9f)
+    );
+  };
+  if (delimiter === quote || isControl(delimiter) || isControl(quote)) {
+    throw new TypeError('delimiter and quote must be distinct non-control characters');
+  }
+  if (lineEnding !== '\n' && lineEnding !== '\r\n') {
+    throw new TypeError('lineEnding must be "\\n" or "\\r\\n"');
+  }
+  if (formulaPolicy === 'spreadsheet-safe' && [delimiter, quote].some(isFormulaCapableText)) {
+    throw new TypeError('CSV syntax must not introduce a spreadsheet formula');
+  }
+}
+
+function csvOutputLimit(options: ToCsvOptions | undefined): number {
+  const requested = options?.limits?.maxOutputBytes;
+  if (requested === undefined) return MAX_CSV_OUTPUT_BYTES;
+  if (!Number.isSafeInteger(requested) || requested <= 0) {
+    throw new TypeError('maxOutputBytes must be a positive safe integer');
+  }
+  return Math.min(requested, MAX_CSV_OUTPUT_BYTES);
+}
+
+function csvTraversalOptions(
+  options: ToCsvOptions | undefined,
+  outputLimit: number,
+): TraversalOptions {
+  const limits = options?.limits;
+  // With R rows, C cells, and F field bytes, sparse v2 is at most
+  // 16 + 10R + 10C + F. CSV has R <= C and at least F + C - 1
+  // bytes, so 64 + 21 * CSV is a conservative sparse admission bound.
+  // Dense v1 may also carry the workbook SST and fails closed at this
+  // derived limit. Retain the library's finite default ceiling overall.
+  const derivedTransferCandidate =
+    CSV_TRANSFER_BASE_BYTES + outputLimit * CSV_TRANSFER_OVERHEAD_FACTOR;
+  if (!Number.isSafeInteger(derivedTransferCandidate)) {
+    throw new TypeError('derived CSV transfer limit must be a safe integer');
+  }
+  const derivedTransferLimit = Math.min(DEFAULT_CSV_TRANSFER_BYTES, derivedTransferCandidate);
+  return {
+    mode: options?.mode,
+    limits: {
+      maxRows: limits?.maxRows,
+      maxColumns: limits?.maxColumns,
+      maxCells: limits?.maxCells,
+      maxOutputBytes: derivedTransferLimit,
+    },
+  };
+}
+
+function csvOutputLimitError(limit: number, observed: number): ResourceLimitError {
+  return createResourceLimitError('resource limit exceeded during CSV serialization', {
+    code: 'resource_limit_exceeded' as const,
+    operation: 'export' as const,
+    category: 'output' as const,
+    dimension: 'output_bytes' as const,
+    limit: BigInt(limit),
+    observed: BigInt(observed),
+    stage: 'serialize' as const,
+  });
+}
+
+interface CsvCell {
+  value: SheetDataCellValue;
+  formula?: boolean;
+  cellType?: CellTypeName;
+}
+
+function countOccurrences(value: string, needle: string): number {
+  let count = 0;
+  let offset = 0;
+  while (true) {
+    const index = value.indexOf(needle, offset);
+    if (index === -1) return count;
+    count++;
+    offset = index + needle.length;
+  }
+}
+
+function csvField(
+  row: CsvCell[],
+  column: number,
+  leadingEmptyFields: number,
+  formulaPolicy: CsvFormulaPolicy,
+): string {
+  const rowColumn = column - leadingEmptyFields;
+  const cell = rowColumn >= 0 && rowColumn < row.length ? row[rowColumn] : undefined;
+  const value = cell?.value ?? null;
+  const isFormula = cell?.formula === true || cell?.cellType === 'formula';
+  const field = isFormula ? `=${cellValueToString(value)}` : cellValueToString(value);
+  return formulaPolicy === 'spreadsheet-safe' &&
+    (isFormula || typeof value === 'string') &&
+    isFormulaCapableText(field)
+    ? `'${field}`
+    : field;
+}
+
+function encodeCsvOutput(
+  rows: CsvCell[][],
+  leadingEmptyFields: number,
+  maxColumns: number | null,
+  delimiter: string,
+  quote: string,
+  lineEnding: string,
+  formulaPolicy: CsvFormulaPolicy,
+  limit: number,
+): string {
+  const delimiterBytes = Buffer.byteLength(delimiter);
+  const quoteBytes = Buffer.byteLength(quote);
+  const lineEndingBytes = Buffer.byteLength(lineEnding);
+  const quotePattern = new RegExp(escapeRegExp(quote), 'g');
+  const lines: string[] = [];
+  let observed = 0;
+  const charge = (bytes: number): void => {
+    const next = observed + bytes;
+    if (!Number.isSafeInteger(next) || next > limit) {
+      throw csvOutputLimitError(limit, Number.isSafeInteger(next) ? next : limit + 1);
+    }
+    observed = next;
+  };
+
+  for (let rowIndex = 0; rowIndex < rows.length; rowIndex++) {
+    if (rowIndex > 0) charge(lineEndingBytes);
+    const row = rows[rowIndex];
+    const fieldCount = maxColumns === null ? row.length : leadingEmptyFields + maxColumns;
+    const escapedFields: string[] = [];
+    for (let column = 0; column < fieldCount; column++) {
+      if (column > 0) charge(delimiterBytes);
+      const field = csvField(row, column, leadingEmptyFields, formulaPolicy);
+
+      const needsQuotes =
+        field.includes(delimiter) ||
+        field.includes(quote) ||
+        field.includes('\n') ||
+        field.includes('\r');
+      const escapedBytes =
+        Buffer.byteLength(field) +
+        (needsQuotes ? (countOccurrences(field, quote) + 2) * quoteBytes : 0);
+      charge(escapedBytes);
+      const escapedField = needsQuotes
+        ? quote + field.replace(quotePattern, quote + quote) + quote
+        : field;
+      escapedFields.push(escapedField);
+    }
+    lines.push(escapedFields.join(delimiter));
+  }
+  return lines.join(lineEnding);
+}
+
+function createJsonOutputObject(): Record<string, CellValue> {
+  return Object.create(null) as Record<string, CellValue>;
+}
+
+function finishJsonOutputObject(object: Record<string, CellValue>): Record<string, CellValue> {
+  Object.setPrototypeOf(object, Object.prototype);
+  return object;
 }
 
 function escapeHtml(s: string): string {
@@ -378,14 +1022,25 @@ function escapeHtml(s: string): string {
 function parseCellRef(ref: string): { col: number; row: number } {
   const match = ref.match(/^([A-Za-z]+)(\d+)$/);
   if (!match) {
-    throw new Error(`Invalid cell reference: ${ref}`);
+    throw new TypeError('Invalid cell reference');
   }
   const letters = match[1].toUpperCase();
-  const row = Number.parseInt(match[2], 10);
   let col = 0;
   for (let i = 0; i < letters.length; i++) {
     col = col * 26 + (letters.charCodeAt(i) - 64);
+    if (col > EXCEL_MAX_COLUMNS) {
+      throw fromJsonLimitError('column_count', EXCEL_MAX_COLUMNS, col);
+    }
   }
+
+  let row = 0;
+  for (const digit of match[2]) {
+    row = row * 10 + (digit.charCodeAt(0) - 48);
+    if (row > EXCEL_MAX_ROWS) {
+      throw fromJsonLimitError('row_count', EXCEL_MAX_ROWS, row);
+    }
+  }
+  if (row === 0) throw new TypeError('Invalid cell reference');
   return { col, row };
 }
 
@@ -512,13 +1167,47 @@ class Workbook {
   }
 
   /** Open an encrypted .xlsx file using a password. */
-  static openWithPasswordSync(path: string, password: string): Workbook {
-    return Workbook.#wrap(NativeWorkbook.openWithPasswordSync(path, password));
+  static openWithPasswordSync(
+    path: string,
+    password: string,
+    options?: OpenOptions | JsOpenOptions | undefined | null,
+  ): Workbook {
+    return Workbook.#wrap(
+      NativeWorkbook.openWithPasswordSync(path, password, toNativeOpenOptions(options)),
+    );
   }
 
   /** Open an encrypted .xlsx file using a password asynchronously. */
-  static async openWithPassword(path: string, password: string): Promise<Workbook> {
-    return Workbook.#wrap(await NativeWorkbook.openWithPassword(path, password));
+  static async openWithPassword(
+    path: string,
+    password: string,
+    options?: OpenOptions | JsOpenOptions | undefined | null,
+  ): Promise<Workbook> {
+    return Workbook.#wrap(
+      await NativeWorkbook.openWithPassword(path, password, toNativeOpenOptions(options)),
+    );
+  }
+
+  /** Open an encrypted workbook from an in-memory Buffer. */
+  static openBufferWithPasswordSync(
+    data: Buffer,
+    password: string,
+    options?: OpenOptions | JsOpenOptions | undefined | null,
+  ): Workbook {
+    return Workbook.#wrap(
+      NativeWorkbook.openBufferWithPasswordSync(data, password, toNativeOpenOptions(options)),
+    );
+  }
+
+  /** Open an encrypted in-memory Buffer asynchronously. */
+  static async openBufferWithPassword(
+    data: Buffer,
+    password: string,
+    options?: OpenOptions | JsOpenOptions | undefined | null,
+  ): Promise<Workbook> {
+    return Workbook.#wrap(
+      await NativeWorkbook.openBufferWithPassword(data, password, toNativeOpenOptions(options)),
+    );
   }
 
   /** Get the names of all sheets in workbook order. */
@@ -527,33 +1216,37 @@ class Workbook {
   }
 
   /** Save the workbook to a .xlsx file. */
-  saveSync(path: string): void {
-    this.#native.saveSync(path);
+  saveSync(path: string, limits?: SaveLimits | JsSaveLimits): void {
+    this.#native.saveSync(path, limits);
   }
 
-  /** Save the workbook to a .xlsx file asynchronously. Serializes to an in-memory buffer before writing; use saveSync for lower peak memory on large workbooks. */
-  async save(path: string): Promise<void> {
-    await this.#native.save(path);
+  /** Save the workbook using destination-preserving atomic replacement. */
+  async save(path: string, limits?: SaveLimits | JsSaveLimits): Promise<void> {
+    await this.#native.save(path, limits);
   }
 
   /** Serialize the workbook to an in-memory Buffer. */
-  writeBufferSync(): Buffer {
-    return this.#native.writeBufferSync();
+  writeBufferSync(limits?: SaveLimits | JsSaveLimits): Buffer {
+    return this.#native.writeBufferSync(limits);
   }
 
   /** Serialize the workbook to an in-memory Buffer asynchronously. */
-  async writeBuffer(): Promise<Buffer> {
-    return this.#native.writeBuffer();
+  async writeBuffer(limits?: SaveLimits | JsSaveLimits): Promise<Buffer> {
+    return this.#native.writeBuffer(limits);
   }
 
   /** Save the workbook as an encrypted .xlsx file. */
-  saveWithPasswordSync(path: string, password: string): void {
-    this.#native.saveWithPasswordSync(path, password);
+  saveWithPasswordSync(path: string, password: string, limits?: CryptLimits | JsCryptLimits): void {
+    this.#native.saveWithPasswordSync(path, password, limits);
   }
 
   /** Save the workbook as an encrypted .xlsx file asynchronously. Both sync and async encrypted saves buffer in memory before encrypting, so peak memory is similar. */
-  async saveWithPassword(path: string, password: string): Promise<void> {
-    await this.#native.saveWithPassword(path, password);
+  async saveWithPassword(
+    path: string,
+    password: string,
+    limits?: CryptLimits | JsCryptLimits,
+  ): Promise<void> {
+    await this.#native.saveWithPassword(path, password, limits);
   }
 
   /** Get the value of a cell. */
@@ -572,8 +1265,11 @@ class Workbook {
   }
 
   /** Set multiple cell values at once. */
-  setCellValues(sheet: string, cells: JsCellEntry[]): void {
-    this.#native.setCellValues(sheet, cells);
+  setCellValues(sheet: string, cells: Array<{ cell: string; value: CellValueInput }>): void {
+    this.#native.setCellValues(
+      sheet,
+      cells.map(({ cell, value }) => ({ cell, value: toNativeCellValue(value) })),
+    );
   }
 
   /** Set values in a single row starting from the given column. */
@@ -905,8 +1601,8 @@ class Workbook {
   }
 
   /** Create a new stream writer for a new sheet. */
-  newStreamWriter(sheetName: string): JsStreamWriter {
-    return this.#native.newStreamWriter(sheetName);
+  newStreamWriter(sheetName: string, limits?: StreamLimits | JsStreamLimits): JsStreamWriter {
+    return this.#native.newStreamWriter(sheetName, limits);
   }
 
   /** Apply a stream writer's output to the workbook. Returns the sheet index. */
@@ -916,11 +1612,13 @@ class Workbook {
 
   /**
    * Open a forward-only streaming reader for the named sheet.
-   * Reads rows in batches without loading the entire sheet into memory.
+   * Reads rows from a bounded incremental source without loading the entire
+   * worksheet into memory.
    */
   async openSheetReader(sheet: string, opts?: { batchSize?: number }): Promise<SheetStreamReader> {
-    const native = this.#native.openSheetReader(sheet);
-    return new SheetStreamReader(native, opts?.batchSize ?? 1000);
+    const batchSize = opts?.batchSize ?? 1000;
+    const native = this.#native.openSheetReader(sheet, batchSize);
+    return new SheetStreamReader(native, batchSize);
   }
 
   /** Set core document properties (title, creator, etc.). */
@@ -1062,15 +1760,25 @@ class Workbook {
     this.#native.deleteCellHyperlink(sheet, cell);
   }
 
+  #rowsBuffer(sheet: string, options?: TraversalOptions): Buffer {
+    const nativeOptions =
+      options?.mode === undefined && options?.limits === undefined
+        ? undefined
+        : { mode: options.mode, limits: options.limits };
+    return options?.mode === 'dense'
+      ? this.#native.getRowsBuffer(sheet, nativeOptions)
+      : this.#native.getRowsBufferV2(sheet, nativeOptions);
+  }
+
   /** Get all rows with their data from a sheet using buffer-based transfer. */
-  getRows(sheet: string): JsRowData[] {
-    const buf = this.#native.getRowsBufferV2(sheet);
+  getRows(sheet: string, options?: TraversalOptions): JsRowData[] {
+    const buf = this.#rowsBuffer(sheet, options);
     return decodeRowsBuffer(buf);
   }
 
   /** Serialize a sheet's cell data into a compact binary buffer (v1 format). */
-  getRowsBuffer(sheet: string): Buffer {
-    return this.#native.getRowsBuffer(sheet);
+  getRowsBuffer(sheet: string, options?: TraversalOptions): Buffer {
+    return this.#native.getRowsBuffer(sheet, options);
   }
 
   /**
@@ -1078,8 +1786,8 @@ class Workbook {
    * The v2 format eliminates the global string table, enabling incremental
    * row-by-row decoding without eagerly materializing all strings.
    */
-  getRowsBufferV2(sheet: string): Buffer {
-    return this.#native.getRowsBufferV2(sheet);
+  getRowsBufferV2(sheet: string, options?: TraversalOptions): Buffer {
+    return this.#native.getRowsBufferV2(sheet, options);
   }
 
   /**
@@ -1088,8 +1796,8 @@ class Workbook {
    * typed arrays. Use this when processing large sheets where object creation
    * overhead matters.
    */
-  getRowsRaw(sheet: string): RawRowsResult {
-    const buf = this.#native.getRowsBufferV2(sheet);
+  getRowsRaw(sheet: string, options?: TraversalOptions): RawRowsResult {
+    const buf = this.#rowsBuffer(sheet, options);
     return decodeRowsRawBuffer(buf);
   }
 
@@ -1097,8 +1805,8 @@ class Workbook {
    * Get a generator that yields one row at a time from the sheet, avoiding
    * materializing the entire result array in memory at once.
    */
-  *getRowsIterator(sheet: string): Generator<JsRowData> {
-    const buf = this.#native.getRowsBufferV2(sheet);
+  *getRowsIterator(sheet: string, options?: TraversalOptions): Generator<JsRowData> {
+    const buf = this.#rowsBuffer(sheet, options);
     yield* decodeRowsIterator(buf);
   }
 
@@ -1107,34 +1815,34 @@ class Workbook {
     this.#native.setSheetDataBuffer(sheet, buf, startCell);
   }
 
-  /** Get all columns with their data from a sheet. */
-  getCols(sheet: string): JsColData[] {
-    return this.#native.getCols(sheet);
+  /** Get all occupied columns using finite sparse traversal limits. */
+  getCols(sheet: string, options?: TraversalOptions): JsColData[] {
+    return this.#native.getCols(sheet, options);
   }
 
-  /** Set a formula on a cell. */
-  setCellFormula(sheet: string, cell: string, formula: string): void {
-    this.#native.setCellFormula(sheet, cell, formula);
+  /** Set a formula on a cell using finite mutation limits. */
+  setCellFormula(sheet: string, cell: string, formula: string, limits?: FormulaLimits): void {
+    this.#native.setCellFormula(sheet, cell, formula, limits);
   }
 
-  /** Fill a range with a formula, adjusting row references. */
-  fillFormula(sheet: string, range: string, formula: string): void {
-    this.#native.fillFormula(sheet, range, formula);
+  /** Fill a range with a formula using finite mutation limits. */
+  fillFormula(sheet: string, range: string, formula: string, limits?: FormulaLimits): void {
+    this.#native.fillFormula(sheet, range, formula, limits);
   }
 
   /** Evaluate a formula string against the current workbook data. */
-  evaluateFormula(sheet: string, formula: string): CellValue {
-    return this.#native.evaluateFormula(sheet, formula) as CellValue;
+  evaluateFormula(sheet: string, formula: string, limits?: FormulaLimits): CellValue {
+    return this.#native.evaluateFormula(sheet, formula, limits) as CellValue;
   }
 
   /** Recalculate all formula cells in the workbook. */
-  calculateAll(): void {
-    this.#native.calculateAll();
+  calculateAll(limits?: FormulaLimits): void {
+    this.#native.calculateAll(limits);
   }
 
-  /** Add a pivot table to the workbook. */
-  addPivotTable(config: JsPivotTableConfig): void {
-    this.#native.addPivotTable(config);
+  /** Add a pivot table using finite dense source traversal limits. */
+  addPivotTable(config: JsPivotTableConfig, options?: TraversalOptions): void {
+    this.#native.addPivotTable(config, options);
   }
 
   /** Get all pivot tables in the workbook. */
@@ -1244,8 +1952,38 @@ class Workbook {
 
   /** Convert sheet data to an array of JSON objects. */
   toJSON(sheet: string, options?: ToJsonOptions): Record<string, CellValue>[] {
-    const buf = this.#native.getRowsBufferV2(sheet);
+    const buf = this.#rowsBuffer(sheet, options);
     const sd = new SheetData(buf);
+    if (options?.mode !== 'dense') {
+      const rows = [...sd.occupiedRows()];
+      if (rows.length === 0) return [];
+
+      const headerOpt = options?.header;
+      let keys: Array<string | undefined> | null = null;
+      let dataStartIndex = 0;
+      if (Array.isArray(headerOpt)) {
+        keys = headerOpt;
+      } else if (headerOpt === true || headerOpt === undefined) {
+        keys = [];
+        for (const { column, value } of rows[0].cells) {
+          keys[column - sd.minCol] = cellValueToString(value);
+        }
+        dataStartIndex = 1;
+      }
+
+      const result: Record<string, CellValue>[] = [];
+      for (let rowIndex = dataStartIndex; rowIndex < rows.length; rowIndex++) {
+        const obj = createJsonOutputObject();
+        for (const { column, value } of rows[rowIndex].cells) {
+          const key = keys === null ? columnNumberToLetter(column) : keys[column - sd.minCol];
+          if (key === undefined) continue;
+          obj[key] = value;
+        }
+        result.push(finishJsonOutputObject(obj));
+      }
+      return result;
+    }
+
     const rows = sd.toArray();
     if (rows.length === 0) return [];
 
@@ -1268,67 +2006,63 @@ class Workbook {
     const result: Record<string, CellValue>[] = [];
     for (let r = dataStartIndex; r < rows.length; r++) {
       const row = rows[r];
-      const obj: Record<string, CellValue> = {};
+      const obj = createJsonOutputObject();
       for (let c = 0; c < keys.length; c++) {
         obj[keys[c]] = c < row.length ? row[c] : null;
       }
-      result.push(obj);
+      result.push(finishJsonOutputObject(obj));
     }
     return result;
   }
 
-  /** Convert sheet data to a CSV string. */
+  /**
+   * Convert sheet data to CSV. Formula cells export expressions regardless of
+   * cached results. Records use LF by default without a trailing terminator.
+   */
   toCSV(sheet: string, options?: ToCsvOptions): string {
     const delimiter = options?.delimiter ?? ',';
     const quote = options?.quote ?? '"';
     const lineEnding = options?.lineEnding ?? '\n';
-    const escapeFormulas = options?.escapeFormulas ?? false;
+    const formulaPolicy = csvFormulaPolicy(options?.formulaPolicy);
+    validateCsvSyntax(delimiter, quote, lineEnding, formulaPolicy);
+    const outputLimit = csvOutputLimit(options);
 
-    const buf = this.#native.getRowsBufferV2(sheet);
+    const buf = this.#rowsBuffer(sheet, csvTraversalOptions(options, outputLimit));
     const sd = new SheetData(buf);
-    const rows = sd.toArray();
+    const dense = options?.mode === 'dense';
+    const rows: CsvCell[][] = dense
+      ? sd.toArray().map((row, rowIndex) =>
+          row.map((value, columnIndex) => ({
+            value,
+            formula: sd.getCellType(sd.minRow + rowIndex, sd.minCol + columnIndex) === 'formula',
+          })),
+        )
+      : [...sd.typedOccupiedRows()].map(({ cells }) => cells);
     if (rows.length === 0) return '';
 
-    const maxCols = rows.reduce((max, row) => Math.max(max, row.length), 0);
-    const leadingEmptyFields = sd.minCol - 1;
-    const lines: string[] = [];
-
-    for (const row of rows) {
-      const fields: string[] = [];
-      for (let c = 0; c < leadingEmptyFields + maxCols; c++) {
-        if (c < leadingEmptyFields) {
-          fields.push('');
-          continue;
-        }
-        const rowIndex = c - leadingEmptyFields;
-        const val = rowIndex < row.length ? row[rowIndex] : null;
-        let str = cellValueToString(val);
-        if (escapeFormulas && str.length > 0 && '=+\x2D@'.includes(str[0])) {
-          str = `\t${str}`;
-        }
-        if (
-          str.includes(delimiter) ||
-          str.includes(quote) ||
-          str.includes('\n') ||
-          str.includes('\r')
-        ) {
-          const escaped = str.replace(new RegExp(escapeRegExp(quote), 'g'), quote + quote);
-          fields.push(quote + escaped + quote);
-        } else {
-          fields.push(str);
-        }
-      }
-      lines.push(fields.join(delimiter));
-    }
-    return lines.join(lineEnding);
+    const maxCols = dense ? rows.reduce((max, row) => Math.max(max, row.length), 0) : null;
+    const leadingEmptyFields = dense ? sd.minCol - 1 : 0;
+    return encodeCsvOutput(
+      rows,
+      leadingEmptyFields,
+      maxCols,
+      delimiter,
+      quote,
+      lineEnding,
+      formulaPolicy,
+      outputLimit,
+    );
   }
 
   /** Convert sheet data to an HTML table string. */
   toHTML(sheet: string, options?: ToHtmlOptions): string {
     const className = options?.className;
-    const buf = this.#native.getRowsBufferV2(sheet);
+    const buf = this.#rowsBuffer(sheet, options);
     const sd = new SheetData(buf);
-    const rows = sd.toArray();
+    const rows =
+      options?.mode === 'dense'
+        ? sd.toArray()
+        : [...sd.occupiedRows()].map(({ cells }) => cells.map(({ value }) => value));
 
     const classAttr = className ? ` class="${escapeHtml(className)}"` : '';
     const parts: string[] = [`<table${classAttr}>`];
@@ -1347,44 +2081,130 @@ class Workbook {
 
   /** Write an array of JSON objects to a sheet. */
   fromJSON(sheet: string, data: Record<string, CellValueInput>[], options?: FromJsonOptions): void {
-    if (data.length === 0) return;
-
-    const startCell = options?.startCell ?? 'A1';
-    const { col: startCol, row: startRow } = parseCellRef(startCell);
-    const headerOpt = options?.header;
-
-    let keys: string[];
-    if (Array.isArray(headerOpt)) {
-      keys = headerOpt;
-    } else {
-      const keySet = new Set<string>();
-      for (const obj of data) {
-        for (const key of Object.keys(obj)) {
-          keySet.add(key);
-        }
-      }
-      keys = Array.from(keySet);
+    if (!Array.isArray(data)) throw new TypeError('JSON import data must be an array');
+    if (
+      options !== undefined &&
+      (typeof options !== 'object' || options === null || Array.isArray(options))
+    ) {
+      throw new TypeError('JSON import options must be an object');
     }
 
+    const limits = resolveFromJsonLimits(options?.limits);
+    const startCell = options?.startCell ?? 'A1';
+    if (typeof startCell !== 'string') throw new TypeError('Invalid cell reference');
+    const { col: startCol, row: startRow } = parseCellRef(startCell);
+
+    const headerOpt = options?.header;
+    if (headerOpt !== undefined && typeof headerOpt !== 'boolean' && !Array.isArray(headerOpt)) {
+      throw new TypeError('header must be a boolean or an array of strings');
+    }
     const writeHeader = headerOpt !== false;
-    const grid: CellValueInput[][] = [];
+    const dataLength = jsonArrayLength(data as unknown[]);
+    const rowCount = dataLength === 0 ? 0 : dataLength + (writeHeader ? 1 : 0);
+    if (!Number.isSafeInteger(rowCount)) {
+      throw fromJsonLimitError('row_count', limits.maxRows, limits.maxRows + 1);
+    }
+    checkFromJsonLimit('row_count', limits.maxRows, rowCount);
+    if (rowCount > 0) {
+      const lastRow = startRow + rowCount - 1;
+      checkFromJsonLimit('row_count', EXCEL_MAX_ROWS, lastRow);
+    }
+
+    const keys: string[] = [];
+    const keyToOffset = new Map<string, number>();
+    let retainedBytes = 0;
+    const addKey = (key: string): number => {
+      const existing = keyToOffset.get(key);
+      if (existing !== undefined) return existing;
+      const columnCount = keys.length + 1;
+      checkFromJsonLimit('column_count', limits.maxColumns, columnCount);
+      checkFromJsonLimit('column_count', EXCEL_MAX_COLUMNS, columnCount);
+      checkFromJsonLimit('column_count', EXCEL_MAX_COLUMNS, startCol + columnCount - 1);
+      retainedBytes = checkedFromJsonAdd(
+        retainedBytes,
+        FROM_JSON_KEY_OVERHEAD_BYTES + Buffer.byteLength(key),
+        limits.maxRetainedBytes,
+        'retained_bytes',
+      );
+      const offset = keys.length;
+      keys.push(key);
+      keyToOffset.set(key, offset);
+      return offset;
+    };
+
+    if (Array.isArray(headerOpt)) {
+      const headerLength = jsonArrayLength(headerOpt as unknown[]);
+      checkFromJsonLimit('column_count', limits.maxColumns, headerLength);
+      checkFromJsonLimit('column_count', EXCEL_MAX_COLUMNS, headerLength);
+      for (let index = 0; index < headerLength; index++) {
+        const key = jsonArrayElement(headerOpt as unknown[], index);
+        if (typeof key !== 'string') throw new TypeError('header names must be strings');
+        if (keyToOffset.has(key)) throw new TypeError('header names must be unique');
+        addKey(key);
+      }
+    }
+    if (dataLength === 0) return;
+
+    const entries: JsCellEntry[] = [];
+    let cellCount = 0;
+
+    for (let rowOffset = 0; rowOffset < dataLength; rowOffset++) {
+      const record = jsonArrayElement(data as unknown[], rowOffset);
+      if (!isJsonRecord(record)) throw new TypeError('JSON import rows must be objects');
+      for (const key of jsonRecordKeys(record)) {
+        let columnOffset = keyToOffset.get(key);
+        if (columnOffset === undefined) {
+          if (Array.isArray(headerOpt)) {
+            throw new TypeError('JSON import row keys must match custom headers');
+          }
+          columnOffset = addKey(key);
+        }
+        cellCount = checkedFromJsonAdd(cellCount, 1, limits.maxCells, 'cell_count');
+        const cell = `${columnNumberToLetter(startCol + columnOffset)}${
+          startRow + rowOffset + (writeHeader ? 1 : 0)
+        }`;
+        retainedBytes = checkedFromJsonAdd(
+          retainedBytes,
+          FROM_JSON_ENTRY_OVERHEAD_BYTES + Buffer.byteLength(cell),
+          limits.maxRetainedBytes,
+          'retained_bytes',
+        );
+        const snapshot = snapshotJsonCellValue(jsonRecordValue(record, key));
+        retainedBytes = checkedFromJsonAdd(
+          retainedBytes,
+          snapshot.retainedBytes,
+          limits.maxRetainedBytes,
+          'retained_bytes',
+        );
+        entries.push({
+          cell,
+          value: snapshot.value,
+        });
+      }
+    }
 
     if (writeHeader) {
-      grid.push(keys.map((k) => k));
-    }
-
-    for (const record of data) {
-      const row: CellValueInput[] = [];
-      for (const key of keys) {
-        const val = record[key];
-        row.push(val === undefined ? null : val);
+      for (let offset = 0; offset < keys.length; offset++) {
+        const key = keys[offset];
+        const keyBytes = Buffer.byteLength(key);
+        if (keyBytes > MAX_FROM_JSON_CELL_STRING_BYTES) {
+          throw new TypeError('JSON cell string exceeds the Excel limit');
+        }
+        cellCount = checkedFromJsonAdd(cellCount, 1, limits.maxCells, 'cell_count');
+        const cell = `${columnNumberToLetter(startCol + offset)}${startRow}`;
+        retainedBytes = checkedFromJsonAdd(
+          retainedBytes,
+          FROM_JSON_ENTRY_OVERHEAD_BYTES + Buffer.byteLength(cell) + keyBytes,
+          limits.maxRetainedBytes,
+          'retained_bytes',
+        );
+        entries.push({ cell, value: key });
       }
-      grid.push(row);
     }
 
-    const colLetter = columnNumberToLetter(startCol);
-    const cellRef = `${colLetter}${startRow}`;
-    this.setSheetData(sheet, grid, cellRef);
+    if (entries.length === 0) return;
+
+    this.#native.setCellValues(sheet, entries);
   }
 
   /** Get the workbook format ("xlsx", "xlsm", "xltx", "xltm", "xlam"). */
@@ -1412,9 +2232,9 @@ class Workbook {
     return this.#native.getSheetVisibility(sheet);
   }
 
-  /** Render a worksheet to an SVG string. */
-  renderToSvg(options: JsRenderOptions): string {
-    return this.#native.renderToSvg(options);
+  /** Render a worksheet to SVG using finite dense traversal limits. */
+  renderToSvg(options: JsRenderOptions, traversal?: TraversalOptions): string {
+    return this.#native.renderToSvg(options, traversal);
   }
 
   /** Get the raw VBA project binary (xl/vbaProject.bin), or null if not present. */
@@ -1423,8 +2243,8 @@ class Workbook {
   }
 
   /** Extract VBA module source code from the workbook's VBA project. Returns null if no VBA project. */
-  getVbaModules(): JsVbaProject | null {
-    return this.#native.getVbaModules();
+  getVbaModules(limits?: VbaLimits | JsVbaLimits): JsVbaProject | null {
+    return this.#native.getVbaModules(limits);
   }
 }
 

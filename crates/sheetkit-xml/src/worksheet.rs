@@ -8,6 +8,7 @@ use serde::de::Deserializer;
 use serde::ser::Serializer;
 use serde::{Deserialize, Serialize};
 
+pub use crate::cell_ref::CompactCellRef;
 use crate::namespaces;
 
 /// Worksheet root element.
@@ -356,157 +357,6 @@ pub struct Row {
 
     #[serde(rename = "c", default)]
     pub cells: Vec<Cell>,
-}
-
-/// Inline cell reference (e.g., "A1", "XFD1048576") stored without heap allocation.
-/// Max Excel cell ref is "XFD1048576" = 10 chars, so [u8; 10] + u8 length suffices.
-#[derive(Clone, Copy, Default, PartialEq, Eq)]
-pub struct CompactCellRef {
-    buf: [u8; 10],
-    len: u8,
-}
-
-impl CompactCellRef {
-    /// Create a new CompactCellRef from a string slice. Panics if the input exceeds 10 bytes.
-    pub fn new(s: &str) -> Self {
-        assert!(
-            s.len() <= 10,
-            "cell reference too long ({} bytes): {s}",
-            s.len()
-        );
-        let mut buf = [0u8; 10];
-        buf[..s.len()].copy_from_slice(s.as_bytes());
-        Self {
-            buf,
-            len: s.len() as u8,
-        }
-    }
-
-    /// Return the cell reference as a string slice.
-    pub fn as_str(&self) -> &str {
-        // Safety: we only ever store valid UTF-8 (ASCII cell refs).
-        unsafe { std::str::from_utf8_unchecked(&self.buf[..self.len as usize]) }
-    }
-
-    /// Convert 1-based column and row numbers into a CompactCellRef with zero heap allocation.
-    pub fn from_coordinates(col: u32, row: u32) -> Self {
-        let mut buf = [0u8; 10];
-        let mut pos = 0;
-
-        // Convert column number to letters (A-XFD)
-        let mut col_buf = [0u8; 3];
-        let mut col_len = 0;
-        let mut c = col;
-        while c > 0 {
-            c -= 1;
-            col_buf[col_len] = b'A' + (c % 26) as u8;
-            col_len += 1;
-            c /= 26;
-        }
-        // Write column letters in correct (reversed) order
-        for i in (0..col_len).rev() {
-            buf[pos] = col_buf[i];
-            pos += 1;
-        }
-
-        // Convert row number to digits
-        let mut row_buf = [0u8; 7];
-        let mut row_len = 0;
-        let mut r = row;
-        while r > 0 {
-            row_buf[row_len] = b'0' + (r % 10) as u8;
-            row_len += 1;
-            r /= 10;
-        }
-        // Write row digits in correct (reversed) order
-        for i in (0..row_len).rev() {
-            buf[pos] = row_buf[i];
-            pos += 1;
-        }
-
-        Self {
-            buf,
-            len: pos as u8,
-        }
-    }
-}
-
-impl fmt::Display for CompactCellRef {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-impl fmt::Debug for CompactCellRef {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "CompactCellRef(\"{}\")", self.as_str())
-    }
-}
-
-impl From<&str> for CompactCellRef {
-    fn from(s: &str) -> Self {
-        Self::new(s)
-    }
-}
-
-impl From<String> for CompactCellRef {
-    fn from(s: String) -> Self {
-        Self::new(&s)
-    }
-}
-
-impl AsRef<str> for CompactCellRef {
-    fn as_ref(&self) -> &str {
-        self.as_str()
-    }
-}
-
-impl PartialEq<&str> for CompactCellRef {
-    fn eq(&self, other: &&str) -> bool {
-        self.as_str() == *other
-    }
-}
-
-impl PartialEq<str> for CompactCellRef {
-    fn eq(&self, other: &str) -> bool {
-        self.as_str() == other
-    }
-}
-
-impl Serialize for CompactCellRef {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(self.as_str())
-    }
-}
-
-impl<'de> Deserialize<'de> for CompactCellRef {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct CompactCellRefVisitor;
-
-        impl serde::de::Visitor<'_> for CompactCellRefVisitor {
-            type Value = CompactCellRef;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                formatter.write_str("a cell reference string (e.g. \"A1\")")
-            }
-
-            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<CompactCellRef, E> {
-                if v.len() > 10 {
-                    return Err(E::custom(format!(
-                        "cell reference too long ({} bytes): {v}",
-                        v.len()
-                    )));
-                }
-                Ok(CompactCellRef::new(v))
-            }
-
-            fn visit_string<E: serde::de::Error>(self, v: String) -> Result<CompactCellRef, E> {
-                self.visit_str(&v)
-            }
-        }
-
-        deserializer.deserialize_str(CompactCellRefVisitor)
-    }
 }
 
 /// A single cell.
@@ -1164,7 +1014,7 @@ mod tests {
                     outline_level: None,
                     cells: vec![
                         Cell {
-                            r: CompactCellRef::new("A1"),
+                            r: CompactCellRef::new("A1").unwrap(),
                             col: 1,
                             s: None,
                             t: CellTypeTag::SharedString,
@@ -1173,7 +1023,7 @@ mod tests {
                             is: None,
                         },
                         Cell {
-                            r: CompactCellRef::new("B1"),
+                            r: CompactCellRef::new("B1").unwrap(),
                             col: 2,
                             s: None,
                             t: CellTypeTag::None,
@@ -1205,7 +1055,7 @@ mod tests {
     #[test]
     fn test_cell_with_formula() {
         let cell = Cell {
-            r: CompactCellRef::new("C1"),
+            r: CompactCellRef::new("C1").unwrap(),
             col: 3,
             s: None,
             t: CellTypeTag::None,
@@ -1228,7 +1078,7 @@ mod tests {
     #[test]
     fn test_cell_with_inline_string() {
         let cell = Cell {
-            r: CompactCellRef::new("A1"),
+            r: CompactCellRef::new("A1").unwrap(),
             col: 1,
             s: None,
             t: CellTypeTag::InlineString,
@@ -1375,7 +1225,7 @@ mod tests {
         ];
         for (tag, expected_str) in &variants {
             let cell = Cell {
-                r: CompactCellRef::new("A1"),
+                r: CompactCellRef::new("A1").unwrap(),
                 col: 1,
                 s: None,
                 t: *tag,
@@ -1393,7 +1243,7 @@ mod tests {
         }
 
         let cell_none = Cell {
-            r: CompactCellRef::new("A1"),
+            r: CompactCellRef::new("A1").unwrap(),
             col: 1,
             s: None,
             t: CellTypeTag::None,
@@ -1494,69 +1344,60 @@ mod tests {
 
     #[test]
     fn test_compact_cell_ref_basic() {
-        let r = CompactCellRef::new("A1");
+        let r = CompactCellRef::new("A1").unwrap();
         assert_eq!(r.as_str(), "A1");
-        assert_eq!(r.len, 2);
     }
 
     #[test]
     fn test_compact_cell_ref_max_length() {
-        let r = CompactCellRef::new("XFD1048576");
+        let r = CompactCellRef::new("XFD1048576").unwrap();
         assert_eq!(r.as_str(), "XFD1048576");
-        assert_eq!(r.len, 10);
     }
 
     #[test]
     fn test_compact_cell_ref_various_lengths() {
         for s in &["A1", "B5", "Z99", "AA100", "XFD1048576"] {
-            let r = CompactCellRef::new(s);
+            let r = CompactCellRef::new(s).unwrap();
             assert_eq!(r.as_str(), *s);
         }
     }
 
     #[test]
     fn test_compact_cell_ref_display() {
-        let r = CompactCellRef::new("C3");
+        let r = CompactCellRef::new("C3").unwrap();
         assert_eq!(format!("{r}"), "C3");
     }
 
     #[test]
     fn test_compact_cell_ref_debug() {
-        let r = CompactCellRef::new("C3");
+        let r = CompactCellRef::new("C3").unwrap();
         let dbg = format!("{r:?}");
         assert!(dbg.contains("CompactCellRef"));
         assert!(dbg.contains("C3"));
     }
 
     #[test]
-    fn test_compact_cell_ref_default() {
-        let r = CompactCellRef::default();
-        assert_eq!(r.as_str(), "");
-        assert_eq!(r.len, 0);
-    }
-
-    #[test]
     fn test_compact_cell_ref_from_str() {
-        let r: CompactCellRef = "D4".into();
+        let r = CompactCellRef::try_from("D4").unwrap();
         assert_eq!(r.as_str(), "D4");
     }
 
     #[test]
     fn test_compact_cell_ref_from_string() {
-        let r: CompactCellRef = String::from("E5").into();
+        let r = CompactCellRef::try_from(String::from("E5")).unwrap();
         assert_eq!(r.as_str(), "E5");
     }
 
     #[test]
     fn test_compact_cell_ref_as_ref_str() {
-        let r = CompactCellRef::new("F6");
+        let r = CompactCellRef::new("F6").unwrap();
         let s: &str = r.as_ref();
         assert_eq!(s, "F6");
     }
 
     #[test]
     fn test_compact_cell_ref_partial_eq_str() {
-        let r = CompactCellRef::new("G7");
+        let r = CompactCellRef::new("G7").unwrap();
         assert_eq!(r, "G7");
         assert!(r == "G7");
         assert!(r != "H8");
@@ -1564,7 +1405,7 @@ mod tests {
 
     #[test]
     fn test_compact_cell_ref_copy() {
-        let r1 = CompactCellRef::new("A1");
+        let r1 = CompactCellRef::new("A1").unwrap();
         let r2 = r1;
         assert_eq!(r1.as_str(), "A1");
         assert_eq!(r2.as_str(), "A1");
@@ -1573,7 +1414,7 @@ mod tests {
     #[test]
     fn test_compact_cell_ref_serde_roundtrip() {
         let cell = Cell {
-            r: CompactCellRef::new("XFD1048576"),
+            r: CompactCellRef::new("XFD1048576").unwrap(),
             col: 16384,
             s: None,
             t: CellTypeTag::None,
@@ -1589,38 +1430,37 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "cell reference too long")]
-    fn test_compact_cell_ref_panics_on_overflow() {
-        CompactCellRef::new("ABCDEFGHIJK");
+    fn test_compact_cell_ref_rejects_overflow() {
+        assert!(CompactCellRef::new("ABCDEFGHIJK").is_err());
     }
 
     #[test]
     fn test_compact_cell_ref_from_coordinates_a1() {
-        let r = CompactCellRef::from_coordinates(1, 1);
+        let r = CompactCellRef::from_coordinates(1, 1).unwrap();
         assert_eq!(r.as_str(), "A1");
     }
 
     #[test]
     fn test_compact_cell_ref_from_coordinates_z26() {
-        let r = CompactCellRef::from_coordinates(26, 26);
+        let r = CompactCellRef::from_coordinates(26, 26).unwrap();
         assert_eq!(r.as_str(), "Z26");
     }
 
     #[test]
     fn test_compact_cell_ref_from_coordinates_aa1() {
-        let r = CompactCellRef::from_coordinates(27, 1);
+        let r = CompactCellRef::from_coordinates(27, 1).unwrap();
         assert_eq!(r.as_str(), "AA1");
     }
 
     #[test]
     fn test_compact_cell_ref_from_coordinates_max() {
-        let r = CompactCellRef::from_coordinates(16384, 1048576);
+        let r = CompactCellRef::from_coordinates(16384, 1048576).unwrap();
         assert_eq!(r.as_str(), "XFD1048576");
     }
 
     #[test]
     fn test_compact_cell_ref_from_coordinates_zz1() {
-        let r = CompactCellRef::from_coordinates(702, 1);
+        let r = CompactCellRef::from_coordinates(702, 1).unwrap();
         assert_eq!(r.as_str(), "ZZ1");
     }
 
@@ -1636,7 +1476,7 @@ mod tests {
             result
         }
         for c in [1, 2, 26, 27, 52, 100, 256, 702, 703, 16384] {
-            let r = CompactCellRef::from_coordinates(c, 1);
+            let r = CompactCellRef::from_coordinates(c, 1).unwrap();
             let expected = format!("{}1", col_to_name(c));
             assert_eq!(r.as_str(), expected, "mismatch for col={c}");
         }

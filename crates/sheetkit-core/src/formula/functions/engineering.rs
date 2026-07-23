@@ -6,7 +6,7 @@ use crate::cell::CellValue;
 use crate::error::Result;
 use crate::formula::ast::Expr;
 use crate::formula::eval::{coerce_to_number, coerce_to_string, Evaluator};
-use crate::formula::functions::check_arg_count;
+use crate::formula::functions::{check_arg_count, finite_number_or_num_error};
 
 /// BIN2DEC(number)
 pub fn fn_bin2dec(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
@@ -62,30 +62,30 @@ pub fn fn_bin2oct(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
 /// DEC2BIN(number, [places])
 pub fn fn_dec2bin(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("DEC2BIN", args, 1, 2)?;
-    let n = coerce_to_number(&ctx.eval_expr(&args[0])?)? as i64;
-    if !(-512..=511).contains(&n) {
+    let value = coerce_to_number(&ctx.eval_expr(&args[0])?)?;
+    let Some(n) = checked_truncated_i64(value, -512, 511) else {
         return Ok(CellValue::Error("#NUM!".to_string()));
-    }
+    };
     format_bin(n, args, ctx, 1)
 }
 
 /// DEC2HEX(number, [places])
 pub fn fn_dec2hex(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("DEC2HEX", args, 1, 2)?;
-    let n = coerce_to_number(&ctx.eval_expr(&args[0])?)? as i64;
-    if !(-549_755_813_888..=549_755_813_887).contains(&n) {
+    let value = coerce_to_number(&ctx.eval_expr(&args[0])?)?;
+    let Some(n) = checked_truncated_i64(value, -549_755_813_888, 549_755_813_887) else {
         return Ok(CellValue::Error("#NUM!".to_string()));
-    }
+    };
     format_hex(n, args, ctx, 1)
 }
 
 /// DEC2OCT(number, [places])
 pub fn fn_dec2oct(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("DEC2OCT", args, 1, 2)?;
-    let n = coerce_to_number(&ctx.eval_expr(&args[0])?)? as i64;
-    if !(-536_870_912..=536_870_911).contains(&n) {
+    let value = coerce_to_number(&ctx.eval_expr(&args[0])?)?;
+    let Some(n) = checked_truncated_i64(value, -536_870_912, 536_870_911) else {
         return Ok(CellValue::Error("#NUM!".to_string()));
-    }
+    };
     format_oct(n, args, ctx, 1)
 }
 
@@ -472,9 +472,15 @@ pub fn fn_besselj(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
 pub fn fn_besselk(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("BESSELK", args, 2, 2)?;
     let x = coerce_to_number(&ctx.eval_expr(&args[0])?)?;
-    let n = coerce_to_number(&ctx.eval_expr(&args[1])?)? as i32;
-    if !x.is_finite() || x <= 0.0 || n < 0 {
+    let order = coerce_to_number(&ctx.eval_expr(&args[1])?)?;
+    let Some(n) = checked_nonnegative_i32(order) else {
         return Ok(CellValue::Error("#NUM!".to_string()));
+    };
+    if !x.is_finite() || x <= 0.0 {
+        return Ok(CellValue::Error("#NUM!".to_string()));
+    }
+    if x > 15.0 {
+        ctx.charge_evaluation_work(u64::try_from(n.saturating_sub(1).max(0)).unwrap_or(u64::MAX))?;
     }
     finite_number_or_num_error(bessel_k(x, n))
 }
@@ -483,60 +489,122 @@ pub fn fn_besselk(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
 pub fn fn_bessely(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("BESSELY", args, 2, 2)?;
     let x = coerce_to_number(&ctx.eval_expr(&args[0])?)?;
-    let n = coerce_to_number(&ctx.eval_expr(&args[1])?)? as i32;
-    if !x.is_finite() || x <= 0.0 || n < 0 {
+    let order = coerce_to_number(&ctx.eval_expr(&args[1])?)?;
+    let Some(n) = checked_nonnegative_i32(order) else {
         return Ok(CellValue::Error("#NUM!".to_string()));
+    };
+    if !x.is_finite() || x <= 0.0 {
+        return Ok(CellValue::Error("#NUM!".to_string()));
+    }
+    if x > 15.0 {
+        ctx.charge_evaluation_work(u64::try_from(n.saturating_sub(1).max(0)).unwrap_or(u64::MAX))?;
     }
     finite_number_or_num_error(bessel_y(x, n))
 }
 
-fn finite_number_or_num_error(value: f64) -> Result<CellValue> {
-    if value.is_finite() {
-        Ok(CellValue::Number(value))
-    } else {
-        Ok(CellValue::Error("#NUM!".to_string()))
+const MAX_ENGINEERING_PLACES: f64 = 10.0;
+
+#[derive(Clone, Copy)]
+enum EngineeringPlaces {
+    Omitted,
+    Width(usize),
+    Invalid,
+}
+
+fn checked_truncated_i64(value: f64, min: i64, max: i64) -> Option<i64> {
+    if !value.is_finite() {
+        return None;
     }
+    let truncated = value.trunc();
+    if truncated < min as f64 || truncated > max as f64 {
+        return None;
+    }
+    Some(truncated as i64)
+}
+
+fn checked_nonnegative_i32(value: f64) -> Option<i32> {
+    if !value.is_finite() {
+        return None;
+    }
+    let truncated = value.trunc();
+    if truncated < 0.0 || truncated > f64::from(i32::MAX) {
+        return None;
+    }
+    Some(truncated as i32)
+}
+
+fn engineering_places(
+    args: &[Expr],
+    ctx: &mut Evaluator,
+    places_idx: usize,
+) -> Result<EngineeringPlaces> {
+    if args.len() <= places_idx {
+        return Ok(EngineeringPlaces::Omitted);
+    }
+    let places = coerce_to_number(&ctx.eval_expr(&args[places_idx])?)?;
+    if !places.is_finite() {
+        return Ok(EngineeringPlaces::Invalid);
+    }
+    let truncated = places.trunc();
+    if !(1.0..=MAX_ENGINEERING_PLACES).contains(&truncated) {
+        return Ok(EngineeringPlaces::Invalid);
+    }
+    Ok(EngineeringPlaces::Width(truncated as usize))
 }
 
 fn format_bin(n: i64, args: &[Expr], ctx: &mut Evaluator, places_idx: usize) -> Result<CellValue> {
+    let places = engineering_places(args, ctx, places_idx)?;
+    if matches!(places, EngineeringPlaces::Invalid) {
+        return Ok(CellValue::Error("#NUM!".to_string()));
+    }
     let s = if n >= 0 {
         format!("{n:b}")
     } else {
         let bits = (n as u64) & 0x3FF;
         format!("{bits:010b}")
     };
-    if args.len() > places_idx {
-        let places = coerce_to_number(&ctx.eval_expr(&args[places_idx])?)? as usize;
-        if places < 1 || (n >= 0 && s.len() > places) {
+    if let EngineeringPlaces::Width(width) = places {
+        if n >= 0 && s.len() > width {
             return Ok(CellValue::Error("#NUM!".to_string()));
         }
         if n >= 0 {
-            return Ok(CellValue::String(format!("{:0>width$}", s, width = places)));
+            ctx.check_output_bytes(u64::try_from(width).unwrap_or(u64::MAX))?;
+            return Ok(CellValue::String(format!("{s:0>width$}")));
         }
     }
+    ctx.check_output_bytes(u64::try_from(s.len()).unwrap_or(u64::MAX))?;
     Ok(CellValue::String(s))
 }
 
 fn format_hex(n: i64, args: &[Expr], ctx: &mut Evaluator, places_idx: usize) -> Result<CellValue> {
+    let places = engineering_places(args, ctx, places_idx)?;
+    if matches!(places, EngineeringPlaces::Invalid) {
+        return Ok(CellValue::Error("#NUM!".to_string()));
+    }
     let s = if n >= 0 {
         format!("{n:X}")
     } else {
         let bits = (n as u64) & 0xFF_FFFF_FFFF;
         format!("{bits:010X}")
     };
-    if args.len() > places_idx {
-        let places = coerce_to_number(&ctx.eval_expr(&args[places_idx])?)? as usize;
-        if places < 1 || (n >= 0 && s.len() > places) {
+    if let EngineeringPlaces::Width(width) = places {
+        if n >= 0 && s.len() > width {
             return Ok(CellValue::Error("#NUM!".to_string()));
         }
         if n >= 0 {
-            return Ok(CellValue::String(format!("{:0>width$}", s, width = places)));
+            ctx.check_output_bytes(u64::try_from(width).unwrap_or(u64::MAX))?;
+            return Ok(CellValue::String(format!("{s:0>width$}")));
         }
     }
+    ctx.check_output_bytes(u64::try_from(s.len()).unwrap_or(u64::MAX))?;
     Ok(CellValue::String(s))
 }
 
 fn format_oct(n: i64, args: &[Expr], ctx: &mut Evaluator, places_idx: usize) -> Result<CellValue> {
+    let places = engineering_places(args, ctx, places_idx)?;
+    if matches!(places, EngineeringPlaces::Invalid) {
+        return Ok(CellValue::Error("#NUM!".to_string()));
+    }
     let s = if n >= 0 {
         format!("{n:o}")
     } else {
@@ -544,15 +612,16 @@ fn format_oct(n: i64, args: &[Expr], ctx: &mut Evaluator, places_idx: usize) -> 
         let bits = (n as u64) & 0x3FFFFFFF;
         format!("{bits:010o}")
     };
-    if args.len() > places_idx {
-        let places = coerce_to_number(&ctx.eval_expr(&args[places_idx])?)? as usize;
-        if places < 1 || (n >= 0 && s.len() > places) {
+    if let EngineeringPlaces::Width(width) = places {
+        if n >= 0 && s.len() > width {
             return Ok(CellValue::Error("#NUM!".to_string()));
         }
         if n >= 0 {
-            return Ok(CellValue::String(format!("{:0>width$}", s, width = places)));
+            ctx.check_output_bytes(u64::try_from(width).unwrap_or(u64::MAX))?;
+            return Ok(CellValue::String(format!("{s:0>width$}")));
         }
     }
+    ctx.check_output_bytes(u64::try_from(s.len()).unwrap_or(u64::MAX))?;
     Ok(CellValue::String(s))
 }
 
@@ -993,6 +1062,8 @@ fn gamma(z: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use crate::cell::CellValue;
+    use crate::error::Result;
+    use crate::formula::ast::Expr;
     use crate::formula::eval::{evaluate, CellSnapshot};
     use crate::formula::parser::parse_formula;
 
@@ -1000,6 +1071,18 @@ mod tests {
         let snap = CellSnapshot::new("Sheet1".to_string());
         let expr = parse_formula(formula).unwrap();
         evaluate(&expr, &snap).unwrap()
+    }
+
+    fn eval_expr(expr: &Expr) -> Result<CellValue> {
+        let snap = CellSnapshot::new("Sheet1".to_string());
+        evaluate(expr, &snap)
+    }
+
+    fn conversion(function: &str, number: Expr, places: f64) -> Expr {
+        Expr::Function {
+            name: function.to_string(),
+            args: vec![number, Expr::Number(places)],
+        }
     }
 
     fn assert_approx(result: CellValue, expected: f64, tol: f64) {
@@ -1055,6 +1138,113 @@ mod tests {
         assert_eq!(
             eval("DEC2BIN(9,8)"),
             CellValue::String("00001001".to_string())
+        );
+    }
+
+    #[test]
+    fn engineering_places_enforce_excel_width_before_formatting() {
+        let cases = [
+            ("BIN2HEX", Expr::String("1".to_string())),
+            ("BIN2OCT", Expr::String("1".to_string())),
+            ("DEC2BIN", Expr::Number(1.0)),
+            ("DEC2OCT", Expr::Number(1.0)),
+            ("OCT2BIN", Expr::String("1".to_string())),
+            ("OCT2HEX", Expr::String("1".to_string())),
+        ];
+
+        for (function, number) in cases {
+            assert_eq!(
+                eval_expr(&conversion(function, number.clone(), 10.0)).unwrap(),
+                CellValue::String("0000000001".to_string()),
+                "{function} must accept the exact width ceiling"
+            );
+            for invalid_places in [
+                11.0,
+                1e20,
+                f64::NAN,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+                0.0,
+                0.9,
+                -1.0,
+                -1.9,
+            ] {
+                assert_eq!(
+                    eval_expr(&conversion(function, number.clone(), invalid_places)).unwrap(),
+                    CellValue::Error("#NUM!".to_string()),
+                    "{function} must reject places={invalid_places:?}"
+                );
+            }
+            assert_eq!(
+                eval_expr(&conversion(function, number, 4.9)).unwrap(),
+                CellValue::String("0001".to_string()),
+                "{function} must truncate fractional places"
+            );
+        }
+    }
+
+    #[test]
+    fn engineering_negative_values_keep_ten_digits_with_valid_places() {
+        let cases = [
+            (
+                "BIN2HEX",
+                Expr::String("1111111111".to_string()),
+                "FFFFFFFFFF",
+            ),
+            (
+                "BIN2OCT",
+                Expr::String("1111111111".to_string()),
+                "7777777777",
+            ),
+            ("DEC2BIN", Expr::Number(-1.0), "1111111111"),
+            ("DEC2OCT", Expr::Number(-1.0), "7777777777"),
+            (
+                "OCT2BIN",
+                Expr::String("7777777777".to_string()),
+                "1111111111",
+            ),
+            (
+                "OCT2HEX",
+                Expr::String("7777777777".to_string()),
+                "FFFFFFFFFF",
+            ),
+        ];
+
+        for (function, number, expected) in cases {
+            assert_eq!(
+                eval_expr(&conversion(function, number.clone(), 1.0)).unwrap(),
+                CellValue::String(expected.to_string()),
+                "{function} must ignore a valid places width for negative values"
+            );
+            assert_eq!(
+                eval_expr(&conversion(function, number, 11.0)).unwrap(),
+                CellValue::Error("#NUM!".to_string()),
+                "{function} must enforce the non-overridable width ceiling"
+            );
+        }
+    }
+
+    #[test]
+    fn decimal_engineering_numbers_use_checked_truncation() {
+        for function in ["DEC2BIN", "DEC2HEX", "DEC2OCT"] {
+            for invalid_number in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, 1e20] {
+                assert_eq!(
+                    eval_expr(&conversion(function, Expr::Number(invalid_number), 10.0)).unwrap(),
+                    CellValue::Error("#NUM!".to_string()),
+                    "{function} must reject number={invalid_number:?}"
+                );
+            }
+        }
+
+        assert_eq!(eval("DEC2BIN(9.9)"), CellValue::String("1001".to_string()));
+        assert_eq!(
+            eval("DEC2BIN(-1.9)"),
+            CellValue::String("1111111111".to_string())
+        );
+        assert_eq!(eval("DEC2OCT(9.9)"), CellValue::String("11".to_string()));
+        assert_eq!(
+            eval("DEC2OCT(-1.9)"),
+            CellValue::String("7777777777".to_string())
         );
     }
 

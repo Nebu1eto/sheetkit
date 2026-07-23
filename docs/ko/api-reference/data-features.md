@@ -1031,9 +1031,11 @@ wb.fromJSON("Sheet1", data, { startCell: "B2", writeHeaders: true });
 
 | 필드 | 타입 | 기본값 | 설명 |
 |------|------|--------|------|
-| `separator` | `string` | `","` | 필드 구분자 |
+| `delimiter` | `string` | `","` | 필드 구분자입니다 |
+| `quote` | `string` | `"\""` | 인용 문자입니다 |
 | `lineEnding` | `string` | `"\n"` | 줄 바꿈 문자 |
-| `escapeFormulas` | `boolean` | `false` | `=`, `+`, `-`, `@`로 시작하는 셀에 탭 문자를 접두사로 추가하여 수식 삽입 공격을 방지합니다 |
+| `formulaPolicy` | `'spreadsheet-safe' \| 'raw-exchange'` | `'spreadsheet-safe'` | 기본적으로 수식으로 해석될 수 있는 text를 중립화하며, 원문 교환은 명시적으로 선택합니다 |
+| `limits` | `TraversalLimits?` | 유한한 secure 기본값 | traversal과 반환되는 UTF-8 output byte를 제한합니다 |
 
 **ToHTMLOptions:**
 

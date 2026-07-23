@@ -395,6 +395,28 @@ pub struct JsRowData {
     pub cells: Vec<JsRowCell>,
 }
 
+/// Finite limits for one worksheet traversal.
+#[napi(object)]
+pub struct JsTraversalLimits {
+    /// Maximum number of occupied rows in sparse mode or spanned rows in dense mode.
+    pub max_rows: Option<f64>,
+    /// Maximum number of occupied or spanned columns.
+    pub max_columns: Option<f64>,
+    /// Maximum number of occupied cells in sparse mode or spanned cells in dense mode.
+    pub max_cells: Option<f64>,
+    /// Maximum binary output size in bytes.
+    pub max_output_bytes: Option<f64>,
+}
+
+/// Options for worksheet traversal and raw transfer.
+#[napi(object)]
+pub struct JsTraversalOptions {
+    /// Traversal layout: "sparse" (default) or "dense" (v1 only).
+    pub mode: Option<String>,
+    /// Finite resource limits for this traversal.
+    pub limits: Option<JsTraversalLimits>,
+}
+
 /// A single cell entry with its row number and value.
 #[napi(object)]
 pub struct JsColCell {
@@ -531,8 +553,81 @@ pub struct JsSheetProtectionConfig {
 
 /// Options for controlling how a workbook is opened and parsed.
 #[napi(object)]
+pub struct JsCryptLimits {
+    pub outer_cfb_bytes: Option<f64>,
+    pub named_stream_count: Option<f64>,
+    pub named_stream_declared_bytes: Option<f64>,
+    pub named_stream_read_bytes: Option<f64>,
+    pub encrypted_package_bytes: Option<f64>,
+    pub kdf_iterations: Option<f64>,
+    pub kdf_work: Option<f64>,
+}
+
+/// Finite limits for one workbook save operation.
+#[napi(object)]
+pub struct JsSaveLimits {
+    pub output_bytes: Option<f64>,
+    pub xml_part_bytes: Option<f64>,
+    pub row_count: Option<f64>,
+    pub cell_count: Option<f64>,
+}
+
+/// Finite limits for one streaming worksheet writer.
+#[napi(object)]
+pub struct JsStreamLimits {
+    pub row_count: Option<f64>,
+    pub cell_count: Option<f64>,
+    pub row_xml_bytes: Option<f64>,
+    pub output_bytes: Option<f64>,
+    pub config_count: Option<f64>,
+    pub config_bytes: Option<f64>,
+}
+
+/// Finite limits for one formula parse, mutation, or calculation operation.
+#[napi(object)]
+pub struct JsFormulaLimits {
+    pub per_formula_input_bytes: Option<f64>,
+    pub per_formula_nesting_depth: Option<f64>,
+    pub per_formula_binary_chain_depth: Option<f64>,
+    pub per_formula_tokens: Option<f64>,
+    pub per_formula_ast_nodes: Option<f64>,
+    pub operation_input_bytes: Option<f64>,
+    pub operation_tokens: Option<f64>,
+    pub operation_ast_nodes: Option<f64>,
+    pub operation_range_cells: Option<f64>,
+    pub operation_dependency_edges: Option<f64>,
+    pub operation_ready_queue_ops: Option<f64>,
+    pub operation_evaluation_steps: Option<f64>,
+    pub operation_match_work: Option<f64>,
+    pub operation_output_bytes: Option<f64>,
+}
+
+/// Finite limits for VBA project loading and module extraction.
+#[napi(object)]
+pub struct JsVbaLimits {
+    pub input_bytes: Option<f64>,
+    pub cfb_stream_count: Option<f64>,
+    pub cfb_stream_declared_bytes: Option<f64>,
+    pub cfb_aggregate_declared_bytes: Option<f64>,
+    pub cfb_stream_read_bytes: Option<f64>,
+    pub cfb_aggregate_read_bytes: Option<f64>,
+    pub compressed_bytes: Option<f64>,
+    pub module_count: Option<f64>,
+    pub chunk_count: Option<f64>,
+    pub module_decoded_bytes: Option<f64>,
+    pub aggregate_decoded_bytes: Option<f64>,
+    pub retained_bytes: Option<f64>,
+    pub output_bytes: Option<f64>,
+}
+
+/// Options for controlling how a workbook is opened and parsed.
+#[napi(object)]
 pub struct JsOpenOptions {
-    /// Maximum number of rows to read per sheet. Omit for unlimited.
+    /// Maximum bytes accepted from an outer ZIP or encrypted container.
+    pub max_outer_input_bytes: Option<f64>,
+    /// Maximum bytes read from one XML part, including lazy hydration.
+    pub max_xml_part_bytes: Option<f64>,
+    /// Maximum rows read per sheet. Omit to use the worksheet format maximum.
     pub sheet_rows: Option<u32>,
     /// Only parse sheets whose names are in this list. Omit to parse all sheets.
     pub sheets: Option<Vec<String>>,
@@ -540,6 +635,10 @@ pub struct JsOpenOptions {
     pub max_unzip_size: Option<f64>,
     /// Maximum number of ZIP entries allowed.
     pub max_zip_entries: Option<u32>,
+    /// Finite encryption-container and password-derivation limits.
+    pub crypt_limits: Option<JsCryptLimits>,
+    /// Finite VBA project loading limits.
+    pub vba_limits: Option<JsVbaLimits>,
     /// Read mode: "eager", "lazy" (default for async-first surface), or "stream".
     /// Lazy skips auxiliary parts for faster read-only workloads.
     /// Stream is reserved for future use and currently behaves like lazy.
@@ -547,7 +646,7 @@ pub struct JsOpenOptions {
     /// Auxiliary parts loading policy: "deferred" or "eager".
     /// When "deferred", auxiliary parts (comments, charts, images, etc.) are
     /// not parsed during open and are loaded on demand.
-    /// Default: "eager" (backward compat with existing sync API).
+    /// Default: "deferred".
     pub aux_parts: Option<String>,
     /// Backward-compatible alias for read_mode. "readfast" maps to "lazy",
     /// "full" maps to "eager". Ignored when read_mode is set.
@@ -557,7 +656,7 @@ pub struct JsOpenOptions {
     /// promote `t="n"` cells whose style references a built-in date numFmt
     /// ID 14-22/45-47, or a custom format code containing date/time tokens,
     /// to a date cell) or `"cellType"` (spec-literal: only `t="d"` becomes
-    /// a date). Values other than these fall back to the default.
+    /// a date). Other values are rejected.
     pub date_interpretation: Option<String>,
 }
 

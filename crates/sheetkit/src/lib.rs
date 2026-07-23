@@ -9,13 +9,17 @@
 //! wb.save("output.xlsx").unwrap();
 //! ```
 
+#[cfg(feature = "encryption")]
+pub use sheetkit_core::crypt::CryptLimits;
 pub use sheetkit_core::defined_names::{DefinedNameInfo, DefinedNameScope};
 pub use sheetkit_core::doc_props::{AppProperties, CustomPropertyValue, DocProperties};
 pub use sheetkit_core::error::{Error, Result};
+pub use sheetkit_core::formula::FormulaLimits;
 pub use sheetkit_core::protection::WorkbookProtectionConfig;
 pub use sheetkit_core::resource::{
     ResourceCategory, ResourceDimension, ResourceLimitError, ResourceOperation, ResourceStage,
 };
+pub use sheetkit_core::save::{SaveLimits, StreamLimits};
 pub use sheetkit_core::sheet::SheetProtectionConfig;
 pub use sheetkit_core::stream::StreamWriter;
 pub use sheetkit_core::workbook::{
@@ -35,6 +39,9 @@ pub use sheetkit_core::control::{FormControlConfig, FormControlInfo, FormControl
 pub use sheetkit_core::hyperlink::{HyperlinkInfo, HyperlinkType};
 pub use sheetkit_core::image::{ImageConfig, ImageFormat, PictureInfo};
 pub use sheetkit_core::numfmt::{builtin_format_code, format_number, format_with_builtin};
+pub use sheetkit_core::output::{
+    serialize_csv, serialize_csv_with_policy, CsvFormulaPolicy, MAX_CSV_OUTPUT_BYTES,
+};
 pub use sheetkit_core::page_layout::{Orientation, PageMarginsConfig, PaperSize};
 pub use sheetkit_core::pivot::{
     AggregateFunction, PivotDataField, PivotField, PivotTableConfig, PivotTableInfo,
@@ -52,10 +59,11 @@ pub use sheetkit_core::style::{
 pub use sheetkit_core::threaded_comment::{
     PersonData, PersonInput, ThreadedCommentData, ThreadedCommentInput,
 };
+pub use sheetkit_core::traversal::{TraversalLimits, TraversalMode, TraversalOptions};
 pub use sheetkit_core::validation::{
     DataValidationConfig, ErrorStyle, ValidationOperator, ValidationType,
 };
-pub use sheetkit_core::vba::{VbaModule, VbaModuleType, VbaProject};
+pub use sheetkit_core::vba::{VbaLimits, VbaModule, VbaModuleType, VbaProject};
 
 /// Utility functions for cell reference conversion.
 pub mod utils {

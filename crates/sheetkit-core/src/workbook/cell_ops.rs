@@ -6,6 +6,16 @@ impl Workbook {
     /// Returns [`CellValue::Empty`] for cells that have no value or do not
     /// exist in the sheet data.
     pub fn get_cell_value(&self, sheet: &str, cell: &str) -> Result<CellValue> {
+        self.get_cell_value_with_limits(sheet, cell, crate::traversal::TraversalLimits::default())
+    }
+
+    /// Gets one cell value with an explicit retained-value limit.
+    pub fn get_cell_value_with_limits(
+        &self,
+        sheet: &str,
+        cell: &str,
+        limits: crate::traversal::TraversalLimits,
+    ) -> Result<CellValue> {
         let ws = self.worksheet_ref(sheet)?;
 
         let (col, row) = cell_name_to_coordinates(cell)?;
@@ -22,6 +32,17 @@ impl Workbook {
             Err(_) => return Ok(CellValue::Empty),
         };
 
+        let retained_bytes = u64::try_from(std::mem::size_of::<CellValue>())
+            .unwrap_or(u64::MAX)
+            .saturating_add(crate::row::cell_cloned_payload_bytes(
+                xml_cell,
+                &self.sst_runtime,
+            ));
+        crate::traversal::check_limit(
+            crate::resource::ResourceDimension::RetainedBytes,
+            limits.max_output_bytes(),
+            retained_bytes,
+        )?;
         self.xml_cell_to_value(xml_cell)
     }
 
@@ -38,6 +59,21 @@ impl Workbook {
         value: impl Into<CellValue>,
     ) -> Result<()> {
         let value = value.into();
+        self.sheet_index(sheet)?;
+        cell_name_to_coordinates(cell)?;
+        validate_formula_values_for_mutation(
+            std::iter::once(&value),
+            crate::formula::FormulaLimits::secure_default(),
+        )?;
+        self.set_cell_value_prevalidated(sheet, cell, value)
+    }
+
+    fn set_cell_value_prevalidated(
+        &mut self,
+        sheet: &str,
+        cell: &str,
+        value: CellValue,
+    ) -> Result<()> {
         let date_style = if matches!(value, CellValue::Date(_)) {
             let mut style = self
                 .get_cell_style(sheet, cell)?
@@ -67,7 +103,7 @@ impl Workbook {
         self.mark_sheet_dirty(sheet_idx);
 
         let (col, row_num) = cell_name_to_coordinates(cell)?;
-        let cell_ref = crate::utils::cell_ref::coordinates_to_cell_name(col, row_num)?;
+        let cell_ref = crate::utils::cell_ref::compact_cell_ref(col, row_num)?;
 
         let ws = self.worksheets[sheet_idx].1.get_mut().unwrap();
 
@@ -97,7 +133,7 @@ impl Workbook {
                 row.cells.insert(
                     insert_pos,
                     Cell {
-                        r: cell_ref.into(),
+                        r: cell_ref,
                         col,
                         s: None,
                         t: CellTypeTag::None,
@@ -344,7 +380,7 @@ impl Workbook {
         let ws = self.worksheet_mut_by_index(sheet_idx)?;
 
         let (col, row_num) = cell_name_to_coordinates(cell)?;
-        let cell_ref = crate::utils::cell_ref::coordinates_to_cell_name(col, row_num)?;
+        let cell_ref = crate::utils::cell_ref::compact_cell_ref(col, row_num)?;
 
         // Find or create the row via binary search.
         let row_idx = match ws.sheet_data.rows.binary_search_by_key(&row_num, |r| r.r) {
@@ -364,7 +400,7 @@ impl Workbook {
                 row.cells.insert(
                     insert_pos,
                     Cell {
-                        r: cell_ref.into(),
+                        r: cell_ref,
                         col,
                         s: None,
                         t: CellTypeTag::None,
@@ -411,11 +447,35 @@ impl Workbook {
     /// This is a convenience wrapper around [`set_cell_value`] with
     /// [`CellValue::Formula`].
     pub fn set_cell_formula(&mut self, sheet: &str, cell: &str, formula: &str) -> Result<()> {
-        self.set_cell_value(
+        self.set_cell_formula_with_limits(
+            sheet,
+            cell,
+            formula,
+            crate::formula::FormulaLimits::secure_default(),
+        )
+    }
+
+    /// Set a formula using caller-selected finite limits for this mutation.
+    pub fn set_cell_formula_with_limits(
+        &mut self,
+        sheet: &str,
+        cell: &str,
+        formula: &str,
+        limits: crate::formula::FormulaLimits,
+    ) -> Result<()> {
+        let sheet_idx = self.sheet_index(sheet)?;
+        self.reject_streamed_mutation(sheet_idx)?;
+        cell_name_to_coordinates(cell)?;
+        let budget = crate::formula::FormulaBudget::for_mutation(limits)?;
+        budget.charge_mutation_cells(1)?;
+        let formula_bytes = u64::try_from(formula.len()).unwrap_or(u64::MAX);
+        budget.charge_mutation_formula(formula_bytes, formula_bytes)?;
+        let formula = fallible_formula_copy(formula)?;
+        self.set_cell_value_prevalidated(
             sheet,
             cell,
             CellValue::Formula {
-                expr: formula.to_string(),
+                expr: formula,
                 result: None,
             },
         )
@@ -429,27 +489,64 @@ impl Workbook {
     /// row references in the formula are shifted by the row offset. Absolute
     /// row references (`$1`) are left unchanged.
     pub fn fill_formula(&mut self, sheet: &str, range: &str, formula: &str) -> Result<()> {
-        let parts: Vec<&str> = range.split(':').collect();
-        if parts.len() != 2 {
-            return Err(Error::InvalidCellReference(format!(
-                "invalid range: {range}"
-            )));
+        self.fill_formula_with_limits(
+            sheet,
+            range,
+            formula,
+            crate::formula::FormulaLimits::secure_default(),
+        )
+    }
+
+    /// Fill a single-column range using caller-selected finite limits.
+    pub fn fill_formula_with_limits(
+        &mut self,
+        sheet: &str,
+        range: &str,
+        formula: &str,
+        limits: crate::formula::FormulaLimits,
+    ) -> Result<()> {
+        let sheet_idx = self.sheet_index(sheet)?;
+        self.reject_streamed_mutation(sheet_idx)?;
+        let Some((start, end)) = range.split_once(':') else {
+            return Err(Error::InvalidCellReference(
+                "invalid fill formula range".to_string(),
+            ));
+        };
+        if end.contains(':') {
+            return Err(Error::InvalidCellReference(
+                "invalid fill formula range".to_string(),
+            ));
         }
-        let (start_col, start_row) = cell_name_to_coordinates(parts[0])?;
-        let (end_col, end_row) = cell_name_to_coordinates(parts[1])?;
+        let (start_col, start_row) = cell_name_to_coordinates(start)?;
+        let (end_col, end_row) = cell_name_to_coordinates(end)?;
 
         if start_col != end_col {
             return Err(Error::InvalidCellReference(
                 "fill_formula only supports single-column ranges".to_string(),
             ));
         }
+        if start_row > end_row {
+            return Err(Error::InvalidCellReference(
+                "fill_formula range must be ascending".to_string(),
+            ));
+        }
 
+        let cell_count = u64::from(end_row - start_row) + 1;
+        let budget = crate::formula::FormulaBudget::for_mutation(limits)?;
+        budget.charge_mutation_cells(cell_count)?;
+        let input_bytes = u64::try_from(formula.len()).unwrap_or(u64::MAX);
+        budget.check_mutation_input(input_bytes)?;
+        let scan_count = cell_count.saturating_mul(3).saturating_sub(2);
+        let cumulative_input = input_bytes.saturating_mul(scan_count);
+        budget.charge_mutation_input_total(cumulative_input)?;
+
+        let mut cumulative_output = 0u64;
         for row in start_row..=end_row {
             let row_offset = row as i32 - start_row as i32;
-            let adjusted = if row_offset == 0 {
-                formula.to_string()
+            let shifted_len = if row_offset == 0 {
+                formula.len()
             } else {
-                crate::cell_ref_shift::shift_cell_references_with_abs(
+                crate::cell_ref_shift::shifted_cell_references_len_with_abs(
                     formula,
                     |col, r, _abs_col, abs_row| {
                         if abs_row {
@@ -460,8 +557,59 @@ impl Workbook {
                     },
                 )?
             };
+            cumulative_output =
+                cumulative_output.saturating_add(u64::try_from(shifted_len).unwrap_or(u64::MAX));
+        }
+        budget.charge_mutation_output(cumulative_output)?;
+
+        let capacity = usize::try_from(cell_count)
+            .map_err(|_| Error::Internal("formula fill range is too large".to_string()))?;
+        let mut staged = Vec::new();
+        staged
+            .try_reserve_exact(capacity)
+            .map_err(|_| Error::Internal("formula fill allocation failed".to_string()))?;
+
+        for row in start_row..=end_row {
+            let row_offset = row as i32 - start_row as i32;
+            let adjusted = if row_offset == 0 {
+                fallible_formula_copy(formula)?
+            } else {
+                let shifted_len = crate::cell_ref_shift::shifted_cell_references_len_with_abs(
+                    formula,
+                    |col, r, _abs_col, abs_row| {
+                        if abs_row {
+                            (col, r)
+                        } else {
+                            (col, (r as i32 + row_offset) as u32)
+                        }
+                    },
+                )?;
+                crate::cell_ref_shift::shift_cell_references_with_abs_preallocated(
+                    formula,
+                    shifted_len,
+                    |col, r, _abs_col, abs_row| {
+                        if abs_row {
+                            (col, r)
+                        } else {
+                            (col, (r as i32 + row_offset) as u32)
+                        }
+                    },
+                )?
+            };
             let cell_ref = crate::utils::cell_ref::coordinates_to_cell_name(start_col, row)?;
-            self.set_cell_formula(sheet, &cell_ref, &adjusted)?;
+            staged.push((cell_ref, adjusted));
+        }
+
+        self.ensure_hydrated(sheet_idx)?;
+        for (cell_ref, adjusted) in staged {
+            self.set_cell_value_prevalidated(
+                sheet,
+                &cell_ref,
+                CellValue::Formula {
+                    expr: adjusted,
+                    result: None,
+                },
+            )?;
         }
         Ok(())
     }
@@ -521,21 +669,39 @@ impl Workbook {
     ) -> Result<()> {
         let sheet_idx = self.sheet_index(sheet)?;
         self.reject_streamed_mutation(sheet_idx)?;
+        validate_formula_values_for_mutation(
+            entries.iter().map(|(_, value)| value),
+            crate::formula::FormulaLimits::secure_default(),
+        )?;
+        for (cell, value) in &entries {
+            validate_stored_string(value)?;
+            cell_name_to_coordinates(cell)?;
+        }
+        self.set_cell_values_prevalidated(sheet_idx, entries)
+    }
+
+    /// Apply an opaque raw transfer without resetting its formula budget.
+    pub fn set_validated_cell_transfer(
+        &mut self,
+        sheet: &str,
+        transfer: crate::raw_transfer_write::ValidatedCellTransfer,
+    ) -> Result<()> {
+        let sheet_idx = self.sheet_index(sheet)?;
+        self.reject_streamed_mutation(sheet_idx)?;
+        self.set_cell_values_prevalidated(sheet_idx, transfer.entries)
+    }
+
+    fn set_cell_values_prevalidated(
+        &mut self,
+        sheet_idx: usize,
+        entries: Vec<(String, CellValue)>,
+    ) -> Result<()> {
         self.ensure_hydrated(sheet_idx)?;
         self.mark_sheet_dirty(sheet_idx);
 
         for (cell, value) in entries {
-            if let CellValue::String(ref s) = value {
-                if s.len() > MAX_CELL_CHARS {
-                    return Err(Error::CellValueTooLong {
-                        length: s.len(),
-                        max: MAX_CELL_CHARS,
-                    });
-                }
-            }
-
             let (col, row_num) = cell_name_to_coordinates(&cell)?;
-            let cell_ref = crate::utils::cell_ref::coordinates_to_cell_name(col, row_num)?;
+            let cell_ref = crate::utils::cell_ref::compact_cell_ref(col, row_num)?;
 
             let row_idx = {
                 let ws = self.worksheets[sheet_idx].1.get_mut().unwrap();
@@ -574,7 +740,7 @@ impl Workbook {
                         row.cells.insert(
                             pos,
                             Cell {
-                                r: cell_ref.into(),
+                                r: cell_ref,
                                 col,
                                 s: None,
                                 t: CellTypeTag::None,
@@ -617,16 +783,36 @@ impl Workbook {
         start_col: u32,
     ) -> Result<()> {
         let sheet_idx = self.sheet_index(sheet)?;
+        let row_count = u32::try_from(data.len()).map_err(|_| Error::InvalidRowNumber(u32::MAX))?;
+        if row_count > 0 {
+            let last_row = start_row
+                .checked_add(row_count - 1)
+                .ok_or(Error::InvalidRowNumber(u32::MAX))?;
+            crate::utils::cell_ref::compact_cell_ref(start_col, last_row)?;
+        }
+
+        let max_cols = data.iter().map(Vec::len).max().unwrap_or(0);
+        if max_cols > 0 {
+            let width =
+                u32::try_from(max_cols).map_err(|_| Error::InvalidColumnNumber(u32::MAX))?;
+            let last_col = start_col
+                .checked_add(width - 1)
+                .ok_or(Error::InvalidColumnNumber(u32::MAX))?;
+            crate::utils::cell_ref::compact_cell_ref(last_col, start_row)?;
+        }
+
+        validate_formula_values_for_mutation(
+            data.iter().flat_map(|row| row.iter()),
+            crate::formula::FormulaLimits::secure_default(),
+        )?;
+        for value in data.iter().flat_map(|row| row.iter()) {
+            validate_stored_string(value)?;
+        }
+
         // This API deliberately replaces streamed backing with typed data.
         self.invalidate_streamed(sheet_idx);
         self.ensure_hydrated(sheet_idx)?;
         self.mark_sheet_dirty(sheet_idx);
-
-        // Pre-compute column names for the widest row.
-        let max_cols = data.iter().map(|r| r.len()).max().unwrap_or(0) as u32;
-        let col_names: Vec<String> = (0..max_cols)
-            .map(|i| crate::utils::cell_ref::column_number_to_name(start_col + i))
-            .collect::<Result<Vec<_>>>()?;
 
         for (row_offset, row_values) in data.into_iter().enumerate() {
             let row_num = start_row + row_offset as u32;
@@ -645,15 +831,6 @@ impl Workbook {
             for (col_offset, value) in row_values.into_iter().enumerate() {
                 let col = start_col + col_offset as u32;
 
-                if let CellValue::String(ref s) = value {
-                    if s.len() > MAX_CELL_CHARS {
-                        return Err(Error::CellValueTooLong {
-                            length: s.len(),
-                            max: MAX_CELL_CHARS,
-                        });
-                    }
-                }
-
                 if value == CellValue::Empty {
                     let row = &mut self.worksheets[sheet_idx]
                         .1
@@ -667,7 +844,7 @@ impl Workbook {
                     continue;
                 }
 
-                let cell_ref = format!("{}{}", col_names[col_offset], row_num);
+                let cell_ref = crate::utils::cell_ref::compact_cell_ref(col, row_num)?;
 
                 let cell_idx = {
                     let row = &mut self.worksheets[sheet_idx]
@@ -682,7 +859,7 @@ impl Workbook {
                             row.cells.insert(
                                 pos,
                                 Cell {
-                                    r: cell_ref.into(),
+                                    r: cell_ref,
                                     col,
                                     s: None,
                                     t: CellTypeTag::None,
@@ -723,6 +900,74 @@ impl Workbook {
     ) -> Result<()> {
         self.set_sheet_data(sheet, vec![values], row_num, start_col)
     }
+}
+
+fn validate_formula_values_for_mutation<'a>(
+    values: impl IntoIterator<Item = &'a CellValue>,
+    limits: crate::formula::FormulaLimits,
+) -> Result<()> {
+    let budget = crate::formula::FormulaBudget::for_mutation(limits)?;
+    for value in values {
+        if let CellValue::Formula { expr, result } = value {
+            budget.charge_mutation_cells(1)?;
+            let input_bytes = u64::try_from(expr.len()).unwrap_or(u64::MAX);
+            let cached_output_bytes = result
+                .as_deref()
+                .map(formula_cached_result_output_len)
+                .transpose()?
+                .unwrap_or(0);
+            budget.charge_mutation_input(input_bytes)?;
+            budget.charge_mutation_output(input_bytes.saturating_add(cached_output_bytes))?;
+        }
+    }
+    Ok(())
+}
+
+fn fallible_formula_copy(formula: &str) -> Result<String> {
+    let mut copy = String::new();
+    copy.try_reserve_exact(formula.len())
+        .map_err(|_| Error::Internal("formula allocation failed".to_string()))?;
+    copy.push_str(formula);
+    Ok(copy)
+}
+
+fn validate_stored_string(value: &CellValue) -> Result<()> {
+    if let CellValue::String(value) = value {
+        if value.len() > MAX_CELL_CHARS {
+            return Err(Error::CellValueTooLong {
+                length: value.len(),
+                max: MAX_CELL_CHARS,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn formula_cached_result_output_len(value: &CellValue) -> Result<u64> {
+    let length = match value {
+        CellValue::Empty => 0,
+        CellValue::Bool(_) => 1,
+        CellValue::Number(value) => value.to_string().len(),
+        CellValue::Date(serial) => crate::cell::serial_to_datetime(*serial)
+            .map(|value| value.format("%Y-%m-%dT%H:%M:%S").to_string().len())
+            .unwrap_or_else(|| serial.to_string().len()),
+        CellValue::String(value) | CellValue::Error(value) => {
+            if value.len() > MAX_CELL_CHARS {
+                return Err(Error::CellValueTooLong {
+                    length: value.len(),
+                    max: MAX_CELL_CHARS,
+                });
+            }
+            value.len()
+        }
+        CellValue::Formula { .. } | CellValue::RichString(_) => {
+            return Err(Error::Internal(
+                "unsupported formula cached result type".to_string(),
+            ));
+        }
+    };
+    u64::try_from(length)
+        .map_err(|_| Error::Internal("formula cached result is not addressable".to_string()))
 }
 
 fn parse_date_cell_value(value: &str) -> Result<f64> {
@@ -779,8 +1024,8 @@ pub(crate) fn value_to_xml_cell(
                 si: None,
                 value: Some(expr),
             }));
-            if let Some(result) = result.as_deref() {
-                write_formula_cached_result(xml_cell, result);
+            if let Some(result) = result {
+                write_formula_cached_result(xml_cell, *result);
             }
         }
         CellValue::Error(e) => {
@@ -798,29 +1043,29 @@ pub(crate) fn value_to_xml_cell(
     }
 }
 
-fn write_formula_cached_result(xml_cell: &mut Cell, result: &CellValue) {
+fn write_formula_cached_result(xml_cell: &mut Cell, result: CellValue) {
     match result {
         CellValue::Empty | CellValue::Formula { .. } | CellValue::RichString(_) => {}
         CellValue::Bool(value) => {
             xml_cell.t = CellTypeTag::Boolean;
-            xml_cell.v = Some(if *value { "1" } else { "0" }.to_string());
+            xml_cell.v = Some(if value { "1" } else { "0" }.to_string());
         }
         CellValue::Number(value) => xml_cell.v = Some(value.to_string()),
         CellValue::Date(serial) => {
             xml_cell.t = CellTypeTag::Date;
             xml_cell.v = Some(
-                crate::cell::serial_to_datetime(*serial)
+                crate::cell::serial_to_datetime(serial)
                     .map(|value| value.format("%Y-%m-%dT%H:%M:%S").to_string())
                     .unwrap_or_else(|| serial.to_string()),
             );
         }
         CellValue::String(value) => {
             xml_cell.t = CellTypeTag::FormulaString;
-            xml_cell.v = Some(value.clone());
+            xml_cell.v = Some(value);
         }
         CellValue::Error(value) => {
             xml_cell.t = CellTypeTag::Error;
-            xml_cell.v = Some(value.clone());
+            xml_cell.v = Some(value);
         }
     }
 }
@@ -1032,7 +1277,7 @@ mod tests {
     fn test_explicit_iso_date_cell_is_date() {
         let wb = Workbook::new();
         let cell = Cell {
-            r: "A1".into(),
+            r: "A1".try_into().unwrap(),
             col: 1,
             s: None,
             t: CellTypeTag::Date,
@@ -1053,7 +1298,7 @@ mod tests {
     fn test_explicit_numeric_date_cell_is_date() {
         let wb = Workbook::new();
         let cell = Cell {
-            r: "A1".into(),
+            r: "A1".try_into().unwrap(),
             col: 1,
             s: None,
             t: CellTypeTag::Date,
@@ -1072,7 +1317,7 @@ mod tests {
     fn test_formula_with_explicit_date_cache_preserves_date_result() {
         let wb = Workbook::new();
         let cell = Cell {
-            r: "A1".into(),
+            r: "A1".try_into().unwrap(),
             col: 1,
             s: None,
             t: CellTypeTag::Date,
@@ -1629,6 +1874,353 @@ mod tests {
     }
 
     #[test]
+    fn formula_assignment_rejects_input_over_secure_default_without_mutation() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", "original").unwrap();
+        let formula = "x".repeat(
+            crate::formula::FormulaLimits::secure_default().per_formula_input_bytes as usize + 1,
+        );
+
+        let error = wb.set_cell_formula("Sheet1", "A1", &formula).unwrap_err();
+        let Error::ResourceLimitExceeded(metadata) = error else {
+            panic!("expected resource limit error");
+        };
+        assert_eq!(
+            metadata.operation(),
+            crate::ResourceOperation::FormulaMutate
+        );
+        assert_eq!(metadata.dimension(), crate::ResourceDimension::InputBytes);
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("original".to_string())
+        );
+    }
+
+    #[test]
+    fn formula_assignment_with_limits_preserves_opaque_excel_formula() {
+        let mut wb = Workbook::new();
+        let formula = "_xlfn.UNSUPPORTED(A1)";
+        let limits = crate::formula::FormulaLimits {
+            per_formula_input_bytes: formula.len() as u64,
+            operation_input_bytes: formula.len() as u64,
+            operation_output_bytes: formula.len() as u64,
+            ..crate::formula::FormulaLimits::secure_default()
+        };
+
+        wb.set_cell_formula_with_limits("Sheet1", "A1", formula, limits)
+            .unwrap();
+
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::Formula {
+                expr: formula.to_string(),
+                result: None,
+            }
+        );
+    }
+
+    #[test]
+    fn fill_formula_range_limit_is_exact_and_atomic() {
+        let exact = crate::formula::FormulaLimits {
+            operation_range_cells: 2,
+            ..crate::formula::FormulaLimits::secure_default()
+        };
+        let mut accepted = Workbook::new();
+        accepted
+            .fill_formula_with_limits("Sheet1", "D1:D2", "A1", exact)
+            .unwrap();
+        assert!(matches!(
+            accepted.get_cell_value("Sheet1", "D2").unwrap(),
+            CellValue::Formula { .. }
+        ));
+
+        let mut rejected = Workbook::new();
+        rejected.set_cell_value("Sheet1", "D1", "first").unwrap();
+        rejected.set_cell_value("Sheet1", "D2", "second").unwrap();
+        let over = crate::formula::FormulaLimits {
+            operation_range_cells: 1,
+            ..crate::formula::FormulaLimits::secure_default()
+        };
+        let error = rejected
+            .fill_formula_with_limits("Sheet1", "D1:D2", "A1", over)
+            .unwrap_err();
+        let Error::ResourceLimitExceeded(metadata) = error else {
+            panic!("expected resource limit error");
+        };
+        assert_eq!(
+            metadata.dimension(),
+            crate::ResourceDimension::RangeCellCount
+        );
+        assert_eq!(
+            rejected.get_cell_value("Sheet1", "D1").unwrap(),
+            CellValue::String("first".to_string())
+        );
+        assert_eq!(
+            rejected.get_cell_value("Sheet1", "D2").unwrap(),
+            CellValue::String("second".to_string())
+        );
+    }
+
+    #[test]
+    fn fill_formula_output_expansion_limit_is_exact_and_atomic() {
+        let exact = crate::formula::FormulaLimits {
+            operation_output_bytes: 5,
+            ..crate::formula::FormulaLimits::secure_default()
+        };
+        let mut accepted = Workbook::new();
+        accepted
+            .fill_formula_with_limits("Sheet1", "D1:D2", "A9", exact)
+            .unwrap();
+        assert_eq!(
+            accepted.get_cell_value("Sheet1", "D2").unwrap(),
+            CellValue::Formula {
+                expr: "A10".to_string(),
+                result: None,
+            }
+        );
+
+        let mut rejected = Workbook::new();
+        rejected.set_cell_value("Sheet1", "D1", "first").unwrap();
+        rejected.set_cell_value("Sheet1", "D2", "second").unwrap();
+        let over = crate::formula::FormulaLimits {
+            operation_output_bytes: 4,
+            ..crate::formula::FormulaLimits::secure_default()
+        };
+        let error = rejected
+            .fill_formula_with_limits("Sheet1", "D1:D2", "A9", over)
+            .unwrap_err();
+        let Error::ResourceLimitExceeded(metadata) = error else {
+            panic!("expected resource limit error");
+        };
+        assert_eq!(metadata.dimension(), crate::ResourceDimension::OutputBytes);
+        assert_eq!(
+            rejected.get_cell_value("Sheet1", "D1").unwrap(),
+            CellValue::String("first".to_string())
+        );
+        assert_eq!(
+            rejected.get_cell_value("Sheet1", "D2").unwrap(),
+            CellValue::String("second".to_string())
+        );
+    }
+
+    #[test]
+    fn fill_formula_cumulative_scan_work_fails_before_commit() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "D1", "first").unwrap();
+        wb.set_cell_value("Sheet1", "D2", "second").unwrap();
+        wb.set_cell_value("Sheet1", "D3", "third").unwrap();
+        let limits = crate::formula::FormulaLimits {
+            operation_input_bytes: 5,
+            ..crate::formula::FormulaLimits::secure_default()
+        };
+
+        let error = wb
+            .fill_formula_with_limits("Sheet1", "D1:D3", "A1", limits)
+            .unwrap_err();
+        let Error::ResourceLimitExceeded(metadata) = error else {
+            panic!("expected resource limit error");
+        };
+        assert_eq!(metadata.dimension(), crate::ResourceDimension::InputBytes);
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "D1").unwrap(),
+            CellValue::String("first".to_string())
+        );
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "D3").unwrap(),
+            CellValue::String("third".to_string())
+        );
+    }
+
+    #[test]
+    fn fill_formula_shift_failure_is_atomic() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "D1", "first").unwrap();
+        wb.set_cell_value("Sheet1", "D2", "second").unwrap();
+
+        assert!(wb.fill_formula("Sheet1", "D1:D2", "A1048576").is_err());
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "D1").unwrap(),
+            CellValue::String("first".to_string())
+        );
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "D2").unwrap(),
+            CellValue::String("second".to_string())
+        );
+    }
+
+    #[test]
+    fn generic_formula_batch_rejects_before_any_mutation() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", "original").unwrap();
+        let oversized = "x".repeat(
+            crate::formula::FormulaLimits::secure_default().per_formula_input_bytes as usize + 1,
+        );
+
+        let error = wb
+            .set_cell_values(
+                "Sheet1",
+                vec![
+                    (
+                        "A1".to_string(),
+                        CellValue::Formula {
+                            expr: "1+1".to_string(),
+                            result: None,
+                        },
+                    ),
+                    (
+                        "B1".to_string(),
+                        CellValue::Formula {
+                            expr: oversized,
+                            result: None,
+                        },
+                    ),
+                ],
+            )
+            .unwrap_err();
+        assert!(matches!(error, Error::ResourceLimitExceeded(_)));
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("original".to_string())
+        );
+        assert_eq!(wb.get_cell_value("Sheet1", "B1").unwrap(), CellValue::Empty);
+    }
+
+    #[test]
+    fn generic_single_formula_uses_secure_mutation_limits() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", "original").unwrap();
+        let oversized = "x".repeat(
+            crate::formula::FormulaLimits::secure_default().per_formula_input_bytes as usize + 1,
+        );
+
+        let error = wb
+            .set_cell_value(
+                "Sheet1",
+                "A1",
+                CellValue::Formula {
+                    expr: oversized,
+                    result: None,
+                },
+            )
+            .unwrap_err();
+
+        assert!(matches!(error, Error::ResourceLimitExceeded(_)));
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("original".to_string())
+        );
+    }
+
+    #[test]
+    fn formula_cached_result_output_budget_is_exact() {
+        let values = [
+            CellValue::Formula {
+                expr: "x".to_string(),
+                result: Some(Box::new(CellValue::String("ab".to_string()))),
+            },
+            CellValue::Formula {
+                expr: "y".to_string(),
+                result: Some(Box::new(CellValue::Error("#N".to_string()))),
+            },
+        ];
+        let exact = crate::formula::FormulaLimits {
+            operation_output_bytes: 6,
+            ..crate::formula::FormulaLimits::secure_default()
+        };
+        validate_formula_values_for_mutation(values.iter(), exact).unwrap();
+
+        let over = crate::formula::FormulaLimits {
+            operation_output_bytes: 5,
+            ..exact
+        };
+        let error = validate_formula_values_for_mutation(values.iter(), over).unwrap_err();
+        let Error::ResourceLimitExceeded(metadata) = error else {
+            panic!("expected a structured formula mutation limit error");
+        };
+        assert_eq!(metadata.operation_code(), "formula_mutate");
+        assert_eq!(metadata.dimension_code(), "output_bytes");
+        assert_eq!(metadata.limit(), 5);
+        assert_eq!(metadata.observed(), 6);
+    }
+
+    #[test]
+    fn formula_cached_result_length_failure_is_atomic() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", "first").unwrap();
+        wb.set_cell_value("Sheet1", "B1", "second").unwrap();
+        let error = wb
+            .set_cell_values(
+                "Sheet1",
+                vec![
+                    (
+                        "A1".to_string(),
+                        CellValue::Formula {
+                            expr: "1+1".to_string(),
+                            result: Some(Box::new(CellValue::String("x".repeat(MAX_CELL_CHARS)))),
+                        },
+                    ),
+                    (
+                        "B1".to_string(),
+                        CellValue::Formula {
+                            expr: "2+2".to_string(),
+                            result: Some(Box::new(CellValue::Error(
+                                "x".repeat(MAX_CELL_CHARS + 1),
+                            ))),
+                        },
+                    ),
+                ],
+            )
+            .unwrap_err();
+        assert!(matches!(error, Error::CellValueTooLong { .. }));
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("first".to_string())
+        );
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "B1").unwrap(),
+            CellValue::String("second".to_string())
+        );
+    }
+
+    #[test]
+    fn sheet_data_formula_budget_failure_is_atomic() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1", "first").unwrap();
+        wb.set_cell_value("Sheet1", "B1", "second").unwrap();
+        let oversized = "x".repeat(
+            crate::formula::FormulaLimits::secure_default().per_formula_input_bytes as usize + 1,
+        );
+
+        let error = wb
+            .set_sheet_data(
+                "Sheet1",
+                vec![vec![
+                    CellValue::Formula {
+                        expr: "1+1".to_string(),
+                        result: None,
+                    },
+                    CellValue::Formula {
+                        expr: oversized,
+                        result: None,
+                    },
+                ]],
+                1,
+                1,
+            )
+            .unwrap_err();
+
+        assert!(matches!(error, Error::ResourceLimitExceeded(_)));
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("first".to_string())
+        );
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "B1").unwrap(),
+            CellValue::String("second".to_string())
+        );
+    }
+
+    #[test]
     fn test_set_cell_values_batch() {
         let mut wb = Workbook::new();
         wb.set_cell_values(
@@ -1986,5 +2578,39 @@ mod tests {
             reopened.get_cell_value("Streamed", "A1").unwrap(),
             CellValue::String("replacement".to_string())
         );
+    }
+
+    #[test]
+    fn get_cell_value_charges_shared_string_before_cloning() {
+        let mut workbook = Workbook::new();
+        workbook
+            .set_cell_value("Sheet1", "A1", "x".repeat(1_024))
+            .unwrap();
+        let exact = u64::try_from(std::mem::size_of::<CellValue>()).unwrap() + 1_024;
+        let limits = crate::traversal::TraversalLimits::new(1, 1, 1, exact).unwrap();
+
+        assert_eq!(
+            workbook
+                .get_cell_value_with_limits("Sheet1", "A1", limits)
+                .unwrap(),
+            workbook.get_cell_value("Sheet1", "A1").unwrap()
+        );
+
+        let error = workbook
+            .get_cell_value_with_limits(
+                "Sheet1",
+                "A1",
+                crate::traversal::TraversalLimits::new(1, 1, 1, exact - 1).unwrap(),
+            )
+            .unwrap_err();
+        let Error::ResourceLimitExceeded(metadata) = error else {
+            panic!("expected resource limit error");
+        };
+        assert_eq!(
+            metadata.dimension(),
+            crate::ResourceDimension::RetainedBytes
+        );
+        assert_eq!(metadata.limit(), exact - 1);
+        assert_eq!(metadata.observed(), exact);
     }
 }

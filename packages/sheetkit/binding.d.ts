@@ -9,15 +9,15 @@ export declare class JsStreamWriter {
   /** Set column width for a range of columns. */
   setColWidthRange(minCol: number, maxCol: number, width: number): void
   /** Write a row of values. Rows must be written in ascending order. */
-  writeRow(row: number, values: Array<JsCellInputValue>): void
+  writeRow(row: number, values: Array<string | number | boolean | DateValue | FormulaValue | null>): void
   /**
    * Write multiple rows at once starting at the given row number.
    * More efficient than calling writeRow in a loop because it crosses
    * the FFI boundary only once.
    */
-  writeRows(startRow: number, rows: Array<Array<JsCellInputValue>>): void
+  writeRows(startRow: number, rows: Array<Array<string | number | boolean | DateValue | FormulaValue | null>>): void
   /** Write a row with a specific style ID applied to all cells. */
-  writeRowWithStyle(row: number, values: Array<JsCellInputValue>, styleId: number): void
+  writeRowWithStyle(row: number, values: Array<string | number | boolean | DateValue | FormulaValue | null>, styleId: number): void
   /** Add a merge cell reference (e.g., "A1:C3"). */
   addMergeCell(reference: string): void
   /** Set column style for a single column (1-based). */
@@ -57,41 +57,33 @@ export declare class Workbook {
   /** Open an existing .xlsx file from disk asynchronously. */
   static open(path: string, options?: JsOpenOptions | undefined | null): Promise<Workbook>
   /** Save the workbook to a .xlsx file. */
-  saveSync(path: string): void
-  /**
-   * Save the workbook to a .xlsx file asynchronously.
-   * Note: the workbook is first serialized to an in-memory buffer, then
-   * written to disk. This increases peak memory usage compared to `saveSync`,
-   * which streams directly to disk. Avoid for very large workbooks.
-   */
-  save(path: string): Promise<void>
+  saveSync(path: string, limits?: JsSaveLimits | undefined | null): void
+  /** Save the workbook to a .xlsx file using destination-preserving atomic replacement. */
+  save(path: string, limits?: JsSaveLimits | undefined | null): Promise<void>
   /** Open a workbook from an in-memory Buffer. */
   static openBufferSync(data: Buffer, options?: JsOpenOptions | undefined | null): Workbook
   /** Open a workbook from an in-memory Buffer asynchronously. */
   static openBuffer(data: Buffer, options?: JsOpenOptions | undefined | null): Promise<Workbook>
   /** Open an encrypted .xlsx file using a password. */
-  static openWithPasswordSync(path: string, password: string): Workbook
+  static openWithPasswordSync(path: string, password: string, options?: JsOpenOptions | undefined | null): Workbook
   /** Open an encrypted .xlsx file using a password asynchronously. */
-  static openWithPassword(path: string, password: string): Promise<Workbook>
+  static openWithPassword(path: string, password: string, options?: JsOpenOptions | undefined | null): Promise<Workbook>
+  /** Open an encrypted workbook from an in-memory Buffer. */
+  static openBufferWithPasswordSync(data: Buffer, password: string, options?: JsOpenOptions | undefined | null): Workbook
+  /** Open an encrypted workbook from an in-memory Buffer asynchronously. */
+  static openBufferWithPassword(data: Buffer, password: string, options?: JsOpenOptions | undefined | null): Promise<Workbook>
   /** Serialize the workbook to an in-memory Buffer. */
-  writeBufferSync(): Buffer
-  /**
-   * Serialize the workbook to an in-memory Buffer asynchronously.
-   * Delegates to `writeBufferSync` internally.
-   */
-  writeBuffer(): Promise<Buffer>
+  writeBufferSync(limits?: JsSaveLimits | undefined | null): Buffer
+  /** Serialize the workbook to an in-memory Buffer asynchronously. */
+  writeBuffer(limits?: JsSaveLimits | undefined | null): Promise<Buffer>
   /** Save the workbook as an encrypted .xlsx file. */
-  saveWithPasswordSync(path: string, password: string): void
-  /**
-   * Save the workbook as an encrypted .xlsx file asynchronously.
-   * Both sync and async encrypted saves buffer the ZIP data in memory
-   * before encrypting, so peak memory is similar to `saveWithPasswordSync`.
-   */
-  saveWithPassword(path: string, password: string): Promise<void>
+  saveWithPasswordSync(path: string, password: string, limits?: JsCryptLimits | undefined | null): void
+  /** Save an encrypted workbook for the TypeScript async rejection bridge. */
+  saveWithPassword(path: string, password: string, limits?: JsCryptLimits | undefined | null): Promise<void>
   /** Get the names of all sheets in workbook order. */
   get sheetNames(): Array<string>
   /** Get the value of a cell. Returns string, number, boolean, DateValue, or null. */
-  getCellValue(sheet: string, cell: string): JsCellOutputValue
+  getCellValue(sheet: string, cell: string): null | boolean | number | string | DateValue
   /**
    * Get the formatted display text for a cell, applying its number format.
    * Returns the value formatted according to the cell's style.
@@ -108,7 +100,7 @@ export declare class Workbook {
    */
   static builtinFormatCode(id: number): string | null
   /** Set the value of a cell. Pass string, number, boolean, DateValue, or null to clear. */
-  setCellValue(sheet: string, cell: string, value: JsCellInputValue): void
+  setCellValue(sheet: string, cell: string, value: string | number | boolean | DateValue | FormulaValue | null): void
   /**
    * Set multiple cell values at once. More efficient than calling
    * setCellValue repeatedly because it crosses the FFI boundary only once.
@@ -118,13 +110,13 @@ export declare class Workbook {
    * Set values in a single row starting from the given column.
    * Values are placed left-to-right starting at startCol (e.g., "A").
    */
-  setRowValues(sheet: string, row: number, startCol: string, values: Array<JsCellInputValue>): void
+  setRowValues(sheet: string, row: number, startCol: string, values: Array<string | number | boolean | DateValue | FormulaValue | null>): void
   /**
    * Set a block of cell values from a 2D array.
    * Each inner array is a row, each element is a cell value.
    * Optionally specify a start cell (default "A1").
    */
-  setSheetData(sheet: string, data: Array<Array<JsCellInputValue>>, startCell?: string | undefined | null): void
+  setSheetData(sheet: string, data: Array<Array<string | number | boolean | DateValue | FormulaValue | null>>, startCell?: string | undefined | null): void
   /** Create a new empty sheet. Returns the 0-based sheet index. */
   newSheet(name: string): number
   /** Delete a sheet by name. */
@@ -250,7 +242,7 @@ export declare class Workbook {
   /** Remove the auto-filter from a sheet. */
   removeAutoFilter(sheet: string): void
   /** Create a new stream writer for a new sheet. */
-  newStreamWriter(sheetName: string): JsStreamWriter
+  newStreamWriter(sheetName: string, limits?: JsStreamLimits | undefined | null): JsStreamWriter
   /** Apply a stream writer's output to the workbook. Returns the sheet index. */
   applyStreamWriter(writer: JsStreamWriter): number
   /** Set core document properties (title, creator, etc.). */
@@ -318,18 +310,18 @@ export declare class Workbook {
    * Get all rows with their data from a sheet.
    * Only rows that contain at least one cell are included.
    */
-  getRows(sheet: string): Array<JsRowData>
+  getRows(sheet: string, options?: JsTraversalOptions | undefined | null): Array<JsRowData>
   /**
    * Serialize a sheet's cell data into a compact binary buffer (v1 format).
    * Returns the raw bytes suitable for efficient JS-side decoding.
    */
-  getRowsBuffer(sheet: string): Buffer
+  getRowsBuffer(sheet: string, options?: JsTraversalOptions | undefined | null): Buffer
   /**
    * Serialize a sheet's cell data into a compact binary buffer (v2 format).
    * The v2 format inlines strings with each cell, eliminating the global
    * string table and enabling incremental row-by-row decoding.
    */
-  getRowsBufferV2(sheet: string): Buffer
+  getRowsBufferV2(sheet: string, options?: JsTraversalOptions | undefined | null): Buffer
   /**
    * Apply cell data from a binary buffer to a sheet.
    * The buffer must follow the raw transfer binary format.
@@ -340,20 +332,20 @@ export declare class Workbook {
    * Get all columns with their data from a sheet.
    * Only columns that have data are included.
    */
-  getCols(sheet: string): Array<JsColData>
+  getCols(sheet: string, options?: JsTraversalOptions | undefined | null): Array<JsColData>
   /** Set a formula on a cell. */
-  setCellFormula(sheet: string, cell: string, formula: string): void
+  setCellFormula(sheet: string, cell: string, formula: string, limits?: JsFormulaLimits | undefined | null): void
   /**
    * Fill a single-column range with a formula, adjusting row references
    * for each row relative to the first cell.
    */
-  fillFormula(sheet: string, range: string, formula: string): void
+  fillFormula(sheet: string, range: string, formula: string, limits?: JsFormulaLimits | undefined | null): void
   /** Evaluate a formula string against the current workbook data. */
-  evaluateFormula(sheet: string, formula: string): JsCellOutputValue
+  evaluateFormula(sheet: string, formula: string, limits?: JsFormulaLimits | undefined | null): null | boolean | number | string | DateValue
   /** Recalculate all formula cells in the workbook. */
-  calculateAll(): void
+  calculateAll(limits?: JsFormulaLimits | undefined | null): void
   /** Add a pivot table to the workbook. */
-  addPivotTable(config: JsPivotTableConfig): void
+  addPivotTable(config: JsPivotTableConfig, options?: JsTraversalOptions | undefined | null): void
   /** Get all pivot tables in the workbook. */
   getPivotTables(): Array<JsPivotTableInfo>
   /** Delete a pivot table by name. */
@@ -416,20 +408,20 @@ export declare class Workbook {
   /** Get sheet visibility. Returns "visible", "hidden", or "veryHidden". */
   getSheetVisibility(sheet: string): string
   /** Render a worksheet to an SVG string. */
-  renderToSvg(options: JsRenderOptions): string
+  renderToSvg(options: JsRenderOptions, traversal?: JsTraversalOptions | undefined | null): string
   /** Get the raw VBA project binary (xl/vbaProject.bin), or null if not present. */
   getVbaProject(): Buffer | null
   /**
    * Create an owned forward-only streaming reader for the named sheet.
-   * The reader owns its SST snapshot and XML bytes, enabling independent
-   * lifetime from the workbook.
+   * The reader owns an independent bounded source and shared SST snapshot,
+   * enabling a lifetime independent from the workbook.
    */
-  openSheetReader(sheet: string): NativeSheetStreamReader
+  openSheetReader(sheet: string, batchSize?: number | undefined | null): NativeSheetStreamReader
   /**
    * Extract VBA module source code from the workbook's VBA project.
    * Returns null if no VBA project is present.
    */
-  getVbaModules(): JsVbaProject | null
+  getVbaModules(limits?: JsVbaLimits | undefined | null): JsVbaProject | null
 }
 
 export interface DateValue {
@@ -615,6 +607,17 @@ export interface JsConditionalStyle {
   customNumFmt?: string
 }
 
+/** Options for controlling how a workbook is opened and parsed. */
+export interface JsCryptLimits {
+  outerCfbBytes?: number
+  namedStreamCount?: number
+  namedStreamDeclaredBytes?: number
+  namedStreamReadBytes?: number
+  encryptedPackageBytes?: number
+  kdfIterations?: number
+  kdfWork?: number
+}
+
 export interface JsDataValidationConfig {
   sqref: string
   validationType: string
@@ -746,6 +749,24 @@ export interface JsFormControlInfo {
   pageIncrement?: number
 }
 
+/** Finite limits for one formula parse, mutation, or calculation operation. */
+export interface JsFormulaLimits {
+  perFormulaInputBytes?: number
+  perFormulaNestingDepth?: number
+  perFormulaBinaryChainDepth?: number
+  perFormulaTokens?: number
+  perFormulaAstNodes?: number
+  operationInputBytes?: number
+  operationTokens?: number
+  operationAstNodes?: number
+  operationRangeCells?: number
+  operationDependencyEdges?: number
+  operationReadyQueueOps?: number
+  operationEvaluationSteps?: number
+  operationMatchWork?: number
+  operationOutputBytes?: number
+}
+
 /** Header and footer text. */
 export interface JsHeaderFooter {
   /** Header text (may use Excel formatting codes like &L, &C, &R). */
@@ -786,7 +807,11 @@ export interface JsImageConfig {
 
 /** Options for controlling how a workbook is opened and parsed. */
 export interface JsOpenOptions {
-  /** Maximum number of rows to read per sheet. Omit for unlimited. */
+  /** Maximum bytes accepted from an outer ZIP or encrypted container. */
+  maxOuterInputBytes?: number
+  /** Maximum bytes read from one XML part, including lazy hydration. */
+  maxXmlPartBytes?: number
+  /** Maximum rows read per sheet. Omit to use the worksheet format maximum. */
   sheetRows?: number
   /** Only parse sheets whose names are in this list. Omit to parse all sheets. */
   sheets?: Array<string>
@@ -794,6 +819,10 @@ export interface JsOpenOptions {
   maxUnzipSize?: number
   /** Maximum number of ZIP entries allowed. */
   maxZipEntries?: number
+  /** Finite encryption-container and password-derivation limits. */
+  cryptLimits?: JsCryptLimits
+  /** Finite VBA project loading limits. */
+  vbaLimits?: JsVbaLimits
   /**
    * Read mode: "eager", "lazy" (default for async-first surface), or "stream".
    * Lazy skips auxiliary parts for faster read-only workloads.
@@ -804,7 +833,7 @@ export interface JsOpenOptions {
    * Auxiliary parts loading policy: "deferred" or "eager".
    * When "deferred", auxiliary parts (comments, charts, images, etc.) are
    * not parsed during open and are loaded on demand.
-   * Default: "eager" (backward compat with existing sync API).
+   * Default: "deferred".
    */
   auxParts?: string
   /**
@@ -818,7 +847,7 @@ export interface JsOpenOptions {
    * promote `t="n"` cells whose style references a built-in date numFmt
    * ID 14-22/45-47, or a custom format code containing date/time tokens,
    * to a date cell) or `"cellType"` (spec-literal: only `t="d"` becomes
-   * a date). Values other than these fall back to the default.
+   * a date). Other values are rejected.
    */
   dateInterpretation?: string
 }
@@ -978,6 +1007,14 @@ export interface JsRowData {
   cells: Array<JsRowCell>
 }
 
+/** Finite limits for one workbook save operation. */
+export interface JsSaveLimits {
+  outputBytes?: number
+  xmlPartBytes?: number
+  rowCount?: number
+  cellCount?: number
+}
+
 /** Configuration for inserting a shape into a worksheet. */
 export interface JsShapeConfig {
   /** Shape type string (e.g., "rect", "ellipse", "roundRect", "diamond"). */
@@ -1097,6 +1134,16 @@ export interface JsSparklineConfig {
   style?: number
 }
 
+/** Finite limits for one streaming worksheet writer. */
+export interface JsStreamLimits {
+  rowCount?: number
+  cellCount?: number
+  rowXmlBytes?: number
+  outputBytes?: number
+  configCount?: number
+  configBytes?: number
+}
+
 export interface JsStyle {
   font?: JsFontStyle
   fill?: JsFillStyle
@@ -1176,6 +1223,43 @@ export interface JsThreadedCommentInput {
   author: string
   text: string
   parentId?: string
+}
+
+/** Finite limits for one worksheet traversal. */
+export interface JsTraversalLimits {
+  /** Maximum number of occupied rows in sparse mode or spanned rows in dense mode. */
+  maxRows?: number
+  /** Maximum number of occupied or spanned columns. */
+  maxColumns?: number
+  /** Maximum number of occupied cells in sparse mode or spanned cells in dense mode. */
+  maxCells?: number
+  /** Maximum binary output size in bytes. */
+  maxOutputBytes?: number
+}
+
+/** Options for worksheet traversal and raw transfer. */
+export interface JsTraversalOptions {
+  /** Traversal layout: "sparse" (default) or "dense" (v1 only). */
+  mode?: string
+  /** Finite resource limits for this traversal. */
+  limits?: JsTraversalLimits
+}
+
+/** Finite limits for VBA project loading and module extraction. */
+export interface JsVbaLimits {
+  inputBytes?: number
+  cfbStreamCount?: number
+  cfbStreamDeclaredBytes?: number
+  cfbAggregateDeclaredBytes?: number
+  cfbStreamReadBytes?: number
+  cfbAggregateReadBytes?: number
+  compressedBytes?: number
+  moduleCount?: number
+  chunkCount?: number
+  moduleDecodedBytes?: number
+  aggregateDecodedBytes?: number
+  retainedBytes?: number
+  outputBytes?: number
 }
 
 /** A VBA module extracted from a .xlsm file. */

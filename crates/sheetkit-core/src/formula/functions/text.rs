@@ -1,10 +1,10 @@
 //! Text formula functions: CONCAT, FIND, SEARCH, SUBSTITUTE, REPLACE, REPT, EXACT, T, PROPER.
 
 use crate::cell::CellValue;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::formula::ast::Expr;
 use crate::formula::eval::{coerce_to_number, coerce_to_string, Evaluator};
-use crate::formula::functions::check_arg_count;
+use crate::formula::functions::{check_arg_count, wildcard_search};
 
 /// CONCAT(text1, [text2], ...) - concatenates multiple values.
 pub fn fn_concat(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
@@ -43,37 +43,24 @@ pub fn fn_find(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
 /// SEARCH(find_text, within_text, [start_num]) - case-insensitive search with wildcards.
 pub fn fn_search(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("SEARCH", args, 2, 3)?;
-    let find_text = coerce_to_string(&ctx.eval_expr(&args[0])?).to_ascii_lowercase();
-    let within_text = coerce_to_string(&ctx.eval_expr(&args[1])?).to_ascii_lowercase();
-    let start_num = if args.len() > 2 {
-        coerce_to_number(&ctx.eval_expr(&args[2])?)? as usize
+    let find_text = coerce_to_string(&ctx.eval_expr(&args[0])?);
+    let within_text = coerce_to_string(&ctx.eval_expr(&args[1])?);
+    let start_value = if args.len() > 2 {
+        coerce_to_number(&ctx.eval_expr(&args[2])?)?
     } else {
-        1
+        1.0
+    };
+    let Some(start_num) = checked_truncated_usize(start_value) else {
+        return Ok(CellValue::Error("#VALUE!".to_string()));
     };
     let char_count = within_text.chars().count();
-    if start_num < 1 || start_num > char_count + 1 {
+    if start_num < 1 || start_num > char_count.saturating_add(1) {
         return Ok(CellValue::Error("#VALUE!".to_string()));
     }
     let search_in = &within_text[character_position_to_byte_offset(&within_text, start_num)..];
-    if find_text.contains('*') || find_text.contains('?') {
-        let positions = search_in
-            .char_indices()
-            .map(|(byte_offset, _)| byte_offset)
-            .chain(std::iter::once(search_in.len()));
-        for (char_offset, byte_offset) in positions.enumerate() {
-            let substring = &search_in[byte_offset..];
-            if wildcard_match_prefix(&find_text, substring) {
-                return Ok(CellValue::Number((char_offset + start_num) as f64));
-            }
-        }
-        Ok(CellValue::Error("#VALUE!".to_string()))
-    } else {
-        match search_in.find(&find_text) {
-            Some(pos) => Ok(CellValue::Number(
-                (start_num + search_in[..pos].chars().count()) as f64,
-            )),
-            None => Ok(CellValue::Error("#VALUE!".to_string())),
-        }
+    match wildcard_search(search_in, &find_text, ctx)? {
+        Some(char_offset) => Ok(CellValue::Number((char_offset + start_num) as f64)),
+        None => Ok(CellValue::Error("#VALUE!".to_string())),
     }
 }
 
@@ -83,34 +70,15 @@ fn character_position_to_byte_offset(text: &str, position: usize) -> usize {
         .map_or(text.len(), |(byte_offset, _)| byte_offset)
 }
 
-/// Wildcard match where the pattern must be fully consumed but the text may have trailing chars.
-fn wildcard_match_prefix(pattern: &str, text: &str) -> bool {
-    let p: Vec<char> = pattern.chars().collect();
-    let t: Vec<char> = text.chars().collect();
-    let mut pi = 0;
-    let mut ti = 0;
-    let mut star_pi = usize::MAX;
-    let mut star_ti = 0;
-    while pi < p.len() {
-        if pi < p.len() && p[pi] == '*' {
-            star_pi = pi;
-            star_ti = ti;
-            pi += 1;
-        } else if ti < t.len() && (p[pi] == '?' || p[pi] == t[ti]) {
-            pi += 1;
-            ti += 1;
-        } else if star_pi != usize::MAX {
-            pi = star_pi + 1;
-            star_ti += 1;
-            ti = star_ti;
-            if ti > t.len() {
-                return false;
-            }
-        } else {
-            return false;
-        }
+fn checked_truncated_usize(value: f64) -> Option<usize> {
+    if !value.is_finite() {
+        return None;
     }
-    true
+    let truncated = value.trunc();
+    if truncated < 0.0 || truncated > usize::MAX as f64 {
+        return None;
+    }
+    Some(truncated as usize)
 }
 
 /// SUBSTITUTE(text, old_text, new_text, [instance_num]) - replaces occurrences.
@@ -123,29 +91,73 @@ pub fn fn_substitute(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
         return Ok(CellValue::String(text));
     }
     if args.len() > 3 {
-        let instance_num = coerce_to_number(&ctx.eval_expr(&args[3])?)? as usize;
+        let instance_value = coerce_to_number(&ctx.eval_expr(&args[3])?)?;
+        let Some(instance_num) = checked_truncated_usize(instance_value) else {
+            return Ok(CellValue::Error("#VALUE!".to_string()));
+        };
         if instance_num < 1 {
             return Ok(CellValue::Error("#VALUE!".to_string()));
         }
-        let mut count = 0;
+        let occurrence = text.match_indices(&old_text).nth(instance_num - 1);
+        let replacement_count = usize::from(occurrence.is_some());
+        let output_len = checked_substitute_output_len(
+            text.len(),
+            old_text.len(),
+            new_text.len(),
+            replacement_count,
+        );
+        let Some(output_len) = output_len else {
+            ctx.check_output_bytes(u64::MAX)?;
+            unreachable!("an overflowing substitute result must exceed the formula budget");
+        };
+        ctx.check_output_bytes(u64::try_from(output_len).unwrap_or(u64::MAX))?;
+        let Some((position, _)) = occurrence else {
+            return Ok(CellValue::String(text));
+        };
         let mut result = String::new();
-        let mut remaining = text.as_str();
-        while let Some(pos) = remaining.find(&old_text) {
-            count += 1;
-            if count == instance_num {
-                result.push_str(&remaining[..pos]);
-                result.push_str(&new_text);
-                result.push_str(&remaining[pos + old_text.len()..]);
-                return Ok(CellValue::String(result));
-            }
-            result.push_str(&remaining[..pos + old_text.len()]);
-            remaining = &remaining[pos + old_text.len()..];
-        }
-        result.push_str(remaining);
+        result
+            .try_reserve_exact(output_len)
+            .map_err(|_| Error::Internal("substitute allocation failed".to_string()))?;
+        result.push_str(&text[..position]);
+        result.push_str(&new_text);
+        result.push_str(&text[position + old_text.len()..]);
         Ok(CellValue::String(result))
     } else {
-        Ok(CellValue::String(text.replace(&old_text, &new_text)))
+        let replacement_count = text.match_indices(&old_text).count();
+        let Some(output_len) = checked_substitute_output_len(
+            text.len(),
+            old_text.len(),
+            new_text.len(),
+            replacement_count,
+        ) else {
+            ctx.check_output_bytes(u64::MAX)?;
+            unreachable!("an overflowing substitute result must exceed the formula budget");
+        };
+        ctx.check_output_bytes(u64::try_from(output_len).unwrap_or(u64::MAX))?;
+        let mut result = String::new();
+        result
+            .try_reserve_exact(output_len)
+            .map_err(|_| Error::Internal("substitute allocation failed".to_string()))?;
+        let mut copied_until = 0;
+        for (position, matched) in text.match_indices(&old_text) {
+            result.push_str(&text[copied_until..position]);
+            result.push_str(&new_text);
+            copied_until = position + matched.len();
+        }
+        result.push_str(&text[copied_until..]);
+        Ok(CellValue::String(result))
     }
+}
+
+fn checked_substitute_output_len(
+    text_len: usize,
+    old_len: usize,
+    new_len: usize,
+    replacement_count: usize,
+) -> Option<usize> {
+    let removed = old_len.checked_mul(replacement_count)?;
+    let added = new_len.checked_mul(replacement_count)?;
+    text_len.checked_sub(removed)?.checked_add(added)
 }
 
 /// REPLACE(old_text, start_num, num_chars, new_text) - replaces by position.
@@ -300,6 +312,14 @@ mod tests {
         assert_eq!(
             eval(r#"SUBSTITUTE("aabbcc","b","X",2)"#),
             CellValue::String("aabXcc".to_string())
+        );
+    }
+
+    #[test]
+    fn substitute_output_length_detects_integer_overflow() {
+        assert_eq!(
+            checked_substitute_output_len(usize::MAX, 1, usize::MAX, 2),
+            None
         );
     }
 

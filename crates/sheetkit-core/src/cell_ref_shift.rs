@@ -1,6 +1,6 @@
 use crate::error::{Error, Result};
 use crate::utils::cell_ref::{column_name_to_number, column_number_to_name};
-use crate::utils::constants::MAX_ROWS;
+use crate::utils::constants::{MAX_COLUMNS, MAX_ROWS};
 
 #[derive(Debug, Clone, Copy)]
 struct ParsedCellRef {
@@ -305,11 +305,126 @@ fn format_shifted_ref(col: u32, row: u32, abs_col: bool, abs_row: bool) -> Resul
 /// The callback receives `(col, row, abs_col, abs_row)` and must return the
 /// new `(col, row)` values.  This allows callers to skip shifting when a
 /// reference is absolute.
+#[cfg(test)]
 pub(crate) fn shift_cell_references_with_abs<F>(text: &str, shift_cell: F) -> Result<String>
 where
     F: Fn(u32, u32, bool, bool) -> (u32, u32) + Copy,
 {
     shift_cell_references_with_abs_and_scope(text, true, |_| true, shift_cell)
+}
+
+/// Shifts cell references after the caller has admitted the exact output size.
+pub(crate) fn shift_cell_references_with_abs_preallocated<F>(
+    text: &str,
+    output_len: usize,
+    shift_cell: F,
+) -> Result<String>
+where
+    F: Fn(u32, u32, bool, bool) -> (u32, u32) + Copy,
+{
+    let shifted = shift_cell_references_with_abs_and_scope_capacity(
+        text,
+        true,
+        |_| true,
+        output_len,
+        shift_cell,
+    )?;
+    debug_assert_eq!(shifted.len(), output_len);
+    Ok(shifted)
+}
+
+fn checked_shifted_len_add(total: usize, value: usize) -> Result<usize> {
+    total
+        .checked_add(value)
+        .ok_or_else(|| Error::Internal("shifted formula length overflow".to_string()))
+}
+
+fn shifted_ref_len(col: u32, row: u32, abs_col: bool, abs_row: bool) -> Result<usize> {
+    if !(1..=MAX_ROWS).contains(&row) {
+        return Err(Error::InvalidRowNumber(row));
+    }
+    if !(1..=MAX_COLUMNS).contains(&col) {
+        return Err(Error::InvalidColumnNumber(col));
+    }
+    let col_len = if col <= 26 {
+        1
+    } else if col <= 702 {
+        2
+    } else {
+        3
+    };
+    let row_len = row.ilog10() as usize + 1;
+    Ok(col_len + row_len + usize::from(abs_col) + usize::from(abs_row))
+}
+
+/// Returns the exact byte length of a shifted formula without allocating the
+/// proportional output string.
+pub(crate) fn shifted_cell_references_len_with_abs<F>(text: &str, shift_cell: F) -> Result<usize>
+where
+    F: Fn(u32, u32, bool, bool) -> (u32, u32) + Copy,
+{
+    let mut output_len = 0usize;
+    let mut i = 0usize;
+    let bytes = text.as_bytes();
+    let last_closing_bracket = text.rfind(']');
+
+    while i < bytes.len() {
+        if bytes[i] == b'"' {
+            let end = end_of_string_literal(text, i);
+            output_len = checked_shifted_len_add(output_len, end - i)?;
+            i = end;
+        } else if let Some(end) = end_of_three_dimensional_reference(text, i) {
+            output_len = checked_shifted_len_add(output_len, end - i)?;
+            i = end;
+        } else if bytes[i] == b'[' && last_closing_bracket.is_none_or(|end| end < i) {
+            output_len = checked_shifted_len_add(output_len, 1)?;
+            i += 1;
+        } else if let Some(parsed) = parse_reference_at(text, i) {
+            let range_endpoint = parsed
+                .qualified_sheet
+                .as_ref()
+                .and_then(|_| qualified_range_endpoint(text, parsed.cell.end));
+            output_len = checked_shifted_len_add(output_len, parsed.cell_start - i)?;
+            let (new_col, new_row) = shift_cell(
+                parsed.cell.col,
+                parsed.cell.row,
+                parsed.cell.abs_col,
+                parsed.cell.abs_row,
+            );
+            output_len = checked_shifted_len_add(
+                output_len,
+                shifted_ref_len(new_col, new_row, parsed.cell.abs_col, parsed.cell.abs_row)?,
+            )?;
+            if let Some(endpoint) = range_endpoint {
+                output_len = checked_shifted_len_add(output_len, 1)?;
+                let (new_col, new_row) = shift_cell(
+                    endpoint.col,
+                    endpoint.row,
+                    endpoint.abs_col,
+                    endpoint.abs_row,
+                );
+                output_len = checked_shifted_len_add(
+                    output_len,
+                    shifted_ref_len(new_col, new_row, endpoint.abs_col, endpoint.abs_row)?,
+                )?;
+                i = endpoint.end;
+            } else {
+                i = parsed.cell.end;
+            }
+        } else if let Some(end) = end_of_bracketed_reference(text, i) {
+            output_len = checked_shifted_len_add(output_len, end - i)?;
+            i = end;
+        } else {
+            let ch = text[i..]
+                .chars()
+                .next()
+                .expect("index must remain on a UTF-8 boundary");
+            output_len = checked_shifted_len_add(output_len, ch.len_utf8())?;
+            i += ch.len_utf8();
+        }
+    }
+
+    Ok(output_len)
 }
 
 /// Shift references selected independently by their local or qualified scope.
@@ -326,9 +441,32 @@ where
     F: Fn(u32, u32, bool, bool) -> (u32, u32) + Copy,
     P: Fn(&str) -> bool + Copy,
 {
-    let mut out = String::with_capacity(text.len());
+    shift_cell_references_with_abs_and_scope_capacity(
+        text,
+        shift_local,
+        shift_qualified_sheet,
+        text.len(),
+        shift_cell,
+    )
+}
+
+fn shift_cell_references_with_abs_and_scope_capacity<F, P>(
+    text: &str,
+    shift_local: bool,
+    shift_qualified_sheet: P,
+    output_len: usize,
+    shift_cell: F,
+) -> Result<String>
+where
+    F: Fn(u32, u32, bool, bool) -> (u32, u32) + Copy,
+    P: Fn(&str) -> bool + Copy,
+{
+    let mut out = String::new();
+    out.try_reserve_exact(output_len)
+        .map_err(|_| Error::Internal("shifted formula allocation failed".to_string()))?;
     let mut i = 0usize;
     let bytes = text.as_bytes();
+    let last_closing_bracket = text.rfind(']');
 
     while i < bytes.len() {
         if bytes[i] == b'"' {
@@ -338,6 +476,9 @@ where
         } else if let Some(end) = end_of_three_dimensional_reference(text, i) {
             out.push_str(&text[i..end]);
             i = end;
+        } else if bytes[i] == b'[' && last_closing_bracket.is_none_or(|end| end < i) {
+            out.push('[');
+            i += 1;
         } else if let Some(parsed) = parse_reference_at(text, i) {
             let range_endpoint = parsed
                 .qualified_sheet
@@ -578,5 +719,46 @@ mod tests {
             shift_cell_references_with_abs("이름A1값+A1", |col, row, _, _| (col + 1, row + 1))
                 .unwrap();
         assert_eq!(shifted, "이름A1값+B2");
+    }
+
+    #[test]
+    fn shifted_length_matches_output_without_materializing_it() {
+        let formula = "SUM(A1:B2)+'Other Sheet'!$C$3+\u{d55c}\u{ae00}+\u{d568}\u{c218}(A1)";
+        let shift = |col, row, abs_col, abs_row| {
+            (
+                if abs_col { col } else { col + 25 },
+                if abs_row { row } else { row + 9_999 },
+            )
+        };
+        let expected = shift_cell_references_with_abs(formula, shift).unwrap();
+
+        let output_len = shifted_cell_references_len_with_abs(formula, shift).unwrap();
+        assert_eq!(output_len, expected.len());
+        assert_eq!(
+            shift_cell_references_with_abs_preallocated(formula, output_len, shift).unwrap(),
+            expected
+        );
+    }
+
+    #[test]
+    fn shifted_length_rejects_out_of_grid_results() {
+        let error =
+            shifted_cell_references_len_with_abs("XFD1048576", |col, row, _, _| (col + 1, row))
+                .unwrap_err();
+
+        assert!(matches!(error, Error::InvalidColumnNumber(16_385)));
+    }
+
+    #[test]
+    fn unmatched_bracket_prefixes_are_scanned_once_and_later_refs_still_shift() {
+        let formula = format!("{}A1", "[".repeat(10_000));
+        let shift = |col, row, _, _| (col + 1, row + 1);
+        let output_len = shifted_cell_references_len_with_abs(&formula, shift).unwrap();
+        let shifted =
+            shift_cell_references_with_abs_preallocated(&formula, output_len, shift).unwrap();
+
+        assert_eq!(output_len, formula.len());
+        assert!(shifted.ends_with("B2"));
+        assert_eq!(&shifted[..10_000], "[".repeat(10_000));
     }
 }

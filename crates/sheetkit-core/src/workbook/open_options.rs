@@ -81,6 +81,13 @@ pub struct OpenOptions {
     /// Independently configurable finite resource limits.
     pub limits: super::OpenLimits,
 
+    /// Independently configurable finite encryption-container and KDF limits.
+    #[cfg(feature = "encryption")]
+    pub crypt_limits: crate::crypt::CryptLimits,
+
+    /// Independently configurable finite VBA project limits.
+    pub vba_limits: crate::vba::VbaLimits,
+
     /// Read mode: `Lazy` (default) skips auxiliary parts for faster
     /// read-only workloads; `Eager` parses everything; `Stream` is
     /// reserved for future streaming reads.
@@ -171,6 +178,19 @@ impl OpenOptions {
     /// Override the byte limit for raw package data retained after open.
     pub fn max_retained_package_bytes(mut self, bytes: u64) -> Self {
         self.limits.retained_package_bytes = bytes;
+        self
+    }
+
+    /// Override encryption-container and password-derivation limits.
+    #[cfg(feature = "encryption")]
+    pub fn crypt_limits(mut self, limits: crate::crypt::CryptLimits) -> Self {
+        self.crypt_limits = limits;
+        self
+    }
+
+    /// Override VBA project parsing limits.
+    pub fn vba_limits(mut self, limits: crate::vba::VbaLimits) -> Self {
+        self.vba_limits = limits;
         self
     }
 

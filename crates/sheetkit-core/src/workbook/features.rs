@@ -423,7 +423,7 @@ impl Workbook {
         let sheet_idx = self.sheet_index(sheet)?;
         let mut tables = self.tables.clone();
 
-        let resolve_table_sheet_idx = |table_path: &str| -> usize {
+        let resolve_table_sheet_idx = |table_path: &str| -> Option<usize> {
             for (idx, rels) in &self.worksheet_rels {
                 for rel in &rels.relationships {
                     if rel.rel_type != rel_types::TABLE {
@@ -432,11 +432,11 @@ impl Workbook {
                     let resolved =
                         resolve_relationship_target(&self.sheet_part_path(*idx), &rel.target);
                     if resolved == table_path {
-                        return *idx;
+                        return Some(*idx);
                     }
                 }
             }
-            0
+            None
         };
 
         if let Some(entries) = self.deferred_parts.entries(AuxCategory::Tables) {
@@ -448,8 +448,9 @@ impl Workbook {
                 if let Ok(table_xml) =
                     quick_xml::de::from_str::<sheetkit_xml::table::TableXml>(&xml_str)
                 {
-                    let idx = resolve_table_sheet_idx(path);
-                    tables.push((path.clone(), table_xml, idx));
+                    if let Some(idx) = resolve_table_sheet_idx(path) {
+                        tables.push((path.clone(), table_xml, idx));
+                    }
                 }
             }
         }
@@ -895,6 +896,8 @@ impl Workbook {
     ///
     /// Returns `None` for standard `.xlsx` files (which have no VBA project).
     /// Returns `Some(bytes)` for `.xlsm` files that contain a VBA project.
+    /// The raw bytes were admitted by the finite VBA input limit used when the
+    /// workbook was opened.
     pub fn get_vba_project(&self) -> Option<&[u8]> {
         self.vba_blob.as_deref()
     }
@@ -909,10 +912,18 @@ impl Workbook {
     /// Returns `Ok(Some(project))` with the extracted modules and any warnings.
     /// Returns `Err` if the VBA project exists but is corrupt or unreadable.
     pub fn get_vba_modules(&self) -> Result<Option<crate::vba::VbaProject>> {
+        self.get_vba_modules_with_limits(crate::vba::VbaLimits::default())
+    }
+
+    /// Extract VBA modules using explicit finite parsing limits.
+    pub fn get_vba_modules_with_limits(
+        &self,
+        limits: crate::vba::VbaLimits,
+    ) -> Result<Option<crate::vba::VbaProject>> {
         match &self.vba_blob {
             None => Ok(None),
             Some(bin) => {
-                let project = crate::vba::extract_vba_modules(bin)?;
+                let project = crate::vba::extract_vba_modules_with_limits(bin, limits)?;
                 Ok(Some(project))
             }
         }
@@ -1029,6 +1040,23 @@ impl Workbook {
             &self.stylesheet,
             &self.theme_colors,
             options,
+        )
+    }
+
+    /// Renders a worksheet using explicit finite dense traversal limits.
+    pub fn render_to_svg_with_limits(
+        &self,
+        options: &crate::render::RenderOptions,
+        limits: crate::traversal::TraversalLimits,
+    ) -> Result<String> {
+        let ws = self.worksheet_ref(&options.sheet_name)?;
+        crate::render::render_to_svg_with_theme_and_limits(
+            ws,
+            &self.sst_runtime,
+            &self.stylesheet,
+            &self.theme_colors,
+            options,
+            limits,
         )
     }
 }

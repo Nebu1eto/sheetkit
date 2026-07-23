@@ -11,12 +11,12 @@
 //! HEADER (16 bytes)
 //!   magic:     u32  = 0x534B5232 ("SKR2")
 //!   version:   u16  = 2
-//!   row_count: u32  = number of rows
+//!   row_count: u32  = number of occupied rows
 //!   col_count: u16  = number of columns
 //!   flags:     u32  = bit 0: always 0 (v2 is always sparse)
 //!                      bits 16..31: min_col (1-based)
 //!
-//! ROW INDEX (row_count * 8 bytes)
+//! ROW INDEX (row_count * 8 bytes; unoccupied rows are omitted)
 //!   per row: row_number (u32) + byte_offset (u32) into CELL DATA section
 //!   offset = 0xFFFFFFFF for empty rows
 //!
@@ -33,9 +33,14 @@
 //!     0x07 (rich):   4 bytes (len u32 LE) + N bytes (UTF-8)
 //! ```
 
-use crate::error::Result;
-use crate::raw_transfer::{inline_string_visible_text, SharedFormulaResolver};
+use crate::error::{Error, Result};
+use crate::raw_transfer::{inline_string_visible_text, RawValueBudget, SharedFormulaResolver};
+use crate::resource::ResourceDimension;
 use crate::sst::SharedStringTable;
+use crate::traversal::{
+    check_limit, checked_output_add, checked_output_mul, CheckedRect, TraversalLimits,
+    TraversalMode, TraversalOptions,
+};
 use crate::utils::cell_ref::cell_name_to_coordinates;
 use sheetkit_xml::worksheet::{CellTypeTag, WorksheetXml};
 
@@ -52,6 +57,7 @@ pub const TYPE_ERROR: u8 = 0x05;
 pub const TYPE_FORMULA: u8 = 0x06;
 pub const TYPE_RICH_STRING: u8 = 0x07;
 
+#[cfg(test)]
 const EMPTY_ROW_OFFSET: u32 = 0xFFFF_FFFF;
 
 /// A cell entry with inline string data (variable-length payload).
@@ -69,12 +75,12 @@ enum CellPayload {
 }
 
 impl CellPayload {
-    fn byte_size(&self) -> usize {
+    fn byte_size(&self, limits: TraversalLimits) -> Result<u64> {
         match self {
-            CellPayload::Empty => 0,
-            CellPayload::Number(_) => 8,
-            CellPayload::Bool(_) => 1,
-            CellPayload::Str(s) => 4 + s.len(),
+            CellPayload::Empty => Ok(0),
+            CellPayload::Number(_) => Ok(8),
+            CellPayload::Bool(_) => Ok(1),
+            CellPayload::Str(s) => checked_output_add(4, s.len() as u64, limits),
         }
     }
 
@@ -102,13 +108,13 @@ struct RowEntriesV2 {
 
 impl RowEntriesV2 {
     /// Byte size of the cell data for this row (cell_count u16 + all cells).
-    fn byte_size(&self) -> usize {
-        // cell_count (2 bytes) + each cell (col u16 + type u8 + payload)
-        let mut size = 2usize;
+    fn byte_size(&self, limits: TraversalLimits) -> Result<u64> {
+        let mut size = 2u64;
         for cell in &self.cells {
-            size += 2 + 1 + cell.payload.byte_size();
+            size = checked_output_add(size, 3, limits)?;
+            size = checked_output_add(size, cell.payload.byte_size(limits)?, limits)?;
         }
-        size
+        Ok(size)
     }
 }
 
@@ -118,7 +124,16 @@ impl RowEntriesV2 {
 /// string table. This enables incremental row-by-row decoding without eagerly
 /// decoding all strings.
 pub fn sheet_to_raw_buffer_v2(ws: &WorksheetXml, sst: &SharedStringTable) -> Result<Vec<u8>> {
-    sheet_to_raw_buffer_v2_with_date_styles(ws, sst, &[])
+    sheet_to_raw_buffer_v2_with_options(ws, sst, TraversalOptions::default())
+}
+
+/// Serializes a worksheet in canonical v2 sparse format with finite options.
+pub fn sheet_to_raw_buffer_v2_with_options(
+    ws: &WorksheetXml,
+    sst: &SharedStringTable,
+    options: TraversalOptions,
+) -> Result<Vec<u8>> {
+    sheet_to_raw_buffer_v2_with_date_styles_and_options(ws, sst, &[], options)
 }
 
 /// Serialize a worksheet while promoting numeric cells that use date styles.
@@ -127,32 +142,78 @@ pub fn sheet_to_raw_buffer_v2_with_date_styles(
     sst: &SharedStringTable,
     style_is_date: &[bool],
 ) -> Result<Vec<u8>> {
+    sheet_to_raw_buffer_v2_with_date_styles_and_options(
+        ws,
+        sst,
+        style_is_date,
+        TraversalOptions::default(),
+    )
+}
+
+/// Serializes a worksheet in canonical v2 sparse format with date styles.
+pub fn sheet_to_raw_buffer_v2_with_date_styles_and_options(
+    ws: &WorksheetXml,
+    sst: &SharedStringTable,
+    style_is_date: &[bool],
+    options: TraversalOptions,
+) -> Result<Vec<u8>> {
+    if options.mode() != TraversalMode::Sparse {
+        return Err(Error::Internal(
+            "raw transfer v2 supports sparse traversal only".to_string(),
+        ));
+    }
     let rows = &ws.sheet_data.rows;
+    let limits = options.limits();
 
     if rows.is_empty() {
-        return Ok(write_empty_buffer());
+        return write_empty_buffer(limits);
     }
 
-    let (min_row, max_row, min_col, max_col, total_cells) = scan_dimensions(ws)?;
+    let (min_row, max_row, min_col, max_col, total_cells) = scan_dimensions(ws, limits)?;
 
     if total_cells == 0 {
-        return Ok(write_empty_buffer());
+        return write_empty_buffer(limits);
     }
 
-    let row_count = (max_row - min_row + 1) as usize;
-    let col_count = (max_col - min_col + 1) as usize;
+    let rect = CheckedRect::new_sparse(min_row, max_row, min_col, max_col, limits)?;
+    let occupied_rows = rows.iter().filter(|row| !row.cells.is_empty()).count() as u64;
+    check_limit(
+        ResourceDimension::RowCount,
+        limits.max_rows(),
+        occupied_rows,
+    )?;
+    check_limit(
+        ResourceDimension::CellCount,
+        limits.max_cells(),
+        total_cells,
+    )?;
+    let row_count = occupied_rows;
+    let col_count = rect.column_count();
 
-    let cell_entries = collect_cell_entries_v2(ws, sst, min_col, style_is_date)?;
+    let mut cell_entries =
+        collect_cell_entries_v2(ws, sst, min_col, style_is_date, limits, occupied_rows)?;
+    cell_entries.sort_unstable_by_key(|row| row.row_num);
 
     let flags: u32 = (min_col & 0xFFFF) << 16;
 
-    let row_index_size = row_count * 8;
+    let row_index_size = checked_output_mul(row_count, 8, limits)?;
+    let cell_data_size = cell_entries.iter().try_fold(0u64, |total, row| {
+        checked_output_add(total, row.byte_size(limits)?, limits)
+    })?;
+    let total_size = checked_output_add(
+        checked_output_add(HEADER_SIZE as u64, row_index_size, limits)?,
+        cell_data_size,
+        limits,
+    )?;
+    let total_size = usize::try_from(total_size)
+        .map_err(|_| Error::Internal("raw transfer v2 output is not addressable".to_string()))?;
 
-    let cell_data = encode_cell_data_v2(&cell_entries, min_row, max_row);
-    let row_index = build_row_index_v2(&cell_entries, min_row, max_row);
+    let cell_data = encode_cell_data_v2(&cell_entries, cell_data_size)?;
+    let row_index = build_row_index_v2(&cell_entries, row_index_size, limits)?;
 
-    let total_size = HEADER_SIZE + row_index_size + cell_data.len();
-    let mut buf = Vec::with_capacity(total_size);
+    let mut buf = Vec::new();
+    buf.try_reserve_exact(total_size)
+        .map_err(|_| Error::Internal("raw transfer v2 output allocation failed".to_string()))?;
 
     buf.extend_from_slice(&MAGIC_V2.to_le_bytes());
     buf.extend_from_slice(&VERSION_V2.to_le_bytes());
@@ -166,22 +227,28 @@ pub fn sheet_to_raw_buffer_v2_with_date_styles(
     Ok(buf)
 }
 
-fn write_empty_buffer() -> Vec<u8> {
-    let mut buf = Vec::with_capacity(HEADER_SIZE);
+fn write_empty_buffer(limits: TraversalLimits) -> Result<Vec<u8>> {
+    checked_output_add(0, HEADER_SIZE as u64, limits)?;
+    let mut buf = Vec::new();
+    buf.try_reserve_exact(HEADER_SIZE)
+        .map_err(|_| Error::Internal("raw transfer v2 output allocation failed".to_string()))?;
     buf.extend_from_slice(&MAGIC_V2.to_le_bytes());
     buf.extend_from_slice(&VERSION_V2.to_le_bytes());
     buf.extend_from_slice(&0u32.to_le_bytes());
     buf.extend_from_slice(&0u16.to_le_bytes());
     buf.extend_from_slice(&0u32.to_le_bytes());
-    buf
+    Ok(buf)
 }
 
-fn scan_dimensions(ws: &WorksheetXml) -> Result<(u32, u32, u32, u32, usize)> {
+fn scan_dimensions(
+    ws: &WorksheetXml,
+    limits: TraversalLimits,
+) -> Result<(u32, u32, u32, u32, u64)> {
     let mut min_row = u32::MAX;
     let mut max_row = 0u32;
     let mut min_col = u32::MAX;
     let mut max_col = 0u32;
-    let mut total_cells = 0usize;
+    let mut total_cells = 0u64;
 
     for row in &ws.sheet_data.rows {
         if row.cells.is_empty() {
@@ -189,12 +256,18 @@ fn scan_dimensions(ws: &WorksheetXml) -> Result<(u32, u32, u32, u32, usize)> {
         }
         min_row = min_row.min(row.r);
         max_row = max_row.max(row.r);
-
+        total_cells = total_cells
+            .checked_add(row.cells.len() as u64)
+            .ok_or_else(|| Error::Internal("raw transfer v2 cell count overflow".to_string()))?;
+        check_limit(
+            ResourceDimension::CellCount,
+            limits.max_cells(),
+            total_cells,
+        )?;
         for cell in &row.cells {
             let col = resolve_col(cell)?;
             min_col = min_col.min(col);
             max_col = max_col.max(col);
-            total_cells += 1;
         }
     }
 
@@ -218,21 +291,45 @@ fn collect_cell_entries_v2(
     sst: &SharedStringTable,
     min_col: u32,
     style_is_date: &[bool],
+    limits: TraversalLimits,
+    occupied_rows: u64,
 ) -> Result<Vec<RowEntriesV2>> {
-    let mut result = Vec::with_capacity(ws.sheet_data.rows.len());
-    let shared_formulas = SharedFormulaResolver::new(ws)?;
+    let mut result = Vec::new();
+    let occupied_rows = usize::try_from(occupied_rows)
+        .map_err(|_| Error::Internal("raw transfer v2 row count is not addressable".to_string()))?;
+    result
+        .try_reserve_exact(occupied_rows)
+        .map_err(|_| Error::Internal("raw transfer v2 row allocation failed".to_string()))?;
+    let mut raw_value_budget = RawValueBudget::new(limits);
+    let shared_formulas = SharedFormulaResolver::new(ws, &mut raw_value_budget)?;
+    let mut payload_bytes = 0u64;
 
     for row in &ws.sheet_data.rows {
         if row.cells.is_empty() {
             continue;
         }
 
-        let mut cells = Vec::with_capacity(row.cells.len());
+        check_limit(
+            ResourceDimension::ColumnCount,
+            limits.max_columns(),
+            row.cells.len() as u64,
+        )?;
+        let mut cells = Vec::new();
+        cells
+            .try_reserve_exact(row.cells.len())
+            .map_err(|_| Error::Internal("raw transfer v2 cell allocation failed".to_string()))?;
         for cell in &row.cells {
             let col = resolve_col(cell)?;
             let relative_col = (col - min_col) as u16;
-            let (type_tag, payload) =
-                encode_cell_value_v2(cell, sst, &shared_formulas, style_is_date)?;
+            let (type_tag, payload) = encode_cell_value_v2(
+                cell,
+                sst,
+                &shared_formulas,
+                style_is_date,
+                limits,
+                &mut payload_bytes,
+                &mut raw_value_budget,
+            )?;
             cells.push(CellEntryV2 {
                 col: relative_col,
                 type_tag,
@@ -254,9 +351,13 @@ fn encode_cell_value_v2(
     sst: &SharedStringTable,
     shared_formulas: &SharedFormulaResolver,
     style_is_date: &[bool],
+    limits: TraversalLimits,
+    payload_bytes: &mut u64,
+    raw_value_budget: &mut RawValueBudget,
 ) -> Result<(u8, CellPayload)> {
     if cell.f.is_some() {
-        if let Some(formula_expr) = shared_formulas.formula_for(cell)? {
+        if let Some(formula_expr) = shared_formulas.formula_for(cell, raw_value_budget)? {
+            let formula_expr = bounded_string(formula_expr.as_ref(), limits, payload_bytes)?;
             return Ok((TYPE_FORMULA, CellPayload::Str(formula_expr)));
         }
     }
@@ -267,9 +368,15 @@ fn encode_cell_value_v2(
                 if let Ok(sst_idx) = v.parse::<usize>() {
                     let text = sst.get(sst_idx).unwrap_or("");
                     if sst.get_rich_text(sst_idx).is_some() {
-                        return Ok((TYPE_RICH_STRING, CellPayload::Str(text.to_string())));
+                        return Ok((
+                            TYPE_RICH_STRING,
+                            CellPayload::Str(bounded_string(text, limits, payload_bytes)?),
+                        ));
                     }
-                    return Ok((TYPE_STRING, CellPayload::Str(text.to_string())));
+                    return Ok((
+                        TYPE_STRING,
+                        CellPayload::Str(bounded_string(text, limits, payload_bytes)?),
+                    ));
                 }
             }
             Ok((TYPE_EMPTY, CellPayload::Empty))
@@ -288,16 +395,21 @@ fn encode_cell_value_v2(
         }
         CellTypeTag::Error => {
             let error_text = cell.v.as_deref().unwrap_or("#VALUE!");
-            Ok((TYPE_ERROR, CellPayload::Str(error_text.to_string())))
+            Ok((
+                TYPE_ERROR,
+                CellPayload::Str(bounded_string(error_text, limits, payload_bytes)?),
+            ))
         }
         CellTypeTag::InlineString => {
-            let text = cell
-                .is
-                .as_deref()
-                .map(inline_string_visible_text)
-                .or_else(|| cell.v.clone())
-                .unwrap_or_default();
-            Ok((TYPE_STRING, CellPayload::Str(text)))
+            let text = if let Some(inline) = cell.is.as_deref() {
+                inline_string_visible_text(inline, raw_value_budget)?
+            } else {
+                std::borrow::Cow::Borrowed(cell.v.as_deref().unwrap_or(""))
+            };
+            Ok((
+                TYPE_STRING,
+                CellPayload::Str(bounded_string(text.as_ref(), limits, payload_bytes)?),
+            ))
         }
         CellTypeTag::Date => {
             if let Some(ref v) = cell.v {
@@ -309,7 +421,10 @@ fn encode_cell_value_v2(
         }
         CellTypeTag::FormulaString => {
             if let Some(ref v) = cell.v {
-                return Ok((TYPE_STRING, CellPayload::Str(v.clone())));
+                return Ok((
+                    TYPE_STRING,
+                    CellPayload::Str(bounded_string(v, limits, payload_bytes)?),
+                ));
             }
             Ok((TYPE_EMPTY, CellPayload::Empty))
         }
@@ -331,67 +446,59 @@ fn encode_cell_value_v2(
     }
 }
 
-fn encode_cell_data_v2(row_entries: &[RowEntriesV2], min_row: u32, max_row: u32) -> Vec<u8> {
-    let total_rows = (max_row - min_row + 1) as usize;
-    let mut entries_by_row: Vec<Option<&RowEntriesV2>> = vec![None; total_rows];
-    for re in row_entries {
-        let idx = (re.row_num - min_row) as usize;
-        entries_by_row[idx] = Some(re);
-    }
-
-    let mut buf = Vec::new();
-    for entry in &entries_by_row {
-        match entry {
-            Some(re) => {
-                let count = re.cells.len() as u16;
-                buf.extend_from_slice(&count.to_le_bytes());
-                for cell in &re.cells {
-                    buf.extend_from_slice(&cell.col.to_le_bytes());
-                    buf.push(cell.type_tag);
-                    cell.payload.write_to(&mut buf);
-                }
-            }
-            None => {
-                buf.extend_from_slice(&0u16.to_le_bytes());
-            }
-        }
-    }
-
-    buf
+fn bounded_string(value: &str, limits: TraversalLimits, payload_bytes: &mut u64) -> Result<String> {
+    *payload_bytes = checked_output_add(*payload_bytes, value.len() as u64, limits)?;
+    let mut output = String::new();
+    output
+        .try_reserve_exact(value.len())
+        .map_err(|_| Error::Internal("raw transfer v2 string allocation failed".to_string()))?;
+    output.push_str(value);
+    Ok(output)
 }
 
-fn build_row_index_v2(row_entries: &[RowEntriesV2], min_row: u32, max_row: u32) -> Vec<u8> {
-    let total_rows = (max_row - min_row + 1) as usize;
-    let mut index = Vec::with_capacity(total_rows * 8);
-
-    let mut entries_by_row: Vec<Option<&RowEntriesV2>> = vec![None; total_rows];
-    for re in row_entries {
-        let idx = (re.row_num - min_row) as usize;
-        entries_by_row[idx] = Some(re);
-    }
-
-    let mut byte_offset = 0u32;
-    for (i, entry) in entries_by_row.iter().enumerate() {
-        let row_num = min_row + i as u32;
-        index.extend_from_slice(&row_num.to_le_bytes());
-        match entry {
-            Some(re) => {
-                if re.cells.is_empty() {
-                    index.extend_from_slice(&EMPTY_ROW_OFFSET.to_le_bytes());
-                    byte_offset += 2; // just the cell_count u16
-                } else {
-                    index.extend_from_slice(&byte_offset.to_le_bytes());
-                    byte_offset += re.byte_size() as u32;
-                }
-            }
-            None => {
-                index.extend_from_slice(&EMPTY_ROW_OFFSET.to_le_bytes());
-                byte_offset += 2; // empty row writes cell_count=0
-            }
+fn encode_cell_data_v2(row_entries: &[RowEntriesV2], total: u64) -> Result<Vec<u8>> {
+    let total = usize::try_from(total)
+        .map_err(|_| Error::Internal("raw transfer v2 cell data is too large".to_string()))?;
+    let mut buf = Vec::new();
+    buf.try_reserve_exact(total)
+        .map_err(|_| Error::Internal("raw transfer v2 cell allocation failed".to_string()))?;
+    for row in row_entries {
+        let count = u16::try_from(row.cells.len())
+            .map_err(|_| Error::Internal("raw transfer v2 row has too many cells".to_string()))?;
+        buf.extend_from_slice(&count.to_le_bytes());
+        for cell in &row.cells {
+            buf.extend_from_slice(&cell.col.to_le_bytes());
+            buf.push(cell.type_tag);
+            cell.payload.write_to(&mut buf);
         }
     }
 
+    Ok(buf)
+}
+
+fn build_row_index_v2(
+    row_entries: &[RowEntriesV2],
+    total: u64,
+    limits: TraversalLimits,
+) -> Result<Vec<u8>> {
+    let total = usize::try_from(total)
+        .map_err(|_| Error::Internal("raw transfer v2 row index is too large".to_string()))?;
+    let mut index = Vec::new();
     index
+        .try_reserve_exact(total)
+        .map_err(|_| Error::Internal("raw transfer v2 row index allocation failed".to_string()))?;
+    let mut byte_offset = 0u32;
+    for row in row_entries {
+        index.extend_from_slice(&row.row_num.to_le_bytes());
+        index.extend_from_slice(&byte_offset.to_le_bytes());
+        let row_size = u32::try_from(row.byte_size(limits)?)
+            .map_err(|_| Error::Internal("raw transfer v2 row is too large".to_string()))?;
+        byte_offset = byte_offset
+            .checked_add(row_size)
+            .ok_or_else(|| Error::Internal("raw transfer v2 offset overflow".to_string()))?;
+    }
+
+    Ok(index)
 }
 
 #[cfg(test)]
@@ -405,7 +512,7 @@ mod tests {
 
     fn make_cell(col_ref: &str, col_num: u32, t: CellTypeTag, v: Option<&str>) -> Cell {
         Cell {
-            r: CompactCellRef::new(col_ref),
+            r: CompactCellRef::new(col_ref).unwrap(),
             col: col_num,
             s: None,
             t,
@@ -669,6 +776,55 @@ mod tests {
     }
 
     #[test]
+    fn v1_and_v2_match_for_budgeted_shared_formulas_and_inline_rich_text() {
+        let sst = SharedStringTable::new();
+        let mut master = make_cell("A1", 1, CellTypeTag::None, Some("1"));
+        master.f = Some(Box::new(CellFormula {
+            t: Some("shared".to_string()),
+            reference: Some("A1:B1".to_string()),
+            si: Some(12),
+            value: Some("A1+$A$1".to_string()),
+        }));
+        let mut follower = make_cell("B1", 2, CellTypeTag::None, Some("2"));
+        follower.f = Some(Box::new(CellFormula {
+            t: Some("shared".to_string()),
+            reference: None,
+            si: Some(12),
+            value: None,
+        }));
+        let mut rich = make_cell("C1", 3, CellTypeTag::InlineString, None);
+        rich.is = Some(Box::new(InlineString {
+            t: None,
+            r: vec![
+                R {
+                    r_pr: None,
+                    t: T {
+                        xml_space: None,
+                        value: "Rich".to_string(),
+                    },
+                },
+                R {
+                    r_pr: None,
+                    t: T {
+                        xml_space: None,
+                        value: " Text".to_string(),
+                    },
+                },
+            ],
+            r_ph: vec![],
+        }));
+        let ws = make_worksheet(vec![make_row(1, vec![master, follower, rich])]);
+
+        let v1 = crate::raw_transfer::sheet_to_raw_buffer(&ws, &sst).unwrap();
+        let v2 = sheet_to_raw_buffer_v2(&ws, &sst).unwrap();
+
+        assert_eq!(
+            crate::raw_transfer_write::raw_buffer_to_cells(&v1).unwrap(),
+            crate::raw_transfer_write::raw_buffer_to_cells(&v2).unwrap()
+        );
+    }
+
+    #[test]
     fn test_shared_formula_without_master_uses_cached_value_or_empty() {
         let sst = SharedStringTable::new();
         let mut cached = make_cell("A1", 1, CellTypeTag::None, Some("17"));
@@ -825,7 +981,7 @@ mod tests {
         let buf = sheet_to_raw_buffer_v2(&ws, &sst).unwrap();
 
         let row_count = read_u32_le(&buf, 6) as usize;
-        assert_eq!(row_count, 100);
+        assert_eq!(row_count, 2);
         let col_count = read_u16_le(&buf, 10) as usize;
         assert_eq!(col_count, 20);
 
@@ -833,13 +989,72 @@ mod tests {
         let row1_offset = read_u32_le(&buf, HEADER_SIZE + 4);
         assert_ne!(row1_offset, EMPTY_ROW_OFFSET);
 
-        // Verify row 2 is empty
-        let row2_offset = read_u32_le(&buf, HEADER_SIZE + 8 + 4);
-        assert_eq!(row2_offset, EMPTY_ROW_OFFSET);
-
-        // Verify row 100 has data
-        let row100_offset = read_u32_le(&buf, HEADER_SIZE + 99 * 8 + 4);
+        // Verify the second entry preserves absolute row 100.
+        assert_eq!(read_u32_le(&buf, HEADER_SIZE + 8), 100);
+        let row100_offset = read_u32_le(&buf, HEADER_SIZE + 12);
         assert_ne!(row100_offset, EMPTY_ROW_OFFSET);
+    }
+
+    #[test]
+    fn canonical_sparse_size_depends_on_occupied_rows_not_row_distance() {
+        let sst = SharedStringTable::new();
+        let near = make_worksheet(vec![
+            make_row(1, vec![make_cell("A1", 1, CellTypeTag::None, Some("1"))]),
+            make_row(2, vec![make_cell("A2", 1, CellTypeTag::None, Some("2"))]),
+        ]);
+        let far = make_worksheet(vec![
+            make_row(1, vec![make_cell("A1", 1, CellTypeTag::None, Some("1"))]),
+            make_row(
+                1_048_576,
+                vec![make_cell("A1048576", 1, CellTypeTag::None, Some("2"))],
+            ),
+        ]);
+
+        let near_buffer = sheet_to_raw_buffer_v2(&near, &sst).unwrap();
+        let far_buffer = sheet_to_raw_buffer_v2(&far, &sst).unwrap();
+
+        assert_eq!(read_u32_le(&near_buffer, 6), 2);
+        assert_eq!(read_u32_le(&far_buffer, 6), 2);
+        assert_eq!(near_buffer.len(), far_buffer.len());
+        assert_eq!(read_u32_le(&far_buffer, HEADER_SIZE + 8), 1_048_576);
+        let decoded = crate::raw_transfer_write::raw_buffer_to_cells(&far_buffer).unwrap();
+        assert_eq!(decoded[0].0, 1);
+        assert_eq!(decoded[1].0, 1_048_576);
+    }
+
+    #[test]
+    fn canonical_sparse_enforces_exact_output_boundary() {
+        let sst = SharedStringTable::new();
+        let ws = make_worksheet(vec![make_row(
+            1,
+            vec![make_cell(
+                "A1",
+                1,
+                CellTypeTag::InlineString,
+                Some("payload"),
+            )],
+        )]);
+        let baseline = sheet_to_raw_buffer_v2(&ws, &sst).unwrap();
+        let exact = TraversalLimits::new(1, 1, 1, baseline.len() as u64).unwrap();
+        sheet_to_raw_buffer_v2_with_options(
+            &ws,
+            &sst,
+            TraversalOptions::default().with_limits(exact),
+        )
+        .unwrap();
+
+        let error = sheet_to_raw_buffer_v2_with_options(
+            &ws,
+            &sst,
+            TraversalOptions::default()
+                .with_limits(TraversalLimits::new(1, 1, 1, baseline.len() as u64 - 1).unwrap()),
+        )
+        .unwrap_err();
+        let Error::ResourceLimitExceeded(metadata) = error else {
+            panic!("expected resource limit error");
+        };
+        assert_eq!(metadata.dimension(), ResourceDimension::OutputBytes);
+        assert_eq!(metadata.observed(), baseline.len() as u64);
     }
 
     #[test]
@@ -852,20 +1067,15 @@ mod tests {
         let buf = sheet_to_raw_buffer_v2(&ws, &sst).unwrap();
 
         let row_count = read_u32_le(&buf, 6) as usize;
-        assert_eq!(row_count, 3);
+        assert_eq!(row_count, 2);
 
         let row1_num = read_u32_le(&buf, HEADER_SIZE);
         let row1_offset = read_u32_le(&buf, HEADER_SIZE + 4);
         assert_eq!(row1_num, 1);
         assert_ne!(row1_offset, EMPTY_ROW_OFFSET);
 
-        let row2_num = read_u32_le(&buf, HEADER_SIZE + 8);
-        let row2_offset = read_u32_le(&buf, HEADER_SIZE + 12);
-        assert_eq!(row2_num, 2);
-        assert_eq!(row2_offset, EMPTY_ROW_OFFSET);
-
-        let row3_num = read_u32_le(&buf, HEADER_SIZE + 16);
-        let row3_offset = read_u32_le(&buf, HEADER_SIZE + 20);
+        let row3_num = read_u32_le(&buf, HEADER_SIZE + 8);
+        let row3_offset = read_u32_le(&buf, HEADER_SIZE + 12);
         assert_eq!(row3_num, 3);
         assert_ne!(row3_offset, EMPTY_ROW_OFFSET);
     }
@@ -888,7 +1098,7 @@ mod tests {
         assert_eq!(read_u32_le(&buf, 0), MAGIC_V2);
         assert_eq!(read_u16_le(&buf, 4), VERSION_V2);
         let row_count = read_u32_le(&buf, 6);
-        assert_eq!(row_count, 4, "rows 2-5 = 4 rows");
+        assert_eq!(row_count, 2, "only occupied rows are indexed");
         let col_count = read_u16_le(&buf, 10);
         assert_eq!(col_count, 3, "cols B-D = 3 columns");
     }

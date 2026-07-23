@@ -4,15 +4,17 @@
 use crate::cell::CellValue;
 use crate::error::Result;
 use crate::formula::ast::Expr;
-use crate::formula::eval::{coerce_to_number, coerce_to_string, Evaluator};
-use crate::formula::functions::{check_arg_count, collect_criteria_range_values, matches_criteria};
+use crate::formula::eval::{coerce_to_number, Evaluator};
+use crate::formula::functions::{
+    check_arg_count, collect_criteria_range_values, matches_prepared_criteria, prepare_criteria,
+};
 
 /// AVERAGEIF(range, criteria, [average_range])
 pub fn fn_averageif(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("AVERAGEIF", args, 2, 3)?;
     let range_vals = collect_criteria_range_values(&args[0], ctx)?;
     let criteria_val = ctx.eval_expr(&args[1])?;
-    let criteria = coerce_to_string(&criteria_val);
+    let criteria = prepare_criteria(criteria_val, ctx)?;
     let avg_vals = if args.len() == 3 {
         collect_criteria_range_values(&args[2], ctx)?
     } else {
@@ -21,7 +23,7 @@ pub fn fn_averageif(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     let mut sum = 0.0;
     let mut count = 0u64;
     for (i, rv) in range_vals.iter().enumerate() {
-        if matches_criteria(rv, &criteria) {
+        if matches_prepared_criteria(rv, &criteria, ctx)? {
             if let Some(sv) = avg_vals.get(i) {
                 if let Ok(n) = coerce_to_number(sv) {
                     sum += n;
@@ -45,25 +47,27 @@ pub fn fn_averageifs(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     let avg_vals = collect_criteria_range_values(&args[0], ctx)?;
     let pair_count = (args.len() - 1) / 2;
     let mut criteria_ranges: Vec<Vec<CellValue>> = Vec::with_capacity(pair_count);
-    let mut criteria_strings: Vec<String> = Vec::with_capacity(pair_count);
+    let mut criteria_values = Vec::with_capacity(pair_count);
     for i in 0..pair_count {
         let range_vals = collect_criteria_range_values(&args[1 + i * 2], ctx)?;
         let crit_val = ctx.eval_expr(&args[2 + i * 2])?;
         criteria_ranges.push(range_vals);
-        criteria_strings.push(coerce_to_string(&crit_val));
+        criteria_values.push(prepare_criteria(crit_val, ctx)?);
     }
     let mut sum = 0.0;
     let mut count = 0u64;
     for (idx, sv) in avg_vals.iter().enumerate() {
-        let all_match =
-            criteria_ranges
-                .iter()
-                .zip(criteria_strings.iter())
-                .all(|(range_vals, crit)| {
-                    range_vals
-                        .get(idx)
-                        .is_some_and(|rv| matches_criteria(rv, crit))
-                });
+        let mut all_match = true;
+        for (range_vals, criteria) in criteria_ranges.iter().zip(criteria_values.iter()) {
+            let Some(value) = range_vals.get(idx) else {
+                all_match = false;
+                break;
+            };
+            if !matches_prepared_criteria(value, criteria, ctx)? {
+                all_match = false;
+                break;
+            }
+        }
         if all_match {
             if let Ok(n) = coerce_to_number(sv) {
                 sum += n;
@@ -93,11 +97,13 @@ pub fn fn_countif(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("COUNTIF", args, 2, 2)?;
     let range_vals = collect_criteria_range_values(&args[0], ctx)?;
     let criteria_val = ctx.eval_expr(&args[1])?;
-    let criteria = coerce_to_string(&criteria_val);
-    let count = range_vals
-        .iter()
-        .filter(|rv| matches_criteria(rv, &criteria))
-        .count();
+    let criteria = prepare_criteria(criteria_val, ctx)?;
+    let mut count = 0usize;
+    for value in &range_vals {
+        if matches_prepared_criteria(value, &criteria, ctx)? {
+            count += 1;
+        }
+    }
     Ok(CellValue::Number(count as f64))
 }
 
@@ -109,25 +115,27 @@ pub fn fn_countifs(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     }
     let pair_count = args.len() / 2;
     let mut criteria_ranges: Vec<Vec<CellValue>> = Vec::with_capacity(pair_count);
-    let mut criteria_strings: Vec<String> = Vec::with_capacity(pair_count);
+    let mut criteria_values = Vec::with_capacity(pair_count);
     for i in 0..pair_count {
         let range_vals = collect_criteria_range_values(&args[i * 2], ctx)?;
         let crit_val = ctx.eval_expr(&args[i * 2 + 1])?;
         criteria_ranges.push(range_vals);
-        criteria_strings.push(coerce_to_string(&crit_val));
+        criteria_values.push(prepare_criteria(crit_val, ctx)?);
     }
     let len = criteria_ranges.first().map_or(0, |r| r.len());
     let mut count = 0u64;
     for idx in 0..len {
-        let all_match =
-            criteria_ranges
-                .iter()
-                .zip(criteria_strings.iter())
-                .all(|(range_vals, crit)| {
-                    range_vals
-                        .get(idx)
-                        .is_some_and(|rv| matches_criteria(rv, crit))
-                });
+        let mut all_match = true;
+        for (range_vals, criteria) in criteria_ranges.iter().zip(criteria_values.iter()) {
+            let Some(value) = range_vals.get(idx) else {
+                all_match = false;
+                break;
+            };
+            if !matches_prepared_criteria(value, criteria, ctx)? {
+                all_match = false;
+                break;
+            }
+        }
         if all_match {
             count += 1;
         }

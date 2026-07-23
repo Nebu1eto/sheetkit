@@ -1,0 +1,15 @@
+{
+  "extends": "../../../../tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "declaration": false,
+    "declarationMap": false,
+    "noEmit": true,
+    "paths": {
+      "@sheetkit/node": ["../../index.d.ts"],
+      "@sheetkit/node/binding.js": ["../../binding.d.ts"]
+    },
+    "skipLibCheck": false
+  },
+  "include": ["consumer.ts"]
+}

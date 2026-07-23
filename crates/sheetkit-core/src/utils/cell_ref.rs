@@ -6,6 +6,79 @@
 
 use crate::error::{Error, Result};
 use crate::utils::constants::{MAX_COLUMNS, MAX_ROWS};
+use sheetkit_xml::cell_ref::parse_a1_reference;
+use sheetkit_xml::worksheet::CompactCellRef;
+
+/// Create a validated compact A1 reference from 1-based coordinates.
+pub(crate) fn compact_cell_ref(col: u32, row: u32) -> Result<CompactCellRef> {
+    CompactCellRef::from_coordinates(col, row)
+        .map_err(|error| Error::InvalidCellReference(error.to_string()))
+}
+
+/// Validate worksheet cell structure before populating binary-search indexes.
+pub(crate) fn validate_and_index_worksheet(
+    worksheet: &mut sheetkit_xml::worksheet::WorksheetXml,
+) -> Result<()> {
+    const COLUMN_WORDS: usize = (MAX_COLUMNS as usize).div_ceil(u64::BITS as usize);
+    let mut seen_rows = vec![0u64; (MAX_ROWS as usize).div_ceil(u64::BITS as usize)];
+
+    for row in &worksheet.sheet_data.rows {
+        if !(1..=MAX_ROWS).contains(&row.r) {
+            return Err(Error::InvalidRowNumber(row.r));
+        }
+
+        let row_index = (row.r - 1) as usize;
+        let row_word = row_index / u64::BITS as usize;
+        let row_mask = 1u64 << (row_index % u64::BITS as usize);
+        if seen_rows[row_word] & row_mask != 0 {
+            return Err(Error::InvalidCellReference(format!(
+                "duplicate worksheet row {}",
+                row.r
+            )));
+        }
+        seen_rows[row_word] |= row_mask;
+
+        let mut seen_columns = [0u64; COLUMN_WORDS];
+        for cell in &row.cells {
+            let parsed = parse_a1_reference(cell.r.as_str())
+                .map_err(|error| Error::InvalidCellReference(error.to_string()))?;
+            if !parsed.is_canonical() {
+                return Err(Error::InvalidCellReference(format!(
+                    "noncanonical worksheet cell reference '{}'",
+                    cell.r
+                )));
+            }
+            if parsed.row() != row.r {
+                return Err(Error::InvalidCellReference(format!(
+                    "cell '{}' does not belong to worksheet row {}",
+                    cell.r, row.r
+                )));
+            }
+
+            let column_index = (parsed.column() - 1) as usize;
+            let column_word = column_index / u64::BITS as usize;
+            let column_mask = 1u64 << (column_index % u64::BITS as usize);
+            if seen_columns[column_word] & column_mask != 0 {
+                return Err(Error::InvalidCellReference(format!(
+                    "duplicate worksheet cell reference '{}'",
+                    cell.r
+                )));
+            }
+            seen_columns[column_word] |= column_mask;
+        }
+    }
+
+    worksheet.sheet_data.rows.sort_unstable_by_key(|row| row.r);
+    for row in &mut worksheet.sheet_data.rows {
+        for cell in &mut row.cells {
+            cell.col = parse_a1_reference(cell.r.as_str())
+                .map_err(|error| Error::InvalidCellReference(error.to_string()))?
+                .column();
+        }
+        row.cells.sort_unstable_by_key(|cell| cell.col);
+    }
+    Ok(())
+}
 
 /// Convert a column name (e.g. `"A"`, `"Z"`, `"AA"`, `"XFD"`) to a 1-based
 /// column number.
@@ -94,51 +167,9 @@ pub fn column_number_to_name(num: u32) -> Result<String> {
 /// assert_eq!(cell_name_to_coordinates("AA100").unwrap(), (27, 100));
 /// ```
 pub fn cell_name_to_coordinates(cell: &str) -> Result<(u32, u32)> {
-    // Strip absolute-reference markers.
-    let cell = cell.replace('$', "");
-
-    if cell.is_empty() {
-        return Err(Error::InvalidCellReference(
-            "empty cell reference".to_string(),
-        ));
-    }
-
-    // Split into column letters and row digits.
-    let mut col_end = 0;
-    for (i, c) in cell.char_indices() {
-        if c.is_ascii_alphabetic() {
-            col_end = i + c.len_utf8();
-        } else {
-            break;
-        }
-    }
-
-    if col_end == 0 {
-        return Err(Error::InvalidCellReference(format!(
-            "no column letters in '{cell}'"
-        )));
-    }
-
-    let col_str = &cell[..col_end];
-    let row_str = &cell[col_end..];
-
-    if row_str.is_empty() {
-        return Err(Error::InvalidCellReference(format!(
-            "no row number in '{cell}'"
-        )));
-    }
-
-    let col = column_name_to_number(col_str)?;
-
-    let row: u32 = row_str
-        .parse()
-        .map_err(|_| Error::InvalidCellReference(format!("invalid row number in '{cell}'")))?;
-
-    if !(1..=MAX_ROWS).contains(&row) {
-        return Err(Error::InvalidRowNumber(row));
-    }
-
-    Ok((col, row))
+    let parsed =
+        parse_a1_reference(cell).map_err(|error| Error::InvalidCellReference(error.to_string()))?;
+    Ok((parsed.column(), parsed.row()))
 }
 
 /// Convert 1-based `(col, row)` coordinates to an A1-style cell reference.
@@ -337,6 +368,26 @@ mod tests {
     }
 
     #[test]
+    fn test_cell_rejects_misplaced_absolute_markers() {
+        for reference in ["A$1$", "$A1$", "$$A1", "A$$1"] {
+            assert!(
+                cell_name_to_coordinates(reference).is_err(),
+                "accepted {reference}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_cell_rejects_trailing_junk_overflow_and_utf8() {
+        for reference in ["A1junk", "A42949672960", "A1é"] {
+            assert!(
+                cell_name_to_coordinates(reference).is_err(),
+                "accepted {reference}"
+            );
+        }
+    }
+
+    #[test]
     fn test_coords_1_1() {
         assert_eq!(coordinates_to_cell_name(1, 1).unwrap(), "A1");
     }
@@ -391,5 +442,84 @@ mod tests {
             let (c, r) = cell_name_to_coordinates(&name).unwrap();
             assert_eq!((c, r), (col, row));
         }
+    }
+
+    fn worksheet_cell(reference: &str) -> sheetkit_xml::worksheet::Cell {
+        sheetkit_xml::worksheet::Cell {
+            r: CompactCellRef::new(reference).unwrap(),
+            col: 0,
+            s: None,
+            t: sheetkit_xml::worksheet::CellTypeTag::None,
+            v: None,
+            f: None,
+            is: None,
+        }
+    }
+
+    fn worksheet_row(row: u32, references: &[&str]) -> sheetkit_xml::worksheet::Row {
+        sheetkit_xml::worksheet::Row {
+            r: row,
+            spans: None,
+            s: None,
+            custom_format: None,
+            ht: None,
+            custom_height: None,
+            hidden: None,
+            outline_level: None,
+            cells: references
+                .iter()
+                .map(|reference| worksheet_cell(reference))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn worksheet_indexing_rejects_row_mismatch_and_duplicate_coordinates() {
+        let mut mismatch = sheetkit_xml::worksheet::WorksheetXml::default();
+        mismatch.sheet_data.rows.push(worksheet_row(2, &["A1"]));
+        assert!(validate_and_index_worksheet(&mut mismatch).is_err());
+
+        let mut duplicate_cells = sheetkit_xml::worksheet::WorksheetXml::default();
+        duplicate_cells
+            .sheet_data
+            .rows
+            .push(worksheet_row(1, &["A1", "A1"]));
+        assert!(validate_and_index_worksheet(&mut duplicate_cells).is_err());
+
+        let mut duplicate_rows = sheetkit_xml::worksheet::WorksheetXml::default();
+        duplicate_rows
+            .sheet_data
+            .rows
+            .extend([worksheet_row(1, &["A1"]), worksheet_row(1, &["B1"])]);
+        assert!(validate_and_index_worksheet(&mut duplicate_rows).is_err());
+    }
+
+    #[test]
+    fn worksheet_indexing_validates_before_sorting_and_populates_columns() {
+        let mut worksheet = sheetkit_xml::worksheet::WorksheetXml::default();
+        worksheet
+            .sheet_data
+            .rows
+            .extend([worksheet_row(2, &["B2", "A2"]), worksheet_row(1, &["C1"])]);
+
+        validate_and_index_worksheet(&mut worksheet).unwrap();
+
+        assert_eq!(
+            worksheet
+                .sheet_data
+                .rows
+                .iter()
+                .map(|row| row.r)
+                .collect::<Vec<_>>(),
+            [1, 2]
+        );
+        assert_eq!(
+            worksheet.sheet_data.rows[1]
+                .cells
+                .iter()
+                .map(|cell| (cell.r.as_str(), cell.col))
+                .collect::<Vec<_>>(),
+            [("A2", 1), ("B2", 2)]
+        );
     }
 }

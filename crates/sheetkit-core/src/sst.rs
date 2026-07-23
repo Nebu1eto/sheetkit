@@ -20,8 +20,13 @@ use crate::rich_text::{xml_to_run, RichTextRun};
 /// cloning the string data a second time.
 #[derive(Debug)]
 pub struct SharedStringTable {
-    strings: Vec<Arc<str>>,
+    read_data: Arc<SharedStringReadData>,
     index_map: HashMap<Arc<str>, usize>,
+}
+
+#[derive(Debug, Clone)]
+struct SharedStringReadData {
+    strings: Vec<Arc<str>>,
     /// Original or constructed Si items, parallel to `strings`.
     /// `None` for plain-text items added via `add()` / `add_owned()`.
     si_items: Vec<Option<Si>>,
@@ -31,9 +36,11 @@ impl SharedStringTable {
     /// Create a new, empty shared string table.
     pub fn new() -> Self {
         Self {
-            strings: Vec::new(),
+            read_data: Arc::new(SharedStringReadData {
+                strings: Vec::new(),
+                si_items: Vec::new(),
+            }),
             index_map: HashMap::new(),
-            si_items: Vec::new(),
         }
     }
 
@@ -76,9 +83,8 @@ impl SharedStringTable {
         }
 
         Self {
-            strings,
+            read_data: Arc::new(SharedStringReadData { strings, si_items }),
             index_map,
-            si_items,
         }
     }
 
@@ -88,11 +94,12 @@ impl SharedStringTable {
     /// `Si` items only for strings added at runtime.
     pub fn to_sst(&self) -> Sst {
         let items: Vec<Si> = self
+            .read_data
             .strings
             .iter()
             .enumerate()
             .map(|(idx, s)| {
-                if let Some(ref si) = self.si_items[idx] {
+                if let Some(ref si) = self.read_data.si_items[idx] {
                     si.clone()
                 } else {
                     Si {
@@ -121,7 +128,7 @@ impl SharedStringTable {
 
     /// Get a string by its index.
     pub fn get(&self, index: usize) -> Option<&str> {
-        self.strings.get(index).map(|s| &**s)
+        self.read_data.strings.get(index).map(|s| &**s)
     }
 
     /// Add a string by reference, returning its index.
@@ -131,11 +138,12 @@ impl SharedStringTable {
         if let Some(&idx) = self.index_map.get(s) {
             return idx;
         }
-        let idx = self.strings.len();
+        let idx = self.read_data.strings.len();
         let rc: Arc<str> = s.into();
-        self.strings.push(Arc::clone(&rc));
+        let data = Arc::make_mut(&mut self.read_data);
+        data.strings.push(Arc::clone(&rc));
         self.index_map.insert(rc, idx);
-        self.si_items.push(None);
+        data.si_items.push(None);
         idx
     }
 
@@ -147,11 +155,12 @@ impl SharedStringTable {
         if let Some(&idx) = self.index_map.get(s.as_str()) {
             return idx;
         }
-        let idx = self.strings.len();
+        let idx = self.read_data.strings.len();
         let rc: Arc<str> = s.into();
         self.index_map.insert(Arc::clone(&rc), idx);
-        self.strings.push(rc);
-        self.si_items.push(None);
+        let data = Arc::make_mut(&mut self.read_data);
+        data.strings.push(rc);
+        data.si_items.push(None);
         idx
     }
 
@@ -163,12 +172,13 @@ impl SharedStringTable {
         if let Some(&idx) = self.index_map.get(plain.as_str()) {
             return idx;
         }
-        let idx = self.strings.len();
+        let idx = self.read_data.strings.len();
         let rc: Arc<str> = plain.into();
         self.index_map.insert(Arc::clone(&rc), idx);
-        self.strings.push(rc);
+        let data = Arc::make_mut(&mut self.read_data);
+        data.strings.push(rc);
         let si = crate::rich_text::runs_to_si(runs);
-        self.si_items.push(Some(si));
+        data.si_items.push(Some(si));
         idx
     }
 
@@ -176,7 +186,8 @@ impl SharedStringTable {
     ///
     /// Returns `None` for plain-text entries.
     pub fn get_rich_text(&self, index: usize) -> Option<Vec<RichTextRun>> {
-        self.si_items
+        self.read_data
+            .si_items
             .get(index)
             .and_then(|opt| opt.as_ref())
             .filter(|si| !si.r.is_empty())
@@ -185,25 +196,29 @@ impl SharedStringTable {
 
     /// Number of unique strings.
     pub fn len(&self) -> usize {
-        self.strings.len()
+        self.read_data.strings.len()
     }
 
     /// Returns `true` if the table contains no strings.
     pub fn is_empty(&self) -> bool {
-        self.strings.is_empty()
+        self.read_data.strings.is_empty()
     }
 
     /// Create a read-only clone suitable for use by an owned stream reader.
     ///
-    /// Clones the string list (`Arc<str>` refcount bumps only) and the Si
-    /// items, but omits the reverse `index_map` since the clone is read-only.
-    /// This is cheaper than a full clone and sufficient for SST index lookups.
-    pub fn clone_for_read(&self) -> Self {
+    /// Shares the immutable lookup data in O(1) and omits the reverse
+    /// `index_map`, which a reader never needs. Later workbook mutation uses
+    /// copy-on-write so the snapshot remains stable.
+    pub(crate) fn clone_for_read(&self) -> Self {
         Self {
-            strings: self.strings.clone(),
+            read_data: Arc::clone(&self.read_data),
             index_map: HashMap::new(),
-            si_items: self.si_items.clone(),
         }
+    }
+
+    #[cfg(test)]
+    fn shares_read_storage_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.read_data, &other.read_data)
     }
 }
 
@@ -255,6 +270,20 @@ mod tests {
         assert_eq!(table.add("world"), 1);
         assert_eq!(table.add("foo"), 2);
         assert_eq!(table.len(), 3);
+    }
+
+    #[test]
+    fn read_snapshot_is_o1_and_copy_on_write() {
+        let mut table = SharedStringTable::new();
+        table.add("original");
+        let snapshot = table.clone_for_read();
+        assert!(table.shares_read_storage_with(&snapshot));
+
+        table.add("later");
+        assert!(!table.shares_read_storage_with(&snapshot));
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot.get(0), Some("original"));
+        assert_eq!(snapshot.get(1), None);
     }
 
     #[test]

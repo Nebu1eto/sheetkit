@@ -4,19 +4,17 @@
 //! business logic decoupled from the [`Workbook`](crate::workbook::Workbook)
 //! wrapper.
 
-use std::collections::BTreeMap;
-
 use sheetkit_xml::worksheet::{Col, Cols, WorksheetXml};
 
 use crate::cell::CellValue;
 use crate::error::{Error, Result};
-use crate::row::get_rows;
+use crate::row::{cell_cloned_payload_bytes, resolve_cell_value};
 use crate::sst::SharedStringTable;
+use crate::traversal::{check_limit, TraversalLimits};
 use crate::utils::cell_ref::{
-    cell_name_to_coordinates, column_name_to_number, column_number_to_name,
-    coordinates_to_cell_name,
+    cell_name_to_coordinates, column_name_to_number, column_number_to_name, compact_cell_ref,
 };
-use crate::utils::constants::{MAX_COLUMNS, MAX_COLUMN_WIDTH};
+use crate::utils::constants::{MAX_COLUMNS, MAX_COLUMN_WIDTH, MAX_ROWS};
 
 /// Get all columns with their data from a worksheet.
 ///
@@ -30,26 +28,140 @@ pub fn get_cols(
     sst: &SharedStringTable,
     style_is_date: &[bool],
 ) -> Result<Vec<(String, Vec<(u32, CellValue)>)>> {
-    let rows = get_rows(ws, sst, style_is_date)?;
+    get_cols_with_limits(ws, sst, style_is_date, TraversalLimits::default())
+}
 
-    // Transpose row-based data into column-based data using a BTreeMap
-    // keyed by column number so columns are naturally sorted.
-    let mut col_map: BTreeMap<u32, Vec<(u32, CellValue)>> = BTreeMap::new();
+/// Gets sparse columns with explicit finite materialization limits.
+///
+/// Counts and retained cloned bytes are admitted before result allocation.
+#[allow(clippy::type_complexity)]
+pub fn get_cols_with_limits(
+    ws: &WorksheetXml,
+    sst: &SharedStringTable,
+    style_is_date: &[bool],
+    limits: TraversalLimits,
+) -> Result<Vec<(String, Vec<(u32, CellValue)>)>> {
+    let mut column_counts = [0u64; MAX_COLUMNS as usize];
+    let mut row_count = 0u64;
+    let mut column_count = 0u64;
+    let mut cell_count = 0u64;
+    let mut retained_bytes = 0u64;
 
-    for (row_num, cells) in rows {
-        for (col_num, value) in cells {
-            col_map.entry(col_num).or_default().push((row_num, value));
+    for row in &ws.sheet_data.rows {
+        if row.cells.is_empty() {
+            continue;
+        }
+        if row.r == 0 || row.r > MAX_ROWS {
+            return Err(Error::InvalidRowNumber(row.r));
+        }
+        row_count = row_count.saturating_add(1);
+        check_limit(
+            crate::ResourceDimension::RowCount,
+            limits.max_rows(),
+            row_count,
+        )?;
+
+        for cell in &row.cells {
+            let col_num = if cell.col > 0 {
+                cell.col
+            } else {
+                cell_name_to_coordinates(cell.r.as_str())?.0
+            };
+            if col_num == 0 || col_num > MAX_COLUMNS {
+                return Err(Error::InvalidColumnNumber(col_num));
+            }
+            let column_slot = usize::try_from(col_num - 1)
+                .map_err(|_| Error::Internal("column index is not addressable".to_string()))?;
+            if column_counts[column_slot] == 0 {
+                column_count = column_count.saturating_add(1);
+                check_limit(
+                    crate::ResourceDimension::ColumnCount,
+                    limits.max_columns(),
+                    column_count,
+                )?;
+                retained_bytes = retained_bytes
+                    .saturating_add(
+                        u64::try_from(std::mem::size_of::<(String, Vec<(u32, CellValue)>)>())
+                            .unwrap_or(u64::MAX),
+                    )
+                    .saturating_add(column_name_byte_len(col_num));
+            }
+            column_counts[column_slot] = column_counts[column_slot].saturating_add(1);
+            cell_count = cell_count.saturating_add(1);
+            check_limit(
+                crate::ResourceDimension::CellCount,
+                limits.max_cells(),
+                cell_count,
+            )?;
+            retained_bytes = retained_bytes
+                .saturating_add(
+                    u64::try_from(std::mem::size_of::<(u32, CellValue)>()).unwrap_or(u64::MAX),
+                )
+                .saturating_add(cell_cloned_payload_bytes(cell, sst));
+            check_limit(
+                crate::ResourceDimension::RetainedBytes,
+                limits.max_output_bytes(),
+                retained_bytes,
+            )?;
         }
     }
 
-    // Convert column numbers to names for the public API.
-    let mut result = Vec::with_capacity(col_map.len());
-    for (col_num, cells) in col_map {
-        let col_name = column_number_to_name(col_num)?;
-        result.push((col_name, cells));
+    let mut result = Vec::new();
+    result
+        .try_reserve_exact(
+            usize::try_from(column_count).map_err(|_| {
+                Error::Internal("column result size is not addressable".to_string())
+            })?,
+        )
+        .map_err(|_| Error::Internal("column result allocation failed".to_string()))?;
+    for (column_slot, count_slot) in column_counts.iter_mut().enumerate() {
+        let count = *count_slot;
+        if count == 0 {
+            continue;
+        }
+        let col_num = u32::try_from(column_slot + 1)
+            .map_err(|_| Error::Internal("column number is not representable".to_string()))?;
+        let mut cells = Vec::new();
+        cells
+            .try_reserve_exact(
+                usize::try_from(count).map_err(|_| {
+                    Error::Internal("column cell count is not addressable".to_string())
+                })?,
+            )
+            .map_err(|_| Error::Internal("column cell allocation failed".to_string()))?;
+        *count_slot = u64::try_from(result.len())
+            .map_err(|_| Error::Internal("column result index is not representable".to_string()))?;
+        result.push((column_number_to_name(col_num)?, cells));
+    }
+
+    for row in &ws.sheet_data.rows {
+        for cell in &row.cells {
+            let col_num = if cell.col > 0 {
+                cell.col
+            } else {
+                cell_name_to_coordinates(cell.r.as_str())?.0
+            };
+            let column_slot = usize::try_from(col_num - 1)
+                .map_err(|_| Error::Internal("column index is not addressable".to_string()))?;
+            let result_index = usize::try_from(column_counts[column_slot]).map_err(|_| {
+                Error::Internal("column result index is not addressable".to_string())
+            })?;
+            let value = resolve_cell_value(cell, sst, style_is_date);
+            result[result_index].1.push((row.r, value));
+        }
     }
 
     Ok(result)
+}
+
+const fn column_name_byte_len(column: u32) -> u64 {
+    if column <= 26 {
+        1
+    } else if column <= 26 * 27 {
+        2
+    } else {
+        3
+    }
 }
 
 /// Set the width of a column. Creates the `Cols` container and/or a `Col`
@@ -174,7 +286,7 @@ pub fn insert_cols(ws: &mut WorksheetXml, col: &str, count: u32) -> Result<()> {
             let (c, r) = cell_name_to_coordinates(cell.r.as_str())?;
             if c >= start_col {
                 let new_col = c + count;
-                cell.r = coordinates_to_cell_name(new_col, r)?.into();
+                cell.r = compact_cell_ref(new_col, r)?;
                 cell.col = new_col;
             }
         }
@@ -213,7 +325,7 @@ pub fn remove_col(ws: &mut WorksheetXml, col: &str) -> Result<()> {
             let (c, r) = cell_name_to_coordinates(cell.r.as_str())?;
             if c > col_num {
                 let new_col = c - 1;
-                cell.r = coordinates_to_cell_name(new_col, r)?.into();
+                cell.r = compact_cell_ref(new_col, r)?;
                 cell.col = new_col;
             }
         }
@@ -346,7 +458,7 @@ mod tests {
                     outline_level: None,
                     cells: vec![
                         Cell {
-                            r: "A1".into(),
+                            r: "A1".try_into().unwrap(),
                             col: 1,
                             s: None,
                             t: CellTypeTag::None,
@@ -355,7 +467,7 @@ mod tests {
                             is: None,
                         },
                         Cell {
-                            r: "B1".into(),
+                            r: "B1".try_into().unwrap(),
                             col: 2,
                             s: None,
                             t: CellTypeTag::None,
@@ -364,7 +476,7 @@ mod tests {
                             is: None,
                         },
                         Cell {
-                            r: "D1".into(),
+                            r: "D1".try_into().unwrap(),
                             col: 4,
                             s: None,
                             t: CellTypeTag::None,
@@ -385,7 +497,7 @@ mod tests {
                     outline_level: None,
                     cells: vec![
                         Cell {
-                            r: "A2".into(),
+                            r: "A2".try_into().unwrap(),
                             col: 1,
                             s: None,
                             t: CellTypeTag::None,
@@ -394,7 +506,7 @@ mod tests {
                             is: None,
                         },
                         Cell {
-                            r: "C2".into(),
+                            r: "C2".try_into().unwrap(),
                             col: 3,
                             s: None,
                             t: CellTypeTag::None,
@@ -635,22 +747,6 @@ mod tests {
     }
 
     #[test]
-    fn test_remove_col_invalid_cell_reference_returns_error() {
-        let mut ws = sample_ws();
-        ws.sheet_data.rows[0].cells.push(Cell {
-            r: "INVALID".into(),
-            col: 0,
-            s: None,
-            t: CellTypeTag::None,
-            v: Some("1".to_string()),
-            f: None,
-            is: None,
-        });
-        let result = remove_col(&mut ws, "A");
-        assert!(result.is_err());
-    }
-
-    #[test]
     fn test_set_multiple_col_widths() {
         let mut ws = WorksheetXml::default();
         set_col_width(&mut ws, "A", 10.0).unwrap();
@@ -863,6 +959,58 @@ mod tests {
     }
 
     #[test]
+    fn get_cols_with_limits_accepts_exact_retained_bytes_and_rejects_plus_one() {
+        let ws = sample_ws();
+        let sst = SharedStringTable::new();
+        let exact = 4 * u64::try_from(std::mem::size_of::<(String, Vec<(u32, CellValue)>)>())
+            .unwrap()
+            + 4
+            + 5 * u64::try_from(std::mem::size_of::<(u32, CellValue)>()).unwrap();
+        let exact_limits = crate::traversal::TraversalLimits::new(2, 4, 5, exact).unwrap();
+
+        assert_eq!(
+            get_cols_with_limits(&ws, &sst, &[], exact_limits).unwrap(),
+            get_cols(&ws, &sst, &[]).unwrap()
+        );
+
+        let error = get_cols_with_limits(
+            &ws,
+            &sst,
+            &[],
+            crate::traversal::TraversalLimits::new(2, 4, 5, exact - 1).unwrap(),
+        )
+        .unwrap_err();
+        let Error::ResourceLimitExceeded(metadata) = error else {
+            panic!("expected resource limit error");
+        };
+        assert_eq!(
+            metadata.dimension(),
+            crate::ResourceDimension::RetainedBytes
+        );
+        assert_eq!(metadata.limit(), exact - 1);
+        assert_eq!(metadata.observed(), exact);
+    }
+
+    #[test]
+    fn get_cols_with_limits_rejects_counts_before_materialization() {
+        let ws = sample_ws();
+        let sst = SharedStringTable::new();
+        let error = get_cols_with_limits(
+            &ws,
+            &sst,
+            &[],
+            crate::traversal::TraversalLimits::new(1, 4, 5, 1_024).unwrap(),
+        )
+        .unwrap_err();
+        let Error::ResourceLimitExceeded(metadata) = error else {
+            panic!("expected resource limit error");
+        };
+        assert_eq!(metadata.dimension(), crate::ResourceDimension::RowCount);
+        assert_eq!(metadata.limit(), 1);
+        assert_eq!(metadata.observed(), 2);
+    }
+
+    #[test]
     fn test_get_cols_with_shared_strings() {
         let mut sst = SharedStringTable::new();
         sst.add("Name");
@@ -883,7 +1031,7 @@ mod tests {
                     outline_level: None,
                     cells: vec![
                         Cell {
-                            r: "A1".into(),
+                            r: "A1".try_into().unwrap(),
                             col: 1,
                             s: None,
                             t: CellTypeTag::SharedString,
@@ -892,7 +1040,7 @@ mod tests {
                             is: None,
                         },
                         Cell {
-                            r: "B1".into(),
+                            r: "B1".try_into().unwrap(),
                             col: 2,
                             s: None,
                             t: CellTypeTag::SharedString,
@@ -913,7 +1061,7 @@ mod tests {
                     outline_level: None,
                     cells: vec![
                         Cell {
-                            r: "A2".into(),
+                            r: "A2".try_into().unwrap(),
                             col: 1,
                             s: None,
                             t: CellTypeTag::SharedString,
@@ -922,7 +1070,7 @@ mod tests {
                             is: None,
                         },
                         Cell {
-                            r: "B2".into(),
+                            r: "B2".try_into().unwrap(),
                             col: 2,
                             s: None,
                             t: CellTypeTag::None,
@@ -966,7 +1114,7 @@ mod tests {
                 outline_level: None,
                 cells: vec![
                     Cell {
-                        r: "AA1".into(),
+                        r: "AA1".try_into().unwrap(),
                         col: 27,
                         s: None,
                         t: CellTypeTag::None,
@@ -975,7 +1123,7 @@ mod tests {
                         is: None,
                     },
                     Cell {
-                        r: "B1".into(),
+                        r: "B1".try_into().unwrap(),
                         col: 2,
                         s: None,
                         t: CellTypeTag::None,
@@ -984,7 +1132,7 @@ mod tests {
                         is: None,
                     },
                     Cell {
-                        r: "A1".into(),
+                        r: "A1".try_into().unwrap(),
                         col: 1,
                         s: None,
                         t: CellTypeTag::None,

@@ -4,7 +4,9 @@ Excel(.xlsx) 파일을 읽고 쓰는 Rust 라이브러리. napi-rs를 통한 Nod
 
 > For the English version, see [README.md](README.md).
 
-> **주의**: SheetKit은 실험적 프로젝트입니다. API가 예고 없이 변경될 수 있습니다. 현재 활발히 개발 중입니다.
+SheetKit 1.0은 유의적 버전 규칙을 따릅니다. v0.5.1에서 업그레이드하는
+경우 [1.0 마이그레이션 가이드](https://sheetkit.dev/ko/guide/migration-v1)를
+확인하세요.
 
 ## 주요 기능
 
@@ -50,7 +52,7 @@ import { Workbook } from "@sheetkit/node";
 const wb = new Workbook();
 wb.setCellValue("Sheet1", "A1", "Hello");
 wb.setCellValue("Sheet1", "B1", 42);
-wb.save("output.xlsx");
+await wb.save("output.xlsx");
 ```
 
 ## 설치
@@ -65,7 +67,7 @@ cargo add sheetkit
 
 ```toml
 [dependencies]
-sheetkit = "0.5.1"
+sheetkit = "1.0.0"
 ```
 
 [crates.io에서 보기](https://crates.io/crates/sheetkit)
@@ -97,6 +99,8 @@ SheetKit의 Node.js 바인딩은 [napi-rs](https://napi.rs/)를 사용하며, No
 **[문서 사이트](https://sheetkit.dev/ko/)** | [English](https://sheetkit.dev/)
 
 문서 소스 파일은 [docs/ko/](docs/ko/) 폴더를 참조하세요.
+
+0.5.1에서 1.0으로 이전하는 경우 [1.0 마이그레이션 가이드](docs/ko/guide/migration-v1.md)를 확인하세요.
 
 ## 감사의 글
 

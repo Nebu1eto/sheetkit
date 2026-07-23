@@ -1,5 +1,83 @@
 use super::io::serialize_xml;
 use super::*;
+use crate::traversal::{checked_output_add, CheckedRect, TraversalLimits};
+
+struct PivotOutputBudget {
+    limits: TraversalLimits,
+    used: u64,
+}
+
+impl PivotOutputBudget {
+    fn new(limits: TraversalLimits) -> Self {
+        Self { limits, used: 0 }
+    }
+
+    fn charge(&mut self, bytes: u64) -> Result<()> {
+        let remaining = self.limits.max_output_bytes().saturating_sub(self.used);
+        let admitted = bytes.min(remaining.saturating_add(1));
+        self.used = checked_output_add(self.used, admitted, self.limits)?;
+        Ok(())
+    }
+
+    fn charge_usize(&mut self, bytes: usize) -> Result<()> {
+        self.charge(u64::try_from(bytes).unwrap_or(u64::MAX))
+    }
+
+    fn charge_array<T>(&mut self, count: usize) -> Result<()> {
+        let bytes = count.saturating_mul(std::mem::size_of::<T>());
+        self.charge_usize(bytes)
+    }
+}
+
+struct PivotXmlCounter<'a> {
+    budget: &'a mut PivotOutputBudget,
+    budget_error: Option<Error>,
+}
+
+impl std::fmt::Write for PivotXmlCounter<'_> {
+    fn write_str(&mut self, value: &str) -> std::fmt::Result {
+        if let Err(error) = self.budget.charge_usize(value.len()) {
+            self.budget_error = Some(error);
+            return Err(std::fmt::Error);
+        }
+        Ok(())
+    }
+}
+
+fn charge_pivot_xml<T: serde::Serialize>(budget: &mut PivotOutputBudget, value: &T) -> Result<()> {
+    budget.charge_usize(XML_DECLARATION.len() + 1)?;
+    let mut counter = PivotXmlCounter {
+        budget,
+        budget_error: None,
+    };
+    let result = value.serialize(quick_xml::se::Serializer::new(&mut counter));
+    if let Some(error) = counter.budget_error {
+        return Err(error);
+    }
+    result.map_err(|error| Error::XmlParse(error.to_string()))
+}
+
+fn pivot_cache_string_bytes(value: &CellValue) -> usize {
+    match value {
+        CellValue::Empty => 0,
+        CellValue::Bool(value) => {
+            if *value {
+                4
+            } else {
+                5
+            }
+        }
+        CellValue::Number(value) | CellValue::Date(value) if value.is_finite() => 0,
+        CellValue::String(value) | CellValue::Error(value) => value.len(),
+        CellValue::RichString(runs) => runs.iter().map(|run| run.text.len()).sum(),
+        CellValue::Formula {
+            result: Some(result),
+            ..
+        } => pivot_cache_string_bytes(result),
+        CellValue::Formula { expr, result: None } => expr.len().saturating_add(1),
+        CellValue::Number(_) | CellValue::Date(_) => 32,
+    }
+}
 
 impl Workbook {
     /// Add a pivot table to the workbook.
@@ -8,23 +86,38 @@ impl Workbook {
     /// `config.source_range` and places its output on `config.target_sheet`
     /// starting at `config.target_cell`.
     pub fn add_pivot_table(&mut self, config: &PivotTableConfig) -> Result<()> {
-        self.hydrate_pivot_tables();
+        self.add_pivot_table_with_limits(config, TraversalLimits::default())
+    }
+
+    /// Add a pivot table with explicit finite source traversal limits.
+    pub fn add_pivot_table_with_limits(
+        &mut self,
+        config: &PivotTableConfig,
+        limits: TraversalLimits,
+    ) -> Result<()> {
+        let mut output_budget = PivotOutputBudget::new(limits);
+        Self::charge_pivot_config(config, &mut output_budget)?;
         self.sheet_index(&config.source_sheet)?;
         let target_idx = self.sheet_index(&config.target_sheet)?;
 
-        // Check for duplicate name.
         if self
-            .pivot_tables
+            .get_pivot_tables()
             .iter()
-            .any(|(_, pt)| pt.name == config.name)
+            .any(|pivot| pivot.name == config.name)
         {
             return Err(Error::PivotTableAlreadyExists {
                 name: config.name.clone(),
             });
         }
 
-        let (field_names, source_rows) =
-            self.read_pivot_source(&config.source_sheet, &config.source_range)?;
+        // Admit the complete dense source before allocating rows or mutating
+        // deferred/typed pivot state.
+        let (field_names, source_rows) = self.read_pivot_source_with_limits(
+            &config.source_sheet,
+            &config.source_range,
+            limits,
+            &mut output_budget,
+        )?;
         if field_names.is_empty() || field_names.iter().any(String::is_empty) {
             return Err(Error::InvalidSourceRange(
                 "source range contains an empty header".to_string(),
@@ -79,6 +172,13 @@ impl Workbook {
         );
 
         let cache_records_rid = "rId1".to_string();
+        Self::charge_pivot_table_construction(
+            config,
+            &field_names,
+            source_rows.len(),
+            &mut output_budget,
+        )?;
+        self.charge_pivot_cache_construction(&field_names, &source_rows, &mut output_budget)?;
         let (pcd, pcr, item_counts) = crate::pivot::build_pivot_cache_parts(
             &config.source_sheet,
             &config.source_range,
@@ -114,9 +214,19 @@ impl Workbook {
         let cache_rels_bytes = serialize_xml(&cache_rels)?.into_bytes();
         let table_rels_bytes = serialize_xml(&table_rels)?.into_bytes();
 
+        charge_pivot_xml(&mut output_budget, &pcd)?;
+        charge_pivot_xml(&mut output_budget, &pcr)?;
+        charge_pivot_xml(&mut output_budget, &pt_def)?;
+        output_budget.charge_usize(cache_rels_bytes.len())?;
+        output_budget.charge_usize(table_rels_bytes.len())?;
+
         let wb_rid = crate::sheet::next_rid(&self.workbook_rels.relationships);
         let ws_rid = self.next_worksheet_rid(target_idx);
+        let ws_target = relative_relationship_target(&self.sheet_part_path(target_idx), &pt_path);
 
+        // All parsing, allocation, construction, and serialization has
+        // succeeded. Hydrate and commit the staged graph in one final phase.
+        self.hydrate_pivot_tables();
         self.pivot_tables.push((pt_path.clone(), pt_def));
         self.pivot_cache_defs.push((pcd_path.clone(), pcd));
         self.pivot_cache_records.push((pcr_path.clone(), pcr));
@@ -157,7 +267,6 @@ impl Workbook {
                 r_id: wb_rid,
             });
 
-        let ws_target = relative_relationship_target(&self.sheet_part_path(target_idx), &pt_path);
         let ws_rels = self
             .worksheet_rels
             .entry(target_idx)
@@ -451,13 +560,37 @@ impl Workbook {
                 .cloned()
                 .unwrap_or_default();
         }
-        self.raw_sheet_xml
+        if let Some(bytes) = self.raw_sheet_xml.get(sheet_idx).and_then(Option::as_deref) {
+            return crate::workbook::io::parse_sparklines_from_xml(&String::from_utf8_lossy(bytes));
+        }
+        if let Some(bytes) = self
+            .raw_sheet_extensions
             .get(sheet_idx)
             .and_then(Option::as_deref)
-            .map(|bytes| {
-                crate::workbook::io::parse_sparklines_from_xml(&String::from_utf8_lossy(bytes))
-            })
-            .unwrap_or_default()
+        {
+            return crate::workbook::io::parse_sparklines_from_xml(&String::from_utf8_lossy(bytes));
+        }
+        if self
+            .sheet_package_backed
+            .get(sheet_idx)
+            .copied()
+            .unwrap_or(false)
+        {
+            self.package_source
+                .as_ref()
+                .and_then(|source| {
+                    source
+                        .worksheet_extension_fragment(&self.sheet_part_path(sheet_idx))
+                        .ok()
+                        .flatten()
+                })
+                .map(|bytes| {
+                    crate::workbook::io::parse_sparklines_from_xml(&String::from_utf8_lossy(&bytes))
+                })
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        }
     }
 
     /// Materialize lazy sparkline data before mutating it.
@@ -469,6 +602,33 @@ impl Workbook {
             .unwrap_or(false)
         {
             return;
+        }
+        while self.raw_sheet_extensions.len() <= sheet_idx {
+            self.raw_sheet_extensions.push(None);
+        }
+        if self
+            .raw_sheet_xml
+            .get(sheet_idx)
+            .and_then(Option::as_ref)
+            .is_none()
+            && self.raw_sheet_extensions[sheet_idx].is_none()
+        {
+            let extension = if self
+                .sheet_package_backed
+                .get(sheet_idx)
+                .copied()
+                .unwrap_or(false)
+            {
+                self.package_source.as_ref().and_then(|source| {
+                    source
+                        .worksheet_extension_fragment(&self.sheet_part_path(sheet_idx))
+                        .ok()
+                        .flatten()
+                })
+            } else {
+                None
+            };
+            self.raw_sheet_extensions[sheet_idx] = extension;
         }
         let sparklines = self.sparklines_for_sheet(sheet_idx);
         while self.sheet_sparklines.len() <= sheet_idx {
@@ -484,81 +644,106 @@ impl Workbook {
     /// A [`CellSnapshot`] is built from the current workbook state so
     /// that cell references within the formula can be resolved.
     pub fn evaluate_formula(&self, sheet: &str, formula: &str) -> Result<CellValue> {
+        self.evaluate_formula_with_limits(
+            sheet,
+            formula,
+            crate::formula::budget::FormulaLimits::secure_default(),
+        )
+    }
+
+    /// Evaluates one formula with finite, validated resource limits.
+    pub fn evaluate_formula_with_limits(
+        &self,
+        sheet: &str,
+        formula: &str,
+        limits: crate::formula::budget::FormulaLimits,
+    ) -> Result<CellValue> {
         // Validate the sheet exists.
         let _ = self.sheet_index(sheet)?;
-        let parsed = crate::formula::parser::parse_formula(formula)?;
+        let budget = crate::formula::budget::FormulaBudget::for_calculation(limits)?;
+        let parsed = crate::formula::parser::parse_formula_with_budget(formula, &budget)?;
         let snapshot = self.build_cell_snapshot(sheet)?;
-        crate::formula::eval::evaluate(&parsed, &snapshot)
+        let mut evaluator = crate::formula::eval::Evaluator::with_budget(&snapshot, budget);
+        evaluator.eval_expr(&parsed)
     }
 
     /// Recalculate every formula cell across all sheets and store the
     /// computed result back into each cell. Uses a dependency graph and
     /// topological sort so formulas are evaluated after their dependencies.
     pub fn calculate_all(&mut self) -> Result<()> {
+        self.calculate_all_with_limits(crate::formula::budget::FormulaLimits::secure_default())
+    }
+
+    /// Recalculate all formulas with finite, validated resource limits.
+    pub fn calculate_all_with_limits(
+        &mut self,
+        limits: crate::formula::budget::FormulaLimits,
+    ) -> Result<()> {
         use crate::formula::eval::{
-            build_dependency_graph_from_parsed, topological_sort, CellCoord,
+            build_dependency_graph_from_parsed_with_budget, topological_sort_with_budget, CellCoord,
         };
+
+        let budget = crate::formula::budget::FormulaBudget::for_calculation(limits)?;
 
         let sheet_names: Vec<String> = self.sheet_names().iter().map(|s| s.to_string()).collect();
 
-        // Collect all formula cells with their coordinates and formula strings.
-        let mut formula_cells: Vec<(CellCoord, String)> = Vec::new();
+        // Parse as formulas are discovered so cumulative limits are enforced
+        // before retaining attacker-controlled formula collections.
+        let mut parsed_cells = Vec::new();
+        let mut results = Vec::new();
         for (idx, sn) in sheet_names.iter().enumerate() {
             self.ensure_hydrated(idx)?;
-            let ws = self.worksheets[idx].1.get().unwrap();
+            let ws = self.worksheets[idx].1.get().ok_or_else(|| {
+                Error::Internal("formula source sheet is not hydrated".to_string())
+            })?;
             for row in &ws.sheet_data.rows {
                 for cell in &row.cells {
                     if let Some(ref f) = cell.f {
-                        let formula_str = f.value.clone().unwrap_or_default();
+                        let formula_str = f.value.as_deref().unwrap_or_default();
                         if !formula_str.is_empty() {
                             let (c, r) = cell_name_to_coordinates(cell.r.as_str())?;
-                            formula_cells.push((
-                                CellCoord {
-                                    sheet: sn.clone(),
-                                    col: c,
-                                    row: r,
-                                },
+                            let coord = CellCoord {
+                                sheet: sn.clone(),
+                                col: c,
+                                row: r,
+                            };
+                            match crate::formula::parser::parse_formula_with_budget(
                                 formula_str,
-                            ));
+                                &budget,
+                            ) {
+                                Ok(expr) => parsed_cells.push((coord, expr)),
+                                Err(error @ Error::ResourceLimitExceeded(_)) => return Err(error),
+                                Err(_) => {
+                                    budget.charge_output_bytes(7)?;
+                                    results.push((coord, CellValue::Error("#VALUE!".to_string())))
+                                }
+                            }
                         }
                     }
                 }
             }
         }
 
-        if formula_cells.is_empty() {
+        if parsed_cells.is_empty() && results.is_empty() {
             return Ok(());
-        }
-
-        // Parse each formula once. Parse failures are formula-level errors, so
-        // retain them for cached error results while ordering valid formulas.
-        let mut parsed_cells = Vec::new();
-        let mut results = Vec::new();
-        for (coord, formula_str) in formula_cells {
-            match crate::formula::parser::parse_formula(&formula_str) {
-                Ok(expr) => parsed_cells.push((coord, formula_str, expr)),
-                Err(_) => results.push((coord, CellValue::Error("#VALUE!".to_string()))),
-            }
         }
 
         // Build the graph only from valid expressions. Invalid formulas are
         // written to the progressive snapshot before dependent expressions run.
-        let parsed_coords: Vec<CellCoord> = parsed_cells
-            .iter()
-            .map(|(coord, _, _)| coord.clone())
-            .collect();
-        let graph_cells: Vec<(CellCoord, crate::formula::ast::Expr)> = parsed_cells
-            .iter()
-            .map(|(coord, _, expr)| (coord.clone(), expr.clone()))
-            .collect();
-        let deps = build_dependency_graph_from_parsed(&graph_cells);
-        let eval_order = topological_sort(&parsed_coords, &deps)?;
+        let mut parsed_coords = Vec::new();
+        parsed_coords
+            .try_reserve_exact(parsed_cells.len())
+            .map_err(|_| Error::Internal("formula coordinate allocation failed".to_string()))?;
+        parsed_coords.extend(parsed_cells.iter().map(|(coord, _)| coord.clone()));
+        let deps = build_dependency_graph_from_parsed_with_budget(&parsed_cells, &budget)?;
+        let eval_order = topological_sort_with_budget(&parsed_coords, &deps, &budget)?;
 
         // Build a lookup from coord to its already-parsed formula expression.
-        let formula_map: HashMap<CellCoord, crate::formula::ast::Expr> = parsed_cells
-            .into_iter()
-            .map(|(coord, _, expr)| (coord, expr))
-            .collect();
+        let mut formula_map: HashMap<CellCoord, crate::formula::ast::Expr> = HashMap::new();
+        formula_map
+            .try_reserve(parsed_cells.len())
+            .map_err(|_| Error::Internal("formula lookup allocation failed".to_string()))?;
+        formula_map.extend(parsed_cells);
 
         // Build a snapshot of all cell data.
         let first_sheet = sheet_names.first().cloned().unwrap_or_default();
@@ -573,11 +758,22 @@ impl Workbook {
         for coord in &eval_order {
             if let Some(parsed) = formula_map.get(coord) {
                 snapshot.set_current_sheet(&coord.sheet);
-                let mut evaluator = crate::formula::eval::Evaluator::new(&snapshot);
+                let mut evaluator =
+                    crate::formula::eval::Evaluator::with_budget(&snapshot, budget.clone());
                 evaluator.set_position(coord.col, coord.row);
                 let result = match evaluator.eval_expr(parsed) {
                     Ok(result) => result,
-                    Err(error) => formula_error_to_cached_value(&error).ok_or(error)?,
+                    Err(error) => {
+                        let cached = formula_error_to_cached_value(&error).ok_or(error)?;
+                        let output_bytes = match &cached {
+                            CellValue::String(value) | CellValue::Error(value) => {
+                                value.len() as u64
+                            }
+                            _ => 0,
+                        };
+                        budget.charge_output_bytes(output_bytes)?;
+                        cached
+                    }
                 };
                 snapshot.set_cell(&coord.sheet, coord.col, coord.row, result.clone());
                 results.push((coord.clone(), result));
@@ -676,38 +872,210 @@ impl Workbook {
         Ok(cells)
     }
 
-    /// Read the header row (first row) of a range from a sheet, returning cell
-    /// values as strings.
-    fn read_header_row(&self, sheet: &str, range: &str) -> Result<Vec<String>> {
-        let parts: Vec<&str> = range.split(':').collect();
-        if parts.len() != 2 {
-            return Err(Error::InvalidSourceRange(range.to_string()));
-        }
-        let (start_col, start_row) = cell_name_to_coordinates(parts[0])
-            .map_err(|_| Error::InvalidSourceRange(range.to_string()))?;
-        let (end_col, _end_row) = cell_name_to_coordinates(parts[1])
-            .map_err(|_| Error::InvalidSourceRange(range.to_string()))?;
+    fn charge_pivot_config(
+        config: &PivotTableConfig,
+        budget: &mut PivotOutputBudget,
+    ) -> Result<()> {
+        use sheetkit_xml::pivot_table::{DataFieldDef, FieldRef};
 
-        let mut headers = Vec::new();
-        for col in start_col..=end_col {
-            let cell_name = crate::utils::cell_ref::coordinates_to_cell_name(col, start_row)?;
-            let val = self.get_cell_value(sheet, &cell_name)?;
-            let s = match val {
-                CellValue::String(s) => s,
-                CellValue::Number(n) => n.to_string(),
-                CellValue::Bool(b) => b.to_string(),
-                CellValue::RichString(runs) => crate::rich_text::rich_text_to_plain(&runs),
-                _ => String::new(),
-            };
-            headers.push(s);
+        for value in [
+            config.name.as_str(),
+            config.source_sheet.as_str(),
+            config.source_range.as_str(),
+            config.target_sheet.as_str(),
+            config.target_cell.as_str(),
+        ] {
+            budget.charge_usize(value.len())?;
         }
-        Ok(headers)
+        for field in config.rows.iter().chain(&config.columns) {
+            budget.charge_usize(field.name.len())?;
+        }
+        for field in &config.data {
+            budget.charge_usize(field.name.len())?;
+            if let Some(display_name) = field.display_name.as_ref() {
+                budget.charge_usize(display_name.len())?;
+            } else {
+                budget.charge_usize(
+                    field
+                        .function
+                        .to_xml_str()
+                        .len()
+                        .saturating_add(" of ".len())
+                        .saturating_add(field.name.len()),
+                )?;
+            }
+            budget.charge_usize(field.function.to_xml_str().len())?;
+        }
+
+        budget.charge_array::<FieldRef>(config.rows.len().saturating_add(config.columns.len()))?;
+        budget.charge_array::<DataFieldDef>(config.data.len())?;
+        // The target is uppercased and then copied into the final location.
+        budget.charge_usize(
+            config
+                .target_cell
+                .len()
+                .saturating_mul(2)
+                .saturating_add(11),
+        )?;
+        Ok(())
     }
 
-    fn read_pivot_source(
+    fn charge_pivot_table_construction(
+        config: &PivotTableConfig,
+        field_names: &[String],
+        source_row_count: usize,
+        budget: &mut PivotOutputBudget,
+    ) -> Result<()> {
+        use sheetkit_xml::pivot_table::{FieldItem, PivotFieldDef};
+
+        budget.charge_array::<PivotFieldDef>(field_names.len())?;
+        for field_name in field_names {
+            let row_field = config.rows.iter().any(|field| field.name == *field_name);
+            let column_field = config.columns.iter().any(|field| field.name == *field_name);
+            if row_field || column_field {
+                budget.charge_array::<FieldItem>(source_row_count.saturating_add(1))?;
+                budget.charge_usize("default".len())?;
+                budget.charge_usize(if row_field {
+                    "axisRow".len()
+                } else {
+                    "axisCol".len()
+                })?;
+            }
+        }
+        Ok(())
+    }
+
+    fn pivot_cell_retained_bytes(&self, cell: &sheetkit_xml::worksheet::Cell) -> Result<usize> {
+        use sheetkit_xml::worksheet::CellTypeTag;
+
+        if let Some(formula) = cell.f.as_ref() {
+            let expression = formula.value.as_ref().map_or(0, String::len);
+            let cached = match cell.t {
+                CellTypeTag::Error | CellTypeTag::FormulaString => {
+                    cell.v.as_ref().map_or(0, String::len)
+                }
+                _ => 0,
+            };
+            let cached_value = if cell.v.is_some() {
+                std::mem::size_of::<CellValue>()
+            } else {
+                0
+            };
+            return Ok(expression
+                .saturating_add(cached)
+                .saturating_add(cached_value));
+        }
+
+        match cell.t {
+            CellTypeTag::SharedString => {
+                let Some(index) = cell.v.as_deref() else {
+                    return Ok(0);
+                };
+                let index = index
+                    .parse::<usize>()
+                    .map_err(|_| Error::Internal(format!("invalid SST index: {index}")))?;
+                self.sst_runtime
+                    .get(index)
+                    .map(str::len)
+                    .ok_or_else(|| Error::Internal(format!("SST index {index} out of bounds")))
+            }
+            CellTypeTag::InlineString => Ok(cell
+                .is
+                .as_ref()
+                .and_then(|inline| inline.t.as_ref())
+                .map_or(0, String::len)),
+            CellTypeTag::Error | CellTypeTag::FormulaString => {
+                Ok(cell.v.as_ref().map_or(0, String::len))
+            }
+            _ => Ok(0),
+        }
+    }
+
+    fn charge_pivot_cache_construction(
+        &self,
+        field_names: &[String],
+        rows: &[Vec<CellValue>],
+        budget: &mut PivotOutputBudget,
+    ) -> Result<()> {
+        use sheetkit_xml::pivot_cache::{CacheField, CacheRecord, IndexField, NumberField};
+
+        let cell_count = rows.iter().try_fold(0usize, |total, row| {
+            total.checked_add(row.len()).ok_or_else(|| {
+                Error::Internal("pivot source cell count overflowed usize".to_string())
+            })
+        })?;
+        budget.charge_array::<Vec<CellValue>>(rows.len())?;
+        budget.charge_array::<CellValue>(cell_count)?;
+        budget.charge_array::<CacheField>(field_names.len())?;
+        budget.charge_array::<Vec<u32>>(field_names.len())?;
+        budget.charge_array::<u32>(field_names.len())?;
+        budget.charge_array::<bool>(field_names.len())?;
+        budget.charge_array::<u32>(cell_count)?;
+        budget.charge_array::<(&str, u32)>(cell_count)?;
+        budget.charge_array::<(u64, u32)>(cell_count)?;
+        budget.charge_array::<CacheRecord>(rows.len())?;
+        budget.charge_array::<IndexField>(cell_count)?;
+        budget.charge_array::<NumberField>(cell_count)?;
+
+        for name in field_names {
+            budget.charge_usize(name.len())?;
+        }
+        for value in rows.iter().flatten() {
+            let string_bytes = pivot_cache_string_bytes(value);
+            // CacheValue retains one copy. SharedItems may retain another;
+            // charging every value is a conservative preflight that avoids
+            // allocating an attacker-controlled deduplication set here.
+            budget.charge_usize(string_bytes)?;
+            budget.charge_usize(string_bytes)?;
+        }
+        Ok(())
+    }
+
+    fn read_pivot_row(
+        &self,
+        worksheet: &sheetkit_xml::worksheet::WorksheetXml,
+        row_number: u32,
+        start_col: u32,
+        end_col: u32,
+        width: usize,
+        output_budget: &mut PivotOutputBudget,
+    ) -> Result<Vec<CellValue>> {
+        let xml_row = worksheet
+            .sheet_data
+            .rows
+            .binary_search_by_key(&row_number, |row| row.r)
+            .ok()
+            .map(|index| &worksheet.sheet_data.rows[index]);
+        output_budget.charge_array::<CellValue>(width)?;
+        let mut values = Vec::new();
+        values
+            .try_reserve_exact(width)
+            .map_err(|_| Error::Internal("failed to allocate admitted pivot row".to_string()))?;
+        for col in start_col..=end_col {
+            let xml_cell = xml_row.and_then(|row| {
+                row.cells
+                    .binary_search_by_key(&col, |cell| cell.col)
+                    .ok()
+                    .map(|index| &row.cells[index])
+            });
+            let value = match xml_cell {
+                Some(cell) => {
+                    output_budget.charge_usize(self.pivot_cell_retained_bytes(cell)?)?;
+                    self.xml_cell_to_value(cell)?
+                }
+                None => CellValue::Empty,
+            };
+            values.push(value);
+        }
+        Ok(values)
+    }
+
+    fn read_pivot_source_with_limits(
         &self,
         sheet: &str,
         range: &str,
+        limits: TraversalLimits,
+        output_budget: &mut PivotOutputBudget,
     ) -> Result<(Vec<String>, Vec<Vec<CellValue>>)> {
         let (start, end) = range
             .split_once(':')
@@ -720,15 +1088,49 @@ impl Workbook {
             return Err(Error::InvalidSourceRange(range.to_string()));
         }
 
-        let field_names = self.read_header_row(sheet, range)?;
-        let mut rows = Vec::with_capacity(end_row.saturating_sub(start_row) as usize);
+        let rect = CheckedRect::new(start_row, end_row, start_col, end_col, limits)?;
+        let width = usize::try_from(rect.column_count())
+            .map_err(|_| Error::InvalidSourceRange(range.to_string()))?;
+        let data_height = usize::try_from(rect.row_count().saturating_sub(1))
+            .map_err(|_| Error::InvalidSourceRange(range.to_string()))?;
+        let ws = self.worksheet_ref(sheet)?;
+
+        output_budget.charge_array::<String>(width)?;
+        output_budget.charge_array::<Vec<CellValue>>(data_height)?;
+
+        let header_values =
+            self.read_pivot_row(ws, start_row, start_col, end_col, width, output_budget)?;
+        for value in &header_values {
+            let allocated = match value {
+                CellValue::Number(_) => 32,
+                CellValue::Bool(value) => {
+                    if *value {
+                        4
+                    } else {
+                        5
+                    }
+                }
+                CellValue::RichString(runs) => runs.iter().map(|run| run.text.len()).sum(),
+                _ => 0,
+            };
+            output_budget.charge_usize(allocated)?;
+        }
+        let field_names = header_values
+            .into_iter()
+            .map(|value| match value {
+                CellValue::String(value) => value,
+                CellValue::Number(value) => value.to_string(),
+                CellValue::Bool(value) => value.to_string(),
+                CellValue::RichString(runs) => crate::rich_text::rich_text_to_plain(&runs),
+                _ => String::new(),
+            })
+            .collect();
+
+        let mut rows = Vec::new();
+        rows.try_reserve_exact(data_height)
+            .map_err(|_| Error::Internal("failed to allocate admitted pivot rows".to_string()))?;
         for row in start_row.saturating_add(1)..=end_row {
-            let mut values = Vec::with_capacity((end_col - start_col + 1) as usize);
-            for col in start_col..=end_col {
-                let cell = crate::utils::cell_ref::coordinates_to_cell_name(col, row)?;
-                values.push(self.get_cell_value(sheet, &cell)?);
-            }
-            rows.push(values);
+            rows.push(self.read_pivot_row(ws, row, start_col, end_col, width, output_budget)?);
         }
         Ok((field_names, rows))
     }
@@ -2138,6 +2540,226 @@ mod tests {
     }
 
     #[test]
+    fn pivot_source_limits_accept_exact_area_and_reject_plus_one_atomically() {
+        let config = basic_pivot_config();
+        let mut exact = make_pivot_workbook();
+        let limits = TraversalLimits::new(4, 3, 12, 64 * 1024).unwrap();
+        exact.add_pivot_table_with_limits(&config, limits).unwrap();
+        assert_eq!(exact.pivot_tables.len(), 1);
+
+        let mut over = make_pivot_workbook();
+        let before_graph_parts = over.raw_graph_parts.len();
+        let before_overrides = over.content_types.overrides.len();
+        let before_workbook_rels = over.workbook_rels.relationships.len();
+        let before_worksheet_rels = over.worksheet_rels.len();
+        let before_pivot_caches = over
+            .workbook_xml
+            .pivot_caches
+            .as_ref()
+            .map_or(0, |caches| caches.caches.len());
+        let limits = TraversalLimits::new(4, 3, 11, 64 * 1024).unwrap();
+        let error = over
+            .add_pivot_table_with_limits(&config, limits)
+            .unwrap_err();
+        let Error::ResourceLimitExceeded(metadata) = error else {
+            panic!("expected resource limit error");
+        };
+        assert_eq!(
+            metadata.dimension(),
+            crate::resource::ResourceDimension::CellCount
+        );
+        assert_eq!(metadata.limit(), 11);
+        assert_eq!(metadata.observed(), 12);
+        assert!(over.pivot_tables.is_empty());
+        assert!(over.pivot_cache_defs.is_empty());
+        assert!(over.pivot_cache_records.is_empty());
+        assert_eq!(over.raw_graph_parts.len(), before_graph_parts);
+        assert_eq!(over.content_types.overrides.len(), before_overrides);
+        assert_eq!(over.workbook_rels.relationships.len(), before_workbook_rels);
+        assert_eq!(over.worksheet_rels.len(), before_worksheet_rels);
+        assert_eq!(
+            over.workbook_xml
+                .pivot_caches
+                .as_ref()
+                .map_or(0, |caches| caches.caches.len()),
+            before_pivot_caches
+        );
+    }
+
+    #[test]
+    fn pivot_output_budget_accepts_exact_and_rejects_plus_one() {
+        let config = basic_pivot_config();
+        let accepts = |max_output_bytes| {
+            let mut workbook = make_pivot_workbook();
+            let limits = TraversalLimits::new(4, 3, 12, max_output_bytes).unwrap();
+            workbook.add_pivot_table_with_limits(&config, limits)
+        };
+
+        let mut low = 1_u64;
+        let mut high = 64 * 1024_u64;
+        accepts(high).unwrap();
+        while low < high {
+            let midpoint = low + (high - low) / 2;
+            if accepts(midpoint).is_ok() {
+                high = midpoint;
+            } else {
+                low = midpoint + 1;
+            }
+        }
+        let exact = low;
+        accepts(exact).unwrap();
+
+        let error = accepts(exact - 1).unwrap_err();
+        let Error::ResourceLimitExceeded(metadata) = error else {
+            panic!("expected output resource limit error");
+        };
+        assert_eq!(
+            metadata.dimension(),
+            crate::resource::ResourceDimension::OutputBytes
+        );
+        assert_eq!(metadata.limit(), exact - 1);
+        assert_eq!(metadata.observed(), exact);
+    }
+
+    #[test]
+    fn pivot_config_strings_are_admitted_before_source_parsing() {
+        let mut workbook = make_pivot_workbook();
+        let before = workbook.save_to_buffer().unwrap();
+        let mut config = basic_pivot_config();
+        config.name = "x".repeat(32_000);
+        config.source_range = "not-a-range".to_string();
+
+        let limits = TraversalLimits::new(4, 3, 12, 1024).unwrap();
+        let error = workbook
+            .add_pivot_table_with_limits(&config, limits)
+            .unwrap_err();
+        let Error::ResourceLimitExceeded(metadata) = error else {
+            panic!("expected config output limit error before source parsing");
+        };
+        assert_eq!(
+            metadata.dimension(),
+            crate::resource::ResourceDimension::OutputBytes
+        );
+        assert_eq!(metadata.limit(), 1024);
+        assert_eq!(metadata.observed(), 1025);
+        assert_eq!(workbook.save_to_buffer().unwrap(), before);
+    }
+
+    #[test]
+    fn pivot_config_collections_are_admitted_before_definition_allocation() {
+        let mut workbook = make_pivot_workbook();
+        let before = workbook.save_to_buffer().unwrap();
+        let mut config = basic_pivot_config();
+        config.source_range = "not-a-range".to_string();
+        config.rows = (0..50_000)
+            .map(|_| crate::pivot::PivotField {
+                name: "Name".to_string(),
+            })
+            .collect();
+
+        let limits = TraversalLimits::new(4, 3, 12, 64 * 1024).unwrap();
+        let error = workbook
+            .add_pivot_table_with_limits(&config, limits)
+            .unwrap_err();
+        let Error::ResourceLimitExceeded(metadata) = error else {
+            panic!("expected definition output limit error before source parsing");
+        };
+        assert_eq!(
+            metadata.dimension(),
+            crate::resource::ResourceDimension::OutputBytes
+        );
+        assert_eq!(metadata.limit(), 64 * 1024);
+        assert_eq!(metadata.observed(), 64 * 1024 + 1);
+        assert_eq!(workbook.save_to_buffer().unwrap(), before);
+    }
+
+    #[test]
+    fn pivot_repeated_sst_amplification_is_bounded_and_atomic() {
+        use crate::pivot::{AggregateFunction, PivotDataField, PivotField};
+
+        let mut workbook = Workbook::new();
+        workbook.set_cell_value("Sheet1", "A1", "Category").unwrap();
+        let repeated = "x".repeat(32_000);
+        for row in 2..=33 {
+            workbook
+                .set_cell_value("Sheet1", &format!("A{row}"), repeated.as_str())
+                .unwrap();
+        }
+        assert_eq!(workbook.sst_runtime.len(), 2);
+
+        let config = PivotTableConfig {
+            name: "RepeatedSst".to_string(),
+            source_sheet: "Sheet1".to_string(),
+            source_range: "A1:A33".to_string(),
+            target_sheet: "Sheet1".to_string(),
+            target_cell: "C1".to_string(),
+            rows: vec![PivotField {
+                name: "Category".to_string(),
+            }],
+            columns: vec![],
+            data: vec![PivotDataField {
+                name: "Category".to_string(),
+                function: AggregateFunction::Count,
+                display_name: None,
+            }],
+        };
+        let before = workbook.save_to_buffer().unwrap();
+        let limits = TraversalLimits::new(33, 1, 33, 256 * 1024).unwrap();
+        let error = workbook
+            .add_pivot_table_with_limits(&config, limits)
+            .unwrap_err();
+        let Error::ResourceLimitExceeded(metadata) = error else {
+            panic!("expected output resource limit error");
+        };
+        assert_eq!(
+            metadata.dimension(),
+            crate::resource::ResourceDimension::OutputBytes
+        );
+        assert_eq!(metadata.limit(), 256 * 1024);
+        assert_eq!(metadata.observed(), 256 * 1024 + 1);
+        assert!(workbook.pivot_tables.is_empty());
+        assert!(workbook.pivot_cache_defs.is_empty());
+        assert!(workbook.pivot_cache_records.is_empty());
+        assert_eq!(workbook.save_to_buffer().unwrap(), before);
+    }
+
+    #[test]
+    fn pivot_source_preserves_far_rows_and_save_reopen_roundtrip() {
+        use crate::pivot::{AggregateFunction, PivotDataField, PivotField};
+
+        let mut wb = Workbook::new();
+        wb.set_cell_value("Sheet1", "A1048575", "Category").unwrap();
+        wb.set_cell_value("Sheet1", "A1048576", "North").unwrap();
+        let config = PivotTableConfig {
+            name: "FarRows".to_string(),
+            source_sheet: "Sheet1".to_string(),
+            source_range: "A1048575:A1048576".to_string(),
+            target_sheet: "Sheet1".to_string(),
+            target_cell: "C1".to_string(),
+            rows: vec![PivotField {
+                name: "Category".to_string(),
+            }],
+            columns: vec![],
+            data: vec![PivotDataField {
+                name: "Category".to_string(),
+                function: AggregateFunction::Count,
+                display_name: None,
+            }],
+        };
+        let limits = TraversalLimits::new(2, 1, 2, 64 * 1024).unwrap();
+        wb.add_pivot_table_with_limits(&config, limits).unwrap();
+        assert_eq!(wb.pivot_cache_records[0].1.count, Some(1));
+
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("far-row-pivot.xlsx");
+        wb.save(&path).unwrap();
+        let reopened = Workbook::open(&path).unwrap();
+        let pivots = reopened.get_pivot_tables();
+        assert_eq!(pivots.len(), 1);
+        assert_eq!(pivots[0].source_range, "A1048575:A1048576");
+    }
+
+    #[test]
     fn test_pivot_table_multiple_save_roundtrip() {
         use crate::pivot::{AggregateFunction, PivotDataField, PivotField};
         let dir = TempDir::new().unwrap();
@@ -2399,6 +3021,49 @@ mod tests {
             err_str.contains("circular reference"),
             "expected circular reference error, got: {err_str}"
         );
+    }
+
+    #[test]
+    fn test_calculate_all_resource_failure_is_atomic() {
+        let mut wb = Workbook::new();
+        wb.set_cell_value(
+            "Sheet1",
+            "A1",
+            CellValue::Formula {
+                expr: "1+1".to_string(),
+                result: Some(Box::new(CellValue::Number(7.0))),
+            },
+        )
+        .unwrap();
+        wb.set_cell_value(
+            "Sheet1",
+            "B1",
+            CellValue::Formula {
+                expr: "A1+1".to_string(),
+                result: Some(Box::new(CellValue::Number(8.0))),
+            },
+        )
+        .unwrap();
+        let buffer = wb.save_to_buffer().unwrap();
+        let options = OpenOptions::new().read_mode(ReadMode::Lazy);
+        let mut wb = Workbook::open_from_buffer_with_options(&buffer, &options).unwrap();
+        let before_a1 = wb.get_cell_value("Sheet1", "A1").unwrap();
+        let before_b1 = wb.get_cell_value("Sheet1", "B1").unwrap();
+        assert!(!wb.is_sheet_dirty(0));
+        let limits = crate::formula::budget::FormulaLimits {
+            operation_input_bytes: 3,
+            ..crate::formula::budget::FormulaLimits::secure_default()
+        };
+
+        let error = wb.calculate_all_with_limits(limits).unwrap_err();
+
+        assert_eq!(
+            error.resource_metadata().unwrap().dimension_code(),
+            "input_bytes"
+        );
+        assert_eq!(wb.get_cell_value("Sheet1", "A1").unwrap(), before_a1);
+        assert_eq!(wb.get_cell_value("Sheet1", "B1").unwrap(), before_b1);
+        assert!(!wb.is_sheet_dirty(0));
     }
 
     #[test]

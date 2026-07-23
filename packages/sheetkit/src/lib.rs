@@ -23,14 +23,193 @@ use sheetkit_core::validation::DataValidationConfig;
 use sheetkit_core::workbook::WorkbookFormat;
 
 use crate::conversions::*;
-use crate::error::{map_core_error, OpenBufferTask, OpenPasswordTask, OpenPathTask};
+use crate::error::{
+    map_core_error, OpenBufferPasswordTask, OpenBufferTask, OpenPasswordTask, OpenPathTask,
+    SavePasswordTask, SavePathTask, WriteBufferTask,
+};
 use crate::stream::JsStreamWriter;
 use crate::types::*;
+
+fn outer_input_error(
+    operation: sheetkit_core::ResourceOperation,
+    category: sheetkit_core::ResourceCategory,
+    limit: u64,
+    observed: u64,
+    stage: sheetkit_core::ResourceStage,
+) -> sheetkit_core::error::Error {
+    sheetkit_core::ResourceLimitError::exceeded(
+        operation,
+        category,
+        sheetkit_core::ResourceDimension::InputBytes,
+        limit,
+        observed,
+        Some(stage),
+    )
+    .map(sheetkit_core::error::Error::from)
+    .unwrap_or_else(|| {
+        sheetkit_core::error::Error::Internal("invalid outer input limit state".to_string())
+    })
+}
+
+fn check_buffer_outer_input(
+    options: &sheetkit_core::workbook::OpenOptions,
+    observed: u64,
+    encrypted: bool,
+) -> std::result::Result<(), sheetkit_core::error::Error> {
+    let open_ceiling = sheetkit_core::workbook::OpenLimits::hard_ceiling().outer_input_bytes;
+    let open_limit = options.limits.outer_input_bytes;
+    if open_limit == 0 || open_limit > open_ceiling {
+        return Err(outer_input_error(
+            sheetkit_core::ResourceOperation::WorkbookOpen,
+            sheetkit_core::ResourceCategory::Archive,
+            open_ceiling,
+            open_limit.max(open_ceiling.saturating_add(1)),
+            sheetkit_core::ResourceStage::Validate,
+        ));
+    }
+    if observed > open_limit {
+        return Err(outer_input_error(
+            sheetkit_core::ResourceOperation::WorkbookOpen,
+            sheetkit_core::ResourceCategory::Archive,
+            open_limit,
+            observed,
+            sheetkit_core::ResourceStage::Inspect,
+        ));
+    }
+
+    if encrypted {
+        let crypt_ceiling = sheetkit_core::crypt::CryptLimits::hard_ceiling().outer_cfb_bytes;
+        let crypt_limit = options.crypt_limits.outer_cfb_bytes;
+        if crypt_limit == 0 || crypt_limit > crypt_ceiling {
+            return Err(outer_input_error(
+                sheetkit_core::ResourceOperation::Decrypt,
+                sheetkit_core::ResourceCategory::Container,
+                crypt_ceiling,
+                crypt_limit.max(crypt_ceiling.saturating_add(1)),
+                sheetkit_core::ResourceStage::Validate,
+            ));
+        }
+        if observed > crypt_limit {
+            return Err(outer_input_error(
+                sheetkit_core::ResourceOperation::Decrypt,
+                sheetkit_core::ResourceCategory::Container,
+                crypt_limit,
+                observed,
+                sheetkit_core::ResourceStage::Inspect,
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn precharge_pivot_config(
+    config: &JsPivotTableConfig,
+    limits: sheetkit_core::traversal::TraversalLimits,
+) -> std::result::Result<(), sheetkit_core::error::Error> {
+    let mut used = 0u64;
+    let mut charge = |bytes: usize| {
+        let remaining = limits.max_output_bytes().saturating_sub(used);
+        let bytes = u64::try_from(bytes).unwrap_or(u64::MAX);
+        let admitted = bytes.min(remaining.saturating_add(1));
+        used = sheetkit_core::traversal::checked_output_add(used, admitted, limits)?;
+        Ok::<(), sheetkit_core::error::Error>(())
+    };
+
+    charge(std::mem::size_of::<PivotTableConfig>())?;
+    for value in [
+        &config.name,
+        &config.source_sheet,
+        &config.source_range,
+        &config.target_sheet,
+        &config.target_cell,
+    ] {
+        charge(value.len())?;
+    }
+
+    charge(
+        config
+            .rows
+            .len()
+            .saturating_mul(std::mem::size_of::<PivotField>()),
+    )?;
+    for field in &config.rows {
+        charge(field.name.len())?;
+    }
+
+    charge(
+        config
+            .columns
+            .len()
+            .saturating_mul(std::mem::size_of::<PivotField>()),
+    )?;
+    for field in &config.columns {
+        charge(field.name.len())?;
+    }
+
+    charge(
+        config
+            .data
+            .len()
+            .saturating_mul(std::mem::size_of::<PivotDataField>()),
+    )?;
+    for field in &config.data {
+        charge(field.name.len())?;
+        charge(field.function.len())?;
+        if let Some(display_name) = &field.display_name {
+            charge(display_name.len())?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_stream_batch_size(
+    batch_size: Option<f64>,
+) -> std::result::Result<usize, sheetkit_core::error::Error> {
+    const MAX_JS_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
+
+    let batch_size = batch_size.unwrap_or(1000.0);
+    if batch_size == 0.0 {
+        return Err(sheetkit_core::error::Error::InvalidArgument(
+            "stream batch size must be greater than zero".to_string(),
+        ));
+    }
+    if !batch_size.is_finite()
+        || batch_size < 0.0
+        || batch_size.fract() != 0.0
+        || batch_size > MAX_JS_SAFE_INTEGER
+    {
+        return Err(sheetkit_core::error::Error::InvalidArgument(
+            "stream batch size must be a positive safe integer".to_string(),
+        ));
+    }
+    let batch_size = u64::try_from(batch_size as u128)
+        .ok()
+        .and_then(|value| usize::try_from(value).ok())
+        .ok_or_else(|| {
+            sheetkit_core::error::Error::InvalidArgument(
+                "stream batch size is not representable on this platform".to_string(),
+            )
+        })?;
+    sheetkit_core::stream_reader::validate_stream_batch_size(batch_size)
+}
 
 /// Excel workbook for reading and writing .xlsx files.
 #[napi]
 pub struct Workbook {
-    inner: sheetkit_core::workbook::Workbook,
+    inner: std::sync::Arc<sheetkit_core::workbook::Workbook>,
+}
+
+impl Workbook {
+    fn from_core(inner: sheetkit_core::workbook::Workbook) -> Self {
+        Self {
+            inner: std::sync::Arc::new(inner),
+        }
+    }
+
+    fn inner_mut(&mut self) -> Result<&mut sheetkit_core::workbook::Workbook> {
+        std::sync::Arc::get_mut(&mut self.inner)
+            .ok_or_else(|| Error::from_reason("workbook has an async save operation in progress"))
+    }
 }
 
 impl Default for Workbook {
@@ -44,51 +223,54 @@ impl Workbook {
     /// Create a new empty workbook with a single sheet named "Sheet1".
     #[napi(constructor)]
     pub fn new() -> Self {
-        Self {
-            inner: sheetkit_core::workbook::Workbook::new(),
-        }
+        Self::from_core(sheetkit_core::workbook::Workbook::new())
     }
 
     /// Open an existing .xlsx file from disk.
     #[napi(factory, js_name = "openSync")]
     pub fn open_sync(env: Env, path: String, options: Option<JsOpenOptions>) -> Result<Self> {
-        let opts = js_open_options_to_core(options.as_ref());
+        let opts = js_open_options_to_core(options.as_ref())
+            .map_err(|error| map_core_error(&env, error))?;
         let inner = sheetkit_core::workbook::Workbook::open_with_options(&path, &opts)
             .map_err(|error| map_core_error(&env, error))?;
-        Ok(Self { inner })
+        Ok(Self::from_core(inner))
     }
 
     /// Open an existing .xlsx file from disk asynchronously.
     #[allow(private_interfaces)]
     #[napi]
-    pub fn open(path: String, options: Option<JsOpenOptions>) -> AsyncTask<OpenPathTask> {
-        let opts = js_open_options_to_core(options.as_ref());
-        OpenPathTask::new(path, opts).into_async_task()
+    pub fn open(
+        env: Env,
+        path: String,
+        options: Option<JsOpenOptions>,
+    ) -> Result<AsyncTask<OpenPathTask>> {
+        let opts = js_open_options_to_core(options.as_ref())
+            .map_err(|error| map_core_error(&env, error))?;
+        Ok(OpenPathTask::new(path, opts).into_async_task())
     }
 
     /// Save the workbook to a .xlsx file.
     #[napi(js_name = "saveSync")]
-    pub fn save_sync(&self, path: String) -> Result<()> {
+    pub fn save_sync(&self, env: Env, path: String, limits: Option<JsSaveLimits>) -> Result<()> {
+        let limits =
+            js_save_limits_to_core(limits.as_ref()).map_err(|error| map_core_error(&env, error))?;
         self.inner
-            .save(&path)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .save_with_limits(&path, limits)
+            .map_err(|error| map_core_error(&env, error))
     }
 
-    /// Save the workbook to a .xlsx file asynchronously.
-    /// Note: the workbook is first serialized to an in-memory buffer, then
-    /// written to disk. This increases peak memory usage compared to `saveSync`,
-    /// which streams directly to disk. Avoid for very large workbooks.
+    /// Save the workbook to a .xlsx file using destination-preserving atomic replacement.
+    #[allow(private_interfaces)]
     #[napi]
-    pub async fn save(&self, path: String) -> Result<()> {
-        let buf = self
-            .inner
-            .save_to_buffer()
-            .map_err(|e| Error::from_reason(e.to_string()))?;
-        tokio::task::spawn_blocking(move || {
-            std::fs::write(&path, &buf).map_err(|e| Error::from_reason(e.to_string()))
-        })
-        .await
-        .unwrap_or_else(|e| Err(Error::from_reason(e.to_string())))
+    pub fn save(
+        &self,
+        env: Env,
+        path: String,
+        limits: Option<JsSaveLimits>,
+    ) -> Result<AsyncTask<SavePathTask>> {
+        let limits =
+            js_save_limits_to_core(limits.as_ref()).map_err(|error| map_core_error(&env, error))?;
+        Ok(SavePathTask::new(self.inner.clone(), path, limits).into_async_task())
     }
 
     /// Open a workbook from an in-memory Buffer.
@@ -98,76 +280,150 @@ impl Workbook {
         data: Buffer,
         options: Option<JsOpenOptions>,
     ) -> Result<Self> {
-        let opts = js_open_options_to_core(options.as_ref());
+        let opts = js_open_options_to_core(options.as_ref())
+            .map_err(|error| map_core_error(&env, error))?;
         let inner = sheetkit_core::workbook::Workbook::open_from_buffer_with_options(&data, &opts)
             .map_err(|error| map_core_error(&env, error))?;
-        Ok(Self { inner })
+        Ok(Self::from_core(inner))
     }
 
     /// Open a workbook from an in-memory Buffer asynchronously.
     #[allow(private_interfaces)]
     #[napi]
-    pub fn open_buffer(data: Buffer, options: Option<JsOpenOptions>) -> AsyncTask<OpenBufferTask> {
-        let opts = js_open_options_to_core(options.as_ref());
-        OpenBufferTask::new(data.to_vec(), opts).into_async_task()
+    pub fn open_buffer(
+        env: Env,
+        data: Buffer,
+        options: Option<JsOpenOptions>,
+    ) -> Result<AsyncTask<OpenBufferTask>> {
+        let opts = js_open_options_to_core(options.as_ref())
+            .map_err(|error| map_core_error(&env, error))?;
+        check_buffer_outer_input(&opts, u64::try_from(data.len()).unwrap_or(u64::MAX), false)
+            .map_err(|error| map_core_error(&env, error))?;
+        Ok(OpenBufferTask::new(data.to_vec(), opts).into_async_task())
     }
 
     /// Open an encrypted .xlsx file using a password.
     #[napi(factory, js_name = "openWithPasswordSync")]
-    pub fn open_with_password_sync(env: Env, path: String, password: String) -> Result<Self> {
-        let inner = sheetkit_core::workbook::Workbook::open_with_password(&path, &password)
+    pub fn open_with_password_sync(
+        env: Env,
+        path: String,
+        password: String,
+        options: Option<JsOpenOptions>,
+    ) -> Result<Self> {
+        let options = js_open_options_to_core(options.as_ref())
             .map_err(|error| map_core_error(&env, error))?;
-        Ok(Self { inner })
+        let inner = sheetkit_core::workbook::Workbook::open_with_password_with_options(
+            &path, &password, &options,
+        )
+        .map_err(|error| map_core_error(&env, error))?;
+        Ok(Self::from_core(inner))
     }
 
     /// Open an encrypted .xlsx file using a password asynchronously.
     #[allow(private_interfaces)]
     #[napi]
-    pub fn open_with_password(path: String, password: String) -> AsyncTask<OpenPasswordTask> {
-        OpenPasswordTask::new(path, password).into_async_task()
+    pub fn open_with_password(
+        env: Env,
+        path: String,
+        password: String,
+        options: Option<JsOpenOptions>,
+    ) -> Result<AsyncTask<OpenPasswordTask>> {
+        let options = js_open_options_to_core(options.as_ref())
+            .map_err(|error| map_core_error(&env, error))?;
+        Ok(OpenPasswordTask::new(path, password, options).into_async_task())
+    }
+
+    /// Open an encrypted workbook from an in-memory Buffer.
+    #[napi(factory, js_name = "openBufferWithPasswordSync")]
+    pub fn open_buffer_with_password_sync(
+        env: Env,
+        data: Buffer,
+        password: String,
+        options: Option<JsOpenOptions>,
+    ) -> Result<Self> {
+        let options = js_open_options_to_core(options.as_ref())
+            .map_err(|error| map_core_error(&env, error))?;
+        let inner = sheetkit_core::workbook::Workbook::open_from_buffer_with_password_with_options(
+            &data, &password, &options,
+        )
+        .map_err(|error| map_core_error(&env, error))?;
+        Ok(Self::from_core(inner))
+    }
+
+    /// Open an encrypted workbook from an in-memory Buffer asynchronously.
+    #[allow(private_interfaces)]
+    #[napi]
+    pub fn open_buffer_with_password(
+        env: Env,
+        data: Buffer,
+        password: String,
+        options: Option<JsOpenOptions>,
+    ) -> Result<AsyncTask<OpenBufferPasswordTask>> {
+        let options = js_open_options_to_core(options.as_ref())
+            .map_err(|error| map_core_error(&env, error))?;
+        check_buffer_outer_input(
+            &options,
+            u64::try_from(data.len()).unwrap_or(u64::MAX),
+            true,
+        )
+        .map_err(|error| map_core_error(&env, error))?;
+        Ok(OpenBufferPasswordTask::new(data.to_vec(), password, options).into_async_task())
     }
 
     /// Serialize the workbook to an in-memory Buffer.
     #[napi(js_name = "writeBufferSync")]
-    pub fn write_buffer_sync(&self) -> Result<Buffer> {
+    pub fn write_buffer_sync(&self, env: Env, limits: Option<JsSaveLimits>) -> Result<Buffer> {
+        let limits =
+            js_save_limits_to_core(limits.as_ref()).map_err(|error| map_core_error(&env, error))?;
         let buf = self
             .inner
-            .save_to_buffer()
-            .map_err(|e| Error::from_reason(e.to_string()))?;
+            .save_to_buffer_with_limits(limits)
+            .map_err(|error| map_core_error(&env, error))?;
         Ok(Buffer::from(buf))
     }
 
     /// Serialize the workbook to an in-memory Buffer asynchronously.
-    /// Delegates to `writeBufferSync` internally.
+    #[allow(private_interfaces)]
     #[napi]
-    pub async fn write_buffer(&self) -> Result<Buffer> {
-        self.write_buffer_sync()
+    pub fn write_buffer(
+        &self,
+        env: Env,
+        limits: Option<JsSaveLimits>,
+    ) -> Result<AsyncTask<WriteBufferTask>> {
+        let limits =
+            js_save_limits_to_core(limits.as_ref()).map_err(|error| map_core_error(&env, error))?;
+        Ok(WriteBufferTask::new(self.inner.clone(), limits).into_async_task())
     }
 
     /// Save the workbook as an encrypted .xlsx file.
     #[napi(js_name = "saveWithPasswordSync")]
-    pub fn save_with_password_sync(&self, path: String, password: String) -> Result<()> {
+    pub fn save_with_password_sync(
+        &self,
+        env: Env,
+        path: String,
+        password: String,
+        limits: Option<JsCryptLimits>,
+    ) -> Result<()> {
+        let limits = js_crypt_limits_to_core(limits.as_ref())
+            .map_err(|error| map_core_error(&env, error))?;
         self.inner
-            .save_with_password(&path, &password)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .save_with_password_with_limits(&path, &password, limits)
+            .map_err(|error| map_core_error(&env, error))
     }
 
-    /// Save the workbook as an encrypted .xlsx file asynchronously.
-    /// Both sync and async encrypted saves buffer the ZIP data in memory
-    /// before encrypting, so peak memory is similar to `saveWithPasswordSync`.
+    /// Save an encrypted workbook for the TypeScript async rejection bridge.
+    #[allow(private_interfaces)]
     #[napi]
-    pub async fn save_with_password(&self, path: String, password: String) -> Result<()> {
-        let buf = self
-            .inner
-            .save_to_buffer()
-            .map_err(|e| Error::from_reason(e.to_string()))?;
-        tokio::task::spawn_blocking(move || {
-            let cfb_data = sheetkit_core::crypt::encrypt_xlsx(&buf, &password)
-                .map_err(|e| Error::from_reason(e.to_string()))?;
-            std::fs::write(&path, &cfb_data).map_err(|e| Error::from_reason(e.to_string()))
-        })
-        .await
-        .unwrap_or_else(|e| Err(Error::from_reason(e.to_string())))
+    pub fn save_with_password(
+        &self,
+        env: Env,
+        path: String,
+        password: String,
+        limits: Option<JsCryptLimits>,
+    ) -> Result<AsyncTask<SavePasswordTask>> {
+        let limits = js_crypt_limits_to_core(limits.as_ref())
+            .map_err(|error| map_core_error(&env, error))?;
+        Ok(SavePasswordTask::new(self.inner.clone(), path, password, limits).into_async_task())
     }
 
     /// Get the names of all sheets in workbook order.
@@ -184,23 +440,29 @@ impl Workbook {
     #[napi]
     pub fn get_cell_value(
         &self,
+        env: Env,
         sheet: String,
         cell: String,
-    ) -> Result<crate::conversions::JsCellOutputValue> {
+    ) -> Result<Either5<Null, bool, f64, String, DateValue>> {
         let value = self
             .inner
             .get_cell_value(&sheet, &cell)
-            .map_err(|e| Error::from_reason(e.to_string()))?;
+            .map_err(|error| map_core_error(&env, error))?;
         cell_value_to_either(value)
     }
 
     /// Get the formatted display text for a cell, applying its number format.
     /// Returns the value formatted according to the cell's style.
     #[napi]
-    pub fn get_cell_formatted_value(&self, sheet: String, cell: String) -> Result<String> {
+    pub fn get_cell_formatted_value(
+        &self,
+        env: Env,
+        sheet: String,
+        cell: String,
+    ) -> Result<String> {
         self.inner
             .get_cell_formatted_value(&sheet, &cell)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Format a numeric value using a format code string.
@@ -221,27 +483,33 @@ impl Workbook {
     #[napi]
     pub fn set_cell_value(
         &mut self,
+        env: Env,
         sheet: String,
         cell: String,
-        value: crate::conversions::JsCellInputValue,
+        value: Either6<String, f64, bool, DateValue, FormulaValue, Null>,
     ) -> Result<()> {
         let cell_value = js_value_to_cell_value(value)?;
-        self.inner
+        self.inner_mut()?
             .set_cell_value(&sheet, &cell, cell_value)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Set multiple cell values at once. More efficient than calling
     /// setCellValue repeatedly because it crosses the FFI boundary only once.
     #[napi]
-    pub fn set_cell_values(&mut self, sheet: String, cells: Vec<JsCellEntry>) -> Result<()> {
+    pub fn set_cell_values(
+        &mut self,
+        env: Env,
+        sheet: String,
+        cells: Vec<JsCellEntry>,
+    ) -> Result<()> {
         let entries: Vec<(String, CellValue)> = cells
             .into_iter()
             .map(|entry| Ok((entry.cell, js_value_to_cell_value(entry.value)?)))
             .collect::<Result<_>>()?;
-        self.inner
+        self.inner_mut()?
             .set_cell_values(&sheet, entries)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Set values in a single row starting from the given column.
@@ -250,19 +518,20 @@ impl Workbook {
     #[allow(clippy::type_complexity)]
     pub fn set_row_values(
         &mut self,
+        env: Env,
         sheet: String,
         row: u32,
         start_col: String,
-        values: Vec<crate::conversions::JsCellInputValue>,
+        values: Vec<Either6<String, f64, bool, DateValue, FormulaValue, Null>>,
     ) -> Result<()> {
         let col_num = crate::conversions::parse_column_name(&start_col)?;
         let cell_values: Vec<CellValue> = values
             .into_iter()
             .map(js_value_to_cell_value)
             .collect::<Result<_>>()?;
-        self.inner
+        self.inner_mut()?
             .set_row_values(&sheet, row, col_num, cell_values)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Set a block of cell values from a 2D array.
@@ -272,13 +541,14 @@ impl Workbook {
     #[allow(clippy::type_complexity)]
     pub fn set_sheet_data(
         &mut self,
+        env: Env,
         sheet: String,
-        data: Vec<Vec<crate::conversions::JsCellInputValue>>,
+        data: Vec<Vec<Either6<String, f64, bool, DateValue, FormulaValue, Null>>>,
         start_cell: Option<String>,
     ) -> Result<()> {
         let (start_col, start_row) = if let Some(ref cell) = start_cell {
             sheetkit_core::utils::cell_ref::cell_name_to_coordinates(cell)
-                .map_err(|e| Error::from_reason(e.to_string()))?
+                .map_err(|error| map_core_error(&env, error))?
         } else {
             (1, 1)
         };
@@ -286,43 +556,43 @@ impl Workbook {
             .into_iter()
             .map(|row| row.into_iter().map(js_value_to_cell_value).collect())
             .collect::<Result<_>>()?;
-        self.inner
+        self.inner_mut()?
             .set_sheet_data(&sheet, cell_data, start_row, start_col)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Create a new empty sheet. Returns the 0-based sheet index.
     #[napi]
-    pub fn new_sheet(&mut self, name: String) -> Result<u32> {
-        self.inner
+    pub fn new_sheet(&mut self, env: Env, name: String) -> Result<u32> {
+        self.inner_mut()?
             .new_sheet(&name)
             .map(|i| i as u32)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Delete a sheet by name.
     #[napi]
-    pub fn delete_sheet(&mut self, name: String) -> Result<()> {
-        self.inner
+    pub fn delete_sheet(&mut self, env: Env, name: String) -> Result<()> {
+        self.inner_mut()?
             .delete_sheet(&name)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Rename a sheet.
     #[napi]
-    pub fn set_sheet_name(&mut self, old_name: String, new_name: String) -> Result<()> {
-        self.inner
+    pub fn set_sheet_name(&mut self, env: Env, old_name: String, new_name: String) -> Result<()> {
+        self.inner_mut()?
             .set_sheet_name(&old_name, &new_name)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Copy a sheet. Returns the new sheet's 0-based index.
     #[napi]
-    pub fn copy_sheet(&mut self, source: String, target: String) -> Result<u32> {
-        self.inner
+    pub fn copy_sheet(&mut self, env: Env, source: String, target: String) -> Result<u32> {
+        self.inner_mut()?
             .copy_sheet(&source, &target)
             .map(|i| i as u32)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Get the 0-based index of a sheet, or null if not found.
@@ -339,209 +609,264 @@ impl Workbook {
 
     /// Set the active sheet by name.
     #[napi]
-    pub fn set_active_sheet(&mut self, name: String) -> Result<()> {
-        self.inner
+    pub fn set_active_sheet(&mut self, env: Env, name: String) -> Result<()> {
+        self.inner_mut()?
             .set_active_sheet(&name)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Insert empty rows starting at the given 1-based row number.
     #[napi]
-    pub fn insert_rows(&mut self, sheet: String, start_row: u32, count: u32) -> Result<()> {
-        self.inner
+    pub fn insert_rows(
+        &mut self,
+        env: Env,
+        sheet: String,
+        start_row: u32,
+        count: u32,
+    ) -> Result<()> {
+        self.inner_mut()?
             .insert_rows(&sheet, start_row, count)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Remove a row (1-based).
     #[napi]
-    pub fn remove_row(&mut self, sheet: String, row: u32) -> Result<()> {
-        self.inner
+    pub fn remove_row(&mut self, env: Env, sheet: String, row: u32) -> Result<()> {
+        self.inner_mut()?
             .remove_row(&sheet, row)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Duplicate a row (1-based).
     #[napi]
-    pub fn duplicate_row(&mut self, sheet: String, row: u32) -> Result<()> {
-        self.inner
+    pub fn duplicate_row(&mut self, env: Env, sheet: String, row: u32) -> Result<()> {
+        self.inner_mut()?
             .duplicate_row(&sheet, row)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Set the height of a row (1-based).
     #[napi]
-    pub fn set_row_height(&mut self, sheet: String, row: u32, height: f64) -> Result<()> {
-        self.inner
+    pub fn set_row_height(&mut self, env: Env, sheet: String, row: u32, height: f64) -> Result<()> {
+        self.inner_mut()?
             .set_row_height(&sheet, row, height)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Get the height of a row, or null if not explicitly set.
     #[napi]
-    pub fn get_row_height(&self, sheet: String, row: u32) -> Result<Option<f64>> {
+    pub fn get_row_height(&self, env: Env, sheet: String, row: u32) -> Result<Option<f64>> {
         self.inner
             .get_row_height(&sheet, row)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Set whether a row is visible.
     #[napi]
-    pub fn set_row_visible(&mut self, sheet: String, row: u32, visible: bool) -> Result<()> {
-        self.inner
+    pub fn set_row_visible(
+        &mut self,
+        env: Env,
+        sheet: String,
+        row: u32,
+        visible: bool,
+    ) -> Result<()> {
+        self.inner_mut()?
             .set_row_visible(&sheet, row, visible)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Get whether a row is visible. Returns true if visible (not hidden).
     #[napi]
-    pub fn get_row_visible(&self, sheet: String, row: u32) -> Result<bool> {
+    pub fn get_row_visible(&self, env: Env, sheet: String, row: u32) -> Result<bool> {
         self.inner
             .get_row_visible(&sheet, row)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Set the outline level of a row (0-7).
     #[napi]
-    pub fn set_row_outline_level(&mut self, sheet: String, row: u32, level: u8) -> Result<()> {
-        self.inner
+    pub fn set_row_outline_level(
+        &mut self,
+        env: Env,
+        sheet: String,
+        row: u32,
+        level: u8,
+    ) -> Result<()> {
+        self.inner_mut()?
             .set_row_outline_level(&sheet, row, level)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Get the outline level of a row. Returns 0 if not set.
     #[napi]
-    pub fn get_row_outline_level(&self, sheet: String, row: u32) -> Result<u8> {
+    pub fn get_row_outline_level(&self, env: Env, sheet: String, row: u32) -> Result<u8> {
         self.inner
             .get_row_outline_level(&sheet, row)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Set the width of a column (e.g., "A", "B", "AA").
     #[napi]
-    pub fn set_col_width(&mut self, sheet: String, col: String, width: f64) -> Result<()> {
-        self.inner
+    pub fn set_col_width(
+        &mut self,
+        env: Env,
+        sheet: String,
+        col: String,
+        width: f64,
+    ) -> Result<()> {
+        self.inner_mut()?
             .set_col_width(&sheet, &col, width)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Get the width of a column, or null if not explicitly set.
     #[napi]
-    pub fn get_col_width(&self, sheet: String, col: String) -> Result<Option<f64>> {
+    pub fn get_col_width(&self, env: Env, sheet: String, col: String) -> Result<Option<f64>> {
         self.inner
             .get_col_width(&sheet, &col)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Set whether a column is visible.
     #[napi]
-    pub fn set_col_visible(&mut self, sheet: String, col: String, visible: bool) -> Result<()> {
-        self.inner
+    pub fn set_col_visible(
+        &mut self,
+        env: Env,
+        sheet: String,
+        col: String,
+        visible: bool,
+    ) -> Result<()> {
+        self.inner_mut()?
             .set_col_visible(&sheet, &col, visible)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Get whether a column is visible. Returns true if visible (not hidden).
     #[napi]
-    pub fn get_col_visible(&self, sheet: String, col: String) -> Result<bool> {
+    pub fn get_col_visible(&self, env: Env, sheet: String, col: String) -> Result<bool> {
         self.inner
             .get_col_visible(&sheet, &col)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Set the outline level of a column (0-7).
     #[napi]
-    pub fn set_col_outline_level(&mut self, sheet: String, col: String, level: u8) -> Result<()> {
-        self.inner
+    pub fn set_col_outline_level(
+        &mut self,
+        env: Env,
+        sheet: String,
+        col: String,
+        level: u8,
+    ) -> Result<()> {
+        self.inner_mut()?
             .set_col_outline_level(&sheet, &col, level)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Get the outline level of a column. Returns 0 if not set.
     #[napi]
-    pub fn get_col_outline_level(&self, sheet: String, col: String) -> Result<u8> {
+    pub fn get_col_outline_level(&self, env: Env, sheet: String, col: String) -> Result<u8> {
         self.inner
             .get_col_outline_level(&sheet, &col)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Insert empty columns starting at the given column letter.
     #[napi]
-    pub fn insert_cols(&mut self, sheet: String, col: String, count: u32) -> Result<()> {
-        self.inner
+    pub fn insert_cols(&mut self, env: Env, sheet: String, col: String, count: u32) -> Result<()> {
+        self.inner_mut()?
             .insert_cols(&sheet, &col, count)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Remove a column by letter.
     #[napi]
-    pub fn remove_col(&mut self, sheet: String, col: String) -> Result<()> {
-        self.inner
+    pub fn remove_col(&mut self, env: Env, sheet: String, col: String) -> Result<()> {
+        self.inner_mut()?
             .remove_col(&sheet, &col)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Add a style definition. Returns the style ID for use with setCellStyle.
     #[napi]
-    pub fn add_style(&mut self, style: JsStyle) -> Result<u32> {
+    pub fn add_style(&mut self, env: Env, style: JsStyle) -> Result<u32> {
         let core_style = js_style_to_core(&style);
-        self.inner
+        self.inner_mut()?
             .add_style(&core_style)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Get the style ID applied to a cell, or null if default.
     #[napi]
-    pub fn get_cell_style(&self, sheet: String, cell: String) -> Result<Option<u32>> {
+    pub fn get_cell_style(&self, env: Env, sheet: String, cell: String) -> Result<Option<u32>> {
         self.inner
             .get_cell_style(&sheet, &cell)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Apply a style ID to a cell.
     #[napi]
-    pub fn set_cell_style(&mut self, sheet: String, cell: String, style_id: u32) -> Result<()> {
-        self.inner
+    pub fn set_cell_style(
+        &mut self,
+        env: Env,
+        sheet: String,
+        cell: String,
+        style_id: u32,
+    ) -> Result<()> {
+        self.inner_mut()?
             .set_cell_style(&sheet, &cell, style_id)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Apply a style ID to an entire row.
     #[napi]
-    pub fn set_row_style(&mut self, sheet: String, row: u32, style_id: u32) -> Result<()> {
-        self.inner
+    pub fn set_row_style(
+        &mut self,
+        env: Env,
+        sheet: String,
+        row: u32,
+        style_id: u32,
+    ) -> Result<()> {
+        self.inner_mut()?
             .set_row_style(&sheet, row, style_id)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Get the style ID for a row. Returns 0 if not set.
     #[napi]
-    pub fn get_row_style(&self, sheet: String, row: u32) -> Result<u32> {
+    pub fn get_row_style(&self, env: Env, sheet: String, row: u32) -> Result<u32> {
         self.inner
             .get_row_style(&sheet, row)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Apply a style ID to an entire column.
     #[napi]
-    pub fn set_col_style(&mut self, sheet: String, col: String, style_id: u32) -> Result<()> {
-        self.inner
+    pub fn set_col_style(
+        &mut self,
+        env: Env,
+        sheet: String,
+        col: String,
+        style_id: u32,
+    ) -> Result<()> {
+        self.inner_mut()?
             .set_col_style(&sheet, &col, style_id)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Get the style ID for a column. Returns 0 if not set.
     #[napi]
-    pub fn get_col_style(&self, sheet: String, col: String) -> Result<u32> {
+    pub fn get_col_style(&self, env: Env, sheet: String, col: String) -> Result<u32> {
         self.inner
             .get_col_style(&sheet, &col)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Add a chart to a sheet.
     #[napi]
     pub fn add_chart(
         &mut self,
+        env: Env,
         sheet: String,
         from_cell: String,
         to_cell: String,
@@ -570,14 +895,14 @@ impl Workbook {
                 perspective: v.perspective,
             }),
         };
-        self.inner
+        self.inner_mut()?
             .add_chart(&sheet, &from_cell, &to_cell, &core_config)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Add a shape to a sheet.
     #[napi]
-    pub fn add_shape(&mut self, sheet: String, config: JsShapeConfig) -> Result<()> {
+    pub fn add_shape(&mut self, env: Env, sheet: String, config: JsShapeConfig) -> Result<()> {
         let core_config = sheetkit_core::shape::ShapeConfig {
             shape_type: parse_shape_type(&config.shape_type)?,
             from_cell: config.from_cell,
@@ -587,41 +912,46 @@ impl Workbook {
             line_color: config.line_color,
             line_width: config.line_width,
         };
-        self.inner
+        self.inner_mut()?
             .add_shape(&sheet, &core_config)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Add a form control to a sheet.
     #[napi]
-    pub fn add_form_control(&mut self, sheet: String, config: JsFormControlConfig) -> Result<()> {
+    pub fn add_form_control(
+        &mut self,
+        env: Env,
+        sheet: String,
+        config: JsFormControlConfig,
+    ) -> Result<()> {
         let core_config = js_form_control_to_core(&config)?;
-        self.inner
+        self.inner_mut()?
             .add_form_control(&sheet, core_config)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Get all form controls on a sheet.
     #[napi]
-    pub fn get_form_controls(&mut self, sheet: String) -> Result<Vec<JsFormControlInfo>> {
+    pub fn get_form_controls(&mut self, env: Env, sheet: String) -> Result<Vec<JsFormControlInfo>> {
         let controls = self
-            .inner
+            .inner_mut()?
             .get_form_controls(&sheet)
-            .map_err(|e| Error::from_reason(e.to_string()))?;
+            .map_err(|error| map_core_error(&env, error))?;
         Ok(controls.iter().map(core_form_control_info_to_js).collect())
     }
 
     /// Delete a form control by index.
     #[napi]
-    pub fn delete_form_control(&mut self, sheet: String, index: u32) -> Result<()> {
-        self.inner
+    pub fn delete_form_control(&mut self, env: Env, sheet: String, index: u32) -> Result<()> {
+        self.inner_mut()?
             .delete_form_control(&sheet, index as usize)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Add an image to a sheet.
     #[napi]
-    pub fn add_image(&mut self, sheet: String, config: JsImageConfig) -> Result<()> {
+    pub fn add_image(&mut self, env: Env, sheet: String, config: JsImageConfig) -> Result<()> {
         let core_config = ImageConfig {
             data: config.data.to_vec(),
             format: parse_image_format(&config.format)?,
@@ -629,34 +959,39 @@ impl Workbook {
             width_px: config.width_px,
             height_px: config.height_px,
         };
-        self.inner
+        self.inner_mut()?
             .add_image(&sheet, &core_config)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Delete a chart anchored at the given cell.
     #[napi]
-    pub fn delete_chart(&mut self, sheet: String, cell: String) -> Result<()> {
-        self.inner
+    pub fn delete_chart(&mut self, env: Env, sheet: String, cell: String) -> Result<()> {
+        self.inner_mut()?
             .delete_chart(&sheet, &cell)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Delete a picture anchored at the given cell.
     #[napi]
-    pub fn delete_picture(&mut self, sheet: String, cell: String) -> Result<()> {
-        self.inner
+    pub fn delete_picture(&mut self, env: Env, sheet: String, cell: String) -> Result<()> {
+        self.inner_mut()?
             .delete_picture(&sheet, &cell)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Get all pictures anchored at the given cell.
     #[napi]
-    pub fn get_pictures(&self, sheet: String, cell: String) -> Result<Vec<JsPictureInfo>> {
+    pub fn get_pictures(
+        &self,
+        env: Env,
+        sheet: String,
+        cell: String,
+    ) -> Result<Vec<JsPictureInfo>> {
         let pics = self
             .inner
             .get_pictures(&sheet, &cell)
-            .map_err(|e| Error::from_reason(e.to_string()))?;
+            .map_err(|error| map_core_error(&env, error))?;
         Ok(pics
             .into_iter()
             .map(|p| JsPictureInfo {
@@ -671,45 +1006,47 @@ impl Workbook {
 
     /// Get all cells that have pictures anchored to them on the given sheet.
     #[napi]
-    pub fn get_picture_cells(&self, sheet: String) -> Result<Vec<String>> {
+    pub fn get_picture_cells(&self, env: Env, sheet: String) -> Result<Vec<String>> {
         self.inner
             .get_picture_cells(&sheet)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Merge a range of cells on a sheet.
     #[napi]
     pub fn merge_cells(
         &mut self,
+        env: Env,
         sheet: String,
         top_left: String,
         bottom_right: String,
     ) -> Result<()> {
-        self.inner
+        self.inner_mut()?
             .merge_cells(&sheet, &top_left, &bottom_right)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Remove a merged cell range from a sheet.
     #[napi]
-    pub fn unmerge_cell(&mut self, sheet: String, reference: String) -> Result<()> {
-        self.inner
+    pub fn unmerge_cell(&mut self, env: Env, sheet: String, reference: String) -> Result<()> {
+        self.inner_mut()?
             .unmerge_cell(&sheet, &reference)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Get all merged cell ranges on a sheet.
     #[napi]
-    pub fn get_merge_cells(&self, sheet: String) -> Result<Vec<String>> {
+    pub fn get_merge_cells(&self, env: Env, sheet: String) -> Result<Vec<String>> {
         self.inner
             .get_merge_cells(&sheet)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Add a data validation rule to a sheet.
     #[napi]
     pub fn add_data_validation(
         &mut self,
+        env: Env,
         sheet: String,
         config: JsDataValidationConfig,
     ) -> Result<()> {
@@ -734,33 +1071,38 @@ impl Workbook {
             show_input_message: config.show_input_message.unwrap_or(false),
             show_error_message: config.show_error_message.unwrap_or(false),
         };
-        self.inner
+        self.inner_mut()?
             .add_data_validation(&sheet, &core_config)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Get all data validations on a sheet.
     #[napi]
-    pub fn get_data_validations(&self, sheet: String) -> Result<Vec<JsDataValidationConfig>> {
+    pub fn get_data_validations(
+        &self,
+        env: Env,
+        sheet: String,
+    ) -> Result<Vec<JsDataValidationConfig>> {
         let validations = self
             .inner
             .get_data_validations(&sheet)
-            .map_err(|e| Error::from_reason(e.to_string()))?;
+            .map_err(|error| map_core_error(&env, error))?;
         Ok(validations.iter().map(core_validation_to_js).collect())
     }
 
     /// Remove a data validation by sqref.
     #[napi]
-    pub fn remove_data_validation(&mut self, sheet: String, sqref: String) -> Result<()> {
-        self.inner
+    pub fn remove_data_validation(&mut self, env: Env, sheet: String, sqref: String) -> Result<()> {
+        self.inner_mut()?
             .remove_data_validation(&sheet, &sqref)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Set conditional formatting rules on a cell range.
     #[napi]
     pub fn set_conditional_format(
         &mut self,
+        env: Env,
         sheet: String,
         sqref: String,
         rules: Vec<JsConditionalFormatRule>,
@@ -769,18 +1111,22 @@ impl Workbook {
             .iter()
             .map(js_cf_rule_to_core)
             .collect::<Result<Vec<_>>>()?;
-        self.inner
+        self.inner_mut()?
             .set_conditional_format(&sheet, &sqref, &core_rules)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Get all conditional formatting rules for a sheet.
     #[napi]
-    pub fn get_conditional_formats(&self, sheet: String) -> Result<Vec<JsConditionalFormatEntry>> {
+    pub fn get_conditional_formats(
+        &self,
+        env: Env,
+        sheet: String,
+    ) -> Result<Vec<JsConditionalFormatEntry>> {
         let formats = self
             .inner
             .get_conditional_formats(&sheet)
-            .map_err(|e| Error::from_reason(e.to_string()))?;
+            .map_err(|error| map_core_error(&env, error))?;
         Ok(formats
             .iter()
             .map(|(sqref, rules)| JsConditionalFormatEntry {
@@ -792,32 +1138,37 @@ impl Workbook {
 
     /// Delete conditional formatting for a specific cell range.
     #[napi]
-    pub fn delete_conditional_format(&mut self, sheet: String, sqref: String) -> Result<()> {
-        self.inner
+    pub fn delete_conditional_format(
+        &mut self,
+        env: Env,
+        sheet: String,
+        sqref: String,
+    ) -> Result<()> {
+        self.inner_mut()?
             .delete_conditional_format(&sheet, &sqref)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Add a comment to a cell.
     #[napi]
-    pub fn add_comment(&mut self, sheet: String, config: JsCommentConfig) -> Result<()> {
+    pub fn add_comment(&mut self, env: Env, sheet: String, config: JsCommentConfig) -> Result<()> {
         let core_config = CommentConfig {
             cell: config.cell,
             author: config.author,
             text: config.text,
         };
-        self.inner
+        self.inner_mut()?
             .add_comment(&sheet, &core_config)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Get all comments on a sheet.
     #[napi]
-    pub fn get_comments(&mut self, sheet: String) -> Result<Vec<JsCommentConfig>> {
+    pub fn get_comments(&mut self, env: Env, sheet: String) -> Result<Vec<JsCommentConfig>> {
         let comments = self
-            .inner
+            .inner_mut()?
             .get_comments(&sheet)
-            .map_err(|e| Error::from_reason(e.to_string()))?;
+            .map_err(|error| map_core_error(&env, error))?;
         Ok(comments
             .iter()
             .map(|c| JsCommentConfig {
@@ -830,16 +1181,17 @@ impl Workbook {
 
     /// Remove a comment from a cell.
     #[napi]
-    pub fn remove_comment(&mut self, sheet: String, cell: String) -> Result<()> {
-        self.inner
+    pub fn remove_comment(&mut self, env: Env, sheet: String, cell: String) -> Result<()> {
+        self.inner_mut()?
             .remove_comment(&sheet, &cell)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Add a threaded comment to a cell. Returns the comment ID.
     #[napi]
     pub fn add_threaded_comment(
         &mut self,
+        env: Env,
         sheet: String,
         cell: String,
         input: JsThreadedCommentInput,
@@ -849,18 +1201,22 @@ impl Workbook {
             text: input.text,
             parent_id: input.parent_id,
         };
-        self.inner
+        self.inner_mut()?
             .add_threaded_comment(&sheet, &cell, &core_input)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Get all threaded comments for a sheet.
     #[napi]
-    pub fn get_threaded_comments(&self, sheet: String) -> Result<Vec<JsThreadedCommentData>> {
+    pub fn get_threaded_comments(
+        &self,
+        env: Env,
+        sheet: String,
+    ) -> Result<Vec<JsThreadedCommentData>> {
         let comments = self
             .inner
             .get_threaded_comments(&sheet)
-            .map_err(|e| Error::from_reason(e.to_string()))?;
+            .map_err(|error| map_core_error(&env, error))?;
         Ok(comments
             .into_iter()
             .map(|c| JsThreadedCommentData {
@@ -880,13 +1236,14 @@ impl Workbook {
     #[napi]
     pub fn get_threaded_comments_by_cell(
         &self,
+        env: Env,
         sheet: String,
         cell: String,
     ) -> Result<Vec<JsThreadedCommentData>> {
         let comments = self
             .inner
             .get_threaded_comments_by_cell(&sheet, &cell)
-            .map_err(|e| Error::from_reason(e.to_string()))?;
+            .map_err(|error| map_core_error(&env, error))?;
         Ok(comments
             .into_iter()
             .map(|c| JsThreadedCommentData {
@@ -904,34 +1261,40 @@ impl Workbook {
 
     /// Delete a threaded comment by ID.
     #[napi]
-    pub fn delete_threaded_comment(&mut self, sheet: String, comment_id: String) -> Result<()> {
-        self.inner
+    pub fn delete_threaded_comment(
+        &mut self,
+        env: Env,
+        sheet: String,
+        comment_id: String,
+    ) -> Result<()> {
+        self.inner_mut()?
             .delete_threaded_comment(&sheet, &comment_id)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Set the resolved (done) state of a threaded comment.
     #[napi]
     pub fn resolve_threaded_comment(
         &mut self,
+        env: Env,
         sheet: String,
         comment_id: String,
         done: bool,
     ) -> Result<()> {
-        self.inner
+        self.inner_mut()?
             .resolve_threaded_comment(&sheet, &comment_id, done)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Add a person to the person list. Returns the person ID.
     #[napi]
-    pub fn add_person(&mut self, input: JsPersonInput) -> String {
+    pub fn add_person(&mut self, input: JsPersonInput) -> Result<String> {
         let core_input = PersonInput {
             display_name: input.display_name,
             user_id: input.user_id,
             provider_id: input.provider_id,
         };
-        self.inner.add_person(&core_input)
+        Ok(self.inner_mut()?.add_person(&core_input))
     }
 
     /// Get all persons in the person list.
@@ -951,27 +1314,34 @@ impl Workbook {
 
     /// Set an auto-filter on a sheet.
     #[napi]
-    pub fn set_auto_filter(&mut self, sheet: String, range: String) -> Result<()> {
-        self.inner
+    pub fn set_auto_filter(&mut self, env: Env, sheet: String, range: String) -> Result<()> {
+        self.inner_mut()?
             .set_auto_filter(&sheet, &range)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Remove the auto-filter from a sheet.
     #[napi]
-    pub fn remove_auto_filter(&mut self, sheet: String) -> Result<()> {
-        self.inner
+    pub fn remove_auto_filter(&mut self, env: Env, sheet: String) -> Result<()> {
+        self.inner_mut()?
             .remove_auto_filter(&sheet)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Create a new stream writer for a new sheet.
     #[napi]
-    pub fn new_stream_writer(&self, sheet_name: String) -> Result<JsStreamWriter> {
+    pub fn new_stream_writer(
+        &self,
+        env: Env,
+        sheet_name: String,
+        limits: Option<JsStreamLimits>,
+    ) -> Result<JsStreamWriter> {
+        let limits = js_stream_limits_to_core(limits.as_ref())
+            .map_err(|error| map_core_error(&env, error))?;
         let writer = self
             .inner
-            .new_stream_writer(&sheet_name)
-            .map_err(|e| Error::from_reason(e.to_string()))?;
+            .new_stream_writer_with_limits(&sheet_name, limits)
+            .map_err(|error| map_core_error(&env, error))?;
         Ok(JsStreamWriter {
             inner: Some(writer),
         })
@@ -979,22 +1349,24 @@ impl Workbook {
 
     /// Apply a stream writer's output to the workbook. Returns the sheet index.
     #[napi]
-    pub fn apply_stream_writer(&mut self, writer: &mut JsStreamWriter) -> Result<u32> {
+    pub fn apply_stream_writer(&mut self, env: Env, writer: &mut JsStreamWriter) -> Result<u32> {
+        let workbook = self.inner_mut()?;
         let inner_writer = writer
             .inner
             .take()
             .ok_or_else(|| Error::from_reason("StreamWriter already consumed"))?;
-        let index = self
-            .inner
+        let index = workbook
             .apply_stream_writer(inner_writer)
-            .map_err(|e| Error::from_reason(e.to_string()))?;
+            .map_err(|error| map_core_error(&env, error))?;
         Ok(index as u32)
     }
 
     /// Set core document properties (title, creator, etc.).
     #[napi]
-    pub fn set_doc_props(&mut self, props: JsDocProperties) {
-        self.inner.set_doc_props(js_doc_props_to_core(&props));
+    pub fn set_doc_props(&mut self, props: JsDocProperties) -> Result<()> {
+        self.inner_mut()?
+            .set_doc_props(js_doc_props_to_core(&props));
+        Ok(())
     }
 
     /// Get core document properties.
@@ -1005,8 +1377,10 @@ impl Workbook {
 
     /// Set application properties (company, app version, etc.).
     #[napi]
-    pub fn set_app_props(&mut self, props: JsAppProperties) {
-        self.inner.set_app_props(js_app_props_to_core(&props));
+    pub fn set_app_props(&mut self, props: JsAppProperties) -> Result<()> {
+        self.inner_mut()?
+            .set_app_props(js_app_props_to_core(&props));
+        Ok(())
     }
 
     /// Get application properties.
@@ -1033,7 +1407,7 @@ impl Workbook {
             }
             Either3::C(b) => CustomPropertyValue::Bool(b),
         };
-        self.inner.set_custom_property(&name, prop_value);
+        self.inner_mut()?.set_custom_property(&name, prop_value);
         Ok(())
     }
 
@@ -1052,25 +1426,28 @@ impl Workbook {
 
     /// Delete a custom property. Returns true if it existed.
     #[napi]
-    pub fn delete_custom_property(&mut self, name: String) -> bool {
-        self.inner.delete_custom_property(&name)
+    pub fn delete_custom_property(&mut self, name: String) -> Result<bool> {
+        Ok(self.inner_mut()?.delete_custom_property(&name))
     }
 
     /// Protect the workbook structure/windows with optional password.
     #[napi]
-    pub fn protect_workbook(&mut self, config: JsWorkbookProtectionConfig) {
-        self.inner.protect_workbook(WorkbookProtectionConfig {
-            password: config.password,
-            lock_structure: config.lock_structure.unwrap_or(false),
-            lock_windows: config.lock_windows.unwrap_or(false),
-            lock_revision: config.lock_revision.unwrap_or(false),
-        });
+    pub fn protect_workbook(&mut self, config: JsWorkbookProtectionConfig) -> Result<()> {
+        self.inner_mut()?
+            .protect_workbook(WorkbookProtectionConfig {
+                password: config.password,
+                lock_structure: config.lock_structure.unwrap_or(false),
+                lock_windows: config.lock_windows.unwrap_or(false),
+                lock_revision: config.lock_revision.unwrap_or(false),
+            });
+        Ok(())
     }
 
     /// Remove workbook protection.
     #[napi]
-    pub fn unprotect_workbook(&mut self) {
-        self.inner.unprotect_workbook();
+    pub fn unprotect_workbook(&mut self) -> Result<()> {
+        self.inner_mut()?.unprotect_workbook();
+        Ok(())
     }
 
     /// Check if the workbook is protected.
@@ -1083,31 +1460,36 @@ impl Workbook {
     /// The cell reference indicates the top-left cell of the scrollable area.
     /// For example, "A2" freezes row 1, "B1" freezes column A.
     #[napi]
-    pub fn set_panes(&mut self, sheet: String, cell: String) -> Result<()> {
-        self.inner
+    pub fn set_panes(&mut self, env: Env, sheet: String, cell: String) -> Result<()> {
+        self.inner_mut()?
             .set_panes(&sheet, &cell)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Remove any freeze or split panes from a sheet.
     #[napi]
-    pub fn unset_panes(&mut self, sheet: String) -> Result<()> {
-        self.inner
+    pub fn unset_panes(&mut self, env: Env, sheet: String) -> Result<()> {
+        self.inner_mut()?
             .unset_panes(&sheet)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Get the current freeze pane cell reference for a sheet, or null if none.
     #[napi]
-    pub fn get_panes(&self, sheet: String) -> Result<Option<String>> {
+    pub fn get_panes(&self, env: Env, sheet: String) -> Result<Option<String>> {
         self.inner
             .get_panes(&sheet)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Set page margins on a sheet (values in inches).
     #[napi]
-    pub fn set_page_margins(&mut self, sheet: String, margins: JsPageMargins) -> Result<()> {
+    pub fn set_page_margins(
+        &mut self,
+        env: Env,
+        sheet: String,
+        margins: JsPageMargins,
+    ) -> Result<()> {
         let config = PageMarginsConfig {
             left: margins.left,
             right: margins.right,
@@ -1116,18 +1498,18 @@ impl Workbook {
             header: margins.header,
             footer: margins.footer,
         };
-        self.inner
+        self.inner_mut()?
             .set_page_margins(&sheet, &config)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Get page margins for a sheet. Returns defaults if not explicitly set.
     #[napi]
-    pub fn get_page_margins(&self, sheet: String) -> Result<JsPageMargins> {
+    pub fn get_page_margins(&self, env: Env, sheet: String) -> Result<JsPageMargins> {
         let m = self
             .inner
             .get_page_margins(&sheet)
-            .map_err(|e| Error::from_reason(e.to_string()))?;
+            .map_err(|error| map_core_error(&env, error))?;
         Ok(JsPageMargins {
             left: m.left,
             right: m.right,
@@ -1140,13 +1522,13 @@ impl Workbook {
 
     /// Set page setup options (paper size, orientation, scale, fit-to-page).
     #[napi]
-    pub fn set_page_setup(&mut self, sheet: String, setup: JsPageSetup) -> Result<()> {
+    pub fn set_page_setup(&mut self, env: Env, sheet: String, setup: JsPageSetup) -> Result<()> {
         let orientation = setup
             .orientation
             .as_ref()
             .and_then(|s| parse_orientation(s));
         let paper_size = setup.paper_size.as_ref().and_then(|s| parse_paper_size(s));
-        self.inner
+        self.inner_mut()?
             .set_page_setup(
                 &sheet,
                 orientation,
@@ -1155,24 +1537,24 @@ impl Workbook {
                 setup.fit_to_width,
                 setup.fit_to_height,
             )
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Get the page setup for a sheet.
     #[napi]
-    pub fn get_page_setup(&self, sheet: String) -> Result<JsPageSetup> {
+    pub fn get_page_setup(&self, env: Env, sheet: String) -> Result<JsPageSetup> {
         let orientation = self
             .inner
             .get_orientation(&sheet)
-            .map_err(|e| Error::from_reason(e.to_string()))?;
+            .map_err(|error| map_core_error(&env, error))?;
         let paper_size = self
             .inner
             .get_paper_size(&sheet)
-            .map_err(|e| Error::from_reason(e.to_string()))?;
+            .map_err(|error| map_core_error(&env, error))?;
         let (scale, fit_to_width, fit_to_height) = self
             .inner
             .get_page_setup_details(&sheet)
-            .map_err(|e| Error::from_reason(e.to_string()))?;
+            .map_err(|error| map_core_error(&env, error))?;
         Ok(JsPageSetup {
             paper_size: paper_size.as_ref().map(paper_size_to_string),
             orientation: orientation.as_ref().map(orientation_to_string),
@@ -1186,30 +1568,36 @@ impl Workbook {
     #[napi]
     pub fn set_header_footer(
         &mut self,
+        env: Env,
         sheet: String,
         header: Option<String>,
         footer: Option<String>,
     ) -> Result<()> {
-        self.inner
+        self.inner_mut()?
             .set_header_footer(&sheet, header.as_deref(), footer.as_deref())
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Get the header and footer text for a sheet.
     /// Returns an object with `header` and `footer` fields, each possibly null.
     #[napi]
-    pub fn get_header_footer(&self, sheet: String) -> Result<JsHeaderFooter> {
+    pub fn get_header_footer(&self, env: Env, sheet: String) -> Result<JsHeaderFooter> {
         let (header, footer) = self
             .inner
             .get_header_footer(&sheet)
-            .map_err(|e| Error::from_reason(e.to_string()))?;
+            .map_err(|error| map_core_error(&env, error))?;
         Ok(JsHeaderFooter { header, footer })
     }
 
     /// Set print options on a sheet.
     #[napi]
-    pub fn set_print_options(&mut self, sheet: String, opts: JsPrintOptions) -> Result<()> {
-        self.inner
+    pub fn set_print_options(
+        &mut self,
+        env: Env,
+        sheet: String,
+        opts: JsPrintOptions,
+    ) -> Result<()> {
+        self.inner_mut()?
             .set_print_options(
                 &sheet,
                 opts.grid_lines,
@@ -1217,16 +1605,16 @@ impl Workbook {
                 opts.horizontal_centered,
                 opts.vertical_centered,
             )
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Get print options for a sheet.
     #[napi]
-    pub fn get_print_options(&self, sheet: String) -> Result<JsPrintOptions> {
+    pub fn get_print_options(&self, env: Env, sheet: String) -> Result<JsPrintOptions> {
         let (gl, hd, hc, vc) = self
             .inner
             .get_print_options(&sheet)
-            .map_err(|e| Error::from_reason(e.to_string()))?;
+            .map_err(|error| map_core_error(&env, error))?;
         Ok(JsPrintOptions {
             grid_lines: gl,
             headings: hd,
@@ -1237,38 +1625,39 @@ impl Workbook {
 
     /// Insert a horizontal page break before the given 1-based row.
     #[napi]
-    pub fn insert_page_break(&mut self, sheet: String, row: u32) -> Result<()> {
-        self.inner
+    pub fn insert_page_break(&mut self, env: Env, sheet: String, row: u32) -> Result<()> {
+        self.inner_mut()?
             .insert_page_break(&sheet, row)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Remove a horizontal page break at the given 1-based row.
     #[napi]
-    pub fn remove_page_break(&mut self, sheet: String, row: u32) -> Result<()> {
-        self.inner
+    pub fn remove_page_break(&mut self, env: Env, sheet: String, row: u32) -> Result<()> {
+        self.inner_mut()?
             .remove_page_break(&sheet, row)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Get all row page break positions (1-based row numbers).
     #[napi]
-    pub fn get_page_breaks(&self, sheet: String) -> Result<Vec<u32>> {
+    pub fn get_page_breaks(&self, env: Env, sheet: String) -> Result<Vec<u32>> {
         self.inner
             .get_page_breaks(&sheet)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Set a hyperlink on a cell.
     #[napi]
     pub fn set_cell_hyperlink(
         &mut self,
+        env: Env,
         sheet: String,
         cell: String,
         opts: JsHyperlinkOptions,
     ) -> Result<()> {
         let link = parse_hyperlink_type(&opts)?;
-        self.inner
+        self.inner_mut()?
             .set_cell_hyperlink(
                 &sheet,
                 &cell,
@@ -1276,39 +1665,52 @@ impl Workbook {
                 opts.display.as_deref(),
                 opts.tooltip.as_deref(),
             )
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Get hyperlink information for a cell, or null if no hyperlink exists.
     #[napi]
     pub fn get_cell_hyperlink(
         &self,
+        env: Env,
         sheet: String,
         cell: String,
     ) -> Result<Option<JsHyperlinkInfo>> {
         let info = self
             .inner
             .get_cell_hyperlink(&sheet, &cell)
-            .map_err(|e| Error::from_reason(e.to_string()))?;
+            .map_err(|error| map_core_error(&env, error))?;
         Ok(info.as_ref().map(hyperlink_info_to_js))
     }
 
     /// Delete a hyperlink from a cell.
     #[napi]
-    pub fn delete_cell_hyperlink(&mut self, sheet: String, cell: String) -> Result<()> {
-        self.inner
+    pub fn delete_cell_hyperlink(&mut self, env: Env, sheet: String, cell: String) -> Result<()> {
+        self.inner_mut()?
             .delete_cell_hyperlink(&sheet, &cell)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Get all rows with their data from a sheet.
     /// Only rows that contain at least one cell are included.
     #[napi]
-    pub fn get_rows(&self, sheet: String) -> Result<Vec<JsRowData>> {
+    pub fn get_rows(
+        &self,
+        env: Env,
+        sheet: String,
+        options: Option<JsTraversalOptions>,
+    ) -> Result<Vec<JsRowData>> {
+        let options = js_traversal_options_to_core(options.as_ref())
+            .map_err(|error| map_core_error(&env, error))?;
+        if options.mode() != sheetkit_core::traversal::TraversalMode::Sparse {
+            return Err(Error::from_reason(
+                "native getRows supports sparse traversal only; use getRowsBuffer for dense traversal",
+            ));
+        }
         let rows = self
             .inner
-            .get_rows(&sheet)
-            .map_err(|e| Error::from_reason(e.to_string()))?;
+            .get_rows_with_limits(&sheet, options.limits())
+            .map_err(|error| map_core_error(&env, error))?;
 
         Ok(rows
             .into_iter()
@@ -1330,19 +1732,27 @@ impl Workbook {
     /// Serialize a sheet's cell data into a compact binary buffer (v1 format).
     /// Returns the raw bytes suitable for efficient JS-side decoding.
     #[napi]
-    pub fn get_rows_buffer(&self, sheet: String) -> Result<Buffer> {
+    pub fn get_rows_buffer(
+        &self,
+        env: Env,
+        sheet: String,
+        options: Option<JsTraversalOptions>,
+    ) -> Result<Buffer> {
+        let options = js_traversal_options_to_core(options.as_ref())
+            .map_err(|error| map_core_error(&env, error))?;
         let ws = self
             .inner
             .worksheet_xml_ref(&sheet)
-            .map_err(|e| Error::from_reason(e.to_string()))?;
+            .map_err(|error| map_core_error(&env, error))?;
         let sst = self.inner.sst_ref();
         let style_is_date = self.inner.transfer_date_style_lookup();
-        let buf = sheetkit_core::raw_transfer::sheet_to_raw_buffer_with_date_styles(
+        let buf = sheetkit_core::raw_transfer::sheet_to_raw_buffer_with_date_styles_and_options(
             ws,
             sst,
             &style_is_date,
+            options,
         )
-        .map_err(|e| Error::from_reason(e.to_string()))?;
+        .map_err(|error| map_core_error(&env, error))?;
         Ok(Buffer::from(buf))
     }
 
@@ -1350,19 +1760,28 @@ impl Workbook {
     /// The v2 format inlines strings with each cell, eliminating the global
     /// string table and enabling incremental row-by-row decoding.
     #[napi]
-    pub fn get_rows_buffer_v2(&self, sheet: String) -> Result<Buffer> {
+    pub fn get_rows_buffer_v2(
+        &self,
+        env: Env,
+        sheet: String,
+        options: Option<JsTraversalOptions>,
+    ) -> Result<Buffer> {
+        let options = js_traversal_options_to_core(options.as_ref())
+            .map_err(|error| map_core_error(&env, error))?;
         let ws = self
             .inner
             .worksheet_xml_ref(&sheet)
-            .map_err(|e| Error::from_reason(e.to_string()))?;
+            .map_err(|error| map_core_error(&env, error))?;
         let sst = self.inner.sst_ref();
         let style_is_date = self.inner.transfer_date_style_lookup();
-        let buf = sheetkit_core::raw_transfer_v2::sheet_to_raw_buffer_v2_with_date_styles(
-            ws,
-            sst,
-            &style_is_date,
-        )
-        .map_err(|e| Error::from_reason(e.to_string()))?;
+        let buf =
+            sheetkit_core::raw_transfer_v2::sheet_to_raw_buffer_v2_with_date_styles_and_options(
+                ws,
+                sst,
+                &style_is_date,
+                options,
+            )
+            .map_err(|error| map_core_error(&env, error))?;
         Ok(Buffer::from(buf))
     }
 
@@ -1372,43 +1791,47 @@ impl Workbook {
     #[napi]
     pub fn set_sheet_data_buffer(
         &mut self,
+        env: Env,
         sheet: String,
         buf: Buffer,
         start_cell: Option<String>,
     ) -> Result<()> {
         let (start_col, start_row) = if let Some(ref cell) = start_cell {
             sheetkit_core::utils::cell_ref::cell_name_to_coordinates(cell)
-                .map_err(|e| Error::from_reason(e.to_string()))?
+                .map_err(|error| map_core_error(&env, error))?
         } else {
             (1, 1)
         };
-        let rows = sheetkit_core::raw_transfer_write::raw_buffer_to_cells(&buf)
-            .map_err(|e| Error::from_reason(e.to_string()))?;
-
-        for (row_num, cells) in rows {
-            let target_row = start_row + row_num - 1;
-            for (col_num, value) in cells {
-                let target_col = start_col + col_num - 1;
-                let cell_name = sheetkit_core::utils::cell_ref::coordinates_to_cell_name(
-                    target_col, target_row,
-                )
-                .map_err(|e| Error::from_reason(e.to_string()))?;
-                self.inner
-                    .set_cell_value(&sheet, &cell_name, value)
-                    .map_err(|e| Error::from_reason(e.to_string()))?;
-            }
-        }
-        Ok(())
+        let workbook = self.inner_mut()?;
+        sheetkit_core::raw_transfer_write::validate_cell_transfer_target(workbook, &sheet)
+            .map_err(|error| map_core_error(&env, error))?;
+        let transfer = sheetkit_core::raw_transfer_write::raw_buffer_to_validated_cell_transfer(
+            &buf, start_row, start_col,
+        )
+        .map_err(|error| map_core_error(&env, error))?;
+        workbook
+            .set_validated_cell_transfer(&sheet, transfer)
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Get all columns with their data from a sheet.
     /// Only columns that have data are included.
     #[napi]
-    pub fn get_cols(&self, sheet: String) -> Result<Vec<JsColData>> {
+    pub fn get_cols(
+        &self,
+        env: Env,
+        sheet: String,
+        options: Option<JsTraversalOptions>,
+    ) -> Result<Vec<JsColData>> {
+        let options = js_traversal_options_to_core(options.as_ref())
+            .map_err(|error| map_core_error(&env, error))?;
+        if options.mode() != sheetkit_core::traversal::TraversalMode::Sparse {
+            return Err(Error::from_reason("getCols supports sparse traversal only"));
+        }
         let cols = self
             .inner
-            .get_cols(&sheet)
-            .map_err(|e| Error::from_reason(e.to_string()))?;
+            .get_cols_with_limits(&sheet, options.limits())
+            .map_err(|error| map_core_error(&env, error))?;
 
         Ok(cols
             .into_iter()
@@ -1424,81 +1847,130 @@ impl Workbook {
 
     /// Set a formula on a cell.
     #[napi]
-    pub fn set_cell_formula(&mut self, sheet: String, cell: String, formula: String) -> Result<()> {
-        self.inner
-            .set_cell_formula(&sheet, &cell, &formula)
-            .map_err(|e| Error::from_reason(e.to_string()))
+    pub fn set_cell_formula(
+        &mut self,
+        env: Env,
+        sheet: String,
+        cell: String,
+        formula: String,
+        limits: Option<JsFormulaLimits>,
+    ) -> Result<()> {
+        let limits = js_formula_limits_to_core(limits.as_ref())
+            .map_err(|error| map_core_error(&env, error))?;
+        self.inner_mut()?
+            .set_cell_formula_with_limits(&sheet, &cell, &formula, limits)
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Fill a single-column range with a formula, adjusting row references
     /// for each row relative to the first cell.
     #[napi]
-    pub fn fill_formula(&mut self, sheet: String, range: String, formula: String) -> Result<()> {
-        self.inner
-            .fill_formula(&sheet, &range, &formula)
-            .map_err(|e| Error::from_reason(e.to_string()))
+    pub fn fill_formula(
+        &mut self,
+        env: Env,
+        sheet: String,
+        range: String,
+        formula: String,
+        limits: Option<JsFormulaLimits>,
+    ) -> Result<()> {
+        let limits = js_formula_limits_to_core(limits.as_ref())
+            .map_err(|error| map_core_error(&env, error))?;
+        self.inner_mut()?
+            .fill_formula_with_limits(&sheet, &range, &formula, limits)
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Evaluate a formula string against the current workbook data.
     #[napi]
     pub fn evaluate_formula(
         &self,
+        env: Env,
         sheet: String,
         formula: String,
-    ) -> Result<crate::conversions::JsCellOutputValue> {
+        limits: Option<JsFormulaLimits>,
+    ) -> Result<Either5<Null, bool, f64, String, DateValue>> {
+        let limits = js_formula_limits_to_core(limits.as_ref())
+            .map_err(|error| map_core_error(&env, error))?;
         let result = self
             .inner
-            .evaluate_formula(&sheet, &formula)
-            .map_err(|e| Error::from_reason(e.to_string()))?;
+            .evaluate_formula_with_limits(&sheet, &formula, limits)
+            .map_err(|error| map_core_error(&env, error))?;
         cell_value_to_either(result)
     }
 
     /// Recalculate all formula cells in the workbook.
     #[napi]
-    pub fn calculate_all(&mut self) -> Result<()> {
-        self.inner
-            .calculate_all()
-            .map_err(|e| Error::from_reason(e.to_string()))
+    pub fn calculate_all(&mut self, env: Env, limits: Option<JsFormulaLimits>) -> Result<()> {
+        let limits = js_formula_limits_to_core(limits.as_ref())
+            .map_err(|error| map_core_error(&env, error))?;
+        self.inner_mut()?
+            .calculate_all_with_limits(limits)
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Add a pivot table to the workbook.
     #[napi]
-    pub fn add_pivot_table(&mut self, config: JsPivotTableConfig) -> Result<()> {
+    pub fn add_pivot_table(
+        &mut self,
+        env: Env,
+        config: JsPivotTableConfig,
+        options: Option<JsTraversalOptions>,
+    ) -> Result<()> {
+        let limits = js_dense_traversal_limits_to_core(options.as_ref())
+            .map_err(|error| map_core_error(&env, error))?;
+        precharge_pivot_config(&config, limits).map_err(|error| map_core_error(&env, error))?;
+
+        let JsPivotTableConfig {
+            name,
+            source_sheet,
+            source_range,
+            target_sheet,
+            target_cell,
+            rows,
+            columns,
+            data,
+        } = config;
+        let mut core_rows = Vec::new();
+        core_rows
+            .try_reserve_exact(rows.len())
+            .map_err(|_| Error::from_reason("failed to allocate admitted pivot rows"))?;
+        core_rows.extend(
+            rows.into_iter()
+                .map(|field| PivotField { name: field.name }),
+        );
+        let mut core_columns = Vec::new();
+        core_columns
+            .try_reserve_exact(columns.len())
+            .map_err(|_| Error::from_reason("failed to allocate admitted pivot columns"))?;
+        core_columns.extend(
+            columns
+                .into_iter()
+                .map(|field| PivotField { name: field.name }),
+        );
+        let mut core_data = Vec::new();
+        core_data
+            .try_reserve_exact(data.len())
+            .map_err(|_| Error::from_reason("failed to allocate admitted pivot data fields"))?;
+        for field in data {
+            core_data.push(PivotDataField {
+                name: field.name,
+                function: parse_aggregate_function(&field.function)?,
+                display_name: field.display_name,
+            });
+        }
         let core_config = PivotTableConfig {
-            name: config.name,
-            source_sheet: config.source_sheet,
-            source_range: config.source_range,
-            target_sheet: config.target_sheet,
-            target_cell: config.target_cell,
-            rows: config
-                .rows
-                .iter()
-                .map(|f| PivotField {
-                    name: f.name.clone(),
-                })
-                .collect(),
-            columns: config
-                .columns
-                .iter()
-                .map(|f| PivotField {
-                    name: f.name.clone(),
-                })
-                .collect(),
-            data: config
-                .data
-                .iter()
-                .map(|f| {
-                    Ok(PivotDataField {
-                        name: f.name.clone(),
-                        function: parse_aggregate_function(&f.function)?,
-                        display_name: f.display_name.clone(),
-                    })
-                })
-                .collect::<Result<Vec<_>>>()?,
+            name,
+            source_sheet,
+            source_range,
+            target_sheet,
+            target_cell,
+            rows: core_rows,
+            columns: core_columns,
+            data: core_data,
         };
-        self.inner
-            .add_pivot_table(&core_config)
-            .map_err(|e| Error::from_reason(e.to_string()))
+        self.inner_mut()?
+            .add_pivot_table_with_limits(&core_config, limits)
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Get all pivot tables in the workbook.
@@ -1519,42 +1991,47 @@ impl Workbook {
 
     /// Delete a pivot table by name.
     #[napi]
-    pub fn delete_pivot_table(&mut self, name: String) -> Result<()> {
-        self.inner
+    pub fn delete_pivot_table(&mut self, env: Env, name: String) -> Result<()> {
+        self.inner_mut()?
             .delete_pivot_table(&name)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Add a sparkline to a worksheet.
     #[napi]
-    pub fn add_sparkline(&mut self, sheet: String, config: JsSparklineConfig) -> Result<()> {
+    pub fn add_sparkline(
+        &mut self,
+        env: Env,
+        sheet: String,
+        config: JsSparklineConfig,
+    ) -> Result<()> {
         let core_config = js_sparkline_to_core(&config);
-        self.inner
+        self.inner_mut()?
             .add_sparkline(&sheet, &core_config)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Get all sparklines for a worksheet.
     #[napi]
-    pub fn get_sparklines(&self, sheet: String) -> Result<Vec<JsSparklineConfig>> {
+    pub fn get_sparklines(&self, env: Env, sheet: String) -> Result<Vec<JsSparklineConfig>> {
         let sparklines = self
             .inner
             .get_sparklines(&sheet)
-            .map_err(|e| Error::from_reason(e.to_string()))?;
+            .map_err(|error| map_core_error(&env, error))?;
         Ok(sparklines.iter().map(core_sparkline_to_js).collect())
     }
 
     /// Remove a sparkline by its location cell reference.
     #[napi]
-    pub fn remove_sparkline(&mut self, sheet: String, location: String) -> Result<()> {
-        self.inner
+    pub fn remove_sparkline(&mut self, env: Env, sheet: String, location: String) -> Result<()> {
+        self.inner_mut()?
             .remove_sparkline(&sheet, &location)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Add a slicer to a sheet targeting a table column.
     #[napi]
-    pub fn add_slicer(&mut self, sheet: String, config: JsSlicerConfig) -> Result<()> {
+    pub fn add_slicer(&mut self, env: Env, sheet: String, config: JsSlicerConfig) -> Result<()> {
         let core_config = sheetkit_core::slicer::SlicerConfig {
             name: config.name,
             cell: config.cell,
@@ -1567,18 +2044,18 @@ impl Workbook {
             show_caption: config.show_caption,
             column_count: config.column_count,
         };
-        self.inner
+        self.inner_mut()?
             .add_slicer(&sheet, &core_config)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Get all slicers on a sheet.
     #[napi]
-    pub fn get_slicers(&self, sheet: String) -> Result<Vec<JsSlicerInfo>> {
+    pub fn get_slicers(&self, env: Env, sheet: String) -> Result<Vec<JsSlicerInfo>> {
         let slicers = self
             .inner
             .get_slicers(&sheet)
-            .map_err(|e| Error::from_reason(e.to_string()))?;
+            .map_err(|error| map_core_error(&env, error))?;
         Ok(slicers
             .into_iter()
             .map(|info| JsSlicerInfo {
@@ -1593,16 +2070,17 @@ impl Workbook {
 
     /// Delete a slicer by name from a sheet.
     #[napi]
-    pub fn delete_slicer(&mut self, sheet: String, name: String) -> Result<()> {
-        self.inner
+    pub fn delete_slicer(&mut self, env: Env, sheet: String, name: String) -> Result<()> {
+        self.inner_mut()?
             .delete_slicer(&sheet, &name)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Set a cell to a rich text value with multiple formatted runs.
     #[napi]
     pub fn set_cell_rich_text(
         &mut self,
+        env: Env,
         sheet: String,
         cell: String,
         runs: Vec<JsRichTextRun>,
@@ -1618,22 +2096,23 @@ impl Workbook {
                 color: r.color.clone(),
             })
             .collect();
-        self.inner
+        self.inner_mut()?
             .set_cell_rich_text(&sheet, &cell, core_runs)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Get rich text runs for a cell, or null if not rich text.
     #[napi]
     pub fn get_cell_rich_text(
         &self,
+        env: Env,
         sheet: String,
         cell: String,
     ) -> Result<Option<Vec<JsRichTextRun>>> {
         let runs = self
             .inner
             .get_cell_rich_text(&sheet, &cell)
-            .map_err(|e| Error::from_reason(e.to_string()))?;
+            .map_err(|error| map_core_error(&env, error))?;
         Ok(runs.map(|rs| {
             rs.iter()
                 .map(|r| JsRichTextRun {
@@ -1658,15 +2137,15 @@ impl Workbook {
     /// Add or update a defined name. If a name with the same name and scope
     /// already exists, its value and comment are updated.
     #[napi]
-    pub fn set_defined_name(&mut self, config: JsDefinedNameConfig) -> Result<()> {
-        self.inner
+    pub fn set_defined_name(&mut self, env: Env, config: JsDefinedNameConfig) -> Result<()> {
+        self.inner_mut()?
             .set_defined_name(
                 &config.name,
                 &config.value,
                 config.scope.as_deref(),
                 config.comment.as_deref(),
             )
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Get a defined name by name and optional scope (sheet name).
@@ -1674,13 +2153,14 @@ impl Workbook {
     #[napi]
     pub fn get_defined_name(
         &self,
+        env: Env,
         name: String,
         scope: Option<String>,
     ) -> Result<Option<JsDefinedNameInfo>> {
         let info = self
             .inner
             .get_defined_name(&name, scope.as_deref())
-            .map_err(|e| Error::from_reason(e.to_string()))?;
+            .map_err(|error| map_core_error(&env, error))?;
         Ok(info.map(|i| self.defined_name_info_to_js(&i)))
     }
 
@@ -1696,16 +2176,22 @@ impl Workbook {
 
     /// Delete a defined name by name and optional scope (sheet name).
     #[napi]
-    pub fn delete_defined_name(&mut self, name: String, scope: Option<String>) -> Result<()> {
-        self.inner
+    pub fn delete_defined_name(
+        &mut self,
+        env: Env,
+        name: String,
+        scope: Option<String>,
+    ) -> Result<()> {
+        self.inner_mut()?
             .delete_defined_name(&name, scope.as_deref())
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Protect a sheet with optional password and permission settings.
     #[napi]
     pub fn protect_sheet(
         &mut self,
+        env: Env,
         sheet: String,
         config: Option<JsSheetProtectionConfig>,
     ) -> Result<()> {
@@ -1713,31 +2199,32 @@ impl Workbook {
             .as_ref()
             .map(js_sheet_protection_to_core)
             .unwrap_or_default();
-        self.inner
+        self.inner_mut()?
             .protect_sheet(&sheet, &core_config)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Remove sheet protection.
     #[napi]
-    pub fn unprotect_sheet(&mut self, sheet: String) -> Result<()> {
-        self.inner
+    pub fn unprotect_sheet(&mut self, env: Env, sheet: String) -> Result<()> {
+        self.inner_mut()?
             .unprotect_sheet(&sheet)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Check if a sheet is protected.
     #[napi]
-    pub fn is_sheet_protected(&self, sheet: String) -> Result<bool> {
+    pub fn is_sheet_protected(&self, env: Env, sheet: String) -> Result<bool> {
         self.inner
             .is_sheet_protected(&sheet)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Set sheet view options (gridlines, zoom, view mode, etc.).
     #[napi]
     pub fn set_sheet_view_options(
         &mut self,
+        env: Env,
         sheet: String,
         opts: JsSheetViewOptions,
     ) -> Result<()> {
@@ -1754,18 +2241,18 @@ impl Workbook {
             }),
             top_left_cell: opts.top_left_cell,
         };
-        self.inner
+        self.inner_mut()?
             .set_sheet_view_options(&sheet, &core_opts)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Get sheet view options.
     #[napi]
-    pub fn get_sheet_view_options(&self, sheet: String) -> Result<JsSheetViewOptions> {
+    pub fn get_sheet_view_options(&self, env: Env, sheet: String) -> Result<JsSheetViewOptions> {
         let opts = self
             .inner
             .get_sheet_view_options(&sheet)
-            .map_err(|e| Error::from_reason(e.to_string()))?;
+            .map_err(|error| map_core_error(&env, error))?;
         Ok(JsSheetViewOptions {
             show_gridlines: opts.show_gridlines,
             show_formulas: opts.show_formulas,
@@ -1790,7 +2277,7 @@ impl Workbook {
 
     /// Add a table to a sheet.
     #[napi]
-    pub fn add_table(&mut self, sheet: String, config: JsTableConfig) -> Result<()> {
+    pub fn add_table(&mut self, env: Env, sheet: String, config: JsTableConfig) -> Result<()> {
         let core_config = TableConfig {
             name: config.name,
             display_name: config.display_name,
@@ -1812,18 +2299,18 @@ impl Workbook {
             show_row_stripes: config.show_row_stripes.unwrap_or(true),
             show_column_stripes: config.show_column_stripes.unwrap_or(false),
         };
-        self.inner
+        self.inner_mut()?
             .add_table(&sheet, &core_config)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Get all tables on a sheet.
     #[napi]
-    pub fn get_tables(&self, sheet: String) -> Result<Vec<JsTableInfo>> {
+    pub fn get_tables(&self, env: Env, sheet: String) -> Result<Vec<JsTableInfo>> {
         let tables = self
             .inner
             .get_tables(&sheet)
-            .map_err(|e| Error::from_reason(e.to_string()))?;
+            .map_err(|error| map_core_error(&env, error))?;
         Ok(tables
             .into_iter()
             .map(|t| JsTableInfo {
@@ -1840,15 +2327,20 @@ impl Workbook {
 
     /// Delete a table from a sheet by name.
     #[napi]
-    pub fn delete_table(&mut self, sheet: String, name: String) -> Result<()> {
-        self.inner
+    pub fn delete_table(&mut self, env: Env, sheet: String, name: String) -> Result<()> {
+        self.inner_mut()?
             .delete_table(&sheet, &name)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Set sheet visibility ("visible", "hidden", or "veryHidden").
     #[napi]
-    pub fn set_sheet_visibility(&mut self, sheet: String, visibility: String) -> Result<()> {
+    pub fn set_sheet_visibility(
+        &mut self,
+        env: Env,
+        sheet: String,
+        visibility: String,
+    ) -> Result<()> {
         use sheetkit_core::sheet::SheetVisibility;
         let vis = match visibility.as_str() {
             "visible" => SheetVisibility::Visible,
@@ -1860,18 +2352,18 @@ impl Workbook {
                 )));
             }
         };
-        self.inner
+        self.inner_mut()?
             .set_sheet_visibility(&sheet, vis)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Get sheet visibility. Returns "visible", "hidden", or "veryHidden".
     #[napi]
-    pub fn get_sheet_visibility(&self, sheet: String) -> Result<String> {
+    pub fn get_sheet_visibility(&self, env: Env, sheet: String) -> Result<String> {
         let vis = self
             .inner
             .get_sheet_visibility(&sheet)
-            .map_err(|e| Error::from_reason(e.to_string()))?;
+            .map_err(|error| map_core_error(&env, error))?;
         Ok(match vis {
             sheetkit_core::sheet::SheetVisibility::Visible => "visible".to_string(),
             sheetkit_core::sheet::SheetVisibility::Hidden => "hidden".to_string(),
@@ -1881,7 +2373,14 @@ impl Workbook {
 
     /// Render a worksheet to an SVG string.
     #[napi]
-    pub fn render_to_svg(&self, options: JsRenderOptions) -> Result<String> {
+    pub fn render_to_svg(
+        &self,
+        env: Env,
+        options: JsRenderOptions,
+        traversal: Option<JsTraversalOptions>,
+    ) -> Result<String> {
+        let limits = js_dense_traversal_limits_to_core(traversal.as_ref())
+            .map_err(|error| map_core_error(&env, error))?;
         let render_opts = sheetkit_core::render::RenderOptions {
             sheet_name: options.sheet_name,
             range: options.range,
@@ -1894,8 +2393,8 @@ impl Workbook {
             default_font_size: options.default_font_size.unwrap_or(11.0),
         };
         self.inner
-            .render_to_svg(&render_opts)
-            .map_err(|e| Error::from_reason(e.to_string()))
+            .render_to_svg_with_limits(&render_opts, limits)
+            .map_err(|error| map_core_error(&env, error))
     }
 
     /// Get the raw VBA project binary (xl/vbaProject.bin), or null if not present.
@@ -1907,14 +2406,20 @@ impl Workbook {
     }
 
     /// Create an owned forward-only streaming reader for the named sheet.
-    /// The reader owns its SST snapshot and XML bytes, enabling independent
-    /// lifetime from the workbook.
+    /// The reader owns an independent bounded source and shared SST snapshot,
+    /// enabling a lifetime independent from the workbook.
     #[napi]
-    pub fn open_sheet_reader(&self, sheet: String) -> Result<NativeSheetStreamReader> {
+    pub fn open_sheet_reader(
+        &self,
+        env: Env,
+        sheet: String,
+        batch_size: Option<f64>,
+    ) -> Result<NativeSheetStreamReader> {
+        validate_stream_batch_size(batch_size).map_err(|error| map_core_error(&env, error))?;
         let reader = self
             .inner
             .open_sheet_reader_owned(&sheet)
-            .map_err(|e| Error::from_reason(e.to_string()))?;
+            .map_err(|error| map_core_error(&env, error))?;
         Ok(NativeSheetStreamReader {
             inner: Some(reader),
         })
@@ -1923,11 +2428,17 @@ impl Workbook {
     /// Extract VBA module source code from the workbook's VBA project.
     /// Returns null if no VBA project is present.
     #[napi]
-    pub fn get_vba_modules(&self) -> Result<Option<JsVbaProject>> {
+    pub fn get_vba_modules(
+        &self,
+        env: Env,
+        limits: Option<JsVbaLimits>,
+    ) -> Result<Option<JsVbaProject>> {
+        let limits =
+            js_vba_limits_to_core(limits.as_ref()).map_err(|error| map_core_error(&env, error))?;
         let project = self
             .inner
-            .get_vba_modules()
-            .map_err(|e| Error::from_reason(e.to_string()))?;
+            .get_vba_modules_with_limits(limits)
+            .map_err(|error| map_core_error(&env, error))?;
         Ok(project.map(|p| {
             let modules = p
                 .modules
@@ -1992,15 +2503,20 @@ pub struct NativeSheetStreamReader {
 impl NativeSheetStreamReader {
     /// Read the next batch of rows. Returns null when there are no more rows.
     #[napi]
-    pub fn next_batch(&mut self, batch_size: Option<u32>) -> Result<Option<Vec<JsRowData>>> {
+    pub fn next_batch(
+        &mut self,
+        env: Env,
+        batch_size: Option<f64>,
+    ) -> Result<Option<Vec<JsRowData>>> {
+        let size =
+            validate_stream_batch_size(batch_size).map_err(|error| map_core_error(&env, error))?;
         let reader = self
             .inner
             .as_mut()
             .ok_or_else(|| Error::from_reason("SheetStreamReader already closed"))?;
-        let size = (batch_size.unwrap_or(1000) as usize).clamp(1, 100_000);
         let rows = reader
             .next_batch(size)
-            .map_err(|e| Error::from_reason(e.to_string()))?;
+            .map_err(|error| map_core_error(&env, error))?;
         if rows.is_empty() {
             return Ok(None);
         }

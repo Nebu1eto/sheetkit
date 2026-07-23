@@ -287,8 +287,9 @@ impl Workbook {
             if let Ok(table_xml) =
                 quick_xml::de::from_str::<sheetkit_xml::table::TableXml>(&xml_str)
             {
-                let sheet_idx = self.find_sheet_for_table_path(&path);
-                self.tables.push((path, table_xml, sheet_idx));
+                if let Some(sheet_idx) = self.find_sheet_for_table_path(&path) {
+                    self.tables.push((path, table_xml, sheet_idx));
+                }
             }
         }
 
@@ -511,7 +512,7 @@ impl Workbook {
     }
 
     /// Find the sheet index that references a given table path via worksheet rels.
-    fn find_sheet_for_table_path(&self, table_path: &str) -> usize {
+    fn find_sheet_for_table_path(&self, table_path: &str) -> Option<usize> {
         for (sheet_idx, rels) in &self.worksheet_rels {
             for rel in &rels.relationships {
                 if rel.rel_type == rel_types::TABLE {
@@ -520,12 +521,12 @@ impl Workbook {
                         &rel.target,
                     );
                     if resolved == table_path {
-                        return *sheet_idx;
+                        return Some(*sheet_idx);
                     }
                 }
             }
         }
-        0
+        None
     }
 
     /// Find the sheet index that references a given threaded comment path.

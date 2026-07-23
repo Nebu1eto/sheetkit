@@ -67,6 +67,7 @@ function sidebarGuide(): DefaultTheme.SidebarItem[] {
         { text: '렌더링', link: '/ko/guide/rendering' },
         { text: '고급 기능', link: '/ko/guide/advanced' },
         { text: 'Async-First 마이그레이션 (v0.5+)', link: '/ko/guide/migration-async-first' },
+        { text: '1.0 마이그레이션', link: '/ko/guide/migration-v1' },
         { text: 'CLI', link: '/ko/guide/cli' },
       ],
     },

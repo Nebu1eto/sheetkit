@@ -117,6 +117,68 @@ pub use budget::OpenLimits;
 pub use open_options::{AuxParts, DateInterpretation, OpenOptions, ReadMode};
 pub(crate) use source::PackageSource;
 
+struct WorksheetSpoolWriter {
+    writer: std::io::BufWriter<std::fs::File>,
+    error: Option<Error>,
+    written: u64,
+    limit: u64,
+}
+
+impl std::fmt::Write for WorksheetSpoolWriter {
+    fn write_str(&mut self, value: &str) -> std::fmt::Result {
+        use std::io::Write as _;
+        if self.error.is_some() {
+            return Err(std::fmt::Error);
+        }
+        let amount = u64::try_from(value.len()).unwrap_or(u64::MAX);
+        let observed = self.written.saturating_add(amount);
+        if observed > self.limit {
+            let metadata = crate::resource::ResourceLimitError::exceeded(
+                crate::resource::ResourceOperation::StreamRead,
+                crate::resource::ResourceCategory::Streaming,
+                crate::resource::ResourceDimension::XmlBytes,
+                self.limit,
+                self.limit.saturating_add(1),
+                Some(crate::resource::ResourceStage::Serialize),
+            )
+            .expect("worksheet spool overflow must exceed its finite limit");
+            self.error = Some(Error::ResourceLimitExceeded(metadata));
+            return Err(std::fmt::Error);
+        }
+        if let Err(error) = self.writer.write_all(value.as_bytes()) {
+            self.error = Some(Error::Io(error));
+            return Err(std::fmt::Error);
+        }
+        self.written = observed;
+        Ok(())
+    }
+}
+
+fn spool_worksheet_xml(worksheet: &WorksheetXml, limit: u64) -> Result<std::fs::File> {
+    use serde::Serialize as _;
+    use std::io::{Seek as _, Write as _};
+
+    let file = tempfile::tempfile()?;
+    let mut output = WorksheetSpoolWriter {
+        writer: std::io::BufWriter::new(file),
+        error: None,
+        written: 0,
+        limit,
+    };
+    let result = worksheet.serialize(quick_xml::se::Serializer::new(&mut output));
+    if let Some(error) = output.error {
+        return Err(error);
+    }
+    result.map_err(|error| Error::XmlParse(error.to_string()))?;
+    output.writer.flush()?;
+    let mut file = output
+        .writer
+        .into_inner()
+        .map_err(|error| Error::Io(error.into_error()))?;
+    file.seek(std::io::SeekFrom::Start(0))?;
+    Ok(file)
+}
+
 /// Helper to initialize an `OnceLock<WorksheetXml>` with a value at
 /// construction time. Avoids repeating the `set`+`unwrap` pattern.
 pub(crate) fn initialized_lock(ws: WorksheetXml) -> OnceLock<WorksheetXml> {
@@ -212,11 +274,24 @@ pub struct Workbook {
     /// Opened sheets retain `Some(bytes)` for exact clean-owner passthrough,
     /// whether parsed eagerly, filtered out, or deferred in Lazy/Stream mode.
     raw_sheet_xml: Vec<Option<Vec<u8>>>,
+    /// Worksheet-level extension fragments retained independently from the
+    /// full XML source for opaque sparkline/slicer metadata preservation.
+    raw_sheet_extensions: Vec<Option<Vec<u8>>>,
     /// Per-sheet dirty flag, parallel to `worksheets`. A sheet is marked
     /// dirty when it is mutated (via `worksheet_mut`, `set_cell_value`, etc.).
     /// Clean sheets with available raw bytes are written via passthrough on
     /// save, avoiding serialization overhead.
     sheet_dirty: Vec<bool>,
+    /// Whether each sheet was included by `OpenOptions::sheets`.
+    /// Excluded sheets keep an empty typed placeholder while their original
+    /// compressed package entry remains available for clean passthrough.
+    sheet_included: Vec<bool>,
+    /// Whether the `OnceLock` contains the real typed worksheet rather than
+    /// an empty placeholder used for an excluded sheet.
+    sheet_materialized: Vec<bool>,
+    /// Whether the sheet still maps to an entry in `package_source`.
+    /// Newly created or copied sheets must never fall back to that archive.
+    sheet_package_backed: Vec<bool>,
     /// Slicer definition parts: (zip path, SlicerDefinitions data).
     slicer_defs: Vec<(String, sheetkit_xml::slicer::SlicerDefinitions)>,
     /// Slicer cache definition parts: (zip path, raw XML string).
@@ -244,6 +319,9 @@ pub struct Workbook {
     /// Optional row limit from `OpenOptions::sheet_rows`, applied during
     /// on-demand hydration of deferred sheets.
     sheet_rows_limit: Option<u32>,
+    /// Finite ceiling for serializing a dirty or new worksheet into a
+    /// streaming-reader spool.
+    worksheet_spool_limit: u64,
     /// Controls whether number cells carrying a date-like number format
     /// should be surfaced as [`CellValue::Date`](crate::cell::CellValue::Date).
     /// Sourced from [`OpenOptions::date_interpretation`].
@@ -376,12 +454,20 @@ impl Workbook {
         if let Some(ws) = self.worksheets[idx].1.get() {
             return Ok(ws);
         }
+        if !self.sheet_included.get(idx).copied().unwrap_or(true) {
+            return Ok(self.worksheets[idx].1.get_or_init(WorksheetXml::default));
+        }
         // Hydrate from raw_sheet_xml on first access.
         if let Some(Some(bytes)) = self.raw_sheet_xml.get(idx) {
-            let mut ws = io::deserialize_worksheet_xml(bytes)?;
-            if let Some(max_rows) = self.sheet_rows_limit {
-                ws.sheet_data.rows.truncate(max_rows as usize);
-            }
+            let ws = io::deserialize_worksheet_xml_with_row_limit(
+                std::io::Cursor::new(bytes.as_slice()),
+                self.sheet_rows_limit,
+            )?;
+            Ok(self.worksheets[idx].1.get_or_init(|| ws))
+        } else if self.sheet_package_backed.get(idx).copied().unwrap_or(false)
+            && self.package_source.is_some()
+        {
+            let ws = self.deserialize_package_sheet(idx)?;
             Ok(self.worksheets[idx].1.get_or_init(|| ws))
         } else {
             Err(Error::Internal(format!(
@@ -419,23 +505,42 @@ impl Workbook {
             // OnceLock is set. If raw bytes are still present, this is a
             // placeholder (filtered-out sheet with WorksheetXml::default()).
             // Replace the placeholder with properly parsed data.
-            if !self.sheet_dirty.get(idx).copied().unwrap_or(false) {
+            if !self.sheet_materialized.get(idx).copied().unwrap_or(true) {
                 if let Some(Some(bytes)) = self.raw_sheet_xml.get(idx) {
-                    let mut ws = io::deserialize_worksheet_xml(bytes)?;
-                    if let Some(max_rows) = self.sheet_rows_limit {
-                        ws.sheet_data.rows.truncate(max_rows as usize);
-                    }
+                    let ws = io::deserialize_worksheet_xml_with_row_limit(
+                        std::io::Cursor::new(bytes.as_slice()),
+                        self.sheet_rows_limit,
+                    )?;
                     *self.worksheets[idx].1.get_mut().unwrap() = ws;
+                    self.sheet_materialized[idx] = true;
+                } else if !self.sheet_included.get(idx).copied().unwrap_or(true)
+                    && self.sheet_package_backed.get(idx).copied().unwrap_or(false)
+                    && self.package_source.is_some()
+                {
+                    let ws = self.deserialize_package_sheet(idx)?;
+                    *self.worksheets[idx].1.get_mut().unwrap() = ws;
+                    self.sheet_materialized[idx] = true;
                 }
+            }
+            if self.sheet_included.get(idx).copied().unwrap_or(true) {
+                self.sheet_materialized[idx] = true;
             }
             return Ok(());
         }
         if let Some(Some(bytes)) = self.raw_sheet_xml.get(idx) {
-            let mut ws = io::deserialize_worksheet_xml(bytes)?;
-            if let Some(max_rows) = self.sheet_rows_limit {
-                ws.sheet_data.rows.truncate(max_rows as usize);
-            }
+            let ws = io::deserialize_worksheet_xml_with_row_limit(
+                std::io::Cursor::new(bytes.as_slice()),
+                self.sheet_rows_limit,
+            )?;
             let _ = self.worksheets[idx].1.set(ws);
+            self.sheet_materialized[idx] = true;
+            Ok(())
+        } else if self.sheet_package_backed.get(idx).copied().unwrap_or(false)
+            && self.package_source.is_some()
+        {
+            let ws = self.deserialize_package_sheet(idx)?;
+            let _ = self.worksheets[idx].1.set(ws);
+            self.sheet_materialized[idx] = true;
             Ok(())
         } else {
             Err(Error::Internal(format!(
@@ -452,6 +557,38 @@ impl Workbook {
         self.ensure_hydrated(idx)?;
         self.mark_sheet_dirty(idx);
         Ok(self.worksheets[idx].1.get_mut().unwrap())
+    }
+
+    fn deserialize_package_sheet(&self, idx: usize) -> Result<WorksheetXml> {
+        let source = self.package_source.as_ref().ok_or_else(|| {
+            Error::Internal(format!("sheet at index {idx} has no package source"))
+        })?;
+        let spool = source.spool_xml_part(&self.sheet_part_path(idx))?;
+        let worksheet = io::deserialize_worksheet_xml_with_row_limit(
+            std::io::BufReader::new(spool),
+            self.sheet_rows_limit,
+        )?;
+        io::validate_materialized_worksheet_table_parts(
+            &worksheet,
+            self.worksheet_rels.get(&idx),
+            &self.sheet_part_path(idx),
+        )?;
+        Ok(worksheet)
+    }
+
+    fn deserialize_package_sheet_for_save(&self, idx: usize) -> Result<WorksheetXml> {
+        let source = self.package_source.as_ref().ok_or_else(|| {
+            Error::Internal(format!("sheet at index {idx} has no package source"))
+        })?;
+        let spool = source.spool_xml_part(&self.sheet_part_path(idx))?;
+        let worksheet =
+            io::deserialize_worksheet_xml_with_row_limit(std::io::BufReader::new(spool), None)?;
+        io::validate_materialized_worksheet_table_parts(
+            &worksheet,
+            self.worksheet_rels.get(&idx),
+            &self.sheet_part_path(idx),
+        )?;
+        Ok(worksheet)
     }
 
     /// Resolve the part path for a sheet index from workbook relationships.
@@ -589,20 +726,19 @@ impl Workbook {
     /// workbook's shared string table and optional `sheet_rows` limit are
     /// passed through to the reader.
     ///
-    /// The XML bytes come from `raw_sheet_xml` (deferred sheets in Lazy/Stream
-    /// mode) or from a freshly hydrated worksheet serialized back to bytes.
+    /// Clean package-backed sheets are decompressed into an anonymous spool;
+    /// dirty sheets are serialized directly into one. Neither path allocates a
+    /// second sheet-sized byte vector.
     pub fn open_sheet_reader(
         &self,
         sheet: &str,
     ) -> Result<
-        crate::stream_reader::SheetStreamReader<'_, std::io::BufReader<std::io::Cursor<Vec<u8>>>>,
+        crate::stream_reader::SheetStreamReader<'_, crate::stream_reader::SheetReaderInput<'_>>,
     > {
         let idx = self.sheet_index(sheet)?;
-        let xml_bytes = self.sheet_xml_bytes(idx)?;
-        let cursor = std::io::Cursor::new(xml_bytes);
-        let buf_reader = std::io::BufReader::new(cursor);
+        let input = self.sheet_reader_input(idx)?;
         Ok(
-            crate::stream_reader::SheetStreamReader::new(buf_reader, &self.sst_runtime)
+            crate::stream_reader::SheetStreamReader::new(input, &self.sst_runtime)
                 .row_limit(self.sheet_rows_limit)
                 .date_promotion(self.date_interpretation, self.computed_style_is_date()),
         )
@@ -610,19 +746,18 @@ impl Workbook {
 
     /// Create an owned forward-only streaming reader for the named sheet.
     ///
-    /// Unlike [`open_sheet_reader`], the returned reader owns its shared
-    /// string table snapshot and XML bytes, so it has no lifetime tied to
-    /// the workbook. This is suitable for FFI contexts (e.g., napi classes)
-    /// where lifetime parameters are not supported.
+    /// Unlike [`open_sheet_reader`], the returned reader owns a disk-backed
+    /// source and an O(1) copy-on-write shared-string snapshot, so it has no
+    /// lifetime tied to the workbook. This is suitable for FFI contexts.
     pub fn open_sheet_reader_owned(
         &self,
         sheet: &str,
     ) -> Result<crate::stream_reader::OwnedSheetStreamReader> {
         let idx = self.sheet_index(sheet)?;
-        let xml_bytes = self.sheet_xml_bytes(idx)?;
+        let spool = self.sheet_reader_spool(idx)?;
         let sst_snapshot = self.sst_runtime.clone_for_read();
         Ok(
-            crate::stream_reader::OwnedSheetStreamReader::new(xml_bytes, sst_snapshot)
+            crate::stream_reader::OwnedSheetStreamReader::from_spool(spool, sst_snapshot)
                 .row_limit(self.sheet_rows_limit)
                 .date_promotion(self.date_interpretation, self.computed_style_is_date()),
         )
@@ -650,32 +785,53 @@ impl Workbook {
         self.computed_style_is_date()
     }
 
-    /// Get the raw XML bytes for a sheet by index.
-    ///
-    /// When the OnceLock is uninitialised (Lazy/Stream deferred), raw bytes
-    /// from `raw_sheet_xml` are used so the DOM is never materialised. When
-    /// the OnceLock IS initialised (Eager parse or filtered-out sheet), the
-    /// parsed worksheet is serialised back so that `sheets(...)` filtering is
-    /// respected (filtered sheets have an empty worksheet placeholder).
-    ///
-    /// The returned bytes are cloned because the `SheetStreamReader` takes
-    /// ownership of its `BufRead` source.
-    fn sheet_xml_bytes(&self, idx: usize) -> Result<Vec<u8>> {
-        // If the OnceLock is already initialised (eager parse OR filtered-out
-        // placeholder), serialise whatever is stored there. This ensures
-        // filtered-out sheets yield an empty worksheet.
-        if let Some(ws) = self.worksheets[idx].1.get() {
-            let xml = quick_xml::se::to_string(ws)
-                .map_err(|e| Error::Internal(format!("failed to serialize worksheet: {e}")))?;
-            return Ok(xml.into_bytes());
+    fn sheet_reader_input(&self, idx: usize) -> Result<crate::stream_reader::SheetReaderInput<'_>> {
+        let dirty = self.sheet_dirty.get(idx).copied().unwrap_or(true);
+        let included = self.sheet_included.get(idx).copied().unwrap_or(true);
+        if included && !dirty {
+            if let Some(Some(bytes)) = self.raw_sheet_xml.get(idx) {
+                return Ok(crate::stream_reader::SheetReaderInput::Borrowed(
+                    std::io::Cursor::new(bytes.as_slice()),
+                ));
+            }
+            if self.sheet_package_backed.get(idx).copied().unwrap_or(false) {
+                if let Some(source) = &self.package_source {
+                    let spool = source.spool_xml_part(&self.sheet_part_path(idx))?;
+                    return Ok(crate::stream_reader::SheetReaderInput::Spool(
+                        std::io::BufReader::new(spool),
+                    ));
+                }
+            }
         }
-        // Lazy/Stream deferred: OnceLock not yet initialised, use raw bytes.
-        if let Some(Some(bytes)) = self.raw_sheet_xml.get(idx) {
-            return Ok(bytes.clone());
+
+        Ok(crate::stream_reader::SheetReaderInput::Spool(
+            std::io::BufReader::new(spool_worksheet_xml(
+                self.worksheet_ref_by_index(idx)?,
+                self.worksheet_spool_limit,
+            )?),
+        ))
+    }
+
+    fn sheet_reader_spool(&self, idx: usize) -> Result<std::fs::File> {
+        let dirty = self.sheet_dirty.get(idx).copied().unwrap_or(true);
+        let included = self.sheet_included.get(idx).copied().unwrap_or(true);
+        if included && !dirty {
+            if let Some(Some(bytes)) = self.raw_sheet_xml.get(idx) {
+                use std::io::{Seek as _, Write as _};
+                let mut spool = tempfile::tempfile()?;
+                spool.write_all(bytes)?;
+                spool.seek(std::io::SeekFrom::Start(0))?;
+                return Ok(spool);
+            }
+            if self.sheet_package_backed.get(idx).copied().unwrap_or(false) {
+                if let Some(source) = &self.package_source {
+                    return source.spool_xml_part(&self.sheet_part_path(idx));
+                }
+            }
         }
-        Err(Error::Internal(format!(
-            "sheet at index {} has no materialized or deferred data",
-            idx
-        )))
+        spool_worksheet_xml(
+            self.worksheet_ref_by_index(idx)?,
+            self.worksheet_spool_limit,
+        )
     }
 }

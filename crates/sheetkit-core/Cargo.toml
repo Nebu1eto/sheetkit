@@ -43,3 +43,11 @@ criterion = { version = "0.5", features = ["html_reports"] }
 [[bench]]
 name = "open_modes"
 harness = false
+
+[[bench]]
+name = "traversal"
+harness = false
+
+[[bench]]
+name = "formula_security"
+harness = false

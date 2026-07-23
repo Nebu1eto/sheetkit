@@ -1265,43 +1265,400 @@ pub(crate) fn js_sheet_protection_to_core(
 
 pub(crate) fn js_open_options_to_core(
     js: Option<&crate::types::JsOpenOptions>,
-) -> sheetkit_core::workbook::OpenOptions {
+) -> std::result::Result<sheetkit_core::workbook::OpenOptions, sheetkit_core::error::Error> {
     let Some(js) = js else {
-        return sheetkit_core::workbook::OpenOptions::default();
+        return Ok(sheetkit_core::workbook::OpenOptions::default());
     };
     let defaults = sheetkit_core::workbook::OpenOptions::default();
     // Prefer read_mode; fall back to parse_mode for backward compatibility.
     let read_mode = if let Some(rm) = js.read_mode.as_deref() {
         match rm {
+            "eager" => sheetkit_core::workbook::ReadMode::Eager,
             "lazy" => sheetkit_core::workbook::ReadMode::Lazy,
             "stream" => sheetkit_core::workbook::ReadMode::Stream,
-            _ => defaults.read_mode,
+            _ => {
+                return Err(sheetkit_core::error::Error::InvalidArgument(
+                    "readMode must be lazy, eager, or stream".to_string(),
+                ));
+            }
         }
     } else {
         match js.parse_mode.as_deref() {
             Some("readfast") => sheetkit_core::workbook::ReadMode::Lazy,
             Some("full") => sheetkit_core::workbook::ReadMode::Eager,
-            _ => defaults.read_mode,
+            None => defaults.read_mode,
+            Some(_) => {
+                return Err(sheetkit_core::error::Error::InvalidArgument(
+                    "parseMode must be readfast or full".to_string(),
+                ));
+            }
         }
     };
     let aux_parts = match js.aux_parts.as_deref() {
         Some("deferred") => sheetkit_core::workbook::AuxParts::Deferred,
-        Some(_) => sheetkit_core::workbook::AuxParts::EagerLoad,
+        Some("eager") => sheetkit_core::workbook::AuxParts::EagerLoad,
+        Some(_) => {
+            return Err(sheetkit_core::error::Error::InvalidArgument(
+                "auxParts must be deferred or eager".to_string(),
+            ));
+        }
         None => defaults.aux_parts,
     };
     let date_interpretation = match js.date_interpretation.as_deref() {
         Some("cellType") => sheetkit_core::workbook::DateInterpretation::CellType,
-        _ => sheetkit_core::workbook::DateInterpretation::NumFmt,
+        Some("numFmt") | None => sheetkit_core::workbook::DateInterpretation::NumFmt,
+        Some(_) => {
+            return Err(sheetkit_core::error::Error::InvalidArgument(
+                "dateInterpretation must be cellType or numFmt".to_string(),
+            ));
+        }
     };
-    sheetkit_core::workbook::OpenOptions {
+    let crypt_limits = js_crypt_limits_to_core(js.crypt_limits.as_ref())?;
+    let vba_limits = js_vba_limits_to_core(js.vba_limits.as_ref())?;
+    let mut limits = defaults.limits;
+    limits.outer_input_bytes = optional_finite_limit(
+        js.max_outer_input_bytes,
+        defaults.limits.outer_input_bytes,
+        "maxOuterInputBytes",
+    )?;
+    limits.xml_bytes = optional_finite_limit(
+        js.max_xml_part_bytes,
+        defaults.limits.xml_bytes,
+        "maxXmlPartBytes",
+    )?;
+    Ok(sheetkit_core::workbook::OpenOptions {
         sheet_rows: js.sheet_rows,
         sheets: js.sheets.clone(),
-        max_unzip_size: js.max_unzip_size.map(|v| v as u64),
+        max_unzip_size: js
+            .max_unzip_size
+            .map(|value| finite_limit(value, "maxUnzipSize"))
+            .transpose()?,
         max_zip_entries: js.max_zip_entries.map(|v| v as usize),
-        limits: defaults.limits,
+        limits,
+        crypt_limits,
+        vba_limits,
         read_mode,
         aux_parts,
         date_interpretation,
+    })
+}
+
+fn optional_finite_limit(
+    value: Option<f64>,
+    default: u64,
+    name: &str,
+) -> std::result::Result<u64, sheetkit_core::error::Error> {
+    match value {
+        None => Ok(default),
+        Some(value) => finite_limit(value, name),
+    }
+}
+
+pub(crate) fn js_crypt_limits_to_core(
+    js: Option<&crate::types::JsCryptLimits>,
+) -> std::result::Result<sheetkit_core::crypt::CryptLimits, sheetkit_core::error::Error> {
+    let defaults = sheetkit_core::crypt::CryptLimits::default();
+    let Some(js) = js else {
+        return Ok(defaults);
+    };
+    Ok(sheetkit_core::crypt::CryptLimits {
+        outer_cfb_bytes: optional_finite_limit(
+            js.outer_cfb_bytes,
+            defaults.outer_cfb_bytes,
+            "outerCfbBytes",
+        )?,
+        named_stream_count: optional_finite_limit(
+            js.named_stream_count,
+            defaults.named_stream_count,
+            "namedStreamCount",
+        )?,
+        named_stream_declared_bytes: optional_finite_limit(
+            js.named_stream_declared_bytes,
+            defaults.named_stream_declared_bytes,
+            "namedStreamDeclaredBytes",
+        )?,
+        named_stream_read_bytes: optional_finite_limit(
+            js.named_stream_read_bytes,
+            defaults.named_stream_read_bytes,
+            "namedStreamReadBytes",
+        )?,
+        encrypted_package_bytes: optional_finite_limit(
+            js.encrypted_package_bytes,
+            defaults.encrypted_package_bytes,
+            "encryptedPackageBytes",
+        )?,
+        kdf_iterations: optional_finite_limit(
+            js.kdf_iterations,
+            defaults.kdf_iterations,
+            "kdfIterations",
+        )?,
+        kdf_work: optional_finite_limit(js.kdf_work, defaults.kdf_work, "kdfWork")?,
+    })
+}
+
+pub(crate) fn js_save_limits_to_core(
+    js: Option<&crate::types::JsSaveLimits>,
+) -> std::result::Result<sheetkit_core::save::SaveLimits, sheetkit_core::error::Error> {
+    let defaults = sheetkit_core::save::SaveLimits::default();
+    let Some(js) = js else {
+        return Ok(defaults);
+    };
+    Ok(sheetkit_core::save::SaveLimits {
+        output_bytes: optional_finite_limit(js.output_bytes, defaults.output_bytes, "outputBytes")?,
+        xml_part_bytes: optional_finite_limit(
+            js.xml_part_bytes,
+            defaults.xml_part_bytes,
+            "xmlPartBytes",
+        )?,
+        row_count: optional_finite_limit(js.row_count, defaults.row_count, "rowCount")?,
+        cell_count: optional_finite_limit(js.cell_count, defaults.cell_count, "cellCount")?,
+    })
+}
+
+pub(crate) fn js_stream_limits_to_core(
+    js: Option<&crate::types::JsStreamLimits>,
+) -> std::result::Result<sheetkit_core::save::StreamLimits, sheetkit_core::error::Error> {
+    let defaults = sheetkit_core::save::StreamLimits::default();
+    let Some(js) = js else {
+        return Ok(defaults);
+    };
+    Ok(sheetkit_core::save::StreamLimits {
+        row_count: optional_finite_limit(js.row_count, defaults.row_count, "rowCount")?,
+        cell_count: optional_finite_limit(js.cell_count, defaults.cell_count, "cellCount")?,
+        row_xml_bytes: optional_finite_limit(
+            js.row_xml_bytes,
+            defaults.row_xml_bytes,
+            "rowXmlBytes",
+        )?,
+        output_bytes: optional_finite_limit(js.output_bytes, defaults.output_bytes, "outputBytes")?,
+        config_count: optional_finite_limit(js.config_count, defaults.config_count, "configCount")?,
+        config_bytes: optional_finite_limit(js.config_bytes, defaults.config_bytes, "configBytes")?,
+    })
+}
+
+pub(crate) fn js_vba_limits_to_core(
+    js: Option<&crate::types::JsVbaLimits>,
+) -> std::result::Result<sheetkit_core::vba::VbaLimits, sheetkit_core::error::Error> {
+    let defaults = sheetkit_core::vba::VbaLimits::default();
+    let Some(js) = js else {
+        return Ok(defaults);
+    };
+    Ok(sheetkit_core::vba::VbaLimits {
+        input_bytes: optional_finite_limit(js.input_bytes, defaults.input_bytes, "inputBytes")?,
+        cfb_stream_count: optional_finite_limit(
+            js.cfb_stream_count,
+            defaults.cfb_stream_count,
+            "cfbStreamCount",
+        )?,
+        cfb_stream_declared_bytes: optional_finite_limit(
+            js.cfb_stream_declared_bytes,
+            defaults.cfb_stream_declared_bytes,
+            "cfbStreamDeclaredBytes",
+        )?,
+        cfb_aggregate_declared_bytes: optional_finite_limit(
+            js.cfb_aggregate_declared_bytes,
+            defaults.cfb_aggregate_declared_bytes,
+            "cfbAggregateDeclaredBytes",
+        )?,
+        cfb_stream_read_bytes: optional_finite_limit(
+            js.cfb_stream_read_bytes,
+            defaults.cfb_stream_read_bytes,
+            "cfbStreamReadBytes",
+        )?,
+        cfb_aggregate_read_bytes: optional_finite_limit(
+            js.cfb_aggregate_read_bytes,
+            defaults.cfb_aggregate_read_bytes,
+            "cfbAggregateReadBytes",
+        )?,
+        compressed_bytes: optional_finite_limit(
+            js.compressed_bytes,
+            defaults.compressed_bytes,
+            "compressedBytes",
+        )?,
+        module_count: optional_finite_limit(js.module_count, defaults.module_count, "moduleCount")?,
+        chunk_count: optional_finite_limit(js.chunk_count, defaults.chunk_count, "chunkCount")?,
+        module_decoded_bytes: optional_finite_limit(
+            js.module_decoded_bytes,
+            defaults.module_decoded_bytes,
+            "moduleDecodedBytes",
+        )?,
+        aggregate_decoded_bytes: optional_finite_limit(
+            js.aggregate_decoded_bytes,
+            defaults.aggregate_decoded_bytes,
+            "aggregateDecodedBytes",
+        )?,
+        retained_bytes: optional_finite_limit(
+            js.retained_bytes,
+            defaults.retained_bytes,
+            "retainedBytes",
+        )?,
+        output_bytes: optional_finite_limit(js.output_bytes, defaults.output_bytes, "outputBytes")?,
+    })
+}
+
+pub(crate) fn js_formula_limits_to_core(
+    js: Option<&crate::types::JsFormulaLimits>,
+) -> std::result::Result<sheetkit_core::formula::FormulaLimits, sheetkit_core::error::Error> {
+    let defaults = sheetkit_core::formula::FormulaLimits::secure_default();
+    let Some(js) = js else {
+        return Ok(defaults);
+    };
+    Ok(sheetkit_core::formula::FormulaLimits {
+        per_formula_input_bytes: optional_finite_limit(
+            js.per_formula_input_bytes,
+            defaults.per_formula_input_bytes,
+            "perFormulaInputBytes",
+        )?,
+        per_formula_nesting_depth: optional_finite_limit(
+            js.per_formula_nesting_depth,
+            defaults.per_formula_nesting_depth,
+            "perFormulaNestingDepth",
+        )?,
+        per_formula_binary_chain_depth: optional_finite_limit(
+            js.per_formula_binary_chain_depth,
+            defaults.per_formula_binary_chain_depth,
+            "perFormulaBinaryChainDepth",
+        )?,
+        per_formula_tokens: optional_finite_limit(
+            js.per_formula_tokens,
+            defaults.per_formula_tokens,
+            "perFormulaTokens",
+        )?,
+        per_formula_ast_nodes: optional_finite_limit(
+            js.per_formula_ast_nodes,
+            defaults.per_formula_ast_nodes,
+            "perFormulaAstNodes",
+        )?,
+        operation_input_bytes: optional_finite_limit(
+            js.operation_input_bytes,
+            defaults.operation_input_bytes,
+            "operationInputBytes",
+        )?,
+        operation_tokens: optional_finite_limit(
+            js.operation_tokens,
+            defaults.operation_tokens,
+            "operationTokens",
+        )?,
+        operation_ast_nodes: optional_finite_limit(
+            js.operation_ast_nodes,
+            defaults.operation_ast_nodes,
+            "operationAstNodes",
+        )?,
+        operation_range_cells: optional_finite_limit(
+            js.operation_range_cells,
+            defaults.operation_range_cells,
+            "operationRangeCells",
+        )?,
+        operation_dependency_edges: optional_finite_limit(
+            js.operation_dependency_edges,
+            defaults.operation_dependency_edges,
+            "operationDependencyEdges",
+        )?,
+        operation_ready_queue_ops: optional_finite_limit(
+            js.operation_ready_queue_ops,
+            defaults.operation_ready_queue_ops,
+            "operationReadyQueueOps",
+        )?,
+        operation_evaluation_steps: optional_finite_limit(
+            js.operation_evaluation_steps,
+            defaults.operation_evaluation_steps,
+            "operationEvaluationSteps",
+        )?,
+        operation_match_work: optional_finite_limit(
+            js.operation_match_work,
+            defaults.operation_match_work,
+            "operationMatchWork",
+        )?,
+        operation_output_bytes: optional_finite_limit(
+            js.operation_output_bytes,
+            defaults.operation_output_bytes,
+            "operationOutputBytes",
+        )?,
+    })
+}
+
+fn finite_limit(value: f64, name: &str) -> std::result::Result<u64, sheetkit_core::error::Error> {
+    const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
+    if !value.is_finite() || value < 0.0 || value.fract() != 0.0 || value > MAX_SAFE_INTEGER {
+        return Err(sheetkit_core::error::Error::InvalidArgument(format!(
+            "{name} must be a finite non-negative safe integer"
+        )));
+    }
+    Ok(value as u64)
+}
+
+pub(crate) fn js_traversal_options_to_core(
+    js: Option<&crate::types::JsTraversalOptions>,
+) -> std::result::Result<sheetkit_core::traversal::TraversalOptions, sheetkit_core::error::Error> {
+    use sheetkit_core::traversal::{TraversalMode, TraversalOptions};
+
+    let Some(js) = js else {
+        return Ok(TraversalOptions::default());
+    };
+    let mode = match js.mode.as_deref() {
+        None | Some("sparse") => TraversalMode::Sparse,
+        Some("dense") => TraversalMode::Dense,
+        Some(_) => {
+            return Err(sheetkit_core::error::Error::InvalidArgument(
+                "traversal mode must be sparse or dense".to_string(),
+            ));
+        }
+    };
+    let limits = js_traversal_limits_to_core(js.limits.as_ref())?;
+    Ok(TraversalOptions::new(mode).with_limits(limits))
+}
+
+pub(crate) fn js_dense_traversal_limits_to_core(
+    js: Option<&crate::types::JsTraversalOptions>,
+) -> std::result::Result<sheetkit_core::traversal::TraversalLimits, sheetkit_core::error::Error> {
+    if let Some(js) = js {
+        match js.mode.as_deref() {
+            None | Some("dense") => {}
+            Some("sparse") => {
+                return Err(sheetkit_core::error::Error::InvalidArgument(
+                    "this operation requires dense traversal".to_string(),
+                ));
+            }
+            Some(_) => {
+                return Err(sheetkit_core::error::Error::InvalidArgument(
+                    "traversal mode must be dense".to_string(),
+                ));
+            }
+        }
+    }
+    js_traversal_limits_to_core(js.and_then(|options| options.limits.as_ref()))
+}
+
+fn js_traversal_limits_to_core(
+    js: Option<&crate::types::JsTraversalLimits>,
+) -> std::result::Result<sheetkit_core::traversal::TraversalLimits, sheetkit_core::error::Error> {
+    use sheetkit_core::traversal::TraversalLimits;
+
+    let defaults = TraversalLimits::default();
+    match js {
+        Some(limits) => TraversalLimits::new(
+            limits
+                .max_rows
+                .map(|value| finite_limit(value, "maxRows"))
+                .transpose()?
+                .unwrap_or(defaults.max_rows()),
+            limits
+                .max_columns
+                .map(|value| finite_limit(value, "maxColumns"))
+                .transpose()?
+                .unwrap_or(defaults.max_columns()),
+            limits
+                .max_cells
+                .map(|value| finite_limit(value, "maxCells"))
+                .transpose()?
+                .unwrap_or(defaults.max_cells()),
+            limits
+                .max_output_bytes
+                .map(|value| finite_limit(value, "maxOutputBytes"))
+                .transpose()?
+                .unwrap_or(defaults.max_output_bytes()),
+        ),
+        None => Ok(defaults),
     }
 }
 
@@ -1539,12 +1896,16 @@ mod tests {
             sheets: None,
             max_unzip_size: None,
             max_zip_entries: None,
+            max_outer_input_bytes: None,
+            max_xml_part_bytes: None,
+            crypt_limits: None,
+            vba_limits: None,
             read_mode: None,
             aux_parts: None,
             parse_mode,
             date_interpretation: None,
         };
-        let defaults = js_open_options_to_core(Some(&options(None)));
+        let defaults = js_open_options_to_core(Some(&options(None))).unwrap();
         assert!(matches!(
             defaults.read_mode,
             sheetkit_core::workbook::ReadMode::Lazy
@@ -1553,10 +1914,28 @@ mod tests {
             defaults.aux_parts,
             sheetkit_core::workbook::AuxParts::Deferred
         ));
-        let legacy = js_open_options_to_core(Some(&options(Some("readfast".to_string()))));
+        let legacy = js_open_options_to_core(Some(&options(Some("readfast".to_string())))).unwrap();
         assert!(matches!(
             legacy.read_mode,
             sheetkit_core::workbook::ReadMode::Lazy
         ));
+
+        let mut eager = options(None);
+        eager.read_mode = Some("eager".to_string());
+        assert!(matches!(
+            js_open_options_to_core(Some(&eager)).unwrap().read_mode,
+            sheetkit_core::workbook::ReadMode::Eager
+        ));
+    }
+
+    #[test]
+    fn numeric_limits_reject_non_finite_fractional_and_unsafe_values() {
+        for value in [f64::NAN, f64::INFINITY, -1.0, 1.5, 9_007_199_254_740_992.0] {
+            assert!(finite_limit(value, "limit").is_err());
+        }
+        assert_eq!(
+            finite_limit(9_007_199_254_740_991.0, "limit").unwrap(),
+            9_007_199_254_740_991
+        );
     }
 }

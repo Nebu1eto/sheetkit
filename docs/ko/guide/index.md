@@ -53,6 +53,11 @@ SheetKit은 Rust와 TypeScript를 위한 고성능 SpreadsheetML 라이브러리
   - 스트리밍 Reader 마이그레이션
   - Raw Buffer V2
   - Copy-on-Write 저장
+- [1.0 마이그레이션](./migration-v1.md)
+  - 유한한 resource limit과 typed 오류
+  - Sparse traversal과 안전한 출력
+  - 저장, 암호화, macro, OOXML 변경 사항
+  - 이전 확인 checklist
 
 ---
 
@@ -72,7 +77,7 @@ SheetKit은 Rust와 TypeScript를 위한 고성능 SpreadsheetML 라이브러리
 
 ```toml
 [dependencies]
-sheetkit = "0.5.1"
+sheetkit = "1.0.0"
 ```
 
 ### Node.js

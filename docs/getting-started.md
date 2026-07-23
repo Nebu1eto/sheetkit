@@ -24,7 +24,7 @@ Or manually add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-sheetkit = { version = "0.5.1" }
+sheetkit = { version = "1.0.0" }
 ```
 
 For encryption support:

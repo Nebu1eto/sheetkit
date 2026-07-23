@@ -27,6 +27,8 @@ use std::io::{BufWriter, Write as _};
 
 use crate::cell::CellValue;
 use crate::error::{Error, Result};
+use crate::resource::{ResourceCategory, ResourceDimension, ResourceOperation, ResourceStage};
+use crate::save::{resource_limit, StreamLimits};
 use crate::utils::cell_ref::cell_name_to_coordinates;
 use crate::utils::constants::{MAX_COLUMNS, MAX_ROWS, MAX_ROW_HEIGHT};
 
@@ -67,6 +69,10 @@ pub struct StreamedSheetData {
     /// Number of bytes written to the temp file (used for diagnostics/testing).
     #[allow(dead_code)]
     pub(crate) data_len: u64,
+    /// Number of rows written to this streamed sheet.
+    pub(crate) row_count: u64,
+    /// Number of cell slots visited while writing this streamed sheet.
+    pub(crate) cell_count: u64,
     /// Pre-built `<sheetViews>` XML fragment (if freeze panes are set).
     pub(crate) sheet_views_xml: Option<String>,
     /// Pre-built `<cols>` XML fragment (if column settings exist).
@@ -85,11 +91,20 @@ impl StreamedSheetData {
         Ok(StreamedSheetData {
             temp_file: new_temp,
             data_len: self.data_len,
+            row_count: self.row_count,
+            cell_count: self.cell_count,
             sheet_views_xml: self.sheet_views_xml.clone(),
             cols_xml: self.cols_xml.clone(),
             merge_cells_xml: self.merge_cells_xml.clone(),
         })
     }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct StreamFormulaUsage {
+    cells: u64,
+    input_bytes: u64,
+    output_bytes: u64,
 }
 
 /// A streaming worksheet writer that writes rows directly to a temp file.
@@ -101,9 +116,17 @@ pub struct StreamWriter {
     sheet_name: String,
     writer: Option<BufWriter<tempfile::NamedTempFile>>,
     bytes_written: u64,
+    row_count: u64,
+    cell_count: u64,
+    limits: StreamLimits,
+    formula_usage: StreamFormulaUsage,
     last_row: u32,
     started: bool,
     finished: bool,
+    failed: bool,
+    config_count: u64,
+    config_bytes: u64,
+    write_failure_after_bytes: Option<u64>,
     col_widths: Vec<(u32, u32, f64)>,
     col_options: Vec<(u32, StreamColOptions)>,
     merge_cells: Vec<String>,
@@ -135,9 +158,17 @@ impl StreamWriter {
             sheet_name: sheet_name.to_string(),
             writer: None,
             bytes_written: 0,
+            row_count: 0,
+            cell_count: 0,
+            limits: StreamLimits::default(),
+            formula_usage: StreamFormulaUsage::default(),
             last_row: 0,
             started: false,
             finished: false,
+            failed: false,
+            config_count: 0,
+            config_bytes: 0,
+            write_failure_after_bytes: None,
             col_widths: Vec::new(),
             col_options: Vec::new(),
             merge_cells: Vec::new(),
@@ -148,6 +179,38 @@ impl StreamWriter {
     /// Create a new StreamWriter and initialize its temporary file eagerly.
     pub fn try_new(sheet_name: &str) -> Result<Self> {
         let mut writer = Self::new(sheet_name);
+        writer.ensure_temp_file()?;
+        Ok(writer)
+    }
+
+    /// Create a StreamWriter with explicit finite operation limits.
+    pub fn new_with_limits(sheet_name: &str, limits: StreamLimits) -> Result<Self> {
+        let limits = limits.validate()?;
+        Ok(Self {
+            sheet_name: sheet_name.to_string(),
+            writer: None,
+            bytes_written: 0,
+            row_count: 0,
+            cell_count: 0,
+            limits,
+            formula_usage: StreamFormulaUsage::default(),
+            last_row: 0,
+            started: false,
+            finished: false,
+            failed: false,
+            config_count: 0,
+            config_bytes: 0,
+            write_failure_after_bytes: None,
+            col_widths: Vec::new(),
+            col_options: Vec::new(),
+            merge_cells: Vec::new(),
+            freeze_pane: None,
+        })
+    }
+
+    /// Create a limited StreamWriter and initialize its temporary file eagerly.
+    pub fn try_new_with_limits(sheet_name: &str, limits: StreamLimits) -> Result<Self> {
+        let mut writer = Self::new_with_limits(sheet_name, limits)?;
         writer.ensure_temp_file()?;
         Ok(writer)
     }
@@ -188,6 +251,15 @@ impl StreamWriter {
                 max_col
             }));
         }
+        if let Some(existing) = self
+            .col_widths
+            .iter_mut()
+            .find(|(min, max, _)| *min == min_col && *max == max_col)
+        {
+            existing.2 = width;
+            return Ok(());
+        }
+        self.charge_config(1, std::mem::size_of::<(u32, u32, f64)>() as u64)?;
         self.col_widths.push((min_col, max_col, width));
         Ok(())
     }
@@ -196,7 +268,7 @@ impl StreamWriter {
     /// Must be called before any write_row() calls.
     pub fn set_col_style(&mut self, col: u32, style_id: u32) -> Result<()> {
         self.ensure_col_configurable(col)?;
-        self.get_or_create_col_options(col).style_id = Some(style_id);
+        self.get_or_create_col_options(col)?.style_id = Some(style_id);
         Ok(())
     }
 
@@ -204,7 +276,7 @@ impl StreamWriter {
     /// Must be called before any write_row() calls.
     pub fn set_col_visible(&mut self, col: u32, visible: bool) -> Result<()> {
         self.ensure_col_configurable(col)?;
-        self.get_or_create_col_options(col).hidden = Some(!visible);
+        self.get_or_create_col_options(col)?.hidden = Some(!visible);
         Ok(())
     }
 
@@ -218,7 +290,7 @@ impl StreamWriter {
                 max: MAX_OUTLINE_LEVEL,
             });
         }
-        self.get_or_create_col_options(col).outline_level = Some(level);
+        self.get_or_create_col_options(col)?.outline_level = Some(level);
         Ok(())
     }
 
@@ -240,6 +312,14 @@ impl StreamWriter {
                 "freeze pane at A1 has no effect".to_string(),
             ));
         }
+        let additional_count = u64::from(self.freeze_pane.is_none());
+        let previous_bytes = self
+            .freeze_pane
+            .as_ref()
+            .map(|(_, _, value)| value.len() as u64)
+            .unwrap_or_default();
+        let next_bytes = top_left_cell.len() as u64;
+        self.replace_config(additional_count, previous_bytes, next_bytes)?;
         self.freeze_pane = Some((col - 1, row - 1, top_left_cell.to_string()));
         Ok(())
     }
@@ -266,10 +346,40 @@ impl StreamWriter {
     /// previously written row.
     pub fn write_rows(&mut self, start_row: u32, rows: &[Vec<CellValue>]) -> Result<()> {
         for (i, values) in rows.iter().enumerate() {
+            let offset = u32::try_from(i).map_err(|_| Error::InvalidRowNumber(u32::MAX))?;
             let row_num = start_row
-                .checked_add(i as u32)
+                .checked_add(offset)
                 .ok_or(Error::InvalidRowNumber(u32::MAX))?;
-            self.write_row_impl(row_num, values, None, None)?;
+            self.validate_row_structure(row_num, values, None)?;
+        }
+        let next_formula_usage =
+            self.preflight_formula_values(rows.iter().flat_map(|row| row.iter()))?;
+
+        let mut next_row_count = self.row_count;
+        let mut next_cell_count = self.cell_count;
+        let mut next_bytes = self.bytes_written;
+        for (i, values) in rows.iter().enumerate() {
+            let offset = u32::try_from(i).map_err(|_| Error::InvalidRowNumber(u32::MAX))?;
+            let row_num = start_row
+                .checked_add(offset)
+                .ok_or(Error::InvalidRowNumber(u32::MAX))?;
+            self.preflight_row(
+                row_num,
+                values,
+                None,
+                None,
+                &mut next_row_count,
+                &mut next_cell_count,
+                &mut next_bytes,
+            )?;
+        }
+        self.formula_usage = next_formula_usage;
+        for (i, values) in rows.iter().enumerate() {
+            let offset = u32::try_from(i).map_err(|_| Error::InvalidRowNumber(u32::MAX))?;
+            let row_num = start_row
+                .checked_add(offset)
+                .ok_or(Error::InvalidRowNumber(u32::MAX))?;
+            self.write_preflighted_row(row_num, values, None, None)?;
         }
         Ok(())
     }
@@ -300,6 +410,14 @@ impl StreamWriter {
             .map_err(|_| Error::InvalidMergeCellReference(reference.to_string()))?;
         cell_name_to_coordinates(parts[1])
             .map_err(|_| Error::InvalidMergeCellReference(reference.to_string()))?;
+        if self
+            .merge_cells
+            .iter()
+            .any(|existing| existing == reference)
+        {
+            return Ok(());
+        }
+        self.charge_config(1, u64::try_from(reference.len()).unwrap_or(u64::MAX))?;
         self.merge_cells.push(reference.to_string());
         Ok(())
     }
@@ -310,14 +428,42 @@ impl StreamWriter {
         if self.finished {
             return Err(Error::StreamAlreadyFinished);
         }
+        if self.failed {
+            return Err(Error::Internal(
+                "stream writer is unusable after an output failure".to_string(),
+            ));
+        }
         self.finished = true;
 
         // Build XML fragments before consuming the writer.
         let sheet_views_xml = self.build_sheet_views_xml();
         let cols_xml = self.build_cols_xml();
         let merge_cells_xml = self.build_merge_cells_xml();
+        let config_xml_bytes = sheet_views_xml
+            .as_ref()
+            .map(|value| value.len() as u64)
+            .unwrap_or_default()
+            .saturating_add(
+                cols_xml
+                    .as_ref()
+                    .map(|value| value.len() as u64)
+                    .unwrap_or_default(),
+            )
+            .saturating_add(
+                merge_cells_xml
+                    .as_ref()
+                    .map(|value| value.len() as u64)
+                    .unwrap_or_default(),
+            )
+            .saturating_add(512);
+        checked_stream_add(
+            self.bytes_written,
+            config_xml_bytes,
+            self.limits.output_bytes,
+            ResourceDimension::OutputBytes,
+        )?;
         let bytes_written = self.bytes_written;
-        let sheet_name = self.sheet_name.clone();
+        let sheet_name = self.sheet_name;
 
         // Flush the writer and recover the temp file.
         let mut writer = self
@@ -329,6 +475,8 @@ impl StreamWriter {
         let data = StreamedSheetData {
             temp_file,
             data_len: bytes_written,
+            row_count: self.row_count,
+            cell_count: self.cell_count,
             sheet_views_xml,
             cols_xml,
             merge_cells_xml,
@@ -352,14 +500,67 @@ impl StreamWriter {
     }
 
     /// Get or create a StreamColOptions entry for the given column.
-    fn get_or_create_col_options(&mut self, col: u32) -> &mut StreamColOptions {
+    fn get_or_create_col_options(&mut self, col: u32) -> Result<&mut StreamColOptions> {
         if let Some(pos) = self.col_options.iter().position(|(c, _)| *c == col) {
-            &mut self.col_options[pos].1
+            Ok(&mut self.col_options[pos].1)
         } else {
+            self.charge_config(
+                1,
+                u64::try_from(std::mem::size_of::<(u32, StreamColOptions)>()).unwrap_or(u64::MAX),
+            )?;
             self.col_options.push((col, StreamColOptions::default()));
             let last = self.col_options.len() - 1;
-            &mut self.col_options[last].1
+            Ok(&mut self.col_options[last].1)
         }
+    }
+
+    fn charge_config(&mut self, count: u64, bytes: u64) -> Result<()> {
+        let next_count = checked_stream_config_add(
+            self.config_count,
+            count,
+            self.limits.config_count,
+            ResourceDimension::CollectionCount,
+        )?;
+        let next_bytes = checked_stream_config_add(
+            self.config_bytes,
+            bytes,
+            self.limits.config_bytes,
+            ResourceDimension::RetainedBytes,
+        )?;
+        self.config_count = next_count;
+        self.config_bytes = next_bytes;
+        Ok(())
+    }
+
+    fn replace_config(
+        &mut self,
+        additional_count: u64,
+        previous_bytes: u64,
+        next_bytes: u64,
+    ) -> Result<()> {
+        let next_count = checked_stream_config_add(
+            self.config_count,
+            additional_count,
+            self.limits.config_count,
+            ResourceDimension::CollectionCount,
+        )?;
+        let retained = self
+            .config_bytes
+            .saturating_sub(previous_bytes)
+            .saturating_add(next_bytes);
+        if retained > self.limits.config_bytes {
+            return Err(resource_limit(
+                ResourceOperation::StreamWrite,
+                ResourceCategory::Streaming,
+                ResourceDimension::RetainedBytes,
+                self.limits.config_bytes,
+                retained,
+                ResourceStage::Validate,
+            ));
+        }
+        self.config_count = next_count;
+        self.config_bytes = retained;
+        Ok(())
     }
 
     /// Build the `<sheetViews>` XML fragment for freeze panes.
@@ -465,8 +666,114 @@ impl StreamWriter {
         cell_style_id: Option<u32>,
         options: Option<&StreamRowOptions>,
     ) -> Result<()> {
+        self.validate_row_structure(row, values, options)?;
+        let next_formula_usage = self.preflight_formula_values(values.iter())?;
+
+        let mut next_row_count = self.row_count;
+        let mut next_cell_count = self.cell_count;
+        let mut next_bytes = self.bytes_written;
+        self.preflight_row(
+            row,
+            values,
+            cell_style_id,
+            options,
+            &mut next_row_count,
+            &mut next_cell_count,
+            &mut next_bytes,
+        )?;
+        self.formula_usage = next_formula_usage;
+        self.write_preflighted_row(row, values, cell_style_id, options)
+    }
+
+    fn preflight_formula_values<'a>(
+        &self,
+        values: impl IntoIterator<Item = &'a CellValue>,
+    ) -> Result<StreamFormulaUsage> {
+        let budget = crate::formula::FormulaBudget::secure_mutation();
+        let mut formula_cells = 0u64;
+        let mut formula_input_bytes = 0u64;
+        let mut formula_output_bytes = 0u64;
+        for value in values {
+            collect_formula_usage(
+                value,
+                &budget,
+                &mut formula_cells,
+                &mut formula_input_bytes,
+                &mut formula_output_bytes,
+            )?;
+        }
+        let next = StreamFormulaUsage {
+            cells: self.formula_usage.cells.saturating_add(formula_cells),
+            input_bytes: self
+                .formula_usage
+                .input_bytes
+                .saturating_add(formula_input_bytes),
+            output_bytes: self
+                .formula_usage
+                .output_bytes
+                .saturating_add(formula_output_bytes),
+        };
+        budget.charge_mutation_cells(next.cells)?;
+        budget.charge_mutation_input_total(next.input_bytes)?;
+        budget.charge_mutation_output(next.output_bytes)?;
+        Ok(next)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn preflight_row(
+        &self,
+        row: u32,
+        values: &[CellValue],
+        cell_style_id: Option<u32>,
+        options: Option<&StreamRowOptions>,
+        row_count: &mut u64,
+        cell_count: &mut u64,
+        output_bytes: &mut u64,
+    ) -> Result<()> {
+        self.validate_row_structure(row, values, options)?;
+        validate_stream_values(values)?;
+        let row_xml_bytes = measure_row_xml(
+            row,
+            values,
+            cell_style_id,
+            options,
+            self.limits.row_xml_bytes,
+        )?;
+
+        *row_count = checked_stream_add(
+            *row_count,
+            1,
+            self.limits.row_count,
+            ResourceDimension::RowCount,
+        )?;
+        *cell_count = checked_stream_add(
+            *cell_count,
+            u64::try_from(values.len()).unwrap_or(u64::MAX),
+            self.limits.cell_count,
+            ResourceDimension::CellCount,
+        )?;
+        *output_bytes = checked_stream_add(
+            *output_bytes,
+            row_xml_bytes,
+            self.limits.output_bytes,
+            ResourceDimension::OutputBytes,
+        )?;
+        Ok(())
+    }
+
+    fn validate_row_structure(
+        &self,
+        row: u32,
+        values: &[CellValue],
+        options: Option<&StreamRowOptions>,
+    ) -> Result<()> {
         if self.finished {
             return Err(Error::StreamAlreadyFinished);
+        }
+        if self.failed {
+            return Err(Error::Internal(
+                "stream writer is unusable after an output failure".to_string(),
+            ));
         }
 
         // Validate row number.
@@ -504,15 +811,41 @@ impl StreamWriter {
             }
         }
 
-        // Build row XML directly and write to temp file.
-        validate_stream_values(values)?;
-        let xml = build_row_xml(row, values, cell_style_id, options);
-        let bytes = xml.as_bytes();
-        self.ensure_temp_file()?.write_all(bytes)?;
+        Ok(())
+    }
+
+    fn write_preflighted_row(
+        &mut self,
+        row: u32,
+        values: &[CellValue],
+        cell_style_id: Option<u32>,
+        options: Option<&StreamRowOptions>,
+    ) -> Result<()> {
+        let (error, row_bytes) = {
+            let failure_after = self.write_failure_after_bytes;
+            let mut output = StreamRowOutput::new(self.ensure_temp_file()?, failure_after);
+            write_row_xml(&mut output, row, values, cell_style_id, options);
+            (output.error, output.written)
+        };
+        if let Some(error) = error {
+            self.failed = true;
+            return Err(Error::Io(error));
+        }
+
+        self.row_count = self
+            .row_count
+            .checked_add(1)
+            .ok_or_else(|| Error::Internal("stream row count overflow".to_string()))?;
+        self.cell_count = self
+            .cell_count
+            .checked_add(u64::try_from(values.len()).unwrap_or(u64::MAX))
+            .ok_or_else(|| Error::Internal("stream cell count overflow".to_string()))?;
+        self.bytes_written = self
+            .bytes_written
+            .checked_add(row_bytes)
+            .ok_or_else(|| Error::Internal("stream byte count overflow".to_string()))?;
         self.started = true;
         self.last_row = row;
-        self.bytes_written += bytes.len() as u64;
-
         Ok(())
     }
 }
@@ -560,12 +893,28 @@ pub(crate) fn write_streamed_sheet<W: std::io::Write + std::io::Seek>(
     entry_name: &str,
     streamed: &StreamedSheetData,
     options: zip::write::SimpleFileOptions,
+    xml_limit: u64,
 ) -> Result<()> {
+    let header = build_worksheet_header(streamed);
+    let footer = build_worksheet_footer(streamed);
+    let observed = u64::try_from(header.len())
+        .unwrap_or(u64::MAX)
+        .saturating_add(streamed.data_len)
+        .saturating_add(u64::try_from(footer.len()).unwrap_or(u64::MAX));
+    if observed > xml_limit {
+        return Err(resource_limit(
+            ResourceOperation::WorkbookSave,
+            ResourceCategory::Output,
+            ResourceDimension::XmlBytes,
+            xml_limit,
+            observed,
+            ResourceStage::Serialize,
+        ));
+    }
     zip.start_file(entry_name, options)
         .map_err(|e| Error::Zip(e.to_string()))?;
 
     // Write the header (XML declaration, <worksheet>, <sheetViews>, <cols>, <sheetData>).
-    let header = build_worksheet_header(streamed);
     zip.write_all(header.as_bytes())?;
 
     // Open the temp file by path for reading (starts at position 0).
@@ -574,20 +923,214 @@ pub(crate) fn write_streamed_sheet<W: std::io::Write + std::io::Seek>(
     std::io::copy(&mut reader, zip)?;
 
     // Write the footer (</sheetData>, <mergeCells>, </worksheet>).
-    let footer = build_worksheet_footer(streamed);
     zip.write_all(footer.as_bytes())?;
 
     Ok(())
 }
 
-/// Build an XML `<row>` element with inline strings for a single row.
-fn build_row_xml(
+trait RowXmlSink {
+    fn push_str(&mut self, value: &str);
+    fn push(&mut self, value: char);
+}
+
+struct RowXmlCounter {
+    written: u64,
+    limit: u64,
+    exceeded: bool,
+}
+
+impl RowXmlSink for RowXmlCounter {
+    fn push_str(&mut self, value: &str) {
+        if self.exceeded {
+            return;
+        }
+        let amount = u64::try_from(value.len()).unwrap_or(u64::MAX);
+        let observed = self.written.saturating_add(amount);
+        if observed > self.limit {
+            self.written = observed;
+            self.exceeded = true;
+        } else {
+            self.written = observed;
+        }
+    }
+
+    fn push(&mut self, value: char) {
+        let mut encoded = [0u8; 4];
+        self.push_str(value.encode_utf8(&mut encoded));
+    }
+}
+
+struct StreamRowOutput<'a> {
+    writer: &'a mut BufWriter<tempfile::NamedTempFile>,
+    written: u64,
+    error: Option<std::io::Error>,
+    failure_after: Option<u64>,
+}
+
+impl<'a> StreamRowOutput<'a> {
+    fn new(writer: &'a mut BufWriter<tempfile::NamedTempFile>, failure_after: Option<u64>) -> Self {
+        Self {
+            writer,
+            written: 0,
+            error: None,
+            failure_after,
+        }
+    }
+}
+
+impl RowXmlSink for StreamRowOutput<'_> {
+    fn push_str(&mut self, value: &str) {
+        if self.error.is_some() {
+            return;
+        }
+        if let Some(failure_after) = self.failure_after {
+            let amount = u64::try_from(value.len()).unwrap_or(u64::MAX);
+            if self.written.saturating_add(amount) > failure_after {
+                let remaining = failure_after.saturating_sub(self.written);
+                let prefix = usize::try_from(remaining)
+                    .unwrap_or(usize::MAX)
+                    .min(value.len());
+                if prefix > 0 {
+                    let _ = self.writer.write_all(&value.as_bytes()[..prefix]);
+                    self.written = self
+                        .written
+                        .saturating_add(u64::try_from(prefix).unwrap_or(u64::MAX));
+                }
+                self.error = Some(std::io::Error::other("injected stream output failure"));
+                return;
+            }
+        }
+        if let Err(error) = self.writer.write_all(value.as_bytes()) {
+            self.error = Some(error);
+            return;
+        }
+        self.written = self
+            .written
+            .saturating_add(u64::try_from(value.len()).unwrap_or(u64::MAX));
+    }
+
+    fn push(&mut self, value: char) {
+        let mut encoded = [0u8; 4];
+        self.push_str(value.encode_utf8(&mut encoded));
+    }
+}
+
+fn measure_row_xml(
     row: u32,
     values: &[CellValue],
     cell_style_id: Option<u32>,
     options: Option<&StreamRowOptions>,
-) -> String {
-    let mut xml = String::with_capacity(128 + values.len() * 64);
+    limit: u64,
+) -> Result<u64> {
+    let mut counter = RowXmlCounter {
+        written: 0,
+        limit,
+        exceeded: false,
+    };
+    write_row_xml(&mut counter, row, values, cell_style_id, options);
+    if counter.exceeded {
+        return Err(resource_limit(
+            ResourceOperation::StreamWrite,
+            ResourceCategory::Streaming,
+            ResourceDimension::XmlBytes,
+            limit,
+            counter.written,
+            ResourceStage::Serialize,
+        ));
+    }
+    Ok(counter.written)
+}
+
+fn checked_stream_add(
+    current: u64,
+    additional: u64,
+    limit: u64,
+    dimension: ResourceDimension,
+) -> Result<u64> {
+    let observed = current.saturating_add(additional);
+    if observed > limit {
+        return Err(resource_limit(
+            ResourceOperation::StreamWrite,
+            ResourceCategory::Streaming,
+            dimension,
+            limit,
+            observed,
+            ResourceStage::Serialize,
+        ));
+    }
+    Ok(observed)
+}
+
+fn checked_stream_config_add(
+    current: u64,
+    additional: u64,
+    limit: u64,
+    dimension: ResourceDimension,
+) -> Result<u64> {
+    let observed = current.saturating_add(additional);
+    if observed > limit {
+        return Err(resource_limit(
+            ResourceOperation::StreamWrite,
+            ResourceCategory::Streaming,
+            dimension,
+            limit,
+            observed,
+            ResourceStage::Validate,
+        ));
+    }
+    Ok(observed)
+}
+
+fn collect_formula_usage(
+    value: &CellValue,
+    budget: &crate::formula::FormulaBudget,
+    formula_cells: &mut u64,
+    formula_input_bytes: &mut u64,
+    formula_output_bytes: &mut u64,
+) -> Result<()> {
+    if let CellValue::Formula { expr, result } = value {
+        let bytes = u64::try_from(expr.len()).unwrap_or(u64::MAX);
+        budget.check_mutation_input(bytes)?;
+        *formula_cells = formula_cells.saturating_add(1);
+        *formula_input_bytes = formula_input_bytes.saturating_add(bytes);
+        *formula_output_bytes = formula_output_bytes.saturating_add(bytes);
+        if let Some(result) = result {
+            *formula_output_bytes =
+                formula_output_bytes.saturating_add(cached_formula_payload_bytes(result)?);
+        }
+    }
+    Ok(())
+}
+
+fn cached_formula_payload_bytes(value: &CellValue) -> Result<u64> {
+    Ok(match value {
+        CellValue::String(value) | CellValue::Error(value) => {
+            u64::try_from(value.len()).unwrap_or(u64::MAX)
+        }
+        CellValue::RichString(_) | CellValue::Formula { .. } => {
+            return Err(resource_limit(
+                ResourceOperation::StreamWrite,
+                ResourceCategory::Structure,
+                ResourceDimension::CollectionCount,
+                0,
+                1,
+                ResourceStage::Validate,
+            ));
+        }
+        CellValue::Number(_) | CellValue::Date(_) => 32,
+        CellValue::Bool(_) => 5,
+        CellValue::Empty => 0,
+    })
+}
+
+/// Write an XML `<row>` element with inline strings to a pre-admitted sink.
+fn write_row_xml<W: RowXmlSink>(
+    xml: &mut W,
+    row: u32,
+    values: &[CellValue],
+    cell_style_id: Option<u32>,
+    options: Option<&StreamRowOptions>,
+) {
     xml.push_str("<row r=\"");
     xml.push_str(&row.to_string());
     xml.push('"');
@@ -641,7 +1184,7 @@ fn build_row_xml(
         match value {
             CellValue::String(s) => {
                 xml.push_str(" t=\"inlineStr\"><is><t>");
-                xml_escape_into(&mut xml, s);
+                xml_escape_into(xml, s);
                 xml.push_str("</t></is></c>");
             }
             CellValue::Number(n) => {
@@ -677,13 +1220,13 @@ fn build_row_xml(
                     }
                 }
                 xml.push_str("><f>");
-                xml_escape_into(&mut xml, expr);
+                xml_escape_into(xml, expr);
                 xml.push_str("</f>");
                 if let Some(res) = result {
                     match res.as_ref() {
                         CellValue::String(s) => {
                             xml.push_str("<v>");
-                            xml_escape_into(&mut xml, s);
+                            xml_escape_into(xml, s);
                             xml.push_str("</v>");
                         }
                         CellValue::Number(n) => {
@@ -707,7 +1250,7 @@ fn build_row_xml(
                         }
                         CellValue::Error(e) => {
                             xml.push_str("<v>");
-                            xml_escape_into(&mut xml, e);
+                            xml_escape_into(xml, e);
                             xml.push_str("</v>");
                         }
                         _ => {}
@@ -717,13 +1260,14 @@ fn build_row_xml(
             }
             CellValue::Error(e) => {
                 xml.push_str(" t=\"e\"><v>");
-                xml_escape_into(&mut xml, e);
+                xml_escape_into(xml, e);
                 xml.push_str("</v></c>");
             }
             CellValue::RichString(runs) => {
-                let plain = crate::rich_text::rich_text_to_plain(runs);
                 xml.push_str(" t=\"inlineStr\"><is><t>");
-                xml_escape_into(&mut xml, &plain);
+                for run in runs {
+                    xml_escape_into(xml, &run.text);
+                }
                 xml.push_str("</t></is></c>");
             }
             CellValue::Empty => unreachable!(),
@@ -731,11 +1275,10 @@ fn build_row_xml(
     }
 
     xml.push_str("</row>");
-    xml
 }
 
 /// Escape XML special characters into an existing string buffer.
-fn xml_escape_into(buf: &mut String, s: &str) {
+fn xml_escape_into<W: RowXmlSink>(buf: &mut W, s: &str) {
     for ch in s.chars() {
         if !crate::utils::is_xml_char(ch) {
             continue;
@@ -766,7 +1309,17 @@ fn validate_stream_value(value: &CellValue) -> Result<()> {
         CellValue::Formula {
             result: Some(result),
             ..
-        } => validate_stream_value(result),
+        } => match result.as_ref() {
+            CellValue::Formula { .. } => Err(resource_limit(
+                ResourceOperation::StreamWrite,
+                ResourceCategory::Structure,
+                ResourceDimension::NestingDepth,
+                1,
+                2,
+                ResourceStage::Validate,
+            )),
+            other => validate_stream_value(other),
+        },
         _ => Ok(()),
     }
 }
@@ -1993,5 +2546,321 @@ mod tests {
         assert!(xml.contains("a b\t\n\rc") || xml.contains("ab\t\n\rc"));
         let parsed: WorksheetXml = quick_xml::de::from_str(&xml).unwrap();
         assert_eq!(parsed.sheet_data.rows.len(), 1);
+    }
+
+    #[test]
+    fn stream_limits_accept_exact_row_xml_and_reject_plus_one_without_output() {
+        let value = CellValue::String("<&payload>".repeat(64));
+        let mut probe = StreamWriter::new("Probe");
+        probe.write_row(1, std::slice::from_ref(&value)).unwrap();
+        let exact = probe.bytes_written;
+
+        let exact_limits = crate::save::StreamLimits {
+            row_xml_bytes: exact,
+            output_bytes: exact,
+            ..crate::save::StreamLimits::default()
+        };
+        let mut accepted = StreamWriter::new_with_limits("Accepted", exact_limits).unwrap();
+        accepted.write_row(1, std::slice::from_ref(&value)).unwrap();
+        assert_eq!(accepted.bytes_written, exact);
+
+        let rejected_limits = crate::save::StreamLimits {
+            row_xml_bytes: exact - 1,
+            output_bytes: exact,
+            ..crate::save::StreamLimits::default()
+        };
+        let mut rejected = StreamWriter::new_with_limits("Rejected", rejected_limits).unwrap();
+        let error = rejected.write_row(1, &[value]).unwrap_err();
+        let metadata = error.resource_metadata().unwrap();
+        assert_eq!(
+            metadata.operation(),
+            crate::resource::ResourceOperation::StreamWrite
+        );
+        assert_eq!(
+            metadata.dimension(),
+            crate::resource::ResourceDimension::XmlBytes
+        );
+        assert_eq!(metadata.limit(), exact - 1);
+        assert_eq!(metadata.observed(), exact);
+        assert_eq!(rejected.bytes_written, 0);
+        assert_eq!(rejected.last_row, 0);
+        assert!(rejected.writer.is_none());
+    }
+
+    #[test]
+    fn stream_limits_reject_huge_string_formula_and_rich_text_before_output() {
+        let limits = crate::save::StreamLimits {
+            row_xml_bytes: 1024,
+            output_bytes: 4096,
+            ..crate::save::StreamLimits::default()
+        };
+        let cases = [
+            CellValue::String("s".repeat(4096)),
+            CellValue::Formula {
+                expr: "A".repeat(4096),
+                result: None,
+            },
+            CellValue::RichString(vec![crate::rich_text::RichTextRun {
+                text: "r".repeat(4096),
+                font: None,
+                size: None,
+                bold: false,
+                italic: false,
+                color: None,
+            }]),
+        ];
+
+        for value in cases {
+            let mut writer = StreamWriter::new_with_limits("Rejected", limits).unwrap();
+            assert!(matches!(
+                writer.write_row(1, &[value]),
+                Err(Error::ResourceLimitExceeded(_))
+            ));
+            assert_eq!(writer.bytes_written, 0);
+            assert_eq!(writer.last_row, 0);
+            assert!(writer.writer.is_none());
+        }
+    }
+
+    #[test]
+    fn stream_batch_policy_failure_is_atomic_and_counts_rows_and_cells() {
+        let mut probe = StreamWriter::new("Probe");
+        probe
+            .write_rows(
+                1,
+                &[
+                    vec![CellValue::String("one".to_string())],
+                    vec![CellValue::String("two".to_string())],
+                ],
+            )
+            .unwrap();
+        let exact_bytes = probe.bytes_written;
+
+        let limits = crate::save::StreamLimits {
+            row_count: 2,
+            cell_count: 2,
+            output_bytes: exact_bytes,
+            ..crate::save::StreamLimits::default()
+        };
+        let mut accepted = StreamWriter::new_with_limits("Accepted", limits).unwrap();
+        accepted
+            .write_rows(
+                1,
+                &[
+                    vec![CellValue::String("one".to_string())],
+                    vec![CellValue::String("two".to_string())],
+                ],
+            )
+            .unwrap();
+
+        for exceeded in [
+            crate::save::StreamLimits {
+                row_count: 1,
+                ..limits
+            },
+            crate::save::StreamLimits {
+                cell_count: 1,
+                ..limits
+            },
+            crate::save::StreamLimits {
+                output_bytes: exact_bytes - 1,
+                ..limits
+            },
+        ] {
+            let mut rejected = StreamWriter::new_with_limits("Rejected", exceeded).unwrap();
+            let error = rejected
+                .write_rows(
+                    1,
+                    &[
+                        vec![CellValue::String("one".to_string())],
+                        vec![CellValue::String("two".to_string())],
+                    ],
+                )
+                .unwrap_err();
+            assert!(matches!(error, Error::ResourceLimitExceeded(_)));
+            assert_eq!(rejected.bytes_written, 0);
+            assert_eq!(rejected.last_row, 0);
+            assert!(rejected.writer.is_none());
+        }
+    }
+
+    #[test]
+    fn stream_formula_budget_enforces_per_formula_and_cumulative_input_before_output() {
+        let mut oversized = StreamWriter::new("Oversized");
+        let error = oversized
+            .write_row(
+                1,
+                &[CellValue::Formula {
+                    expr: "A".repeat(32_769),
+                    result: None,
+                }],
+            )
+            .unwrap_err();
+        let metadata = error.resource_metadata().unwrap();
+        assert_eq!(
+            metadata.operation(),
+            crate::resource::ResourceOperation::FormulaMutate
+        );
+        assert_eq!(
+            metadata.dimension(),
+            crate::resource::ResourceDimension::InputBytes
+        );
+        assert_eq!(oversized.bytes_written, 0);
+        assert!(oversized.writer.is_none());
+
+        let formula = || CellValue::Formula {
+            expr: "A".repeat(32_768),
+            result: None,
+        };
+        let exact = (0..128).map(|_| formula()).collect::<Vec<_>>();
+        let mut accepted = StreamWriter::new("Exact");
+        accepted.write_row(1, &exact).unwrap();
+
+        let plus_one = (0..129).map(|_| formula()).collect::<Vec<_>>();
+        let mut rejected = StreamWriter::new("PlusOne");
+        let error = rejected.write_row(1, &plus_one).unwrap_err();
+        let metadata = error.resource_metadata().unwrap();
+        assert_eq!(
+            metadata.dimension(),
+            crate::resource::ResourceDimension::InputBytes
+        );
+        assert_eq!(metadata.limit(), 4 * 1024 * 1024);
+        assert!(metadata.observed() > metadata.limit());
+        assert_eq!(rejected.bytes_written, 0);
+        assert!(rejected.writer.is_none());
+    }
+
+    #[test]
+    fn stream_policy_rejection_does_not_consume_formula_budget() {
+        let limits = crate::save::StreamLimits {
+            cell_count: 1,
+            ..crate::save::StreamLimits::default()
+        };
+        let formula = || CellValue::Formula {
+            expr: "A".repeat(32_768),
+            result: None,
+        };
+        let rejected_values = (0..128).map(|_| formula()).collect::<Vec<_>>();
+        let mut writer = StreamWriter::new_with_limits("Retry", limits).unwrap();
+
+        let error = writer.write_row(1, &rejected_values).unwrap_err();
+        let metadata = error.resource_metadata().unwrap();
+        assert_eq!(metadata.dimension(), ResourceDimension::CellCount);
+        assert_eq!(writer.bytes_written, 0);
+        assert_eq!(writer.last_row, 0);
+        assert!(writer.writer.is_none());
+
+        writer
+            .write_row(
+                1,
+                &[CellValue::Formula {
+                    expr: "1".to_string(),
+                    result: None,
+                }],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn stream_config_limits_are_atomic_and_deduplicate_updates() {
+        let limits = crate::save::StreamLimits {
+            config_count: 1,
+            config_bytes: std::mem::size_of::<(u32, u32, f64)>() as u64,
+            ..crate::save::StreamLimits::default()
+        };
+        let mut writer = StreamWriter::new_with_limits("Config", limits).unwrap();
+        writer.set_col_width_range(1, 2, 10.0).unwrap();
+        writer.set_col_width_range(1, 2, 20.0).unwrap();
+        assert_eq!(writer.config_count, 1);
+
+        let error = writer.add_merge_cell("A1:B1").unwrap_err();
+        let metadata = error.resource_metadata().unwrap();
+        assert_eq!(metadata.dimension(), ResourceDimension::CollectionCount);
+        assert_eq!(metadata.stage(), Some(ResourceStage::Validate));
+        assert_eq!(writer.config_count, 1);
+        assert_eq!(
+            writer.config_bytes,
+            std::mem::size_of::<(u32, u32, f64)>() as u64
+        );
+
+        let mut retained = StreamWriter::new_with_limits(
+            "Retained",
+            crate::save::StreamLimits {
+                config_bytes: 1,
+                ..crate::save::StreamLimits::default()
+            },
+        )
+        .unwrap();
+        let error = retained.set_col_width(1, 10.0).unwrap_err();
+        assert_eq!(
+            error.resource_metadata().unwrap().dimension(),
+            ResourceDimension::RetainedBytes
+        );
+        assert_eq!(retained.config_count, 0);
+        assert_eq!(retained.config_bytes, 0);
+        assert!(retained.col_widths.is_empty());
+    }
+
+    #[test]
+    fn stream_cached_formula_results_reject_nested_and_unserializable_values_without_recursion() {
+        let mut nested = CellValue::String("cached".to_string());
+        for _ in 0..20_000 {
+            nested = CellValue::Formula {
+                expr: "A1".to_string(),
+                result: Some(Box::new(nested)),
+            };
+        }
+        let values = vec![CellValue::Formula {
+            expr: "A1".to_string(),
+            result: Some(Box::new(nested)),
+        }];
+        let mut writer = StreamWriter::new("Nested");
+        let error = writer.write_row(1, &values).unwrap_err();
+        assert_eq!(
+            error.resource_metadata().unwrap().category(),
+            ResourceCategory::Structure
+        );
+        assert!(writer.writer.is_none());
+        std::mem::forget(values);
+
+        let mut rich = StreamWriter::new("Rich");
+        let error = rich
+            .write_row(
+                1,
+                &[CellValue::Formula {
+                    expr: "A1".to_string(),
+                    result: Some(Box::new(CellValue::RichString(vec![]))),
+                }],
+            )
+            .unwrap_err();
+        assert_eq!(
+            error.resource_metadata().unwrap().category(),
+            ResourceCategory::Structure
+        );
+        assert!(rich.writer.is_none());
+    }
+
+    #[test]
+    fn partial_stream_output_failure_poison_prevents_retry_and_publication() {
+        let mut writer = StreamWriter::new("Poisoned");
+        writer.write_failure_after_bytes = Some(5);
+        let error = writer
+            .write_row(1, &[CellValue::String("payload".to_string())])
+            .unwrap_err();
+        assert!(matches!(error, Error::Io(_)));
+        assert!(writer.failed);
+        let path = writer
+            .writer
+            .as_ref()
+            .unwrap()
+            .get_ref()
+            .path()
+            .to_path_buf();
+        assert!(path.exists());
+        assert!(writer
+            .write_row(1, &[CellValue::String("retry".to_string())])
+            .is_err());
+        assert!(writer.into_streamed_data().is_err());
+        assert!(!path.exists());
     }
 }

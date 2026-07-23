@@ -4,11 +4,13 @@
 //! against cell data.
 
 pub mod ast;
+pub mod budget;
 pub mod eval;
 pub mod functions;
 pub mod parser;
 
 pub use ast::{BinaryOperator, CellReference, Expr, UnaryOperator};
+pub use budget::{FormulaBudget, FormulaLimits};
 pub use eval::{
     build_dependency_graph, evaluate, topological_sort, CellCoord, CellDataProvider, CellSnapshot,
     Evaluator,

@@ -4,20 +4,22 @@
 //! column widths, row heights, cell styles (fonts, fills, borders),
 //! optional gridlines, and optional row/column headers.
 
-use crate::cell::CellValue;
-use crate::col::get_col_width;
 use crate::error::{Error, Result};
-use crate::row::{get_row_height, get_rows, resolve_cell_value};
+use crate::resource::{
+    ResourceCategory, ResourceDimension, ResourceLimitError, ResourceOperation, ResourceStage,
+};
+use crate::row::get_row_height;
 use crate::sst::SharedStringTable;
 use crate::style::{
     get_style, AlignmentStyle, BorderLineStyle, FontStyle, HorizontalAlign, PatternType,
     StyleColor, VerticalAlign,
 };
 use crate::theme::{default_theme_colors, resolve_theme_color};
+use crate::traversal::{CheckedRect, TraversalLimits};
 use crate::utils::cell_ref::{cell_name_to_coordinates, column_number_to_name};
 use sheetkit_xml::styles::StyleSheet;
 use sheetkit_xml::theme::ThemeColors;
-use sheetkit_xml::worksheet::WorksheetXml;
+use sheetkit_xml::worksheet::{Cell, CellTypeTag, InlineString, WorksheetXml};
 
 /// Default column width in pixels (approximately 8.43 characters at 7px each).
 const DEFAULT_COL_WIDTH_PX: f64 = 64.0;
@@ -32,6 +34,76 @@ const HEADER_HEIGHT: f64 = 20.0;
 const HEADER_BG_COLOR: &str = "#F0F0F0";
 const HEADER_TEXT_COLOR: &str = "#666666";
 const GRIDLINE_COLOR: &str = "#D0D0D0";
+
+/// Maximum size of one non-streaming SVG result.
+pub const MAX_SVG_OUTPUT_BYTES: u64 = 64 * 1024 * 1024;
+
+struct SvgOutput {
+    value: String,
+    limit: u64,
+    base_offset: u64,
+}
+
+impl SvgOutput {
+    const fn new(limit: u64) -> Self {
+        Self {
+            value: String::new(),
+            limit,
+            base_offset: 0,
+        }
+    }
+
+    fn stage(&self) -> Self {
+        Self {
+            value: String::new(),
+            limit: self.limit,
+            base_offset: self.observed_len(),
+        }
+    }
+
+    fn push_str(&mut self, value: &str) -> Result<()> {
+        let additional = u64::try_from(value.len()).unwrap_or(u64::MAX);
+        self.ensure_additional(additional)?;
+
+        self.value
+            .try_reserve(value.len())
+            .map_err(|_| Error::Internal("SVG output allocation failed".to_string()))?;
+        self.value.push_str(value);
+        Ok(())
+    }
+
+    fn ensure_additional(&self, additional: u64) -> Result<()> {
+        let observed = self.observed_len().saturating_add(additional);
+        if observed > self.limit {
+            return Err(svg_output_limit_error(self.limit, observed));
+        }
+        Ok(())
+    }
+
+    fn observed_len(&self) -> u64 {
+        self.base_offset
+            .saturating_add(u64::try_from(self.value.len()).unwrap_or(u64::MAX))
+    }
+
+    fn finish(self) -> String {
+        self.value
+    }
+}
+
+fn svg_output_limit_error(limit: u64, observed: u64) -> Error {
+    let observed = observed.max(limit.saturating_add(1));
+    match ResourceLimitError::exceeded(
+        ResourceOperation::Render,
+        ResourceCategory::Output,
+        ResourceDimension::OutputBytes,
+        limit,
+        observed,
+        Some(ResourceStage::Render),
+    ) {
+        Some(metadata) => metadata.into(),
+        None => Error::Internal("invalid SVG output limit".to_string()),
+    }
+}
 
 /// Conversion factor from Excel column width units to pixels.
 /// Excel column width is in "number of characters" based on the default font.
@@ -86,6 +158,125 @@ struct CellLayout {
     height: f64,
     col: u32,
     row: u32,
+    column_style: u32,
+}
+
+struct ColumnMetadataIndex {
+    widths: Vec<f64>,
+    styles: Vec<u32>,
+}
+
+impl ColumnMetadataIndex {
+    fn build(ws: &WorksheetXml, min_col: u32, max_col: u32) -> Result<(Self, usize)> {
+        let count = usize::try_from(u64::from(max_col - min_col) + 1)
+            .map_err(|_| Error::Internal("render column count is not addressable".to_string()))?;
+
+        let mut widths = Vec::new();
+        widths
+            .try_reserve_exact(count)
+            .map_err(|_| Error::Internal("render column layout allocation failed".to_string()))?;
+        widths.resize(count, DEFAULT_COL_WIDTH_PX);
+
+        let mut styles = Vec::new();
+        styles
+            .try_reserve_exact(count)
+            .map_err(|_| Error::Internal("render column layout allocation failed".to_string()))?;
+        styles.resize(count, 0);
+
+        let parent_count = count.checked_add(1).ok_or_else(|| {
+            Error::Internal("render column metadata index is too large".to_string())
+        })?;
+        let mut next_unresolved = Vec::new();
+        next_unresolved
+            .try_reserve_exact(parent_count)
+            .map_err(|_| {
+                Error::Internal("render column metadata index allocation failed".to_string())
+            })?;
+        next_unresolved.extend(0..parent_count);
+
+        let mut resolution_work = 0usize;
+        if let Some(columns) = ws.cols.as_ref() {
+            // Resolve in source order to preserve the renderer's first-match semantics.
+            for column in &columns.cols {
+                resolution_work = resolution_work.saturating_add(1);
+                if column.min > column.max || column.max < min_col || column.min > max_col {
+                    continue;
+                }
+
+                let start = usize::try_from(column.min.max(min_col) - min_col).map_err(|_| {
+                    Error::Internal("render column start is not addressable".to_string())
+                })?;
+                let end = usize::try_from(column.max.min(max_col) - min_col).map_err(|_| {
+                    Error::Internal("render column end is not addressable".to_string())
+                })?;
+                let mut offset = find_next_unresolved(&mut next_unresolved, start);
+                while offset <= end {
+                    widths[offset] = column
+                        .width
+                        .map(col_width_to_px)
+                        .unwrap_or(DEFAULT_COL_WIDTH_PX);
+                    styles[offset] = column.style.unwrap_or(0);
+                    resolution_work = resolution_work.saturating_add(1);
+
+                    let next = find_next_unresolved(&mut next_unresolved, offset + 1);
+                    next_unresolved[offset] = next;
+                    offset = next;
+                }
+            }
+        }
+
+        Ok((Self { widths, styles }, resolution_work))
+    }
+}
+
+fn find_next_unresolved(parent: &mut [usize], index: usize) -> usize {
+    let mut root = index;
+    while parent[root] != root {
+        root = parent[root];
+    }
+
+    let mut current = index;
+    while parent[current] != current {
+        let next = parent[current];
+        parent[current] = root;
+        current = next;
+    }
+    root
+}
+
+struct LayoutGrid<'a> {
+    col_widths: &'a [f64],
+    col_styles: &'a [u32],
+    row_heights: &'a [f64],
+    min_col: u32,
+    min_row: u32,
+    x_offset: f64,
+    y_offset: f64,
+}
+
+impl LayoutGrid<'_> {
+    fn for_each(&self, mut visitor: impl FnMut(&CellLayout) -> Result<()>) -> Result<()> {
+        let mut y = self.y_offset;
+        for (row_index, height) in self.row_heights.iter().copied().enumerate() {
+            let row = self.min_row + row_index as u32;
+            let mut x = self.x_offset;
+            for (column_index, width) in self.col_widths.iter().copied().enumerate() {
+                let col = self.min_col + column_index as u32;
+                visitor(&CellLayout {
+                    x,
+                    y,
+                    width,
+                    height,
+                    col,
+                    row,
+                    column_style: self.col_styles[column_index],
+                })?;
+                x += width;
+            }
+            y += height;
+        }
+        Ok(())
+    }
 }
 
 /// Render a worksheet to an SVG string.
@@ -99,7 +290,25 @@ pub fn render_to_svg(
     stylesheet: &StyleSheet,
     options: &RenderOptions,
 ) -> Result<String> {
-    render_to_svg_with_theme(ws, sst, stylesheet, &default_theme_colors(), options)
+    render_to_svg_with_limits(ws, sst, stylesheet, options, TraversalLimits::default())
+}
+
+/// Renders a worksheet using explicit finite dense traversal limits.
+pub fn render_to_svg_with_limits(
+    ws: &WorksheetXml,
+    sst: &SharedStringTable,
+    stylesheet: &StyleSheet,
+    options: &RenderOptions,
+    limits: TraversalLimits,
+) -> Result<String> {
+    render_to_svg_with_theme_and_limits(
+        ws,
+        sst,
+        stylesheet,
+        &default_theme_colors(),
+        options,
+        limits,
+    )
 }
 
 /// Render a worksheet to SVG using the supplied theme colors.
@@ -110,20 +319,47 @@ pub(crate) fn render_to_svg_with_theme(
     theme: &ThemeColors,
     options: &RenderOptions,
 ) -> Result<String> {
-    if options.scale <= 0.0 {
-        return Err(Error::InvalidArgument(format!(
-            "render scale must be positive, got {}",
-            options.scale
-        )));
-    }
+    render_to_svg_with_theme_and_limits(
+        ws,
+        sst,
+        stylesheet,
+        theme,
+        options,
+        TraversalLimits::default(),
+    )
+}
 
-    let (min_col, min_row, max_col, max_row) = compute_range(ws, sst, options)?;
+pub(crate) fn render_to_svg_with_theme_and_limits(
+    ws: &WorksheetXml,
+    sst: &SharedStringTable,
+    stylesheet: &StyleSheet,
+    theme: &ThemeColors,
+    options: &RenderOptions,
+    limits: TraversalLimits,
+) -> Result<String> {
+    validate_positive_finite(options.scale, "render scale must be positive and finite")?;
+    validate_positive_finite(
+        options.default_font_size,
+        "default font size must be positive and finite",
+    )?;
+    let output_limit = MAX_SVG_OUTPUT_BYTES.min(limits.max_output_bytes());
+    let mut svg = SvgOutput::new(output_limit);
+    let default_font_family = css_font_family_attribute(&options.default_font_family, &svg)?;
 
-    let col_widths = compute_col_widths(ws, min_col, max_col);
-    let row_heights = compute_row_heights(ws, min_row, max_row);
+    let (min_col, min_row, max_col, max_row) = compute_range(ws, sst, options, limits)?;
+    let _rect = render_checked_rect(min_col, min_row, max_col, max_row, limits)?;
+
+    let (column_metadata, _metadata_work) = ColumnMetadataIndex::build(ws, min_col, max_col)?;
+    let col_widths = column_metadata.widths.as_slice();
+    let row_heights = compute_row_heights(ws, min_row, max_row)?;
 
     let total_width: f64 = col_widths.iter().sum();
     let total_height: f64 = row_heights.iter().sum();
+    validate_finite_nonnegative(total_width, "render width must be finite and non-negative")?;
+    validate_finite_nonnegative(
+        total_height,
+        "render height must be finite and non-negative",
+    )?;
 
     let header_x_offset = if options.show_headers {
         HEADER_WIDTH
@@ -138,77 +374,96 @@ pub(crate) fn render_to_svg_with_theme(
 
     let svg_width = (total_width + header_x_offset) * options.scale;
     let svg_height = (total_height + header_y_offset) * options.scale;
+    validate_finite_nonnegative(svg_width, "SVG width must be finite and non-negative")?;
+    validate_finite_nonnegative(svg_height, "SVG height must be finite and non-negative")?;
 
-    let mut svg = String::with_capacity(4096);
     svg.push_str(&format!(
-        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{svg_width}" height="{svg_height}" viewBox="0 0 {} {}">"#,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{svg_width}" height="{svg_height}" viewBox="0 0 {} {}" font-family=""#,
         total_width + header_x_offset,
         total_height + header_y_offset,
-    ));
-
-    svg.push_str(&format!(
-        r#"<style>text {{ font-family: {}; font-size: {}px; }}</style>"#,
-        &options.default_font_family, options.default_font_size
-    ));
+    ))?;
+    svg.push_str(&default_font_family)?;
+    svg.push_str(&format!(r#"" font-size="{}">"#, options.default_font_size))?;
 
     // White background
     svg.push_str(&format!(
         r#"<rect width="{}" height="{}" fill="white"/>"#,
         total_width + header_x_offset,
         total_height + header_y_offset,
-    ));
+    ))?;
 
     // Render column headers
     if options.show_headers {
-        render_column_headers(&mut svg, &col_widths, min_col, header_x_offset, options);
-        render_row_headers(&mut svg, &row_heights, min_row, header_y_offset, options);
+        render_column_headers(&mut svg, col_widths, min_col, header_x_offset, options)?;
+        render_row_headers(&mut svg, &row_heights, min_row, header_y_offset, options)?;
     }
 
-    // Build cell layouts
-    let layouts = build_cell_layouts(
-        &col_widths,
-        &row_heights,
+    let layouts = LayoutGrid {
+        col_widths,
+        col_styles: &column_metadata.styles,
+        row_heights: &row_heights,
         min_col,
         min_row,
-        max_col,
-        max_row,
-        header_x_offset,
-        header_y_offset,
-    );
+        x_offset: header_x_offset,
+        y_offset: header_y_offset,
+    };
 
     // Render cell fills
-    render_cell_fills(&mut svg, ws, stylesheet, theme, &layouts);
+    render_cell_fills(&mut svg, ws, stylesheet, theme, &layouts)?;
 
     // Render gridlines
     if options.show_gridlines {
         render_gridlines(
             &mut svg,
-            &col_widths,
+            col_widths,
             &row_heights,
             total_width,
             total_height,
             header_x_offset,
             header_y_offset,
-        );
+        )?;
     }
 
     // Render cell borders
-    render_cell_borders(&mut svg, ws, stylesheet, theme, &layouts, min_col, min_row);
+    render_cell_borders(&mut svg, ws, stylesheet, theme, &layouts, min_col, min_row)?;
 
     // Render cell text
     render_cell_text(
         &mut svg, ws, sst, stylesheet, theme, &layouts, min_col, min_row, options,
-    );
+    )?;
 
-    svg.push_str("</svg>");
-    Ok(svg)
+    svg.push_str("</svg>")?;
+    Ok(svg.finish())
+}
+
+fn render_checked_rect(
+    min_col: u32,
+    min_row: u32,
+    max_col: u32,
+    max_row: u32,
+    limits: TraversalLimits,
+) -> Result<CheckedRect> {
+    CheckedRect::new(min_row, max_row, min_col, max_col, limits).map_err(|error| match error {
+        Error::ResourceLimitExceeded(metadata) => ResourceLimitError::exceeded(
+            ResourceOperation::Render,
+            ResourceCategory::Traversal,
+            metadata.dimension(),
+            metadata.limit(),
+            metadata.observed(),
+            Some(ResourceStage::Render),
+        )
+        .map(Error::from)
+        .unwrap_or_else(|| Error::Internal("invalid render resource limit".to_string())),
+        other => other,
+    })
 }
 
 /// Determine the range of cells to render.
 fn compute_range(
     ws: &WorksheetXml,
-    sst: &SharedStringTable,
+    _sst: &SharedStringTable,
     options: &RenderOptions,
+    limits: TraversalLimits,
 ) -> Result<(u32, u32, u32, u32)> {
     if let Some(ref range) = options.range {
         let parts: Vec<&str> = range.split(':').collect();
@@ -223,19 +478,41 @@ fn compute_range(
     } else {
         // Rendering computes bounds from cell presence only, so date
         // promotion is not relevant here. Skip the lookup.
-        let rows = get_rows(ws, sst, &[])?;
-        if rows.is_empty() {
+        if ws.sheet_data.rows.is_empty() {
             return Ok((1, 1, 1, 1));
         }
         let mut min_col = u32::MAX;
         let mut max_col = 0u32;
-        let min_row = rows.first().map(|(r, _)| *r).unwrap_or(1);
-        let max_row = rows.last().map(|(r, _)| *r).unwrap_or(1);
-        for (_, cells) in &rows {
-            for (col, _) in cells {
-                min_col = min_col.min(*col);
-                max_col = max_col.max(*col);
+        let mut min_row = u32::MAX;
+        let mut max_row = 0;
+        let mut visited_rows = 0u64;
+        let mut visited_cells = 0u64;
+        for row in &ws.sheet_data.rows {
+            visited_rows = visited_rows.saturating_add(1);
+            check_render_visit_limit(ResourceDimension::RowCount, limits.max_rows(), visited_rows)?;
+            if row.cells.is_empty() {
+                continue;
             }
+            min_row = min_row.min(row.r);
+            max_row = max_row.max(row.r);
+            for cell in &row.cells {
+                visited_cells = visited_cells.saturating_add(1);
+                check_render_visit_limit(
+                    ResourceDimension::CellCount,
+                    limits.max_cells(),
+                    visited_cells,
+                )?;
+                let col = if cell.col > 0 {
+                    cell.col
+                } else {
+                    cell_name_to_coordinates(cell.r.as_str())?.0
+                };
+                min_col = min_col.min(col);
+                max_col = max_col.max(col);
+            }
+        }
+        if min_row == u32::MAX {
+            return Ok((1, 1, 1, 1));
         }
         if min_col == u32::MAX {
             min_col = 1;
@@ -247,75 +524,51 @@ fn compute_range(
     }
 }
 
-/// Compute pixel widths for each column in the range.
-fn compute_col_widths(ws: &WorksheetXml, min_col: u32, max_col: u32) -> Vec<f64> {
-    (min_col..=max_col)
-        .map(|col_num| {
-            let col_name = column_number_to_name(col_num).unwrap_or_default();
-            match get_col_width(ws, &col_name) {
-                Some(w) => col_width_to_px(w),
-                None => DEFAULT_COL_WIDTH_PX,
-            }
-        })
-        .collect()
+fn check_render_visit_limit(dimension: ResourceDimension, limit: u64, observed: u64) -> Result<()> {
+    if observed <= limit {
+        return Ok(());
+    }
+    let metadata = ResourceLimitError::exceeded(
+        ResourceOperation::Render,
+        ResourceCategory::Traversal,
+        dimension,
+        limit,
+        observed,
+        Some(ResourceStage::Render),
+    )
+    .ok_or_else(|| Error::Internal("invalid render traversal limit".to_string()))?;
+    Err(metadata.into())
 }
 
 /// Compute pixel heights for each row in the range.
-fn compute_row_heights(ws: &WorksheetXml, min_row: u32, max_row: u32) -> Vec<f64> {
-    (min_row..=max_row)
-        .map(|row_num| match get_row_height(ws, row_num) {
+fn compute_row_heights(ws: &WorksheetXml, min_row: u32, max_row: u32) -> Result<Vec<f64>> {
+    let count = usize::try_from(u64::from(max_row - min_row) + 1)
+        .map_err(|_| Error::Internal("render row count is not addressable".to_string()))?;
+    let mut heights = Vec::new();
+    heights
+        .try_reserve_exact(count)
+        .map_err(|_| Error::Internal("render row layout allocation failed".to_string()))?;
+    for row_num in min_row..=max_row {
+        heights.push(match get_row_height(ws, row_num) {
             Some(h) => row_height_to_px(h),
             None => DEFAULT_ROW_HEIGHT_PX,
-        })
-        .collect()
-}
-
-/// Build a grid of CellLayout structs for every cell position in the range.
-#[allow(clippy::too_many_arguments)]
-fn build_cell_layouts(
-    col_widths: &[f64],
-    row_heights: &[f64],
-    min_col: u32,
-    min_row: u32,
-    max_col: u32,
-    max_row: u32,
-    x_offset: f64,
-    y_offset: f64,
-) -> Vec<CellLayout> {
-    let mut layouts = Vec::new();
-    let mut y = y_offset;
-    for (ri, row_num) in (min_row..=max_row).enumerate() {
-        let h = row_heights[ri];
-        let mut x = x_offset;
-        for (ci, col_num) in (min_col..=max_col).enumerate() {
-            let w = col_widths[ci];
-            layouts.push(CellLayout {
-                x,
-                y,
-                width: w,
-                height: h,
-                col: col_num,
-                row: row_num,
-            });
-            x += w;
-        }
-        y += h;
+        });
     }
-    layouts
+    Ok(heights)
 }
 
 /// Render column header labels (A, B, C, ...).
 fn render_column_headers(
-    svg: &mut String,
+    svg: &mut SvgOutput,
     col_widths: &[f64],
     min_col: u32,
     x_offset: f64,
     _options: &RenderOptions,
-) {
+) -> Result<()> {
     let total_w: f64 = col_widths.iter().sum();
     svg.push_str(&format!(
         "<rect x=\"{x_offset}\" y=\"0\" width=\"{total_w}\" height=\"{HEADER_HEIGHT}\" fill=\"{HEADER_BG_COLOR}\"/>",
-    ));
+    ))?;
 
     let mut x = x_offset;
     for (i, &w) in col_widths.iter().enumerate() {
@@ -325,23 +578,24 @@ fn render_column_headers(
         let text_y = HEADER_HEIGHT / 2.0 + 4.0;
         svg.push_str(&format!(
             "<text x=\"{text_x}\" y=\"{text_y}\" text-anchor=\"middle\" fill=\"{HEADER_TEXT_COLOR}\" font-size=\"10\">{col_name}</text>",
-        ));
+        ))?;
         x += w;
     }
+    Ok(())
 }
 
 /// Render row header labels (1, 2, 3, ...).
 fn render_row_headers(
-    svg: &mut String,
+    svg: &mut SvgOutput,
     row_heights: &[f64],
     min_row: u32,
     y_offset: f64,
     _options: &RenderOptions,
-) {
+) -> Result<()> {
     let total_h: f64 = row_heights.iter().sum();
     svg.push_str(&format!(
         "<rect x=\"0\" y=\"{y_offset}\" width=\"{HEADER_WIDTH}\" height=\"{total_h}\" fill=\"{HEADER_BG_COLOR}\"/>",
-    ));
+    ))?;
 
     let mut y = y_offset;
     for (i, &h) in row_heights.iter().enumerate() {
@@ -350,57 +604,59 @@ fn render_row_headers(
         let text_y = y + h / 2.0 + 4.0;
         svg.push_str(&format!(
             "<text x=\"{text_x}\" y=\"{text_y}\" text-anchor=\"middle\" fill=\"{HEADER_TEXT_COLOR}\" font-size=\"10\">{row_num}</text>",
-        ));
+        ))?;
         y += h;
     }
+    Ok(())
 }
 
 /// Render cell background fills.
 fn render_cell_fills(
-    svg: &mut String,
+    svg: &mut SvgOutput,
     ws: &WorksheetXml,
     stylesheet: &StyleSheet,
     theme: &ThemeColors,
-    layouts: &[CellLayout],
-) {
-    for layout in layouts {
-        let style_id = find_cell_style(ws, layout.col, layout.row);
+    layouts: &LayoutGrid<'_>,
+) -> Result<()> {
+    layouts.for_each(|layout| {
+        let style_id = find_cell_style(ws, layout.col, layout.row, layout.column_style);
         if style_id == 0 {
-            continue;
+            return Ok(());
         }
         if let Some(style) = get_style(stylesheet, style_id) {
             if let Some(ref fill) = style.fill {
                 if fill.pattern == PatternType::Solid {
                     if let Some(ref color) = fill.fg_color {
-                        let hex = style_color_to_hex(color, theme);
+                        let hex = style_color_to_hex(color, theme)?;
                         svg.push_str(&format!(
                             r#"<rect x="{}" y="{}" width="{}" height="{}" fill="{}"/>"#,
                             layout.x, layout.y, layout.width, layout.height, hex
-                        ));
+                        ))?;
                     }
                 }
             }
         }
-    }
+        Ok(())
+    })
 }
 
 /// Render gridlines.
 fn render_gridlines(
-    svg: &mut String,
+    svg: &mut SvgOutput,
     col_widths: &[f64],
     row_heights: &[f64],
     total_width: f64,
     total_height: f64,
     x_offset: f64,
     y_offset: f64,
-) {
+) -> Result<()> {
     let mut y = y_offset;
     for h in row_heights {
         y += h;
         let x2 = x_offset + total_width;
         svg.push_str(&format!(
             "<line x1=\"{x_offset}\" y1=\"{y}\" x2=\"{x2}\" y2=\"{y}\" stroke=\"{GRIDLINE_COLOR}\" stroke-width=\"0.5\"/>",
-        ));
+        ))?;
     }
 
     let mut x = x_offset;
@@ -409,32 +665,33 @@ fn render_gridlines(
         let y2 = y_offset + total_height;
         svg.push_str(&format!(
             "<line x1=\"{x}\" y1=\"{y_offset}\" x2=\"{x}\" y2=\"{y2}\" stroke=\"{GRIDLINE_COLOR}\" stroke-width=\"0.5\"/>",
-        ));
+        ))?;
     }
+    Ok(())
 }
 
 /// Render cell borders.
 fn render_cell_borders(
-    svg: &mut String,
+    svg: &mut SvgOutput,
     ws: &WorksheetXml,
     stylesheet: &StyleSheet,
     theme: &ThemeColors,
-    layouts: &[CellLayout],
+    layouts: &LayoutGrid<'_>,
     _min_col: u32,
     _min_row: u32,
-) {
-    for layout in layouts {
-        let style_id = find_cell_style(ws, layout.col, layout.row);
+) -> Result<()> {
+    layouts.for_each(|layout| {
+        let style_id = find_cell_style(ws, layout.col, layout.row, layout.column_style);
         if style_id == 0 {
-            continue;
+            return Ok(());
         }
         let style = match get_style(stylesheet, style_id) {
             Some(s) => s,
-            None => continue,
+            None => return Ok(()),
         };
         let border = match &style.border {
             Some(b) => b,
-            None => continue,
+            None => return Ok(()),
         };
 
         let x1 = layout.x;
@@ -443,87 +700,88 @@ fn render_cell_borders(
         let y2 = layout.y + layout.height;
 
         if let Some(ref left) = border.left {
-            let (sw, color) = border_line_attrs(left.style, left.color.as_ref(), theme);
+            let (sw, color) = border_line_attrs(left.style, left.color.as_ref(), theme)?;
             svg.push_str(&format!(
                 r#"<line x1="{x1}" y1="{y1}" x2="{x1}" y2="{y2}" stroke="{color}" stroke-width="{sw}"/>"#,
-            ));
+            ))?;
         }
         if let Some(ref right) = border.right {
-            let (sw, color) = border_line_attrs(right.style, right.color.as_ref(), theme);
+            let (sw, color) = border_line_attrs(right.style, right.color.as_ref(), theme)?;
             svg.push_str(&format!(
                 r#"<line x1="{x2}" y1="{y1}" x2="{x2}" y2="{y2}" stroke="{color}" stroke-width="{sw}"/>"#,
-            ));
+            ))?;
         }
         if let Some(ref top) = border.top {
-            let (sw, color) = border_line_attrs(top.style, top.color.as_ref(), theme);
+            let (sw, color) = border_line_attrs(top.style, top.color.as_ref(), theme)?;
             svg.push_str(&format!(
                 r#"<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y1}" stroke="{color}" stroke-width="{sw}"/>"#,
-            ));
+            ))?;
         }
         if let Some(ref bottom) = border.bottom {
-            let (sw, color) = border_line_attrs(bottom.style, bottom.color.as_ref(), theme);
+            let (sw, color) = border_line_attrs(bottom.style, bottom.color.as_ref(), theme)?;
             svg.push_str(&format!(
                 r#"<line x1="{x1}" y1="{y2}" x2="{x2}" y2="{y2}" stroke="{color}" stroke-width="{sw}"/>"#,
-            ));
+            ))?;
         }
-    }
+        Ok(())
+    })
 }
 
 /// Render cell text values.
 #[allow(clippy::too_many_arguments)]
 fn render_cell_text(
-    svg: &mut String,
+    svg: &mut SvgOutput,
     ws: &WorksheetXml,
     sst: &SharedStringTable,
     stylesheet: &StyleSheet,
     theme: &ThemeColors,
-    layouts: &[CellLayout],
+    layouts: &LayoutGrid<'_>,
     _min_col: u32,
     _min_row: u32,
     options: &RenderOptions,
-) {
-    for layout in layouts {
-        let cell_value = find_cell_value(ws, sst, layout.col, layout.row);
-        if cell_value == CellValue::Empty {
-            continue;
+) -> Result<()> {
+    layouts.for_each(|layout| {
+        let Some(cell) = find_cell(ws, layout.col, layout.row) else {
+            return Ok(());
+        };
+        let cell_text = CellText::from_cell(cell, sst);
+        if cell_text.is_empty() {
+            return Ok(());
         }
 
-        let display_text = cell_value.to_string();
-        if display_text.is_empty() {
-            continue;
-        }
-
-        let style_id = find_cell_style(ws, layout.col, layout.row);
+        let style_id = find_cell_style(ws, layout.col, layout.row, layout.column_style);
         let style = get_style(stylesheet, style_id);
 
         let font = style.as_ref().and_then(|s| s.font.as_ref());
         let alignment = style.as_ref().and_then(|s| s.alignment.as_ref());
 
         let (text_x, anchor) = compute_text_x(layout, alignment);
-        let text_y = compute_text_y(layout, alignment, font, options);
+        let text_y = compute_text_y(layout, alignment, font, options)?;
 
-        let escaped = xml_escape(&display_text);
-
-        let mut attrs = String::new();
-        attrs.push_str(&format!(r#" x="{text_x}" y="{text_y}""#));
-        attrs.push_str(&format!(r#" text-anchor="{anchor}""#));
+        let mut attrs = svg.stage();
+        attrs.push_str(&format!(r#" x="{text_x}" y="{text_y}""#))?;
+        attrs.push_str(&format!(r#" text-anchor="{anchor}""#))?;
 
         if let Some(f) = font {
             if f.bold {
-                attrs.push_str(r#" font-weight="bold""#);
+                attrs.push_str(r#" font-weight="bold""#)?;
             }
             if f.italic {
-                attrs.push_str(r#" font-style="italic""#);
+                attrs.push_str(r#" font-style="italic""#)?;
             }
             if let Some(ref name) = f.name {
-                attrs.push_str(&format!(r#" font-family="{name}""#));
+                attrs.push_str(r#" font-family=""#)?;
+                let name = css_font_family_attribute(name, &attrs)?;
+                attrs.push_str(&name)?;
+                attrs.push_str("\"")?;
             }
             if let Some(size) = f.size {
-                attrs.push_str(&format!(r#" font-size="{size}""#));
+                validate_positive_finite(size, "font size must be positive and finite")?;
+                attrs.push_str(&format!(r#" font-size="{size}""#))?;
             }
             if let Some(ref color) = f.color {
-                let hex = style_color_to_hex(color, theme);
-                attrs.push_str(&format!(r#" fill="{hex}""#));
+                let hex = style_color_to_hex(color, theme)?;
+                attrs.push_str(&format!(r#" fill="{hex}""#))?;
             }
             let mut decorations = Vec::new();
             if f.underline {
@@ -533,11 +791,128 @@ fn render_cell_text(
                 decorations.push("line-through");
             }
             if !decorations.is_empty() {
-                attrs.push_str(&format!(r#" text-decoration="{}""#, decorations.join(" ")));
+                attrs.push_str(&format!(r#" text-decoration="{}""#, decorations.join(" ")))?;
             }
         }
 
-        svg.push_str(&format!("<text{attrs}>{escaped}</text>"));
+        svg.push_str("<text")?;
+        svg.push_str(&attrs.finish())?;
+        svg.push_str(">")?;
+        cell_text.write_escaped(svg)?;
+        svg.push_str("</text>")?;
+        Ok(())
+    })
+}
+
+enum CellText<'a> {
+    Empty,
+    Borrowed(&'a str),
+    Inline(&'a InlineString),
+    Formula(&'a str),
+    Static(&'static str),
+    Number(f64),
+}
+
+impl<'a> CellText<'a> {
+    fn from_cell(cell: &'a Cell, sst: &'a SharedStringTable) -> Self {
+        if let Some(formula) = cell.f.as_deref() {
+            let expression = formula.value.as_deref().unwrap_or("");
+            return match (cell.t, cell.v.as_deref()) {
+                (CellTypeTag::Boolean, Some(value)) => {
+                    Self::Static(if value == "1" { "TRUE" } else { "FALSE" })
+                }
+                (CellTypeTag::Error | CellTypeTag::FormulaString, Some(value)) => {
+                    Self::Borrowed(value)
+                }
+                (CellTypeTag::SharedString, Some(value)) => sst_text(sst, value),
+                (CellTypeTag::InlineString, _) => {
+                    cell.is.as_deref().map(Self::Inline).unwrap_or(Self::Empty)
+                }
+                (CellTypeTag::None | CellTypeTag::Number | CellTypeTag::Date, Some(value)) => value
+                    .parse::<f64>()
+                    .map(Self::Number)
+                    .unwrap_or(Self::Formula(expression)),
+                _ => Self::Formula(expression),
+            };
+        }
+
+        match (cell.t, cell.v.as_deref()) {
+            (CellTypeTag::SharedString, Some(value)) => sst_text(sst, value),
+            (CellTypeTag::Boolean, Some(value)) => {
+                Self::Static(if value == "1" { "TRUE" } else { "FALSE" })
+            }
+            (CellTypeTag::Error | CellTypeTag::FormulaString, Some(value)) => Self::Borrowed(value),
+            (CellTypeTag::InlineString, _) => {
+                cell.is.as_deref().map(Self::Inline).unwrap_or(Self::Empty)
+            }
+            (CellTypeTag::None | CellTypeTag::Number, Some(value)) => value
+                .parse::<f64>()
+                .map(Self::Number)
+                .unwrap_or(Self::Empty),
+            _ => Self::Empty,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        match self {
+            Self::Empty => true,
+            Self::Borrowed(value) | Self::Static(value) => value.is_empty(),
+            Self::Inline(value) => {
+                value.t.as_deref().is_none_or(str::is_empty)
+                    && value.r.iter().all(|run| run.t.value.is_empty())
+            }
+            Self::Formula(_) | Self::Number(_) => false,
+        }
+    }
+
+    fn write_escaped(&self, output: &mut SvgOutput) -> Result<()> {
+        match self {
+            Self::Empty => Ok(()),
+            Self::Borrowed(value) | Self::Static(value) => push_xml_text(output, value),
+            Self::Inline(value) => {
+                let escaped_len = value
+                    .t
+                    .as_deref()
+                    .map(xml_text_escaped_len)
+                    .transpose()?
+                    .unwrap_or(0);
+                let escaped_len = value.r.iter().try_fold(escaped_len, |total, run| {
+                    Ok::<_, Error>(total.saturating_add(xml_text_escaped_len(&run.t.value)?))
+                })?;
+                output.ensure_additional(escaped_len)?;
+                if let Some(text) = value.t.as_deref() {
+                    push_xml_text_unchecked(output, text)?;
+                }
+                for run in &value.r {
+                    push_xml_text_unchecked(output, &run.t.value)?;
+                }
+                Ok(())
+            }
+            Self::Formula(expression) => {
+                let escaped_len = 1u64.saturating_add(xml_text_escaped_len(expression)?);
+                output.ensure_additional(escaped_len)?;
+                output.push_str("=")?;
+                push_xml_text_unchecked(output, expression)
+            }
+            Self::Number(number) => push_xml_text(output, &display_number(*number)),
+        }
+    }
+}
+
+fn sst_text<'a>(sst: &'a SharedStringTable, index: &str) -> CellText<'a> {
+    index
+        .parse::<usize>()
+        .ok()
+        .and_then(|index| sst.get(index))
+        .map(CellText::Borrowed)
+        .unwrap_or(CellText::Empty)
+}
+
+fn display_number(number: f64) -> String {
+    if number.fract() == 0.0 && number.is_finite() {
+        (number as i64).to_string()
+    } else {
+        number.to_string()
     }
 }
 
@@ -559,19 +934,20 @@ fn compute_text_y(
     alignment: Option<&AlignmentStyle>,
     font: Option<&FontStyle>,
     options: &RenderOptions,
-) -> f64 {
+) -> Result<f64> {
     let font_size = font
         .and_then(|f| f.size)
         .unwrap_or(options.default_font_size);
-    match alignment.and_then(|a| a.vertical) {
+    validate_positive_finite(font_size, "font size must be positive and finite")?;
+    Ok(match alignment.and_then(|a| a.vertical) {
         Some(VerticalAlign::Top) => layout.y + font_size + 2.0,
         Some(VerticalAlign::Center) => layout.y + layout.height / 2.0 + font_size / 3.0,
         _ => layout.y + layout.height - 4.0,
-    }
+    })
 }
 
 /// Find the style ID for a cell at the given coordinates.
-fn find_cell_style(ws: &WorksheetXml, col: u32, row: u32) -> u32 {
+fn find_cell_style(ws: &WorksheetXml, col: u32, row: u32, column_style: u32) -> u32 {
     let row_data = ws
         .sheet_data
         .rows
@@ -595,19 +971,11 @@ fn find_cell_style(ws: &WorksheetXml, col: u32, row: u32) -> u32 {
         }
     }
 
-    ws.cols
-        .as_ref()
-        .and_then(|cols| {
-            cols.cols
-                .iter()
-                .find(|column| column.min <= col && col <= column.max)
-                .and_then(|column| column.style)
-        })
-        .unwrap_or(0)
+    column_style
 }
 
-/// Find the CellValue for a cell at the given coordinates.
-fn find_cell_value(ws: &WorksheetXml, sst: &SharedStringTable, col: u32, row: u32) -> CellValue {
+/// Find a cell at the given coordinates without cloning its value.
+fn find_cell(ws: &WorksheetXml, col: u32, row: u32) -> Option<&Cell> {
     ws.sheet_data
         .rows
         .binary_search_by_key(&row, |r| r.r)
@@ -618,34 +986,36 @@ fn find_cell_value(ws: &WorksheetXml, sst: &SharedStringTable, col: u32, row: u3
                 .cells
                 .binary_search_by_key(&col, |c| c.col)
                 .ok()
-                // Rendering formats numeric values using the stylesheet
-                // directly; no date-promotion step is needed here.
-                .map(|ci| resolve_cell_value(&row_data.cells[ci], sst, &[]))
+                .map(|ci| &row_data.cells[ci])
         })
-        .unwrap_or(CellValue::Empty)
 }
 
-/// Convert a StyleColor to a CSS hex color string.
-///
-/// Handles several input formats: 8-char ARGB (`FF000000`), 6-char RGB
-/// (`000000`), and values already prefixed with `#`. Always returns a
-/// `#RRGGBB` string suitable for SVG attributes.
-fn style_color_to_hex(color: &StyleColor, theme: &ThemeColors) -> String {
+/// Convert a StyleColor to a validated SVG hex color string.
+fn style_color_to_hex(color: &StyleColor, theme: &ThemeColors) -> Result<String> {
     match color {
-        StyleColor::Rgb(rgb) => {
-            let stripped = rgb.strip_prefix('#').unwrap_or(rgb);
-            if stripped.len() == 8 {
-                // ARGB format (e.g. "FF000000") -> "#000000"
-                format!("#{}", &stripped[2..])
-            } else {
-                format!("#{stripped}")
-            }
-        }
-        StyleColor::Theme(index) => resolve_theme_color(theme, *index, None)
-            .map(|color| style_color_to_hex(&StyleColor::Rgb(color), theme))
-            .unwrap_or_else(|| "#000000".to_string()),
-        StyleColor::Indexed(_) => "#000000".to_string(),
+        StyleColor::Rgb(rgb) => rgb_to_svg_hex(rgb),
+        StyleColor::Theme(index) => match resolve_theme_color(theme, *index, None) {
+            Some(color) => rgb_to_svg_hex(&color),
+            None => Ok("#000000".to_string()),
+        },
+        StyleColor::Indexed(_) => Ok("#000000".to_string()),
     }
+}
+
+fn rgb_to_svg_hex(rgb: &str) -> Result<String> {
+    let digits = rgb.strip_prefix('#').unwrap_or(rgb);
+    if !matches!(digits.len(), 6 | 8) || !digits.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(Error::InvalidArgument("invalid SVG color".to_string()));
+    }
+
+    let digits = if digits.len() == 8 {
+        digits
+            .get(2..)
+            .ok_or_else(|| Error::InvalidArgument("invalid SVG color".to_string()))?
+    } else {
+        digits
+    };
+    Ok(format!("#{digits}"))
 }
 
 /// Convert a border line style to SVG stroke-width and color.
@@ -653,7 +1023,7 @@ fn border_line_attrs(
     style: BorderLineStyle,
     color: Option<&StyleColor>,
     theme: &ThemeColors,
-) -> (f64, String) {
+) -> Result<(f64, String)> {
     let stroke_width = match style {
         BorderLineStyle::Thin | BorderLineStyle::Hair => 1.0,
         BorderLineStyle::Medium
@@ -665,24 +1035,121 @@ fn border_line_attrs(
     };
     let color_str = color
         .map(|color| style_color_to_hex(color, theme))
+        .transpose()?
         .unwrap_or_else(|| "#000000".to_string());
-    (stroke_width, color_str)
+    Ok((stroke_width, color_str))
 }
 
-/// Escape special XML characters in text content.
-fn xml_escape(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
+fn validate_positive_finite(value: f64, message: &'static str) -> Result<()> {
+    if !value.is_finite() || value <= 0.0 {
+        return Err(Error::InvalidArgument(message.to_string()));
+    }
+    Ok(())
+}
+
+fn validate_finite_nonnegative(value: f64, message: &'static str) -> Result<()> {
+    if !value.is_finite() || value < 0.0 {
+        return Err(Error::InvalidArgument(message.to_string()));
+    }
+    Ok(())
+}
+
+fn is_xml_char(c: char) -> bool {
+    matches!(c, '\u{9}' | '\u{A}' | '\u{D}')
+        || ('\u{20}'..='\u{D7FF}').contains(&c)
+        || ('\u{E000}'..='\u{FFFD}').contains(&c)
+        || ('\u{10000}'..='\u{10FFFF}').contains(&c)
+}
+
+fn validate_xml_chars(value: &str, message: &'static str) -> Result<()> {
+    if value.chars().any(|c| !is_xml_char(c)) {
+        return Err(Error::InvalidArgument(message.to_string()));
+    }
+    Ok(())
+}
+
+/// Escape XML text while preserving printable Unicode.
+#[cfg(test)]
+fn xml_text_escape(s: &str) -> Result<String> {
+    let mut out = SvgOutput::new(MAX_SVG_OUTPUT_BYTES);
+    push_xml_text(&mut out, s)?;
+    Ok(out.finish())
+}
+
+fn push_xml_text(output: &mut SvgOutput, value: &str) -> Result<()> {
+    output.ensure_additional(xml_text_escaped_len(value)?)?;
+    push_xml_text_unchecked(output, value)
+}
+
+fn xml_text_escaped_len(value: &str) -> Result<u64> {
+    validate_xml_chars(value, "SVG text contains an XML-forbidden character")?;
+    Ok(value.chars().fold(0u64, |length, c| {
+        length.saturating_add(match c {
+            '&' => 5,
+            '<' | '>' => 4,
+            _ => u64::from(c.len_utf8() as u32),
+        })
+    }))
+}
+
+fn push_xml_text_unchecked(out: &mut SvgOutput, s: &str) -> Result<()> {
     for c in s.chars() {
         match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&apos;"),
-            _ => out.push(c),
+            '&' => out.push_str("&amp;")?,
+            '<' => out.push_str("&lt;")?,
+            '>' => out.push_str("&gt;")?,
+            _ => {
+                let mut encoded = [0; 4];
+                out.push_str(c.encode_utf8(&mut encoded))?;
+            }
         }
     }
-    out
+    Ok(())
+}
+
+/// Escape one XML attribute after its CSS value has been encoded.
+fn xml_attribute_escape(s: &str, parent: &SvgOutput) -> Result<String> {
+    validate_xml_chars(s, "SVG attribute contains an XML-forbidden character")?;
+    let mut out = parent.stage();
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;")?,
+            '<' => out.push_str("&lt;")?,
+            '>' => out.push_str("&gt;")?,
+            '"' => out.push_str("&quot;")?,
+            '\'' => out.push_str("&apos;")?,
+            _ => {
+                let mut encoded = [0; 4];
+                out.push_str(c.encode_utf8(&mut encoded))?;
+            }
+        }
+    }
+    Ok(out.finish())
+}
+
+/// Encode a font family as one CSS string, then as one XML attribute value.
+fn css_font_family_attribute(value: &str, parent: &SvgOutput) -> Result<String> {
+    validate_xml_chars(value, "SVG font family contains an XML-forbidden character")?;
+    let mut css = parent.stage();
+    css.push_str("\"")?;
+    for c in value.chars() {
+        match c {
+            '"' => css.push_str("\\\"")?,
+            '\\' => css.push_str("\\\\")?,
+            '\n' => css.push_str("\\A ")?,
+            '\r' => css.push_str("\\D ")?,
+            '\t' => css.push_str("\\9 ")?,
+            '<' => css.push_str("\\3C ")?,
+            '>' => css.push_str("\\3E ")?,
+            '&' => css.push_str("\\26 ")?,
+            _ => {
+                let mut encoded = [0; 4];
+                css.push_str(c.encode_utf8(&mut encoded))?;
+            }
+        }
+    }
+    css.push_str("\"")?;
+    xml_attribute_escape(&css.finish(), parent)
 }
 
 #[cfg(test)]
@@ -703,7 +1170,7 @@ mod tests {
 
     fn make_num_cell(r: &str, col: u32, v: &str) -> Cell {
         Cell {
-            r: r.into(),
+            r: r.try_into().unwrap(),
             col,
             s: None,
             t: CellTypeTag::None,
@@ -715,7 +1182,7 @@ mod tests {
 
     fn make_sst_cell(r: &str, col: u32, sst_idx: u32) -> Cell {
         Cell {
-            r: r.into(),
+            r: r.try_into().unwrap(),
             col,
             s: None,
             t: CellTypeTag::SharedString,
@@ -772,6 +1239,206 @@ mod tests {
         assert!(svg.starts_with("<svg"));
         assert!(svg.ends_with("</svg>"));
         assert!(svg.contains("xmlns=\"http://www.w3.org/2000/svg\""));
+    }
+
+    #[test]
+    fn render_dense_area_accepts_exact_limit_and_rejects_plus_one() {
+        let (ws, sst) = simple_ws_and_sst();
+        let stylesheet = StyleSheet::default();
+        let mut options = default_options("Sheet1");
+        options.range = Some("A1:B2".to_string());
+        let exact = TraversalLimits::new(2, 2, 4, 1024 * 1024).unwrap();
+        render_to_svg_with_limits(&ws, &sst, &stylesheet, &options, exact).unwrap();
+
+        let plus_one = TraversalLimits::new(2, 2, 3, 1024 * 1024).unwrap();
+        let error =
+            render_to_svg_with_limits(&ws, &sst, &stylesheet, &options, plus_one).unwrap_err();
+        let Error::ResourceLimitExceeded(metadata) = error else {
+            panic!("expected resource limit error");
+        };
+        assert_eq!(metadata.operation(), ResourceOperation::Render);
+        assert_eq!(metadata.dimension(), ResourceDimension::CellCount);
+        assert_eq!(metadata.limit(), 3);
+        assert_eq!(metadata.observed(), 4);
+    }
+
+    #[test]
+    fn range_discovery_charges_duplicate_cell_visits() {
+        let mut ws = WorksheetXml::default();
+        ws.sheet_data.rows = vec![Row {
+            r: 1,
+            spans: None,
+            s: None,
+            custom_format: None,
+            ht: None,
+            hidden: None,
+            custom_height: None,
+            outline_level: None,
+            cells: vec![make_num_cell("A1", 1, "1"), make_num_cell("A1", 1, "2")],
+        }];
+        let options = default_options("Sheet1");
+        let exact = TraversalLimits::new(1, 1, 2, 1024 * 1024).unwrap();
+        render_to_svg_with_limits(
+            &ws,
+            &SharedStringTable::new(),
+            &StyleSheet::default(),
+            &options,
+            exact,
+        )
+        .unwrap();
+
+        let plus_one = TraversalLimits::new(1, 1, 1, 1024 * 1024).unwrap();
+        let error = render_to_svg_with_limits(
+            &ws,
+            &SharedStringTable::new(),
+            &StyleSheet::default(),
+            &options,
+            plus_one,
+        )
+        .unwrap_err();
+        let Error::ResourceLimitExceeded(metadata) = error else {
+            panic!("expected resource limit error");
+        };
+        assert_eq!(metadata.dimension(), ResourceDimension::CellCount);
+        assert_eq!(metadata.limit(), 1);
+        assert_eq!(metadata.observed(), 2);
+    }
+
+    #[test]
+    fn range_discovery_charges_duplicate_row_visits() {
+        let mut ws = WorksheetXml::default();
+        let duplicate_row = Row {
+            r: 1,
+            spans: None,
+            s: None,
+            custom_format: None,
+            ht: None,
+            hidden: None,
+            custom_height: None,
+            outline_level: None,
+            cells: vec![make_num_cell("A1", 1, "1")],
+        };
+        ws.sheet_data.rows = vec![duplicate_row.clone(), duplicate_row];
+        let options = default_options("Sheet1");
+        let exact = TraversalLimits::new(2, 1, 2, 1024 * 1024).unwrap();
+        render_to_svg_with_limits(
+            &ws,
+            &SharedStringTable::new(),
+            &StyleSheet::default(),
+            &options,
+            exact,
+        )
+        .unwrap();
+
+        let plus_one = TraversalLimits::new(1, 1, 2, 1024 * 1024).unwrap();
+        let error = render_to_svg_with_limits(
+            &ws,
+            &SharedStringTable::new(),
+            &StyleSheet::default(),
+            &options,
+            plus_one,
+        )
+        .unwrap_err();
+        let Error::ResourceLimitExceeded(metadata) = error else {
+            panic!("expected resource limit error");
+        };
+        assert_eq!(metadata.dimension(), ResourceDimension::RowCount);
+        assert_eq!(metadata.limit(), 1);
+        assert_eq!(metadata.observed(), 2);
+    }
+
+    #[test]
+    fn bounded_text_escape_rejects_before_growing_output() {
+        let text = "<&>".repeat(1_000_000);
+        let mut output = SvgOutput::new(16);
+
+        let error = push_xml_text(&mut output, &text).unwrap_err();
+
+        assert!(matches!(error, Error::ResourceLimitExceeded(_)));
+        assert_eq!(output.value.capacity(), 0);
+    }
+
+    #[test]
+    fn font_family_helper_uses_the_caller_output_limit() {
+        let font_family = "<&>".repeat(1_000_000);
+        let output = SvgOutput::new(16);
+
+        let error = css_font_family_attribute(&font_family, &output).unwrap_err();
+
+        let Error::ResourceLimitExceeded(metadata) = error else {
+            panic!("expected resource limit error");
+        };
+        assert_eq!(metadata.dimension(), ResourceDimension::OutputBytes);
+        assert_eq!(metadata.limit(), 16);
+    }
+
+    #[test]
+    fn render_admits_far_rows_before_layout_allocation() {
+        let mut ws = WorksheetXml::default();
+        ws.sheet_data.rows = vec![
+            Row {
+                r: 1,
+                spans: None,
+                s: None,
+                custom_format: None,
+                ht: None,
+                hidden: None,
+                custom_height: None,
+                outline_level: None,
+                cells: vec![make_num_cell("A1", 1, "1")],
+            },
+            Row {
+                r: 1_048_576,
+                spans: None,
+                s: None,
+                custom_format: None,
+                ht: None,
+                hidden: None,
+                custom_height: None,
+                outline_level: None,
+                cells: vec![make_num_cell("A1048576", 1, "2")],
+            },
+        ];
+        let options = default_options("Sheet1");
+        let limits = TraversalLimits::new(1_048_576, 1, 2, 1024).unwrap();
+        let error = render_to_svg_with_limits(
+            &ws,
+            &SharedStringTable::new(),
+            &StyleSheet::default(),
+            &options,
+            limits,
+        )
+        .unwrap_err();
+        let Error::ResourceLimitExceeded(metadata) = error else {
+            panic!("expected resource limit error");
+        };
+        assert_eq!(metadata.dimension(), ResourceDimension::CellCount);
+        assert_eq!(metadata.observed(), 1_048_576);
+    }
+
+    #[test]
+    fn explicit_default_limits_preserve_svg_output() {
+        let (ws, sst) = simple_ws_and_sst();
+        let stylesheet = StyleSheet::default();
+        let options = default_options("Sheet1");
+        let default_svg = render_to_svg(&ws, &sst, &stylesheet, &options).unwrap();
+        let explicit_svg =
+            render_to_svg_with_limits(&ws, &sst, &stylesheet, &options, TraversalLimits::default())
+                .unwrap();
+        assert_eq!(default_svg, explicit_svg);
+
+        let exact = TraversalLimits::new(2, 2, 4, default_svg.len() as u64).unwrap();
+        assert_eq!(
+            render_to_svg_with_limits(&ws, &sst, &stylesheet, &options, exact).unwrap(),
+            default_svg
+        );
+        let too_small = TraversalLimits::new(2, 2, 4, default_svg.len() as u64 - 1).unwrap();
+        let error =
+            render_to_svg_with_limits(&ws, &sst, &stylesheet, &options, too_small).unwrap_err();
+        let Error::ResourceLimitExceeded(metadata) = error else {
+            panic!("expected resource limit error");
+        };
+        assert_eq!(metadata.dimension(), ResourceDimension::OutputBytes);
     }
 
     #[test]
@@ -868,6 +1535,50 @@ mod tests {
 
         assert!(svg.starts_with("<svg"));
         assert!(svg.contains(">Name<"));
+    }
+
+    #[test]
+    fn column_metadata_index_resolves_overlaps_once_with_first_definition_winning() {
+        let mut ws = WorksheetXml::default();
+        let definition_count = 4_096usize;
+        let visible_columns = 64usize;
+        let mut definitions = Vec::with_capacity(definition_count);
+        for index in 0..definition_count {
+            definitions.push(Col {
+                min: 1,
+                max: visible_columns as u32,
+                width: Some(10.0 + index as f64),
+                style: Some(index as u32),
+                hidden: None,
+                custom_width: Some(true),
+                outline_level: None,
+            });
+        }
+        ws.cols = Some(Cols { cols: definitions });
+
+        let (metadata, resolution_work) =
+            ColumnMetadataIndex::build(&ws, 1, visible_columns as u32).unwrap();
+
+        assert_eq!(resolution_work, definition_count + visible_columns);
+        assert_eq!(metadata.widths.len(), visible_columns);
+        assert_eq!(metadata.styles.len(), visible_columns);
+        assert!(metadata
+            .widths
+            .iter()
+            .all(|width| *width == col_width_to_px(10.0)));
+        assert!(metadata.styles.iter().all(|style| *style == 0));
+
+        let mut options = default_options("Sheet1");
+        let last_column = column_number_to_name(visible_columns as u32).unwrap();
+        options.range = Some(format!("A1:{last_column}64"));
+        let svg = render_to_svg(
+            &ws,
+            &SharedStringTable::new(),
+            &StyleSheet::default(),
+            &options,
+        )
+        .unwrap();
+        assert!(svg.ends_with("</svg>"));
     }
 
     #[test]
@@ -1006,9 +1717,9 @@ mod tests {
             }],
         });
 
-        assert_eq!(find_cell_style(&ws, 1, 1), 0);
-        assert_eq!(find_cell_style(&ws, 2, 1), 2);
-        assert_eq!(find_cell_style(&ws, 1, 3), 3);
+        assert_eq!(find_cell_style(&ws, 1, 1, 3), 0);
+        assert_eq!(find_cell_style(&ws, 2, 1, 3), 2);
+        assert_eq!(find_cell_style(&ws, 1, 3, 3), 3);
     }
 
     #[test]
@@ -1101,7 +1812,7 @@ mod tests {
                 outline_level: None,
                 cells: vec![
                     Cell {
-                        r: "A1".into(),
+                        r: "A1".try_into().unwrap(),
                         col: 1,
                         s: None,
                         t: CellTypeTag::SharedString,
@@ -1110,7 +1821,7 @@ mod tests {
                         is: None,
                     },
                     Cell {
-                        r: "B1".into(),
+                        r: "B1".try_into().unwrap(),
                         col: 2,
                         s: None,
                         t: CellTypeTag::SharedString,
@@ -1161,19 +1872,19 @@ mod tests {
 
     #[test]
     fn test_xml_escape_special_chars() {
-        assert_eq!(xml_escape("a&b"), "a&amp;b");
-        assert_eq!(xml_escape("a<b"), "a&lt;b");
-        assert_eq!(xml_escape("a>b"), "a&gt;b");
-        assert_eq!(xml_escape("a\"b"), "a&quot;b");
-        assert_eq!(xml_escape("a'b"), "a&apos;b");
-        assert_eq!(xml_escape("normal"), "normal");
+        assert_eq!(xml_text_escape("a&b").unwrap(), "a&amp;b");
+        assert_eq!(xml_text_escape("a<b").unwrap(), "a&lt;b");
+        assert_eq!(xml_text_escape("a>b").unwrap(), "a&gt;b");
+        assert_eq!(xml_text_escape("a\"b").unwrap(), "a\"b");
+        assert_eq!(xml_text_escape("a'b").unwrap(), "a'b");
+        assert_eq!(xml_text_escape("normal").unwrap(), "normal");
     }
 
     #[test]
     fn test_style_color_to_hex_argb() {
         let color = StyleColor::Rgb("FFFF0000".to_string());
         assert_eq!(
-            style_color_to_hex(&color, &default_theme_colors()),
+            style_color_to_hex(&color, &default_theme_colors()).unwrap(),
             "#FF0000"
         );
     }
@@ -1182,7 +1893,7 @@ mod tests {
     fn test_style_color_to_hex_rgb() {
         let color = StyleColor::Rgb("00FF00".to_string());
         assert_eq!(
-            style_color_to_hex(&color, &default_theme_colors()),
+            style_color_to_hex(&color, &default_theme_colors()).unwrap(),
             "#00FF00"
         );
     }
@@ -1191,14 +1902,15 @@ mod tests {
     fn test_style_color_to_hex_theme_uses_default_theme() {
         let color = StyleColor::Theme(4);
         assert_eq!(
-            style_color_to_hex(&color, &default_theme_colors()),
+            style_color_to_hex(&color, &default_theme_colors()).unwrap(),
             "#4472C4"
         );
     }
 
     #[test]
     fn test_border_line_attrs_thin() {
-        let (sw, color) = border_line_attrs(BorderLineStyle::Thin, None, &default_theme_colors());
+        let (sw, color) =
+            border_line_attrs(BorderLineStyle::Thin, None, &default_theme_colors()).unwrap();
         assert_eq!(sw, 1.0);
         assert_eq!(color, "#000000");
     }
@@ -1207,7 +1919,7 @@ mod tests {
     fn test_border_line_attrs_thick_with_color() {
         let c = StyleColor::Rgb("FF0000FF".to_string());
         let (sw, color) =
-            border_line_attrs(BorderLineStyle::Thick, Some(&c), &default_theme_colors());
+            border_line_attrs(BorderLineStyle::Thick, Some(&c), &default_theme_colors()).unwrap();
         assert_eq!(sw, 3.0);
         assert_eq!(color, "#0000FF");
     }
@@ -1384,7 +2096,7 @@ mod tests {
     fn test_style_color_to_hex_already_prefixed() {
         let color = StyleColor::Rgb("#FF0000".to_string());
         assert_eq!(
-            style_color_to_hex(&color, &default_theme_colors()),
+            style_color_to_hex(&color, &default_theme_colors()).unwrap(),
             "#FF0000"
         );
     }
@@ -1393,7 +2105,7 @@ mod tests {
     fn test_style_color_to_hex_prefixed_argb() {
         let color = StyleColor::Rgb("#FFFF0000".to_string());
         assert_eq!(
-            style_color_to_hex(&color, &default_theme_colors()),
+            style_color_to_hex(&color, &default_theme_colors()).unwrap(),
             "#FF0000"
         );
     }
@@ -1401,7 +2113,7 @@ mod tests {
     #[test]
     fn test_style_color_to_hex_no_double_hash() {
         let color = StyleColor::Rgb("#00FF00".to_string());
-        let hex = style_color_to_hex(&color, &default_theme_colors());
+        let hex = style_color_to_hex(&color, &default_theme_colors()).unwrap();
         assert!(
             !hex.starts_with("##"),
             "should not produce double hash, got: {hex}"
@@ -1467,5 +2179,26 @@ mod tests {
             err_msg.contains("scale must be positive"),
             "error should mention scale: {err_msg}"
         );
+    }
+
+    #[test]
+    fn svg_output_limit_accepts_exact_bytes_and_rejects_plus_one() {
+        let mut exact = SvgOutput::new(3);
+        exact.push_str("abc").unwrap();
+        assert_eq!(exact.finish(), "abc");
+
+        let mut over = SvgOutput::new(3);
+        over.push_str("abc").unwrap();
+        let error = over.push_str("d").unwrap_err();
+        let Error::ResourceLimitExceeded(metadata) = error else {
+            panic!("expected resource limit error");
+        };
+        assert_eq!(metadata.operation(), ResourceOperation::Render);
+        assert_eq!(metadata.category(), ResourceCategory::Output);
+        assert_eq!(metadata.dimension(), ResourceDimension::OutputBytes);
+        assert_eq!(metadata.limit(), 3);
+        assert_eq!(metadata.observed(), 4);
+        assert_eq!(metadata.stage(), Some(ResourceStage::Render));
+        assert_eq!(over.finish(), "abc");
     }
 }

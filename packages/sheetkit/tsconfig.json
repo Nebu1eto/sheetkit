@@ -3,5 +3,6 @@
   "compilerOptions": {
     "noEmit": true
   },
-  "include": ["index.ts", "buffer-codec.ts", "sheet-data.ts", "__test__"]
+  "include": ["index.ts", "buffer-codec.ts", "sheet-data.ts", "__test__"],
+  "exclude": ["__test__/declarations"]
 }

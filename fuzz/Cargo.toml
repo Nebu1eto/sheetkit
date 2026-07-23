@@ -1,0 +1,46 @@
+[package]
+name = "sheetkit-security-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+quick-xml = { version = "0.36", features = ["serialize", "overlapped-lists"] }
+sheetkit-core = { path = "../crates/sheetkit-core" }
+sheetkit-xml = { path = "../crates/sheetkit-xml" }
+zip = { package = "sheetkit-zip", path = "../vendor/zip", default-features = false, features = ["deflate"] }
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "workbook_open"
+path = "fuzz_targets/workbook_open.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "worksheet_xml"
+path = "fuzz_targets/worksheet_xml.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "formula"
+path = "fuzz_targets/formula.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "transfer"
+path = "fuzz_targets/transfer.rs"
+test = false
+doc = false
+bench = false

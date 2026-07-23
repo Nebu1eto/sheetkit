@@ -10,6 +10,11 @@ const VBA_PROJECT_REL_TYPE: &str =
 /// VBA project content type.
 const VBA_PROJECT_CONTENT_TYPE: &str = "application/vnd.ms-office.vbaProject";
 
+fn is_canonical_vba_package_path(path: &str) -> bool {
+    path.trim_start_matches('/')
+        .eq_ignore_ascii_case("xl/vbaProject.bin")
+}
+
 impl Workbook {
     /// Create a new empty workbook containing a single empty sheet named "Sheet1".
     pub fn new() -> Self {
@@ -102,7 +107,11 @@ impl Workbook {
             vba_blob: None,
             tables: vec![],
             raw_sheet_xml: vec![None],
+            raw_sheet_extensions: vec![None],
             sheet_dirty: vec![true],
+            sheet_included: vec![true],
+            sheet_materialized: vec![true],
+            sheet_package_backed: vec![false],
             slicer_defs: vec![],
             slicer_caches: vec![],
             sheet_threaded_comments: vec![None],
@@ -113,6 +122,9 @@ impl Workbook {
             package_source: None,
             read_mode: ReadMode::default(),
             sheet_rows_limit: None,
+            worksheet_spool_limit: OpenLimits::default()
+                .xml_bytes
+                .min(OpenLimits::default().entry_actual_bytes),
             date_interpretation: super::DateInterpretation::default(),
         }
     }
@@ -152,18 +164,21 @@ impl Workbook {
         }
 
         let file = std::fs::File::open(file_path)?;
+        let source_file = file.try_clone()?;
         let outer_size = file.metadata()?.len();
-        let mut budget = OpenBudget::new(options.resolved_limits()?)?;
+        let limits = options.resolved_limits()?;
+        let mut budget = OpenBudget::new(limits)?;
         budget.check_outer_input(outer_size)?;
         let mut archive = PackageReader::open(file, &mut budget)?;
         let mut wb = Self::from_archive(&mut archive, options)?;
-        wb.package_source = Some(PackageSource::Path(file_path.to_path_buf()));
+        wb.package_source = Some(PackageSource::from_file(source_file, limits));
         wb.read_mode = options.read_mode;
         Ok(wb)
     }
 
     /// Build a Workbook from an already-opened ZIP archive.
     fn from_archive<A: ArchiveAccess>(archive: &mut A, options: &OpenOptions) -> Result<Self> {
+        let resolved_limits = options.resolved_limits()?;
         // Track all ZIP entry paths that are explicitly handled so that the
         // remaining entries can be preserved as unknown parts.
         let mut known_paths: HashSet<String> = HashSet::new();
@@ -200,6 +215,8 @@ impl Workbook {
         let mut worksheets: Vec<(String, OnceLock<WorksheetXml>)> = Vec::with_capacity(sheet_count);
         let mut worksheet_paths = Vec::with_capacity(sheet_count);
         let mut raw_sheet_xml: Vec<Option<Vec<u8>>> = Vec::with_capacity(sheet_count);
+        let mut sheet_included: Vec<bool> = Vec::with_capacity(sheet_count);
+        let mut sheet_materialized: Vec<bool> = Vec::with_capacity(sheet_count);
 
         let defer_sheets = matches!(options.read_mode, ReadMode::Lazy | ReadMode::Stream);
 
@@ -220,31 +237,36 @@ impl Workbook {
             let sheet_path = resolve_relationship_target("xl/workbook.xml", &rel.target);
 
             let should_parse = options.should_parse_sheet(&sheet_entry.name);
+            sheet_included.push(should_parse);
 
             if should_parse && !defer_sheets {
-                // Eager mode + selected: parse immediately while retaining
-                // exact source bytes for clean-sheet passthrough.
-                let raw_bytes = read_bytes_part(archive, &sheet_path)?;
-                let ws = deserialize_worksheet_xml(&raw_bytes)?;
+                // Eager mode + selected: parse immediately. Clean save
+                // passthrough uses the pinned package source, so no second
+                // sheet-sized raw allocation is retained.
+                let entry = archive.entry(&sheet_path, true)?;
+                let ws = deserialize_worksheet_xml_with_row_limit(
+                    std::io::BufReader::with_capacity(LARGE_BUF_CAPACITY, entry),
+                    options.sheet_rows,
+                )?;
                 worksheets.push((sheet_entry.name.clone(), initialized_lock(ws)));
-                raw_sheet_xml.push(Some(raw_bytes));
+                sheet_materialized.push(true);
+                raw_sheet_xml.push(None);
             } else if !should_parse {
-                // Filtered out (any mode): store raw bytes for round-trip save
-                // but initialize the OnceLock with an empty worksheet so that
-                // cell queries return Empty instead of hydrating real data.
-                let raw_bytes = read_bytes_part(archive, &sheet_path)?;
+                // Filtered out (any mode): do not decompress or retain the
+                // worksheet. Keep an empty typed placeholder for queries; a
+                // clean save raw-copies the original compressed entry.
                 worksheets.push((
                     sheet_entry.name.clone(),
                     initialized_lock(WorksheetXml::default()),
                 ));
-                raw_sheet_xml.push(Some(raw_bytes));
+                sheet_materialized.push(false);
+                raw_sheet_xml.push(None);
             } else {
-                // Lazy/Stream mode + selected: store raw bytes for on-demand
-                // hydration. OnceLock is left empty; `worksheet_ref` will
-                // parse from `raw_sheet_xml` on first access.
-                let raw_bytes = read_bytes_part(archive, &sheet_path)?;
+                // Lazy/Stream mode + selected: keep the sheet package-backed
+                // until first access. OnceLock is left empty.
                 worksheets.push((sheet_entry.name.clone(), OnceLock::new()));
-                raw_sheet_xml.push(Some(raw_bytes));
+                sheet_materialized.push(false);
+                raw_sheet_xml.push(None);
             }
             known_paths.insert(sheet_path.clone());
             worksheet_paths.push(sheet_path);
@@ -285,6 +307,23 @@ impl Workbook {
                 known_paths.insert(rels_path);
             }
         }
+
+        let mut package_paths = HashSet::with_capacity(archive.len());
+        for index in 0..archive.len() {
+            package_paths.insert(archive.entry_name(index)?);
+        }
+        validate_table_relationship_ownership(
+            &worksheet_paths,
+            &worksheet_rels,
+            &content_types,
+            &package_paths,
+        )?;
+        validate_worksheet_table_parts(
+            archive,
+            &worksheet_paths,
+            &worksheet_rels,
+            &sheet_included,
+        )?;
 
         let skip_aux = options.skip_aux_parts();
 
@@ -596,18 +635,15 @@ impl Workbook {
 
             // Parse sparklines from worksheet extension lists.
             for (i, ws_path) in worksheet_paths.iter().enumerate() {
+                if !sheet_included.get(i).copied().unwrap_or(true) {
+                    continue;
+                }
                 if let Ok(raw) = read_string_part(archive, ws_path) {
                     let parsed = parse_sparklines_from_xml(&raw);
                     if !parsed.is_empty() {
                         sheet_sparklines[i] = parsed;
                     }
                 }
-            }
-
-            // Load VBA project binary blob if present (macro-enabled files).
-            vba_blob = read_bytes_part(archive, "xl/vbaProject.bin").ok();
-            if vba_blob.is_some() {
-                known_paths.insert("xl/vbaProject.bin".to_string());
             }
 
             // Parse table parts referenced from worksheet relationships.
@@ -628,21 +664,30 @@ impl Workbook {
                     }
                 }
             }
-            // Fallback: load table parts from content type overrides if not found via rels.
-            for ovr in &content_types.overrides {
-                if ovr.content_type != mime_types::TABLE {
-                    continue;
-                }
-                let table_path = ovr.part_name.trim_start_matches('/').to_string();
-                if tables.iter().any(|(p, _, _)| p == &table_path) {
-                    continue;
-                }
-                if let Ok(table_xml) =
-                    read_xml_part::<sheetkit_xml::table::TableXml, _>(archive, &table_path)
-                {
-                    known_paths.insert(table_path.clone());
-                    tables.push((table_path, table_xml, 0));
-                }
+        }
+
+        // VBA access and preservation must not depend on eager/lazy auxiliary
+        // parsing. Apply the independent VBA input limit before retaining it.
+        let mut vba_candidates: Vec<String> = workbook_rels
+            .relationships
+            .iter()
+            .filter(|relationship| relationship.rel_type == VBA_PROJECT_REL_TYPE)
+            .map(|relationship| {
+                resolve_relationship_target("xl/workbook.xml", &relationship.target)
+            })
+            .collect();
+        if !vba_candidates
+            .iter()
+            .any(|path| is_canonical_vba_package_path(path))
+        {
+            vba_candidates.push("xl/vbaProject.bin".to_string());
+        }
+        for path in vba_candidates {
+            if let Some(bytes) = read_all_optional_part(archive, &path, false, true)? {
+                crate::vba::validate_vba_input(&bytes, options.vba_limits)?;
+                known_paths.insert(path);
+                vba_blob = Some(bytes);
+                break;
             }
         }
 
@@ -676,28 +721,19 @@ impl Workbook {
             }
         }
 
-        // Populate cached column numbers on all eagerly-parsed cells, apply
-        // row limit, and ensure sorted order for binary search correctness.
+        // Validate and index all eagerly-parsed cells before applying row
+        // limits or using the cached coordinates for binary search.
         // Deferred sheets (empty OnceLock) are skipped here; they are
         // post-processed on demand in `deserialize_worksheet_xml`.
         for (_name, ws_lock) in &mut worksheets {
             let Some(ws) = ws_lock.get_mut() else {
                 continue;
             };
-            // Ensure rows are sorted by row number (some writers output unsorted data).
-            ws.sheet_data.rows.sort_unstable_by_key(|r| r.r);
+            crate::utils::cell_ref::validate_and_index_worksheet(ws)?;
 
             // Apply sheet_rows limit: keep only the first N rows.
             if let Some(max_rows) = options.sheet_rows {
                 ws.sheet_data.rows.truncate(max_rows as usize);
-            }
-
-            for row in &mut ws.sheet_data.rows {
-                for cell in &mut row.cells {
-                    cell.col = fast_col_number(cell.r.as_str());
-                }
-                // Ensure cells within a row are sorted by column number.
-                row.cells.sort_unstable_by_key(|c| c.col);
             }
         }
 
@@ -746,8 +782,12 @@ impl Workbook {
             tables,
             // Every opened sheet retains raw bytes and starts clean. A later
             // owner mutation marks only its sheet dirty.
-            sheet_dirty: raw_sheet_xml.iter().map(|raw| raw.is_none()).collect(),
+            sheet_dirty: vec![false; raw_sheet_xml.len()],
+            sheet_included,
+            sheet_materialized,
+            sheet_package_backed: vec![true; sheet_count],
             raw_sheet_xml,
+            raw_sheet_extensions: vec![None; sheet_count],
             slicer_defs,
             slicer_caches,
             sheet_threaded_comments,
@@ -758,8 +798,106 @@ impl Workbook {
             package_source: None,
             read_mode: options.read_mode,
             sheet_rows_limit: options.sheet_rows,
+            worksheet_spool_limit: resolved_limits
+                .xml_bytes
+                .min(resolved_limits.entry_actual_bytes),
             date_interpretation: options.date_interpretation,
         })
+    }
+
+    fn validate_save_model(&self, limits: crate::save::SaveLimits) -> Result<()> {
+        let limits = limits.validate()?;
+        let mut rows = 0u64;
+        let mut cells = 0u64;
+
+        for (index, (_, worksheet)) in self.worksheets.iter().enumerate() {
+            if let Some(streamed) = self.streamed_sheets.get(&index) {
+                rows = rows.saturating_add(streamed.row_count);
+                cells = cells.saturating_add(streamed.cell_count);
+                let xml_bytes = streamed_worksheet_xml_bytes(streamed);
+                reject_save_metric(
+                    crate::resource::ResourceDimension::XmlBytes,
+                    xml_bytes,
+                    limits.xml_part_bytes,
+                )?;
+            } else if self
+                .sheet_package_backed
+                .get(index)
+                .copied()
+                .unwrap_or(false)
+                && (!self.sheet_dirty.get(index).copied().unwrap_or(true)
+                    || (!self.sheet_included.get(index).copied().unwrap_or(true)
+                        && !self.sheet_materialized.get(index).copied().unwrap_or(true)))
+            {
+                let source = self.package_source.as_ref().ok_or_else(|| {
+                    Error::Internal("package-backed sheet has no source".to_string())
+                })?;
+                let (_, raw_rows, raw_cells) = source
+                    .worksheet_save_metrics(&self.sheet_part_path(index), limits.xml_part_bytes)?;
+                rows = rows.saturating_add(raw_rows);
+                cells = cells.saturating_add(raw_cells);
+            } else if !self.sheet_dirty.get(index).copied().unwrap_or(true) {
+                if let Some(Some(raw)) = self.raw_sheet_xml.get(index) {
+                    let (raw_rows, raw_cells) = worksheet_xml_metrics(raw, limits.xml_part_bytes)?;
+                    rows = rows.saturating_add(raw_rows);
+                    cells = cells.saturating_add(raw_cells);
+                } else if let Some(worksheet) = worksheet.get() {
+                    rows = rows.saturating_add(
+                        u64::try_from(worksheet.sheet_data.rows.len()).unwrap_or(u64::MAX),
+                    );
+                    for row in &worksheet.sheet_data.rows {
+                        cells = cells
+                            .saturating_add(u64::try_from(row.cells.len()).unwrap_or(u64::MAX));
+                    }
+                }
+            } else if let Some(worksheet) = worksheet.get() {
+                rows = rows.saturating_add(
+                    u64::try_from(worksheet.sheet_data.rows.len()).unwrap_or(u64::MAX),
+                );
+                for row in &worksheet.sheet_data.rows {
+                    cells =
+                        cells.saturating_add(u64::try_from(row.cells.len()).unwrap_or(u64::MAX));
+                }
+            }
+
+            reject_save_metric(
+                crate::resource::ResourceDimension::RowCount,
+                rows,
+                limits.row_count,
+            )?;
+            reject_save_metric(
+                crate::resource::ResourceDimension::CellCount,
+                cells,
+                limits.cell_count,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn write_zip_archive_with_limits<W: std::io::Write + std::io::Seek>(
+        &self,
+        writer: W,
+        options: SimpleFileOptions,
+        format_override: Option<WorkbookFormat>,
+        limits: crate::save::SaveLimits,
+    ) -> Result<W> {
+        let limits = limits.validate()?;
+        self.validate_save_model(limits)?;
+        let mut output = SaveOutputWriter::new(writer, limits.output_bytes);
+        let result = {
+            let mut zip = zip::ZipWriter::new(&mut output);
+            let contents = self.write_zip_contents(&mut zip, options, format_override, limits);
+            let finish = zip
+                .finish()
+                .map(|_| ())
+                .map_err(|error| Error::Zip(error.to_string()));
+            contents.and(finish)
+        };
+        if let Some(metadata) = output.resource_error() {
+            return Err(metadata.into());
+        }
+        result?;
+        Ok(output.into_inner())
     }
 
     /// Save the workbook to a file at the given path.
@@ -771,38 +909,40 @@ impl Workbook {
     /// The inferred format overrides the workbook's stored format so that
     /// the content type in the output always matches the extension.
     pub fn save<P: AsRef<Path>>(&self, path: P) -> Result<()> {
+        self.save_with_limits(path, crate::save::SaveLimits::default())
+    }
+
+    /// Save the workbook to a file with explicit finite output limits.
+    pub fn save_with_limits<P: AsRef<Path>>(
+        &self,
+        path: P,
+        limits: crate::save::SaveLimits,
+    ) -> Result<()> {
         let path = path.as_ref();
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         let target_format = WorkbookFormat::from_extension(ext)
             .ok_or_else(|| Error::UnsupportedFileExtension(ext.to_string()))?;
 
-        let file = std::fs::File::create(path)?;
-        let mut zip = zip::ZipWriter::new(file);
-        let options = SimpleFileOptions::default()
-            .compression_method(CompressionMethod::Deflated)
-            .compression_level(Some(1));
-        self.write_zip_contents(&mut zip, options, Some(target_format))?;
-        zip.finish().map_err(|e| Error::Zip(e.to_string()))?;
-        Ok(())
+        atomic_write_file(path, |file| {
+            let options = SimpleFileOptions::default()
+                .compression_method(CompressionMethod::Deflated)
+                .compression_level(Some(1));
+            self.write_zip_archive_with_limits(file, options, Some(target_format), limits)?;
+            Ok(())
+        })
     }
 
     /// Serialize the workbook to an in-memory buffer using the stored format.
     pub fn save_to_buffer(&self) -> Result<Vec<u8>> {
-        // Estimate compressed output size to reduce reallocations.
-        let estimated = self.worksheets.len() * 4000
-            + self.sst_runtime.len() * 60
-            + self.images.iter().map(|(_, d)| d.len()).sum::<usize>()
-            + 32_000;
-        let mut buf = Vec::with_capacity(estimated);
-        {
-            let cursor = std::io::Cursor::new(&mut buf);
-            let mut zip = zip::ZipWriter::new(cursor);
-            let options =
-                SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
-            self.write_zip_contents(&mut zip, options, None)?;
-            zip.finish().map_err(|e| Error::Zip(e.to_string()))?;
-        }
-        Ok(buf)
+        self.save_to_buffer_with_limits(crate::save::SaveLimits::default())
+    }
+
+    /// Serialize the workbook to a buffer with explicit finite output limits.
+    pub fn save_to_buffer_with_limits(&self, limits: crate::save::SaveLimits) -> Result<Vec<u8>> {
+        let cursor = std::io::Cursor::new(Vec::new());
+        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+        let cursor = self.write_zip_archive_with_limits(cursor, options, None, limits)?;
+        Ok(cursor.into_inner())
     }
 
     /// Open a workbook from an in-memory `.xlsx` buffer.
@@ -824,12 +964,13 @@ impl Workbook {
 
         let cursor = std::io::Cursor::new(data);
         let outer_size = u64::try_from(data.len()).unwrap_or(u64::MAX);
-        let mut budget = OpenBudget::new(options.resolved_limits()?)?;
+        let limits = options.resolved_limits()?;
+        let mut budget = OpenBudget::new(limits)?;
         budget.check_outer_input(outer_size)?;
         budget.charge_retained(outer_size)?;
         let mut archive = PackageReader::open(cursor, &mut budget)?;
         let mut wb = Self::from_archive(&mut archive, options)?;
-        wb.package_source = Some(PackageSource::Buffer(data.into()));
+        wb.package_source = Some(PackageSource::from_buffer(data.into(), limits));
         wb.read_mode = options.read_mode;
         Ok(wb)
     }
@@ -841,32 +982,137 @@ impl Workbook {
     /// 2010+, AES-256-CBC).
     #[cfg(feature = "encryption")]
     pub fn open_with_password<P: AsRef<Path>>(path: P, password: &str) -> Result<Self> {
-        let data = std::fs::read(path.as_ref())?;
-        let decrypted_zip = crate::crypt::decrypt_xlsx(&data, password)?;
-        let cursor = std::io::Cursor::new(decrypted_zip);
-        let mut archive = zip::ZipArchive::new(cursor).map_err(|e| Error::Zip(e.to_string()))?;
-        Self::from_archive(&mut archive, &OpenOptions::default())
+        Self::open_with_password_with_options(path, password, &OpenOptions::default())
+    }
+
+    /// Open an encrypted workbook from a path with explicit finite limits.
+    #[cfg(feature = "encryption")]
+    pub fn open_with_password_with_options<P: AsRef<Path>>(
+        path: P,
+        password: &str,
+        options: &OpenOptions,
+    ) -> Result<Self> {
+        let path = path.as_ref();
+        let budget = OpenBudget::new(options.resolved_limits()?)?;
+        let data = read_bounded_file(path, &budget, options.crypt_limits)?;
+        Self::open_encrypted_bytes(data, password, options, budget)
+    }
+
+    /// Open an encrypted workbook from an in-memory CFB container.
+    #[cfg(feature = "encryption")]
+    pub fn open_from_buffer_with_password(data: &[u8], password: &str) -> Result<Self> {
+        Self::open_from_buffer_with_password_with_options(data, password, &OpenOptions::default())
+    }
+
+    /// Open an encrypted in-memory CFB container with explicit finite limits.
+    #[cfg(feature = "encryption")]
+    pub fn open_from_buffer_with_password_with_options(
+        data: &[u8],
+        password: &str,
+        options: &OpenOptions,
+    ) -> Result<Self> {
+        let budget = OpenBudget::new(options.resolved_limits()?)?;
+        let observed = u64::try_from(data.len()).unwrap_or(u64::MAX);
+        budget.check_outer_input(observed)?;
+        crate::crypt::validate_decrypt_outer_cfb(options.crypt_limits, observed)?;
+        Self::open_encrypted_bytes(data.to_vec(), password, options, budget)
+    }
+
+    #[cfg(feature = "encryption")]
+    fn open_encrypted_bytes(
+        encrypted: Vec<u8>,
+        password: &str,
+        options: &OpenOptions,
+        mut budget: OpenBudget,
+    ) -> Result<Self> {
+        let decrypted_zip =
+            crate::crypt::decrypt_xlsx_with_limits(&encrypted, password, options.crypt_limits)?;
+        let decrypted_size = u64::try_from(decrypted_zip.len()).unwrap_or(u64::MAX);
+        budget.check_outer_input(decrypted_size)?;
+        budget.charge_retained(decrypted_size)?;
+
+        let mut workbook = {
+            let cursor = std::io::Cursor::new(decrypted_zip.as_slice());
+            let mut archive = PackageReader::open(cursor, &mut budget)?;
+            Self::from_archive(&mut archive, options)?
+        };
+        workbook.package_source = Some(PackageSource::from_buffer(
+            decrypted_zip.into(),
+            options.resolved_limits()?,
+        ));
+        workbook.read_mode = options.read_mode;
+        Ok(workbook)
     }
 
     /// Save the workbook as an encrypted `.xlsx` file using Agile Encryption
     /// (AES-256-CBC + SHA-512, 100K iterations).
     #[cfg(feature = "encryption")]
     pub fn save_with_password<P: AsRef<Path>>(&self, path: P, password: &str) -> Result<()> {
+        self.save_with_password_with_output_limits(
+            path,
+            password,
+            crate::crypt::CryptLimits::default(),
+            crate::save::SaveLimits::default(),
+        )
+    }
+
+    /// Save an encrypted workbook with explicit finite encryption limits.
+    #[cfg(feature = "encryption")]
+    pub fn save_with_password_with_limits<P: AsRef<Path>>(
+        &self,
+        path: P,
+        password: &str,
+        limits: crate::crypt::CryptLimits,
+    ) -> Result<()> {
+        self.save_with_password_with_output_limits(
+            path,
+            password,
+            limits,
+            crate::save::SaveLimits::default(),
+        )
+    }
+
+    /// Save an encrypted workbook with explicit encryption and output limits.
+    #[cfg(feature = "encryption")]
+    pub fn save_with_password_with_output_limits<P: AsRef<Path>>(
+        &self,
+        path: P,
+        password: &str,
+        crypt_limits: crate::crypt::CryptLimits,
+        save_limits: crate::save::SaveLimits,
+    ) -> Result<()> {
+        let path = path.as_ref();
+        let ext = path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .unwrap_or("");
+        let target_format = WorkbookFormat::from_extension(ext)
+            .ok_or_else(|| Error::UnsupportedFileExtension(ext.to_string()))?;
+
         // First, serialize to an in-memory ZIP buffer
-        let mut zip_buf = Vec::new();
-        {
-            let cursor = std::io::Cursor::new(&mut zip_buf);
-            let mut zip = zip::ZipWriter::new(cursor);
-            let options =
-                SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
-            self.write_zip_contents(&mut zip, options, None)?;
-            zip.finish().map_err(|e| Error::Zip(e.to_string()))?;
-        }
+        let cursor = std::io::Cursor::new(Vec::new());
+        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+        let zip_buf = self
+            .write_zip_archive_with_limits(cursor, options, Some(target_format), save_limits)?
+            .into_inner();
 
         // Encrypt and write to CFB container
-        let cfb_data = crate::crypt::encrypt_xlsx(&zip_buf, password)?;
-        std::fs::write(path.as_ref(), &cfb_data)?;
-        Ok(())
+        let cfb_data = crate::crypt::encrypt_xlsx_with_limits(&zip_buf, password, crypt_limits)?;
+        let observed = u64::try_from(cfb_data.len()).unwrap_or(u64::MAX);
+        if observed > save_limits.output_bytes {
+            return Err(crate::save::resource_limit(
+                crate::resource::ResourceOperation::WorkbookSave,
+                crate::resource::ResourceCategory::Output,
+                crate::resource::ResourceDimension::OutputBytes,
+                save_limits.output_bytes,
+                observed,
+                crate::resource::ResourceStage::Write,
+            ));
+        }
+        atomic_write_file(path, |file| {
+            file.write_all(&cfb_data)?;
+            Ok(())
+        })
     }
 
     /// Write all workbook parts into the given ZIP writer.
@@ -879,8 +1125,28 @@ impl Workbook {
         zip: &mut zip::ZipWriter<W>,
         options: SimpleFileOptions,
         format_override: Option<WorkbookFormat>,
+        limits: crate::save::SaveLimits,
     ) -> Result<()> {
         let effective_format = format_override.unwrap_or(self.format);
+        let preserves_vba = matches!(
+            effective_format,
+            WorkbookFormat::Xlsm | WorkbookFormat::Xltm | WorkbookFormat::Xlam
+        );
+        let emits_vba = preserves_vba && self.vba_blob.is_some();
+        let mut vba_part_paths = HashSet::from(["xl/vbaProject.bin".to_string()]);
+        vba_part_paths.extend(
+            self.workbook_rels
+                .relationships
+                .iter()
+                .filter(|relationship| relationship.rel_type == VBA_PROJECT_REL_TYPE)
+                .map(|relationship| {
+                    resolve_relationship_target("xl/workbook.xml", &relationship.target)
+                }),
+        );
+        let is_vba_path = |path: &str| {
+            let normalized = path.trim_start_matches('/');
+            is_canonical_vba_package_path(normalized) || vba_part_paths.contains(normalized)
+        };
         let mut content_types = self.content_types.clone();
 
         // Ensure the workbook override content type matches the effective format.
@@ -917,41 +1183,38 @@ impl Workbook {
             target: "sharedStrings.xml".to_string(),
             target_mode: None,
         });
-        if self.vba_blob.is_some() {
+        if emits_vba {
             let vba_part_name = "/xl/vbaProject.bin";
-            if !content_types
-                .overrides
-                .iter()
-                .any(|o| o.part_name == vba_part_name)
-            {
-                content_types.overrides.push(ContentTypeOverride {
-                    part_name: vba_part_name.to_string(),
-                    content_type: VBA_PROJECT_CONTENT_TYPE.to_string(),
-                });
-            }
+            content_types.overrides.retain(|entry| {
+                entry.content_type != VBA_PROJECT_CONTENT_TYPE && !is_vba_path(&entry.part_name)
+            });
+            content_types.overrides.push(ContentTypeOverride {
+                part_name: vba_part_name.to_string(),
+                content_type: VBA_PROJECT_CONTENT_TYPE.to_string(),
+            });
             if !content_types.defaults.iter().any(|d| d.extension == "bin") {
                 content_types.defaults.push(ContentTypeDefault {
                     extension: "bin".to_string(),
                     content_type: VBA_PROJECT_CONTENT_TYPE.to_string(),
                 });
             }
-            if !workbook_rels
+            workbook_rels
                 .relationships
-                .iter()
-                .any(|r| r.rel_type == VBA_PROJECT_REL_TYPE)
-            {
-                let rid = crate::sheet::next_rid(&workbook_rels.relationships);
-                workbook_rels.relationships.push(Relationship {
-                    id: rid,
-                    rel_type: VBA_PROJECT_REL_TYPE.to_string(),
-                    target: "vbaProject.bin".to_string(),
-                    target_mode: None,
-                });
-            }
-        } else if !has_deferred {
+                .retain(|relationship| relationship.rel_type != VBA_PROJECT_REL_TYPE);
+            let rid = crate::sheet::next_rid(&workbook_rels.relationships);
+            workbook_rels.relationships.push(Relationship {
+                id: rid,
+                rel_type: VBA_PROJECT_REL_TYPE.to_string(),
+                target: "vbaProject.bin".to_string(),
+                target_mode: None,
+            });
+        } else if !preserves_vba || !has_deferred {
+            content_types.overrides.retain(|entry| {
+                entry.content_type != VBA_PROJECT_CONTENT_TYPE && !is_vba_path(&entry.part_name)
+            });
             content_types
-                .overrides
-                .retain(|o| o.content_type != VBA_PROJECT_CONTENT_TYPE);
+                .defaults
+                .retain(|entry| entry.content_type != VBA_PROJECT_CONTENT_TYPE);
             workbook_rels
                 .relationships
                 .retain(|r| r.rel_type != VBA_PROJECT_REL_TYPE);
@@ -1017,12 +1280,28 @@ impl Workbook {
                 .copied()
                 .unwrap_or(false);
             let original_control_entries = if controls_dirty {
-                self.raw_sheet_xml
+                if let Some(entries) = self
+                    .raw_sheet_xml
                     .get(sheet_idx)
                     .and_then(|raw| raw.as_deref())
                     .and_then(|raw| std::str::from_utf8(raw).ok())
                     .map(parse_worksheet_control_entries)
-                    .unwrap_or_default()
+                {
+                    entries
+                } else if self
+                    .sheet_package_backed
+                    .get(sheet_idx)
+                    .copied()
+                    .unwrap_or(false)
+                {
+                    let source = self.package_source.as_ref().ok_or_else(|| {
+                        Error::Internal("package-backed sheet has no source".to_string())
+                    })?;
+                    let spool = source.spool_xml_part(&sheet_path)?;
+                    parse_worksheet_control_entries_reader(std::io::BufReader::new(spool))?
+                } else {
+                    Vec::new()
+                }
             } else {
                 Vec::new()
             };
@@ -1448,10 +1727,12 @@ impl Workbook {
         let raw_preserved_paths: HashSet<String> = self
             .unknown_parts
             .iter()
+            .filter(|(path, _)| !is_vba_path(path))
             .map(|(path, _)| path.clone())
             .chain(
                 self.deferred_parts
                     .remaining_parts()
+                    .filter(|(path, _)| !is_vba_path(path))
                     .map(|(path, _)| path.to_string()),
             )
             .collect();
@@ -1505,7 +1786,7 @@ impl Workbook {
         if self.theme_xml.is_some() {
             generated_lifecycle_paths.insert("xl/theme/theme1.xml".to_string());
         }
-        if self.vba_blob.is_some() {
+        if emits_vba {
             generated_lifecycle_paths.insert("xl/vbaProject.bin".to_string());
         }
         if self.core_properties.is_some() {
@@ -1538,10 +1819,22 @@ impl Workbook {
         }
 
         // [Content_Types].xml
-        write_xml_part(zip, "[Content_Types].xml", &content_types, options)?;
+        write_xml_part(
+            zip,
+            "[Content_Types].xml",
+            &content_types,
+            options,
+            limits.xml_part_bytes,
+        )?;
 
         // _rels/.rels
-        write_xml_part(zip, "_rels/.rels", &self.package_rels, options)?;
+        write_xml_part(
+            zip,
+            "_rels/.rels",
+            &self.package_rels,
+            options,
+            limits.xml_part_bytes,
+        )?;
 
         // xl/workbook.xml
         let slicer_cache_rids: Vec<&str> = workbook_rels
@@ -1558,21 +1851,45 @@ impl Workbook {
                 raw,
                 &slicer_cache_rids,
             )?;
-            write_bytes_part(zip, "xl/workbook.xml", xml.as_bytes(), options)?;
+            write_bytes_part(
+                zip,
+                "xl/workbook.xml",
+                xml.as_bytes(),
+                options,
+                limits.xml_part_bytes,
+            )?;
         } else if let (Some(raw), Some(baseline)) =
             (&self.raw_workbook_xml, &self.workbook_xml_baseline)
         {
             if self.workbook_xml == *baseline {
-                write_bytes_part(zip, "xl/workbook.xml", raw, options)?;
+                write_bytes_part(zip, "xl/workbook.xml", raw, options, limits.xml_part_bytes)?;
             } else {
-                write_xml_part(zip, "xl/workbook.xml", &self.workbook_xml, options)?;
+                write_xml_part(
+                    zip,
+                    "xl/workbook.xml",
+                    &self.workbook_xml,
+                    options,
+                    limits.xml_part_bytes,
+                )?;
             }
         } else {
-            write_xml_part(zip, "xl/workbook.xml", &self.workbook_xml, options)?;
+            write_xml_part(
+                zip,
+                "xl/workbook.xml",
+                &self.workbook_xml,
+                options,
+                limits.xml_part_bytes,
+            )?;
         }
 
         // xl/_rels/workbook.xml.rels
-        write_xml_part(zip, "xl/_rels/workbook.xml.rels", &workbook_rels, options)?;
+        write_xml_part(
+            zip,
+            "xl/_rels/workbook.xml.rels",
+            &workbook_rels,
+            options,
+            limits.xml_part_bytes,
+        )?;
 
         // xl/worksheets/sheet{N}.xml
         for (i, (_name, ws_lock)) in self.worksheets.iter().enumerate() {
@@ -1581,7 +1898,13 @@ impl Workbook {
 
             // If the sheet has streamed data, write it directly from the temp file.
             if let Some(streamed) = self.streamed_sheets.get(&i) {
-                crate::stream::write_streamed_sheet(zip, &entry_name, streamed, options)?;
+                crate::stream::write_streamed_sheet(
+                    zip,
+                    &entry_name,
+                    streamed,
+                    options,
+                    limits.xml_part_bytes,
+                )?;
                 continue;
             }
 
@@ -1606,10 +1929,23 @@ impl Workbook {
                 .unwrap_or_default();
             let needs_aux_injection = legacy_drawing_rids.contains_key(&i)
                 || table_parts_by_sheet.contains_key(&i)
-                || !slicer_rids.is_empty();
-            if !dirty && !needs_aux_injection {
+                || !slicer_rids.is_empty()
+                || self
+                    .sheet_sparklines
+                    .get(i)
+                    .is_some_and(|sparklines| !sparklines.is_empty());
+            let included = self.sheet_included.get(i).copied().unwrap_or(true);
+            let package_backed = self.sheet_package_backed.get(i).copied().unwrap_or(false);
+            if !dirty && (!included || !needs_aux_injection) {
                 if let Some(Some(raw_bytes)) = self.raw_sheet_xml.get(i) {
-                    write_bytes_part(zip, &entry_name, raw_bytes, options)?;
+                    write_bytes_part(zip, &entry_name, raw_bytes, options, limits.xml_part_bytes)?;
+                    continue;
+                }
+                if package_backed {
+                    let source = self.package_source.as_ref().ok_or_else(|| {
+                        Error::Internal("package-backed sheet has no source".to_string())
+                    })?;
+                    source.raw_copy_part(&entry_name, zip)?;
                     continue;
                 }
             }
@@ -1628,18 +1964,35 @@ impl Workbook {
                 if let Some(Some(raw_bytes)) = self.raw_sheet_xml.get(i) {
                     hydrated_for_save = deserialize_worksheet_xml(raw_bytes)?;
                     &hydrated_for_save
+                } else if package_backed && self.package_source.is_some() && included {
+                    hydrated_for_save = self.deserialize_package_sheet_for_save(i)?;
+                    &hydrated_for_save
                 } else {
                     match ws_lock.get() {
                         Some(ws) => ws,
                         None => continue,
                     }
                 }
+            } else if !included
+                && !self.sheet_materialized.get(i).copied().unwrap_or(true)
+                && package_backed
+                && self.package_source.is_some()
+            {
+                // Auxiliary-only mutations can dirty an excluded sheet while
+                // its typed worksheet is still the empty filter placeholder.
+                // Merge those auxiliary changes into the complete pinned
+                // package worksheet rather than serializing the placeholder.
+                hydrated_for_save = self.deserialize_package_sheet_for_save(i)?;
+                &hydrated_for_save
             } else {
                 match ws_lock.get() {
                     Some(ws) => ws,
                     None => {
                         if let Some(Some(raw_bytes)) = self.raw_sheet_xml.get(i) {
                             hydrated_for_save = deserialize_worksheet_xml(raw_bytes)?;
+                            &hydrated_for_save
+                        } else if package_backed && self.package_source.is_some() && included {
+                            hydrated_for_save = self.deserialize_package_sheet_for_save(i)?;
                             &hydrated_for_save
                         } else {
                             continue;
@@ -1662,7 +2015,7 @@ impl Workbook {
                 || self.sheet_controls_dirty.get(i).copied().unwrap_or(false);
 
             if !has_extras {
-                write_xml_part(zip, &entry_name, ws, options)?;
+                write_xml_part(zip, &entry_name, ws, options, limits.xml_part_bytes)?;
             } else {
                 let ws_to_serialize;
                 let ws_ref = if let Some(rids) = sheet_table_rids {
@@ -1689,44 +2042,77 @@ impl Workbook {
                 } else {
                     ws
                 };
+                let retained_extension = self
+                    .raw_sheet_xml
+                    .get(i)
+                    .and_then(|raw| raw.as_deref())
+                    .or_else(|| {
+                        self.raw_sheet_extensions
+                            .get(i)
+                            .and_then(|raw| raw.as_deref())
+                    });
+                let package_extension = if retained_extension.is_none() && package_backed {
+                    self.package_source
+                        .as_ref()
+                        .map(|source| source.worksheet_extension_fragment(&entry_name))
+                        .transpose()?
+                        .flatten()
+                } else {
+                    None
+                };
+                let raw_sheet = retained_extension.or(package_extension.as_deref());
                 let xml = serialize_worksheet_with_slicer_extras(
                     ws_ref,
                     sparklines,
                     legacy_rid,
-                    self.raw_sheet_xml.get(i).and_then(|raw| raw.as_deref()),
+                    raw_sheet,
                     &slicer_rids,
                     worksheet_controls.get(&i).map(Vec::as_slice).unwrap_or(&[]),
                     self.sheet_controls_dirty.get(i).copied().unwrap_or(false),
                 )?;
-                zip.start_file(&entry_name, options)
-                    .map_err(|e| Error::Zip(e.to_string()))?;
-                zip.write_all(xml.as_bytes())?;
+                write_bytes_part(
+                    zip,
+                    &entry_name,
+                    xml.as_bytes(),
+                    options,
+                    limits.xml_part_bytes,
+                )?;
             }
         }
 
         // xl/styles.xml
-        write_xml_part(zip, "xl/styles.xml", &self.stylesheet, options)?;
+        write_xml_part(
+            zip,
+            "xl/styles.xml",
+            &self.stylesheet,
+            options,
+            limits.xml_part_bytes,
+        )?;
 
         // xl/sharedStrings.xml -- write from the runtime SST
         let sst_xml = self.sst_runtime.to_sst();
-        write_xml_part(zip, "xl/sharedStrings.xml", &sst_xml, options)?;
+        write_xml_part(
+            zip,
+            "xl/sharedStrings.xml",
+            &sst_xml,
+            options,
+            limits.xml_part_bytes,
+        )?;
 
         // Write hydrated comments at their retained or newly allocated paths.
         for (sheet_idx, path) in &comment_parts_to_write {
             if let Some(comments) = self.sheet_comments[*sheet_idx].as_ref() {
-                write_xml_part(zip, path, comments, options)?;
+                write_xml_part(zip, path, comments, options, limits.xml_part_bytes)?;
             }
         }
 
         // xl/drawings/vmlDrawing{N}.vml -- write VML drawing parts
         for (_sheet_idx, vml_path, vml_bytes) in &vml_parts_to_write {
-            zip.start_file(vml_path, options)
-                .map_err(|e| Error::Zip(e.to_string()))?;
-            zip.write_all(vml_bytes)?;
+            write_bytes_part(zip, vml_path, vml_bytes, options, limits.xml_part_bytes)?;
         }
 
         for (path, xml) in &control_parts_to_write {
-            write_bytes_part(zip, path, xml.as_bytes(), options)?;
+            write_bytes_part(zip, path, xml.as_bytes(), options, limits.xml_part_bytes)?;
         }
 
         let mut emitted_graph_paths: HashSet<String> = HashSet::new();
@@ -1734,9 +2120,9 @@ impl Workbook {
         // xl/drawings/drawing{N}.xml -- write drawing parts
         for (path, drawing) in &self.drawings {
             if let Some(bytes) = self.clean_raw_graph_part(path) {
-                write_bytes_part(zip, path, bytes, options)?;
+                write_bytes_part(zip, path, bytes, options, limits.xml_part_bytes)?;
             } else {
-                write_xml_part(zip, path, drawing, options)?;
+                write_xml_part(zip, path, drawing, options, limits.xml_part_bytes)?;
             }
             emitted_graph_paths.insert(path.clone());
         }
@@ -1744,9 +2130,9 @@ impl Workbook {
         // xl/charts/chart{N}.xml -- write chart parts
         for (path, chart) in &self.charts {
             if let Some(bytes) = self.clean_raw_graph_part(path) {
-                write_bytes_part(zip, path, bytes, options)?;
+                write_bytes_part(zip, path, bytes, options, limits.xml_part_bytes)?;
             } else {
-                write_xml_part(zip, path, chart, options)?;
+                write_xml_part(zip, path, chart, options, limits.xml_part_bytes)?;
             }
             emitted_graph_paths.insert(path.clone());
         }
@@ -1754,24 +2140,26 @@ impl Workbook {
             if self.charts.iter().any(|(p, _)| p == path) {
                 continue;
             }
-            zip.start_file(path, options)
-                .map_err(|e| Error::Zip(e.to_string()))?;
-            zip.write_all(self.clean_raw_graph_part(path).unwrap_or(data))?;
+            write_bytes_part(
+                zip,
+                path,
+                self.clean_raw_graph_part(path).unwrap_or(data),
+                options,
+                limits.xml_part_bytes,
+            )?;
             emitted_graph_paths.insert(path.clone());
         }
 
         // xl/media/image{N}.{ext} -- write image data
         for (path, data) in &self.images {
-            zip.start_file(path, options)
-                .map_err(|e| Error::Zip(e.to_string()))?;
-            zip.write_all(data)?;
+            write_package_bytes_part(zip, path, data, options, limits.xml_part_bytes)?;
         }
 
         // xl/worksheets/_rels/sheet{N}.xml.rels -- write worksheet relationships
         for (sheet_idx, rels) in &worksheet_rels {
             let sheet_path = self.sheet_part_path(*sheet_idx);
             let path = relationship_part_path(&sheet_path);
-            write_xml_part(zip, &path, rels, options)?;
+            write_xml_part(zip, &path, rels, options, limits.xml_part_bytes)?;
         }
 
         // xl/drawings/_rels/drawing{N}.xml.rels -- write drawing relationships
@@ -1779,9 +2167,9 @@ impl Workbook {
             if let Some((drawing_path, _)) = self.drawings.get(*drawing_idx) {
                 let path = relationship_part_path(drawing_path);
                 if let Some(bytes) = self.clean_raw_graph_part(&path) {
-                    write_bytes_part(zip, &path, bytes, options)?;
+                    write_bytes_part(zip, &path, bytes, options, limits.xml_part_bytes)?;
                 } else {
-                    write_xml_part(zip, &path, rels, options)?;
+                    write_xml_part(zip, &path, rels, options, limits.xml_part_bytes)?;
                 }
                 emitted_graph_paths.insert(path);
             }
@@ -1792,17 +2180,17 @@ impl Workbook {
             if self.dirty_graph_parts.contains(path) || emitted_graph_paths.contains(path) {
                 continue;
             }
-            write_bytes_part(zip, path, data, options)?;
+            write_bytes_part(zip, path, data, options, limits.xml_part_bytes)?;
         }
 
         // xl/pivotTables/pivotTable{N}.xml
         for (path, pt) in &self.pivot_tables {
-            write_xml_part(zip, path, pt, options)?;
+            write_xml_part(zip, path, pt, options, limits.xml_part_bytes)?;
         }
 
         // xl/pivotCache/pivotCacheDefinition{N}.xml
         for (path, pcd) in &self.pivot_cache_defs {
-            write_xml_part(zip, path, pcd, options)?;
+            write_xml_part(zip, path, pcd, options, limits.xml_part_bytes)?;
         }
 
         // xl/pivotCache/pivotCacheRecords{N}.xml
@@ -1841,19 +2229,17 @@ impl Workbook {
             } else {
                 serialize_xml(pcr)?
             };
-            zip.start_file(path, options)
-                .map_err(|error| Error::Zip(error.to_string()))?;
-            zip.write_all(xml.as_bytes())?;
+            write_bytes_part(zip, path, xml.as_bytes(), options, limits.xml_part_bytes)?;
         }
 
         // xl/tables/table{N}.xml
         for (path, table_xml, _sheet_idx) in &self.tables {
-            write_xml_part(zip, path, table_xml, options)?;
+            write_xml_part(zip, path, table_xml, options, limits.xml_part_bytes)?;
         }
 
         // xl/slicers/slicer{N}.xml
         for (path, sd) in &self.slicer_defs {
-            write_xml_part(zip, path, sd, options)?;
+            write_xml_part(zip, path, sd, options, limits.xml_part_bytes)?;
         }
 
         // xl/slicerCaches/slicerCache{N}.xml (manual serialization)
@@ -1863,52 +2249,90 @@ impl Workbook {
                 XML_DECLARATION,
                 sheetkit_xml::slicer::serialize_slicer_cache(scd),
             );
-            zip.start_file(path, options)
-                .map_err(|e| Error::Zip(e.to_string()))?;
-            zip.write_all(xml_str.as_bytes())?;
+            write_bytes_part(
+                zip,
+                path,
+                xml_str.as_bytes(),
+                options,
+                limits.xml_part_bytes,
+            )?;
         }
 
         // xl/theme/theme1.xml
         {
             let default_theme = crate::theme::default_theme_xml();
             let theme_bytes = self.theme_xml.as_deref().unwrap_or(&default_theme);
-            zip.start_file("xl/theme/theme1.xml", options)
-                .map_err(|e| Error::Zip(e.to_string()))?;
-            zip.write_all(theme_bytes)?;
+            write_bytes_part(
+                zip,
+                "xl/theme/theme1.xml",
+                theme_bytes,
+                options,
+                limits.xml_part_bytes,
+            )?;
         }
 
         // xl/vbaProject.bin -- write VBA blob if present
-        if let Some(ref blob) = self.vba_blob {
-            zip.start_file("xl/vbaProject.bin", options)
-                .map_err(|e| Error::Zip(e.to_string()))?;
-            zip.write_all(blob)?;
+        if let Some(blob) = self.vba_blob.as_ref().filter(|_| emits_vba) {
+            write_package_bytes_part(
+                zip,
+                "xl/vbaProject.bin",
+                blob,
+                options,
+                limits.xml_part_bytes,
+            )?;
         }
 
         // docProps/core.xml
         if let Some(raw) = self.clean_raw_doc_prop("docProps/core.xml") {
-            write_bytes_part(zip, "docProps/core.xml", raw, options)?;
+            write_bytes_part(
+                zip,
+                "docProps/core.xml",
+                raw,
+                options,
+                limits.xml_part_bytes,
+            )?;
         } else if let Some(ref props) = self.core_properties {
             let xml_str = sheetkit_xml::doc_props::serialize_core_properties(props);
-            zip.start_file("docProps/core.xml", options)
-                .map_err(|e| Error::Zip(e.to_string()))?;
-            zip.write_all(xml_str.as_bytes())?;
+            write_bytes_part(
+                zip,
+                "docProps/core.xml",
+                xml_str.as_bytes(),
+                options,
+                limits.xml_part_bytes,
+            )?;
         }
 
         // docProps/app.xml
         if let Some(raw) = self.clean_raw_doc_prop("docProps/app.xml") {
-            write_bytes_part(zip, "docProps/app.xml", raw, options)?;
+            write_bytes_part(zip, "docProps/app.xml", raw, options, limits.xml_part_bytes)?;
         } else if let Some(ref props) = self.app_properties {
-            write_xml_part(zip, "docProps/app.xml", props, options)?;
+            write_xml_part(
+                zip,
+                "docProps/app.xml",
+                props,
+                options,
+                limits.xml_part_bytes,
+            )?;
         }
 
         // docProps/custom.xml
         if let Some(raw) = self.clean_raw_doc_prop("docProps/custom.xml") {
-            write_bytes_part(zip, "docProps/custom.xml", raw, options)?;
+            write_bytes_part(
+                zip,
+                "docProps/custom.xml",
+                raw,
+                options,
+                limits.xml_part_bytes,
+            )?;
         } else if let Some(ref props) = self.custom_properties {
             let xml_str = sheetkit_xml::doc_props::serialize_custom_properties(props);
-            zip.start_file("docProps/custom.xml", options)
-                .map_err(|e| Error::Zip(e.to_string()))?;
-            zip.write_all(xml_str.as_bytes())?;
+            write_bytes_part(
+                zip,
+                "docProps/custom.xml",
+                xml_str.as_bytes(),
+                options,
+                limits.xml_part_bytes,
+            )?;
         }
 
         // xl/threadedComments/threadedComment{N}.xml
@@ -1916,20 +2340,24 @@ impl Workbook {
             for (i, tc) in self.sheet_threaded_comments.iter().enumerate() {
                 if let Some(ref tc_data) = tc {
                     let tc_path = format!("xl/threadedComments/threadedComment{}.xml", i + 1);
-                    write_xml_part(zip, &tc_path, tc_data, options)?;
+                    write_xml_part(zip, &tc_path, tc_data, options, limits.xml_part_bytes)?;
                 }
             }
-            write_xml_part(zip, "xl/persons/person.xml", &self.person_list, options)?;
+            write_xml_part(
+                zip,
+                "xl/persons/person.xml",
+                &self.person_list,
+                options,
+                limits.xml_part_bytes,
+            )?;
         }
 
         // Write back unknown parts preserved from the original file.
         for (path, data) in &self.unknown_parts {
-            if removed_control_paths.contains(path) {
+            if removed_control_paths.contains(path) || is_vba_path(path) {
                 continue;
             }
-            zip.start_file(path, options)
-                .map_err(|e| Error::Zip(e.to_string()))?;
-            zip.write_all(data)?;
+            write_package_bytes_part(zip, path, data, options, limits.xml_part_bytes)?;
         }
 
         // Write back deferred parts from Lazy open (raw bytes, unparsed).
@@ -2001,7 +2429,7 @@ impl Workbook {
             for (path, _) in &self.slicer_caches {
                 emitted_owned.insert(path.clone());
             }
-            if self.vba_blob.is_some() {
+            if emits_vba || !preserves_vba {
                 emitted_owned.insert("xl/vbaProject.bin".to_string());
             }
             if self.core_properties.is_some() {
@@ -2028,12 +2456,10 @@ impl Workbook {
             }
 
             for (path, data) in self.deferred_parts.remaining_parts() {
-                if emitted_owned.contains(path) {
+                if emitted_owned.contains(path) || is_vba_path(path) {
                     continue;
                 }
-                zip.start_file(path, options)
-                    .map_err(|e| Error::Zip(e.to_string()))?;
-                zip.write_all(data)?;
+                write_package_bytes_part(zip, path, data, options, limits.xml_part_bytes)?;
             }
         }
 
@@ -2044,6 +2470,236 @@ impl Workbook {
 impl Default for Workbook {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(feature = "encryption")]
+fn read_bounded_file(
+    path: &Path,
+    budget: &OpenBudget,
+    crypt_limits: crate::crypt::CryptLimits,
+) -> Result<Vec<u8>> {
+    let file = std::fs::File::open(path)?;
+    let declared = file.metadata()?.len();
+    budget.check_outer_input(declared)?;
+    let crypt_limit = crate::crypt::validate_decrypt_outer_cfb(crypt_limits, declared)?;
+
+    let limit = budget.limits().outer_input_bytes.min(crypt_limit);
+    let mut reader = file.take(limit.saturating_add(1));
+    let initial_capacity =
+        usize::try_from(declared.min(LARGE_BUF_CAPACITY as u64)).unwrap_or(LARGE_BUF_CAPACITY);
+    let mut data = Vec::new();
+    data.try_reserve(initial_capacity).map_err(|_| {
+        Error::Io(std::io::Error::new(
+            std::io::ErrorKind::OutOfMemory,
+            "unable to reserve bounded encrypted workbook buffer",
+        ))
+    })?;
+    reader.read_to_end(&mut data)?;
+    let observed = u64::try_from(data.len()).unwrap_or(u64::MAX);
+    budget.check_outer_input(observed)?;
+    crate::crypt::validate_decrypt_outer_cfb(crypt_limits, observed)?;
+    Ok(data)
+}
+
+fn atomic_write_file(
+    path: &Path,
+    write: impl FnOnce(&mut std::fs::File) -> Result<()>,
+) -> Result<()> {
+    atomic_write_file_with_parent_sync(path, write, sync_parent_directory)
+}
+
+fn atomic_write_file_with_parent_sync(
+    path: &Path,
+    write: impl FnOnce(&mut std::fs::File) -> Result<()>,
+    sync_parent: impl FnOnce(&Path) -> std::io::Result<()>,
+) -> Result<()> {
+    let parent = path
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let mut temporary = tempfile::Builder::new()
+        .prefix(".sheetkit-")
+        .tempfile_in(parent)?;
+    write(temporary.as_file_mut())?;
+    temporary.as_file_mut().flush()?;
+    temporary.as_file().sync_all()?;
+    temporary
+        .persist(path)
+        .map_err(|error| Error::Io(error.error))?;
+
+    // The rename is the commit point. A failed directory sync cannot undo it.
+    let _ = sync_parent(parent);
+    Ok(())
+}
+
+fn sync_parent_directory(parent: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        std::fs::File::open(parent)?.sync_all()
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = parent;
+        Ok(())
+    }
+}
+
+fn reject_save_metric(
+    dimension: crate::resource::ResourceDimension,
+    observed: u64,
+    limit: u64,
+) -> Result<()> {
+    if observed > limit {
+        return Err(crate::save::resource_limit(
+            crate::resource::ResourceOperation::WorkbookSave,
+            crate::resource::ResourceCategory::Output,
+            dimension,
+            limit,
+            observed,
+            crate::resource::ResourceStage::Serialize,
+        ));
+    }
+    Ok(())
+}
+
+fn worksheet_xml_metrics(bytes: &[u8], limit: u64) -> Result<(u64, u64)> {
+    reject_save_metric(
+        crate::resource::ResourceDimension::XmlBytes,
+        u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+        limit,
+    )?;
+    let mut reader = quick_xml::Reader::from_reader(std::io::Cursor::new(bytes));
+    let mut buffer = Vec::with_capacity(4096);
+    let mut rows = 0u64;
+    let mut cells = 0u64;
+    loop {
+        buffer.clear();
+        match reader
+            .read_event_into(&mut buffer)
+            .map_err(|error| Error::XmlParse(error.to_string()))?
+        {
+            quick_xml::events::Event::Start(element) | quick_xml::events::Event::Empty(element) => {
+                match element.local_name().as_ref() {
+                    b"row" => rows = rows.saturating_add(1),
+                    b"c" => cells = cells.saturating_add(1),
+                    _ => {}
+                }
+            }
+            quick_xml::events::Event::Eof => break,
+            _ => {}
+        }
+    }
+    Ok((rows, cells))
+}
+
+fn streamed_worksheet_xml_bytes(streamed: &crate::stream::StreamedSheetData) -> u64 {
+    u64::try_from(crate::stream::build_worksheet_header(streamed).len())
+        .unwrap_or(u64::MAX)
+        .saturating_add(streamed.data_len)
+        .saturating_add(
+            u64::try_from(crate::stream::build_worksheet_footer(streamed).len())
+                .unwrap_or(u64::MAX),
+        )
+}
+
+struct SaveOutputWriter<W> {
+    inner: W,
+    limit: u64,
+    position: u64,
+    length: u64,
+    resource_error: Option<crate::resource::ResourceLimitError>,
+}
+
+impl<W> SaveOutputWriter<W> {
+    fn new(inner: W, limit: u64) -> Self {
+        Self {
+            inner,
+            limit,
+            position: 0,
+            length: 0,
+            resource_error: None,
+        }
+    }
+
+    fn resource_error(&self) -> Option<crate::resource::ResourceLimitError> {
+        self.resource_error
+    }
+
+    fn into_inner(self) -> W {
+        self.inner
+    }
+
+    fn mark_output_exceeded(&mut self) {
+        if self.resource_error.is_none() {
+            self.resource_error = crate::resource::ResourceLimitError::exceeded(
+                crate::resource::ResourceOperation::WorkbookSave,
+                crate::resource::ResourceCategory::Output,
+                crate::resource::ResourceDimension::OutputBytes,
+                self.limit,
+                self.limit.saturating_add(1),
+                Some(crate::resource::ResourceStage::Write),
+            );
+        }
+    }
+
+    fn virtual_seek(&self, position: std::io::SeekFrom) -> std::io::Result<u64> {
+        let next = match position {
+            std::io::SeekFrom::Start(offset) => i128::from(offset),
+            std::io::SeekFrom::Current(offset) => {
+                i128::from(self.position).saturating_add(i128::from(offset))
+            }
+            std::io::SeekFrom::End(offset) => {
+                i128::from(self.length).saturating_add(i128::from(offset))
+            }
+        };
+        u64::try_from(next).map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid output seek")
+        })
+    }
+}
+
+impl<W: std::io::Write> std::io::Write for SaveOutputWriter<W> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let amount = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+        let observed = self.position.saturating_add(amount);
+        if self.resource_error.is_some() || observed > self.limit {
+            self.mark_output_exceeded();
+            self.position = observed;
+            self.length = self.length.max(observed);
+            return Ok(bytes.len());
+        }
+        let written = self.inner.write(bytes)?;
+        self.position = self
+            .position
+            .saturating_add(u64::try_from(written).unwrap_or(u64::MAX));
+        self.length = self.length.max(self.position);
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        if self.resource_error.is_some() {
+            Ok(())
+        } else {
+            self.inner.flush()
+        }
+    }
+}
+
+impl<W: std::io::Seek> std::io::Seek for SaveOutputWriter<W> {
+    fn seek(&mut self, position: std::io::SeekFrom) -> std::io::Result<u64> {
+        let virtual_next = self.virtual_seek(position)?;
+        if self.resource_error.is_some() || virtual_next > self.limit {
+            self.mark_output_exceeded();
+            self.position = virtual_next;
+            self.length = self.length.max(virtual_next);
+            return Ok(virtual_next);
+        }
+        let next = self.inner.seek(position)?;
+        self.position = next;
+        self.length = self.length.max(next);
+        Ok(next)
     }
 }
 
@@ -2130,19 +2786,495 @@ fn serialize_pivot_cache_records(
 pub(super) fn deserialize_worksheet_xml(bytes: &[u8]) -> Result<WorksheetXml> {
     let buf_cap = bytes.len().clamp(8192, LARGE_BUF_CAPACITY);
     let reader = std::io::BufReader::with_capacity(buf_cap, bytes);
-    let mut ws: WorksheetXml =
-        quick_xml::de::from_reader(reader).map_err(|e| Error::XmlDeserialize(e.to_string()))?;
-    // Post-process: populate cached column numbers, sort rows and cells.
-    ws.sheet_data.rows.sort_unstable_by_key(|r| r.r);
-    for row in &mut ws.sheet_data.rows {
-        for cell in &mut row.cells {
-            cell.col = fast_col_number(cell.r.as_str());
+    deserialize_worksheet_xml_with_row_limit(reader, None)
+}
+
+/// Incrementally filter worksheet rows before typed deserialization.
+///
+/// Rows beyond `row_limit` are scanned but never copied into the bounded
+/// intermediate spool and therefore cannot create typed row/cell allocations.
+pub(super) fn deserialize_worksheet_xml_with_row_limit<R: std::io::BufRead>(
+    source: R,
+    row_limit: Option<u32>,
+) -> Result<WorksheetXml> {
+    let mut ws: WorksheetXml = if let Some(row_limit) = row_limit {
+        use std::io::{Seek as _, Write as _};
+
+        let mut reader = quick_xml::Reader::from_reader(source);
+        reader.config_mut().trim_text(false);
+        let spool = tempfile::tempfile()?;
+        let mut writer = quick_xml::Writer::new(std::io::BufWriter::new(spool));
+        let mut buffer = Vec::with_capacity(4096);
+        let mut in_sheet_data = false;
+        let mut rows_kept = 0u32;
+        let mut skipped_depth: Option<usize> = None;
+
+        loop {
+            buffer.clear();
+            let event = reader
+                .read_event_into(&mut buffer)
+                .map_err(|error| Error::XmlParse(error.to_string()))?;
+
+            if let Some(depth) = &mut skipped_depth {
+                match &event {
+                    quick_xml::events::Event::Start(_) => *depth += 1,
+                    quick_xml::events::Event::End(_) => {
+                        *depth -= 1;
+                        if *depth == 0 {
+                            skipped_depth = None;
+                        }
+                    }
+                    quick_xml::events::Event::Eof => {
+                        return Err(Error::XmlParse(
+                            "unexpected EOF while skipping worksheet row".to_string(),
+                        ));
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+
+            match &event {
+                quick_xml::events::Event::Start(element)
+                    if element.local_name().as_ref() == b"sheetData" =>
+                {
+                    in_sheet_data = true;
+                }
+                quick_xml::events::Event::End(element)
+                    if element.local_name().as_ref() == b"sheetData" =>
+                {
+                    in_sheet_data = false;
+                }
+                quick_xml::events::Event::Start(element)
+                    if in_sheet_data && element.local_name().as_ref() == b"row" =>
+                {
+                    if rows_kept >= row_limit {
+                        skipped_depth = Some(1);
+                        continue;
+                    }
+                    rows_kept += 1;
+                }
+                quick_xml::events::Event::Empty(element)
+                    if in_sheet_data && element.local_name().as_ref() == b"row" =>
+                {
+                    if rows_kept >= row_limit {
+                        continue;
+                    }
+                    rows_kept += 1;
+                }
+                quick_xml::events::Event::Eof => break,
+                _ => {}
+            }
+            writer
+                .write_event(event.into_owned())
+                .map_err(|error| Error::XmlParse(error.to_string()))?;
         }
-        row.cells.sort_unstable_by_key(|c| c.col);
+
+        let mut spool = writer
+            .into_inner()
+            .into_inner()
+            .map_err(|error| Error::Io(error.into_error()))?;
+        spool.flush()?;
+        spool.seek(std::io::SeekFrom::Start(0))?;
+        quick_xml::de::from_reader(std::io::BufReader::new(spool))
+            .map_err(|error| Error::XmlDeserialize(error.to_string()))?
+    } else {
+        quick_xml::de::from_reader(source)
+            .map_err(|error| Error::XmlDeserialize(error.to_string()))?
+    };
+    crate::utils::cell_ref::validate_and_index_worksheet(&mut ws)?;
+    for row in &mut ws.sheet_data.rows {
         row.cells.shrink_to_fit();
     }
     ws.sheet_data.rows.shrink_to_fit();
     Ok(ws)
+}
+
+fn resolve_checked_table_target(source_part: &str, target: &str) -> Result<String> {
+    if target.is_empty()
+        || target.contains('\\')
+        || target
+            .chars()
+            .any(|character| matches!(character, '?' | '#' | '\0'))
+        || target.split('/').any(|segment| segment == ".")
+    {
+        return Err(Error::InvalidArgument(
+            "invalid table relationship target".to_string(),
+        ));
+    }
+
+    let mut segments: Vec<&str> = if target.starts_with('/') {
+        Vec::new()
+    } else {
+        source_part
+            .rsplit_once('/')
+            .map(|(directory, _)| directory.split('/').collect())
+            .unwrap_or_default()
+    };
+
+    for segment in target.trim_start_matches('/').split('/') {
+        match segment {
+            "" => {
+                return Err(Error::InvalidArgument(
+                    "invalid table relationship target".to_string(),
+                ));
+            }
+            ".." => {
+                if segments.pop().is_none() {
+                    return Err(Error::InvalidArgument(
+                        "table relationship target escapes package root".to_string(),
+                    ));
+                }
+            }
+            value if value.contains(':') => {
+                return Err(Error::InvalidArgument(
+                    "external table relationship target is not allowed".to_string(),
+                ));
+            }
+            value => segments.push(value),
+        }
+    }
+
+    let resolved = segments.join("/");
+    if !resolved.starts_with("xl/tables/") || !resolved.ends_with(".xml") {
+        return Err(Error::InvalidArgument(format!(
+            "table relationship target is outside xl/tables: {resolved}"
+        )));
+    }
+    Ok(resolved)
+}
+
+fn validate_table_relationship_ownership(
+    worksheet_paths: &[String],
+    worksheet_rels: &HashMap<usize, Relationships>,
+    content_types: &ContentTypes,
+    package_paths: &HashSet<String>,
+) -> Result<HashMap<String, usize>> {
+    let mut declared_tables = HashSet::new();
+    for entry in &content_types.overrides {
+        if entry.content_type != mime_types::TABLE {
+            continue;
+        }
+        if !entry.part_name.starts_with('/') {
+            return Err(Error::InvalidArgument(
+                "table content type path must be package-absolute".to_string(),
+            ));
+        }
+        let path = resolve_checked_table_target("", &entry.part_name)?;
+        if !declared_tables.insert(path.clone()) {
+            return Err(Error::InvalidArgument(format!(
+                "duplicate table content type declaration: {path}"
+            )));
+        }
+        if !package_paths.contains(&path) {
+            return Err(Error::InvalidArgument(format!(
+                "table relationship target is missing from package: {path}"
+            )));
+        }
+    }
+
+    let mut owners = HashMap::new();
+    for (sheet_index, relationships) in worksheet_rels {
+        let sheet_path = worksheet_paths.get(*sheet_index).ok_or_else(|| {
+            Error::InvalidArgument(format!(
+                "table relationship references unknown sheet index {sheet_index}"
+            ))
+        })?;
+        let mut id_counts: HashMap<&str, usize> = HashMap::new();
+        for relationship in &relationships.relationships {
+            *id_counts.entry(&relationship.id).or_default() += 1;
+        }
+
+        for relationship in &relationships.relationships {
+            if relationship.rel_type != rel_types::TABLE {
+                continue;
+            }
+            if relationship.target_mode.is_some() {
+                return Err(Error::InvalidArgument(format!(
+                    "external table relationship is not allowed: {}",
+                    relationship.id
+                )));
+            }
+            if relationship.id.is_empty() || id_counts[relationship.id.as_str()] != 1 {
+                return Err(Error::InvalidArgument(format!(
+                    "duplicate or empty table relationship id: {}",
+                    relationship.id
+                )));
+            }
+
+            let path = resolve_checked_table_target(sheet_path, &relationship.target)?;
+            if !declared_tables.contains(&path) || !package_paths.contains(&path) {
+                return Err(Error::InvalidArgument(format!(
+                    "table relationship target is missing or undeclared: {path}"
+                )));
+            }
+            if let Some(previous_owner) = owners.insert(path.clone(), *sheet_index) {
+                return Err(Error::InvalidArgument(format!(
+                    "table part has multiple owners ({previous_owner}, {sheet_index}): {path}"
+                )));
+            }
+        }
+    }
+
+    for path in declared_tables {
+        if !owners.contains_key(&path) {
+            return Err(Error::InvalidArgument(format!(
+                "table part has no worksheet relationship owner: {path}"
+            )));
+        }
+    }
+    Ok(owners)
+}
+
+fn resolved_namespace_is(result: &quick_xml::name::ResolveResult<'_>, expected: &str) -> bool {
+    matches!(
+        result,
+        quick_xml::name::ResolveResult::Bound(namespace)
+            if namespace.as_ref() == expected.as_bytes()
+    )
+}
+
+fn table_part_relationship_id<R: std::io::BufRead>(
+    reader: &quick_xml::NsReader<R>,
+    element: &quick_xml::events::BytesStart<'_>,
+    sheet_path: &str,
+) -> Result<String> {
+    let mut relationship_id = None;
+    for attribute in element.attributes() {
+        let attribute = attribute.map_err(|error| Error::XmlParse(error.to_string()))?;
+        let (namespace, local_name) = reader.resolve_attribute(attribute.key);
+        if local_name.as_ref() == b"id"
+            && resolved_namespace_is(&namespace, sheetkit_xml::namespaces::RELATIONSHIPS)
+        {
+            if relationship_id.is_some() {
+                return Err(Error::InvalidArgument(format!(
+                    "worksheet tablePart has duplicate r:id attributes: {sheet_path}"
+                )));
+            }
+            relationship_id = Some(
+                attribute
+                    .decode_and_unescape_value(reader.decoder())
+                    .map_err(|error| Error::XmlParse(error.to_string()))?
+                    .into_owned(),
+            );
+        }
+    }
+    relationship_id.ok_or_else(|| {
+        Error::InvalidArgument(format!("worksheet tablePart is missing r:id: {sheet_path}"))
+    })
+}
+
+fn validate_worksheet_table_parts<A: ArchiveAccess>(
+    archive: &mut A,
+    worksheet_paths: &[String],
+    worksheet_rels: &HashMap<usize, Relationships>,
+    sheet_included: &[bool],
+) -> Result<()> {
+    for (sheet_index, relationships) in worksheet_rels {
+        if !sheet_included.get(*sheet_index).copied().unwrap_or(false) {
+            continue;
+        }
+        let expected_ids: HashSet<&str> = relationships
+            .relationships
+            .iter()
+            .filter(|relationship| relationship.rel_type == rel_types::TABLE)
+            .map(|relationship| relationship.id.as_str())
+            .collect();
+        if expected_ids.is_empty() {
+            continue;
+        }
+
+        let sheet_path = worksheet_paths.get(*sheet_index).ok_or_else(|| {
+            Error::InvalidArgument(format!(
+                "table relationship references unknown sheet index {sheet_index}"
+            ))
+        })?;
+        let result: Result<()> = {
+            let entry = archive.entry(sheet_path, true)?;
+            let mut reader = quick_xml::NsReader::from_reader(std::io::BufReader::with_capacity(
+                LARGE_BUF_CAPACITY,
+                entry,
+            ));
+            let mut buffer = Vec::with_capacity(4096);
+            let mut declared_count = None;
+            let mut seen_container = false;
+            let mut in_container = false;
+            let mut open_table_part = false;
+            let mut actual_ids = HashSet::with_capacity(expected_ids.len());
+
+            loop {
+                buffer.clear();
+                let (namespace, event) = reader
+                    .read_resolved_event_into(&mut buffer)
+                    .map_err(|error| Error::XmlParse(error.to_string()))?;
+                let is_spreadsheet_ml =
+                    resolved_namespace_is(&namespace, sheetkit_xml::namespaces::SPREADSHEET_ML);
+                if open_table_part {
+                    match event {
+                        quick_xml::events::Event::End(element)
+                            if is_spreadsheet_ml
+                                && element.local_name().as_ref() == b"tablePart" =>
+                        {
+                            open_table_part = false;
+                            continue;
+                        }
+                        quick_xml::events::Event::Text(text)
+                            if text.as_ref().iter().all(u8::is_ascii_whitespace) =>
+                        {
+                            continue;
+                        }
+                        quick_xml::events::Event::Comment(_) => continue,
+                        _ => {
+                            return Err(Error::InvalidArgument(format!(
+                                "worksheet tablePart must be empty: {sheet_path}"
+                            )));
+                        }
+                    }
+                }
+                match event {
+                    quick_xml::events::Event::Start(element)
+                        if is_spreadsheet_ml && element.local_name().as_ref() == b"tableParts" =>
+                    {
+                        if seen_container {
+                            return Err(Error::InvalidArgument(format!(
+                                "worksheet has duplicate tableParts containers: {sheet_path}"
+                            )));
+                        }
+                        seen_container = true;
+                        in_container = true;
+                        for attribute in element.attributes() {
+                            let attribute =
+                                attribute.map_err(|error| Error::XmlParse(error.to_string()))?;
+                            let (attribute_namespace, local_name) =
+                                reader.resolve_attribute(attribute.key);
+                            if matches!(
+                                attribute_namespace,
+                                quick_xml::name::ResolveResult::Unbound
+                            ) && local_name.as_ref() == b"count"
+                            {
+                                if declared_count.is_some() {
+                                    return Err(Error::InvalidArgument(format!(
+                                        "worksheet tableParts has duplicate count attributes: {sheet_path}"
+                                    )));
+                                }
+                                declared_count = Some(
+                                    attribute
+                                        .decode_and_unescape_value(reader.decoder())
+                                        .map_err(|error| Error::XmlParse(error.to_string()))?
+                                        .parse::<u32>()
+                                        .map_err(|error| Error::XmlParse(error.to_string()))?,
+                                );
+                            }
+                        }
+                    }
+                    quick_xml::events::Event::End(element)
+                        if is_spreadsheet_ml && element.local_name().as_ref() == b"tableParts" =>
+                    {
+                        in_container = false;
+                    }
+                    quick_xml::events::Event::Empty(element)
+                        if in_container
+                            && is_spreadsheet_ml
+                            && element.local_name().as_ref() == b"tablePart" =>
+                    {
+                        let relationship_id =
+                            table_part_relationship_id(&reader, &element, sheet_path)?;
+                        if !actual_ids.insert(relationship_id)
+                            || actual_ids.len() > expected_ids.len()
+                        {
+                            return Err(Error::InvalidArgument(format!(
+                                "worksheet tableParts do not match table relationships: {sheet_path}"
+                            )));
+                        }
+                    }
+                    quick_xml::events::Event::Start(element)
+                        if in_container
+                            && is_spreadsheet_ml
+                            && element.local_name().as_ref() == b"tablePart" =>
+                    {
+                        let relationship_id =
+                            table_part_relationship_id(&reader, &element, sheet_path)?;
+                        if !actual_ids.insert(relationship_id)
+                            || actual_ids.len() > expected_ids.len()
+                        {
+                            return Err(Error::InvalidArgument(format!(
+                                "worksheet tableParts do not match table relationships: {sheet_path}"
+                            )));
+                        }
+                        open_table_part = true;
+                    }
+                    quick_xml::events::Event::Eof => break,
+                    _ => {}
+                }
+            }
+
+            if open_table_part
+                || declared_count.is_some_and(|count| count as usize != actual_ids.len())
+            {
+                return Err(Error::InvalidArgument(format!(
+                    "worksheet tableParts count does not match entries: {sheet_path}"
+                )));
+            }
+            if actual_ids.len() != expected_ids.len()
+                || !actual_ids
+                    .iter()
+                    .all(|relationship_id| expected_ids.contains(relationship_id.as_str()))
+            {
+                return Err(Error::InvalidArgument(format!(
+                    "worksheet tableParts do not match table relationships: {sheet_path}"
+                )));
+            }
+            Ok(())
+        };
+        if let Some(metadata) = archive.resource_violation() {
+            return Err(Error::ResourceLimitExceeded(metadata));
+        }
+        result?;
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_materialized_worksheet_table_parts(
+    worksheet: &WorksheetXml,
+    relationships: Option<&Relationships>,
+    sheet_path: &str,
+) -> Result<()> {
+    let expected_ids: HashSet<&str> = relationships
+        .into_iter()
+        .flat_map(|relationships| &relationships.relationships)
+        .filter(|relationship| relationship.rel_type == rel_types::TABLE)
+        .map(|relationship| relationship.id.as_str())
+        .collect();
+    if expected_ids.is_empty() {
+        return Ok(());
+    }
+    let Some(table_parts) = &worksheet.table_parts else {
+        return Err(Error::InvalidArgument(format!(
+            "worksheet tableParts do not match table relationships: {sheet_path}"
+        )));
+    };
+    if table_parts
+        .count
+        .is_some_and(|count| usize::try_from(count).ok() != Some(table_parts.table_parts.len()))
+    {
+        return Err(Error::InvalidArgument(format!(
+            "worksheet tableParts count does not match entries: {sheet_path}"
+        )));
+    }
+    let actual_ids: HashSet<&str> = table_parts
+        .table_parts
+        .iter()
+        .map(|table_part| table_part.r_id.as_str())
+        .collect();
+    if actual_ids.len() != table_parts.table_parts.len()
+        || actual_ids.len() != expected_ids.len()
+        || !actual_ids.iter().all(|id| expected_ids.contains(id))
+    {
+        return Err(Error::InvalidArgument(format!(
+            "worksheet tableParts do not match table relationships: {sheet_path}"
+        )));
+    }
+    Ok(())
 }
 
 /// BufReader capacity for large XML parts (worksheets, sharedStrings).
@@ -2635,6 +3767,51 @@ fn parse_worksheet_control_entries(xml: &str) -> Vec<(usize, String, String)> {
     entries
 }
 
+fn parse_worksheet_control_entries_reader<R: std::io::BufRead>(
+    reader: R,
+) -> Result<Vec<(usize, String, String)>> {
+    let mut reader = quick_xml::Reader::from_reader(reader);
+    let mut buffer = Vec::with_capacity(4096);
+    let mut entries = Vec::new();
+    loop {
+        buffer.clear();
+        let event = reader
+            .read_event_into(&mut buffer)
+            .map_err(|error| Error::XmlParse(error.to_string()))?;
+        match event {
+            quick_xml::events::Event::Start(element) | quick_xml::events::Event::Empty(element)
+                if element.local_name().as_ref() == b"control" =>
+            {
+                let mut shape_id = None;
+                let mut relationship_id = None;
+                let mut name = None;
+                for attribute in element.attributes() {
+                    let attribute =
+                        attribute.map_err(|error| Error::XmlParse(error.to_string()))?;
+                    let value = attribute
+                        .decode_and_unescape_value(reader.decoder())
+                        .map_err(|error| Error::XmlParse(error.to_string()))?
+                        .into_owned();
+                    match attribute.key.local_name().as_ref() {
+                        b"shapeId" => shape_id = value.parse::<usize>().ok(),
+                        b"id" => relationship_id = Some(value),
+                        b"name" => name = Some(value),
+                        _ => {}
+                    }
+                }
+                if let (Some(shape_id), Some(relationship_id), Some(name)) =
+                    (shape_id, relationship_id, name)
+                {
+                    entries.push((shape_id, relationship_id, name));
+                }
+            }
+            quick_xml::events::Event::Eof => break,
+            _ => {}
+        }
+    }
+    Ok(entries)
+}
+
 fn next_control_property_path(existing: &HashSet<String>) -> String {
     let mut number = 1usize;
     loop {
@@ -2897,9 +4074,62 @@ pub(crate) fn write_xml_part<T: Serialize, W: std::io::Write + std::io::Seek>(
     name: &str,
     value: &T,
     options: SimpleFileOptions,
+    limit: u64,
 ) -> Result<()> {
-    let xml = serialize_xml(value)?;
-    write_bytes_part(zip, name, xml.as_bytes(), options)
+    use std::fmt::Write as _;
+
+    struct XmlPartWriter<'a, W: std::io::Write + std::io::Seek> {
+        zip: &'a mut zip::ZipWriter<W>,
+        limit: u64,
+        written: u64,
+        error: Option<Error>,
+    }
+
+    impl<W: std::io::Write + std::io::Seek> std::fmt::Write for XmlPartWriter<'_, W> {
+        fn write_str(&mut self, value: &str) -> std::fmt::Result {
+            if self.error.is_some() {
+                return Err(std::fmt::Error);
+            }
+            let amount = u64::try_from(value.len()).unwrap_or(u64::MAX);
+            let observed = self.written.saturating_add(amount);
+            if observed > self.limit {
+                self.error = Some(crate::save::resource_limit(
+                    crate::resource::ResourceOperation::WorkbookSave,
+                    crate::resource::ResourceCategory::Output,
+                    crate::resource::ResourceDimension::XmlBytes,
+                    self.limit,
+                    observed,
+                    crate::resource::ResourceStage::Serialize,
+                ));
+                return Err(std::fmt::Error);
+            }
+            if let Err(error) = self.zip.write_all(value.as_bytes()) {
+                self.error = Some(Error::Io(error));
+                return Err(std::fmt::Error);
+            }
+            self.written = observed;
+            Ok(())
+        }
+    }
+
+    zip.start_file(name, options)
+        .map_err(|error| Error::Zip(error.to_string()))?;
+    let mut output = XmlPartWriter {
+        zip,
+        limit,
+        written: 0,
+        error: None,
+    };
+    let declaration = writeln!(output, "{XML_DECLARATION}");
+    if let Some(error) = output.error.take() {
+        return Err(error);
+    }
+    declaration.map_err(|_| Error::Internal("XML declaration serialization failed".to_string()))?;
+    let result = value.serialize(quick_xml::se::Serializer::new(&mut output));
+    if let Some(error) = output.error {
+        return Err(error);
+    }
+    result.map_err(|error| Error::XmlParse(error.to_string()))
 }
 
 fn write_bytes_part<W: std::io::Write + std::io::Seek>(
@@ -2907,28 +4137,38 @@ fn write_bytes_part<W: std::io::Write + std::io::Seek>(
     name: &str,
     bytes: &[u8],
     options: SimpleFileOptions,
+    limit: u64,
 ) -> Result<()> {
+    reject_save_metric(
+        crate::resource::ResourceDimension::XmlBytes,
+        u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+        limit,
+    )?;
     zip.start_file(name, options)
         .map_err(|e| Error::Zip(e.to_string()))?;
     zip.write_all(bytes)?;
     Ok(())
 }
 
-/// Fast column number extraction from a cell reference string like "A1", "BC42".
-///
-/// Parses only the alphabetic prefix (column letters) and converts to a
-/// 1-based column number. Much faster than [`cell_name_to_coordinates`] because
-/// it skips row parsing and avoids error handling overhead.
-fn fast_col_number(cell_ref: &str) -> u32 {
-    let mut col: u32 = 0;
-    for b in cell_ref.bytes() {
-        if b.is_ascii_alphabetic() {
-            col = col * 26 + (b.to_ascii_uppercase() - b'A') as u32 + 1;
-        } else {
-            break;
-        }
+fn write_package_bytes_part<W: std::io::Write + std::io::Seek>(
+    zip: &mut zip::ZipWriter<W>,
+    name: &str,
+    bytes: &[u8],
+    options: SimpleFileOptions,
+    xml_limit: u64,
+) -> Result<()> {
+    let extension = name.rsplit_once('.').map(|(_, extension)| extension);
+    if extension.is_some_and(|extension| {
+        extension.eq_ignore_ascii_case("xml")
+            || extension.eq_ignore_ascii_case("rels")
+            || extension.eq_ignore_ascii_case("vml")
+    }) {
+        return write_bytes_part(zip, name, bytes, options, xml_limit);
     }
-    col
+    zip.start_file(name, options)
+        .map_err(|error| Error::Zip(error.to_string()))?;
+    zip.write_all(bytes)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -3333,17 +4573,6 @@ mod tests {
                 .count(),
             1
         );
-    }
-
-    #[test]
-    fn test_fast_col_number() {
-        assert_eq!(fast_col_number("A1"), 1);
-        assert_eq!(fast_col_number("B1"), 2);
-        assert_eq!(fast_col_number("Z1"), 26);
-        assert_eq!(fast_col_number("AA1"), 27);
-        assert_eq!(fast_col_number("AZ1"), 52);
-        assert_eq!(fast_col_number("BA1"), 53);
-        assert_eq!(fast_col_number("XFD1"), 16384);
     }
 
     #[test]
@@ -4522,6 +5751,193 @@ mod tests {
     }
 
     #[test]
+    fn lazy_vba_open_applies_exact_and_plus_one_input_limits() {
+        let vba_data = b"FINITE_VBA_PROJECT";
+        let xlsm = build_xlsm_with_vba(vba_data);
+        let exact = crate::vba::VbaLimits {
+            input_bytes: vba_data.len() as u64,
+            ..crate::vba::VbaLimits::default()
+        };
+        let workbook =
+            Workbook::open_from_buffer_with_options(&xlsm, &OpenOptions::new().vba_limits(exact))
+                .unwrap();
+        assert_eq!(workbook.get_vba_project(), Some(vba_data.as_slice()));
+
+        let rejected = crate::vba::VbaLimits {
+            input_bytes: vba_data.len() as u64 - 1,
+            ..crate::vba::VbaLimits::default()
+        };
+        let error = match Workbook::open_from_buffer_with_options(
+            &xlsm,
+            &OpenOptions::new().vba_limits(rejected),
+        ) {
+            Ok(_) => panic!("expected VBA input limit"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            error.resource_metadata().unwrap().dimension(),
+            crate::resource::ResourceDimension::InputBytes
+        );
+    }
+
+    #[test]
+    fn macro_free_target_strips_vba_without_mutating_source() {
+        let vba_data = b"VALIDATED_VBA_PROJECT";
+        let source = build_xlsm_with_vba(vba_data);
+        let workbook = Workbook::open_from_buffer(&source).unwrap();
+        let directory = TempDir::new().unwrap();
+        let xlsx_path = directory.path().join("converted.xlsx");
+        let xlsm_path = directory.path().join("preserved.xlsm");
+
+        workbook.save(&xlsx_path).unwrap();
+        let mut xlsx = zip::ZipArchive::new(std::fs::File::open(&xlsx_path).unwrap()).unwrap();
+        assert!(xlsx.by_name("xl/vbaProject.bin").is_err());
+        let content_types: ContentTypes = read_xml_part(&mut xlsx, "[Content_Types].xml").unwrap();
+        assert!(content_types
+            .overrides
+            .iter()
+            .all(|entry| entry.content_type != VBA_PROJECT_CONTENT_TYPE));
+        let relationships: Relationships =
+            read_xml_part(&mut xlsx, "xl/_rels/workbook.xml.rels").unwrap();
+        assert!(relationships
+            .relationships
+            .iter()
+            .all(|entry| entry.rel_type != VBA_PROJECT_REL_TYPE));
+        drop(xlsx);
+
+        workbook.save(&xlsm_path).unwrap();
+        let mut xlsm = zip::ZipArchive::new(std::fs::File::open(&xlsm_path).unwrap()).unwrap();
+        let mut preserved = Vec::new();
+        xlsm.by_name("xl/vbaProject.bin")
+            .unwrap()
+            .read_to_end(&mut preserved)
+            .unwrap();
+        assert_eq!(preserved, vba_data);
+    }
+
+    #[cfg(feature = "encryption")]
+    #[test]
+    fn encrypted_save_infers_target_format_for_vba_filtering() {
+        let password = "bounded-password";
+        let vba_data = b"ENCRYPTED_VBA_PROJECT";
+        let workbook = Workbook::open_from_buffer(&build_xlsm_with_vba(vba_data)).unwrap();
+        let directory = TempDir::new().unwrap();
+
+        for (extension, preserves_vba) in [("xlsx", false), ("xlsm", true)] {
+            let path = directory.path().join(format!("encrypted.{extension}"));
+            workbook.save_with_password(&path, password).unwrap();
+            let encrypted = std::fs::read(path).unwrap();
+            let decrypted = crate::crypt::decrypt_xlsx(&encrypted, password).unwrap();
+            let mut archive = zip::ZipArchive::new(std::io::Cursor::new(decrypted)).unwrap();
+            assert_eq!(archive.by_name("xl/vbaProject.bin").is_ok(), preserves_vba);
+        }
+    }
+
+    #[cfg(feature = "encryption")]
+    #[test]
+    fn encrypted_save_limits_accept_exact_package_and_reject_plus_one() {
+        let workbook = Workbook::new();
+        let directory = TempDir::new().unwrap();
+        let baseline_path = directory.path().join("baseline.xlsx");
+        let exact_path = directory.path().join("exact.xlsx");
+        let rejected_path = directory.path().join("rejected.xlsx");
+        workbook
+            .save_with_password(&baseline_path, "password")
+            .unwrap();
+        let baseline = std::fs::read(&baseline_path).unwrap();
+        let compound = cfb::CompoundFile::open(std::io::Cursor::new(baseline)).unwrap();
+        let package_limit = compound.entry("/EncryptedPackage").unwrap().len();
+
+        workbook
+            .save_with_password_with_limits(
+                &exact_path,
+                "password",
+                crate::crypt::CryptLimits {
+                    encrypted_package_bytes: package_limit,
+                    ..crate::crypt::CryptLimits::default()
+                },
+            )
+            .unwrap();
+        let error = workbook
+            .save_with_password_with_limits(
+                &rejected_path,
+                "password",
+                crate::crypt::CryptLimits {
+                    encrypted_package_bytes: package_limit - 1,
+                    ..crate::crypt::CryptLimits::default()
+                },
+            )
+            .unwrap_err();
+        let metadata = error.resource_metadata().expect("resource metadata");
+        assert_eq!(metadata.operation(), crate::ResourceOperation::Encrypt);
+        assert_eq!(metadata.dimension(), crate::ResourceDimension::InputBytes);
+        assert_eq!(metadata.limit(), package_limit - 1);
+        assert_eq!(metadata.observed(), package_limit);
+        assert!(!rejected_path.exists());
+    }
+
+    #[test]
+    fn failed_atomic_xlsx_stage_preserves_destination_and_workbook() {
+        let vba_data = b"REUSABLE_VBA_PROJECT";
+        let workbook = Workbook::open_from_buffer(&build_xlsm_with_vba(vba_data)).unwrap();
+        let directory = TempDir::new().unwrap();
+        let destination = directory.path().join("existing.xlsx");
+        let later = directory.path().join("later.xlsm");
+        let original = b"existing destination bytes";
+        std::fs::write(&destination, original).unwrap();
+
+        let error = atomic_write_file(&destination, |file| {
+            let mut zip = zip::ZipWriter::new(file);
+            let options =
+                SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+            workbook.write_zip_contents(
+                &mut zip,
+                options,
+                Some(WorkbookFormat::Xlsx),
+                crate::save::SaveLimits::default(),
+            )?;
+            zip.finish()
+                .map_err(|error| Error::Zip(error.to_string()))?;
+            Err(Error::Internal(
+                "injected before atomic replace".to_string(),
+            ))
+        })
+        .unwrap_err();
+        assert!(matches!(error, Error::Internal(_)));
+        assert_eq!(std::fs::read(&destination).unwrap(), original);
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+
+        workbook.save(&later).unwrap();
+        let mut archive = zip::ZipArchive::new(std::fs::File::open(later).unwrap()).unwrap();
+        let mut preserved = Vec::new();
+        archive
+            .by_name("xl/vbaProject.bin")
+            .unwrap()
+            .read_to_end(&mut preserved)
+            .unwrap();
+        assert_eq!(preserved, vba_data);
+    }
+
+    #[test]
+    fn post_rename_directory_sync_failure_does_not_report_save_failure() {
+        let directory = TempDir::new().unwrap();
+        let destination = directory.path().join("existing.xlsx");
+        std::fs::write(&destination, b"old contents").unwrap();
+
+        atomic_write_file_with_parent_sync(
+            &destination,
+            |file| {
+                file.write_all(b"new contents")?;
+                Ok(())
+            },
+            |_| Err(std::io::Error::other("injected directory sync failure")),
+        )
+        .unwrap();
+
+        assert_eq!(std::fs::read(&destination).unwrap(), b"new contents");
+    }
+
+    #[test]
     fn test_vba_blob_none_for_plain_xlsx() {
         let wb = Workbook::new();
         assert!(wb.vba_blob.is_none());
@@ -5580,6 +6996,249 @@ mod tests {
         let tables = wb3.get_tables("Sheet1").unwrap();
         assert_eq!(tables.len(), 1);
         assert_eq!(tables[0].name, "Table1");
+    }
+
+    #[test]
+    fn malformed_cell_structure_fails_in_eager_lazy_and_stream_modes() {
+        let mut workbook = Workbook::new();
+        workbook.set_cell_value("Sheet1", "A1", 1.0).unwrap();
+        let base = workbook.save_to_buffer().unwrap();
+        let sheet_path = "xl/worksheets/sheet1.xml";
+        let malformed = String::from_utf8(zip_part(&base, sheet_path))
+            .unwrap()
+            .replacen("r=\"A1\"", "r=\"A2\"", 1);
+        let input = rewrite_zip_parts(&base, &[(sheet_path, Some(malformed.into_bytes()))]);
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("malformed-cell.xlsx");
+        std::fs::write(&path, &input).unwrap();
+
+        let assert_invalid = |result: Result<Workbook>| match result {
+            Err(error) => assert!(matches!(error, Error::InvalidCellReference(_))),
+            Ok(workbook) => {
+                let error = workbook.get_cell_value("Sheet1", "A1").unwrap_err();
+                assert!(matches!(error, Error::InvalidCellReference(_)));
+            }
+        };
+
+        for mode in [ReadMode::Eager, ReadMode::Lazy, ReadMode::Stream] {
+            let options = OpenOptions::new().read_mode(mode);
+            assert_invalid(Workbook::open_from_buffer_with_options(&input, &options));
+            assert_invalid(Workbook::open_with_options(&path, &options));
+        }
+    }
+
+    #[test]
+    fn table_ownership_fails_closed_in_every_read_mode() {
+        let mut workbook = Workbook::new();
+        workbook
+            .add_table(
+                "Sheet1",
+                &crate::table::TableConfig {
+                    name: "Table1".to_string(),
+                    display_name: "Table1".to_string(),
+                    range: "A1:B2".to_string(),
+                    columns: vec![
+                        crate::table::TableColumn {
+                            name: "Name".to_string(),
+                            totals_row_function: None,
+                            totals_row_label: None,
+                        },
+                        crate::table::TableColumn {
+                            name: "Value".to_string(),
+                            totals_row_function: None,
+                            totals_row_label: None,
+                        },
+                    ],
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let base = workbook.save_to_buffer().unwrap();
+        let relationships_path = "xl/worksheets/_rels/sheet1.xml.rels";
+        let relationships_xml = zip_part(&base, relationships_path);
+        let relationships: Relationships = deserialize_xml_bytes(&relationships_xml).unwrap();
+        let table_relationship_id = relationships
+            .relationships
+            .iter()
+            .find(|relationship| relationship.rel_type == rel_types::TABLE)
+            .unwrap()
+            .id
+            .clone();
+        let sheet_path = "xl/worksheets/sheet1.xml";
+        let sheet_xml = String::from_utf8(zip_part(&base, sheet_path)).unwrap();
+        let table_parts = format!(
+            "<tableParts count=\"1\"><tablePart r:id=\"{table_relationship_id}\"/></tableParts>"
+        );
+        assert!(sheet_xml.contains(&table_parts));
+
+        let mut orphan = relationships.clone();
+        orphan
+            .relationships
+            .retain(|relationship| relationship.rel_type != rel_types::TABLE);
+        let orphan = rewrite_zip_parts(
+            &base,
+            &[(
+                relationships_path,
+                Some(serialize_xml(&orphan).unwrap().into_bytes()),
+            )],
+        );
+
+        let mut external = relationships.clone();
+        external
+            .relationships
+            .iter_mut()
+            .find(|relationship| relationship.rel_type == rel_types::TABLE)
+            .unwrap()
+            .target_mode = Some("External".to_string());
+        let external = rewrite_zip_parts(
+            &base,
+            &[(
+                relationships_path,
+                Some(serialize_xml(&external).unwrap().into_bytes()),
+            )],
+        );
+
+        let mut traversal = relationships.clone();
+        traversal
+            .relationships
+            .iter_mut()
+            .find(|relationship| relationship.rel_type == rel_types::TABLE)
+            .unwrap()
+            .target = "../../../tables/table1.xml".to_string();
+        let traversal = rewrite_zip_parts(
+            &base,
+            &[(
+                relationships_path,
+                Some(serialize_xml(&traversal).unwrap().into_bytes()),
+            )],
+        );
+
+        let mut duplicate = relationships;
+        let mut duplicate_relationship = duplicate
+            .relationships
+            .iter()
+            .find(|relationship| relationship.rel_type == rel_types::TABLE)
+            .unwrap()
+            .clone();
+        duplicate_relationship.id = "duplicateTableOwner".to_string();
+        duplicate.relationships.push(duplicate_relationship);
+        let duplicate = rewrite_zip_parts(
+            &base,
+            &[(
+                relationships_path,
+                Some(serialize_xml(&duplicate).unwrap().into_bytes()),
+            )],
+        );
+
+        let missing = rewrite_zip_parts(&base, &[("xl/tables/table1.xml", None)]);
+
+        let missing_table_parts = rewrite_zip_parts(
+            &base,
+            &[(
+                sheet_path,
+                Some(sheet_xml.replacen(&table_parts, "", 1).into_bytes()),
+            )],
+        );
+        let unknown_table_part = rewrite_zip_parts(
+            &base,
+            &[(
+                sheet_path,
+                Some(
+                    sheet_xml
+                        .replacen(
+                            &format!("r:id=\"{table_relationship_id}\""),
+                            "r:id=\"unknownTableRelationship\"",
+                            1,
+                        )
+                        .into_bytes(),
+                ),
+            )],
+        );
+        let duplicate_table_part = rewrite_zip_parts(
+            &base,
+            &[(
+                sheet_path,
+                Some(
+                    sheet_xml
+                        .replacen(
+                            &format!("<tablePart r:id=\"{table_relationship_id}\"/>"),
+                            &format!(
+                                "<tablePart r:id=\"{table_relationship_id}\"/><tablePart r:id=\"{table_relationship_id}\"/>"
+                            ),
+                            1,
+                        )
+                        .into_bytes(),
+                ),
+            )],
+        );
+        let mismatched_table_part_count = rewrite_zip_parts(
+            &base,
+            &[(
+                sheet_path,
+                Some(
+                    sheet_xml
+                        .replacen("<tableParts count=\"1\">", "<tableParts count=\"2\">", 1)
+                        .into_bytes(),
+                ),
+            )],
+        );
+        let foreign_table_parts_xml = sheet_xml
+            .replacen("<worksheet ", "<worksheet xmlns:f=\"urn:foreign\" ", 1)
+            .replacen(
+                &table_parts,
+                &format!(
+                    "<f:tableParts count=\"1\"><f:tablePart f:id=\"{table_relationship_id}\"/></f:tableParts>"
+                ),
+                1,
+            );
+        let foreign_table_parts = rewrite_zip_parts(
+            &base,
+            &[(sheet_path, Some(foreign_table_parts_xml.into_bytes()))],
+        );
+        let expanded_table_part = rewrite_zip_parts(
+            &base,
+            &[(
+                sheet_path,
+                Some(
+                    sheet_xml
+                        .replacen(
+                            &format!("<tablePart r:id=\"{table_relationship_id}\"/>"),
+                            &format!("<tablePart r:id=\"{table_relationship_id}\"></tablePart>"),
+                            1,
+                        )
+                        .into_bytes(),
+                ),
+            )],
+        );
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("invalid-table-owner.xlsx");
+
+        for input in [
+            &orphan,
+            &external,
+            &traversal,
+            &duplicate,
+            &missing,
+            &missing_table_parts,
+            &unknown_table_part,
+            &duplicate_table_part,
+            &mismatched_table_part_count,
+            &foreign_table_parts,
+        ] {
+            std::fs::write(&path, input).unwrap();
+            for mode in [ReadMode::Eager, ReadMode::Lazy, ReadMode::Stream] {
+                let options = OpenOptions::new().read_mode(mode);
+                assert!(Workbook::open_from_buffer_with_options(input, &options).is_err());
+                assert!(Workbook::open_with_options(&path, &options).is_err());
+            }
+        }
+
+        std::fs::write(&path, &expanded_table_part).unwrap();
+        for mode in [ReadMode::Eager, ReadMode::Lazy, ReadMode::Stream] {
+            let options = OpenOptions::new().read_mode(mode);
+            Workbook::open_from_buffer_with_options(&expanded_table_part, &options).unwrap();
+            Workbook::open_with_options(&path, &options).unwrap();
+        }
     }
 
     #[test]
@@ -6845,6 +8504,38 @@ mod tests {
         assert!(!saved_sheet.contains("sparklineGroups"));
         assert!(!saved_sheet.contains("<extLst>"));
         assert_eq!(zip_entry_count(&saved, "xl/worksheets/sheet1.xml"), 1);
+    }
+
+    #[test]
+    fn lazy_sparkline_addition_bypasses_clean_package_raw_copy() {
+        let base = Workbook::new().save_to_buffer().unwrap();
+        let mut opened = Workbook::open_from_buffer_with_options(
+            &base,
+            &OpenOptions::new().read_mode(ReadMode::Lazy),
+        )
+        .unwrap();
+        opened
+            .add_sparkline(
+                "Sheet1",
+                &crate::sparkline::SparklineConfig::new("Sheet1!A1:A3", "B1"),
+            )
+            .unwrap();
+        opened
+            .add_sparkline(
+                "Sheet1",
+                &crate::sparkline::SparklineConfig::new("Sheet1!C1:C3", "D1"),
+            )
+            .unwrap();
+
+        let saved = opened.save_to_buffer().unwrap();
+        let reopened = Workbook::open_from_buffer_with_options(
+            &saved,
+            &OpenOptions::new()
+                .read_mode(ReadMode::Eager)
+                .aux_parts(AuxParts::EagerLoad),
+        )
+        .unwrap();
+        assert_eq!(reopened.get_sparklines("Sheet1").unwrap().len(), 2);
     }
 
     #[test]
