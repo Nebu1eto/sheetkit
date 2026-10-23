@@ -200,7 +200,7 @@ impl<'a, R: BufRead> SheetStreamReader<'a, R> {
                 .read_event_into(&mut buf)
                 .map_err(|e| Error::XmlParse(e.to_string()))?
             {
-                Event::Start(ref e) if e.local_name().as_ref() == b"row" => {
+                Event::Start(ref e) if is_element(e.name(), b"row") => {
                     let row_number =
                         resolve_row_number(extract_row_number(e)?, self.last_row_number)?;
                     let row = self.parse_row_body(row_number)?;
@@ -245,7 +245,7 @@ impl<'a, R: BufRead> SheetStreamReader<'a, R> {
                 .read_event_into(&mut buf)
                 .map_err(|e| Error::XmlParse(e.to_string()))?
             {
-                Event::Start(ref e) if e.local_name().as_ref() == b"c" => {
+                Event::Start(ref e) if is_element(e.name(), b"c") => {
                     let (explicit_col, cell_type, style_idx) = extract_cell_attrs(e)?;
                     let col = resolve_cell_column(explicit_col, last_col)?;
                     let promote = self.should_promote_to_date(style_idx);
@@ -253,7 +253,7 @@ impl<'a, R: BufRead> SheetStreamReader<'a, R> {
                     last_col = col;
                     cells.push((col, cv));
                 }
-                Event::Empty(ref e) if e.local_name().as_ref() == b"c" => {
+                Event::Empty(ref e) if is_element(e.name(), b"c") => {
                     let (explicit_col, cell_type, style_idx) = extract_cell_attrs(e)?;
                     let col = resolve_cell_column(explicit_col, last_col)?;
                     let promote = self.should_promote_to_date(style_idx);
@@ -268,7 +268,7 @@ impl<'a, R: BufRead> SheetStreamReader<'a, R> {
                     last_col = col;
                     cells.push((col, cv));
                 }
-                Event::End(ref e) if e.local_name().as_ref() == b"row" => break,
+                Event::End(ref e) if is_element(e.name(), b"row") => break,
                 Event::Eof => {
                     self.done = true;
                     return Err(unexpected_eof("row"));
@@ -472,7 +472,7 @@ impl OwnedSheetStreamReader {
                 .read_event_into(&mut buf)
                 .map_err(|e| Error::XmlParse(e.to_string()))?
             {
-                Event::Start(ref e) if e.local_name().as_ref() == b"row" => {
+                Event::Start(ref e) if is_element(e.name(), b"row") => {
                     let row_number =
                         resolve_row_number(extract_row_number(e)?, self.last_row_number)?;
                     let row = self.parse_row_body(row_number)?;
@@ -515,7 +515,7 @@ impl OwnedSheetStreamReader {
                 .read_event_into(&mut buf)
                 .map_err(|e| Error::XmlParse(e.to_string()))?
             {
-                Event::Start(ref e) if e.local_name().as_ref() == b"c" => {
+                Event::Start(ref e) if is_element(e.name(), b"c") => {
                     let (explicit_col, cell_type, style_idx) = extract_cell_attrs(e)?;
                     let col = resolve_cell_column(explicit_col, last_col)?;
                     let promote = self.should_promote_to_date(style_idx);
@@ -523,7 +523,7 @@ impl OwnedSheetStreamReader {
                     last_col = col;
                     cells.push((col, cv));
                 }
-                Event::Empty(ref e) if e.local_name().as_ref() == b"c" => {
+                Event::Empty(ref e) if is_element(e.name(), b"c") => {
                     let (explicit_col, cell_type, style_idx) = extract_cell_attrs(e)?;
                     let col = resolve_cell_column(explicit_col, last_col)?;
                     let promote = self.should_promote_to_date(style_idx);
@@ -538,7 +538,7 @@ impl OwnedSheetStreamReader {
                     last_col = col;
                     cells.push((col, cv));
                 }
-                Event::End(ref e) if e.local_name().as_ref() == b"row" => break,
+                Event::End(ref e) if is_element(e.name(), b"row") => break,
                 Event::Eof => {
                     self.done = true;
                     return Err(unexpected_eof("row"));
@@ -679,6 +679,26 @@ pub fn validate_stream_batch_size(batch_size: usize) -> Result<usize> {
         return Err(Error::ResourceLimitExceeded(metadata));
     }
     Ok(batch_size)
+}
+
+/// Return `true` when `name` has local part `local`, matching
+/// `QName::local_name() == local` without scanning unprefixed names.
+///
+/// `local` must not contain `:`. The unprefixed form is a plain slice
+/// comparison; only a name that ends with `:local` is scanned for an
+/// earlier `:` so the first-colon split rule of `local_name()` is kept.
+#[inline]
+fn is_element(name: QName<'_>, local: &[u8]) -> bool {
+    let name = name.as_ref();
+    if name == local {
+        return true;
+    }
+    let Some(prefix_len) = name.len().checked_sub(local.len() + 1) else {
+        return false;
+    };
+    name[prefix_len] == b':'
+        && &name[prefix_len + 1..] == local
+        && !name[..prefix_len].contains(&b':')
 }
 
 /// Build the error returned when the worksheet XML ends inside an open
@@ -1494,6 +1514,25 @@ mod tests {
             ]
         );
         assert_eq!(rows[1].cells, vec![(1, CellValue::Number(2.0))]);
+    }
+
+    #[test]
+    fn is_element_matches_local_name_semantics() {
+        let names: [&[u8]; 10] = [
+            b"c", b"x:c", b"cc", b"xc", b":c", b"a:b:c", b"row", b"x:row", b"r", b"",
+        ];
+        for name in names {
+            for local in [&b"c"[..], b"row"] {
+                let qname = QName(name);
+                assert_eq!(
+                    is_element(qname, local),
+                    qname.local_name().as_ref() == local,
+                    "name {:?} local {:?}",
+                    String::from_utf8_lossy(name),
+                    String::from_utf8_lossy(local)
+                );
+            }
+        }
     }
 
     #[test]
