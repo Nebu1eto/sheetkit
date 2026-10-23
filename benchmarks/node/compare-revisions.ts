@@ -136,9 +136,20 @@ function prepareWorktree(
   return path;
 }
 
+/**
+ * Each revision runs its own release-gate.ts when it ships one, so both sides
+ * exercise the code path they were written for. The current script is copied
+ * in only for revisions that predate the gate, and the report records which
+ * sides used a borrowed script.
+ */
+const borrowedGateScript = new Set<string>();
+
 function gateScriptFor(worktree: string): string {
   const target = join(worktree, "benchmarks", "node", "release-gate.ts");
-  copyFileSync(join(scriptDirectory, "release-gate.ts"), target);
+  if (!existsSync(target)) {
+    copyFileSync(join(scriptDirectory, "release-gate.ts"), target);
+    borrowedGateScript.add(worktree);
+  }
   return target;
 }
 
@@ -287,7 +298,7 @@ interface ComparisonRun {
   fixtures: string[];
 }
 
-function runComparison(run: ComparisonRun): void {
+function runComparison(comparisonRun: ComparisonRun): void {
   const {
     baseRevision,
     headRevision,
@@ -303,7 +314,7 @@ function runComparison(run: ComparisonRun): void {
     password,
     operations,
     fixtures,
-  } = run;
+  } = comparisonRun;
   const worktrees = {
     base: prepareWorktree(baseRevision, baseSha, runScratch, ownedWorktrees),
     head: prepareWorktree(headRevision, headSha, runScratch, ownedWorktrees),
@@ -365,6 +376,12 @@ function runComparison(run: ComparisonRun): void {
     `# Release gate comparison: ${baseSha.slice(0, 7)} -> ${headSha.slice(0, 7)}`,
     "",
     `Samples: ${samples}, warmups: ${warmups}, regression threshold: +${threshold}% median.`,
+    ...(borrowedGateScript.size > 0
+      ? [
+          "",
+          `Note: ${borrowedGateScript.size} revision(s) predate release-gate.ts and ran the current script instead of their own.`,
+        ]
+      : []),
     "",
     "| Operation | Fixture | Base median (ms) | Base MAD | Head median (ms) | Head MAD | Delta | Verdict |",
     "|---|---|---|---|---|---|---|---|",
