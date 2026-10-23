@@ -222,6 +222,6 @@ The report is printed and written to `benchmarks/node/output/compare-<base>-<hea
 | Base median (ms), Head median (ms) | Median latency of the measured runs. |
 | Base MAD, Head MAD | Median absolute deviation, in milliseconds. A delta smaller than the MAD is within run-to-run noise. |
 | Delta | `(head - base) / base`. Positive means the head revision is slower. |
-| Verdict | `ok`, `REGRESSION` when Delta exceeds the threshold, or `missing` when either side failed to produce a result. |
+| Verdict | `ok`, `REGRESSION` when Delta exceeds the threshold, `skipped (<error>)` when both revisions failed with the same error (for example a fixture that exceeds a default output limit), or `missing` when only one side failed. |
 
-The process exits with status 1 when any row is `REGRESSION` or `missing`. Re-run regressed rows with more samples before treating them as real, since short operations on small fixtures are sensitive to machine load.
+The process exits with status 1 when any row is `REGRESSION` or `missing`; `skipped` rows do not fail the run. The two revisions alternate which one runs first on each row, so background load does not bias one side consistently. Re-run regressed rows with more samples, on an otherwise idle machine, before treating them as real: a row is only trustworthy when its Delta exceeds several times the larger MAD divided by the median, and short operations on small fixtures (medians of a few milliseconds) rarely meet that bar.

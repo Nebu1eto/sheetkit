@@ -66,7 +66,12 @@ interface Comparison {
   base: GateResult | undefined;
   head: GateResult | undefined;
   deltaPercent: number | undefined;
+  /** Set when a side failed; holds the first error line of its output. */
+  baseError?: string;
+  headError?: string;
 }
+
+type GateOutcome = { result: GateResult } | { error: string };
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = resolve(scriptDirectory, "../..");
@@ -146,7 +151,7 @@ function runGate(
   warmups: number,
   encryptedFixture: string | undefined,
   password: string | undefined,
-): GateResult | undefined {
+): GateOutcome {
   if (existsSync(output)) rmSync(output);
   const gateEnv: NodeJS.ProcessEnv = {
     SHEETKIT_GATE_OPERATION: operation,
@@ -160,15 +165,29 @@ function runGate(
   const result = spawnSync(
     process.execPath,
     ["--expose-gc", "--import", "tsx", gateScriptFor(worktree)],
-    { cwd: join(worktree, "benchmarks", "node"), stdio: "inherit", env: { ...process.env, ...gateEnv } },
+    {
+      cwd: join(worktree, "benchmarks", "node"),
+      stdio: ["ignore", "inherit", "pipe"],
+      encoding: "utf8",
+      env: { ...process.env, ...gateEnv },
+    },
   );
   if (result.status !== 0 || !existsSync(output)) {
-    console.error(`[compare] ${operation} on ${fixture} failed for ${worktree}`);
-    return undefined;
+    const stderr = typeof result.stderr === "string" ? result.stderr : "";
+    process.stderr.write(stderr);
+    // Classify by the first line that looks like an error so identical
+    // failures on both sides can be recognised as a skipped workload.
+    const firstError =
+      stderr
+        .split("\n")
+        .map((line) => line.trim())
+        .find((line) => /error/i.test(line)) ?? `exit status ${String(result.status)}`;
+    console.error(`[compare] ${operation} on ${fixture} failed for ${worktree}: ${firstError}`);
+    return { error: firstError };
   }
   const parsed: unknown = JSON.parse(readFileSync(output, "utf8"));
   assert(typeof parsed === "object" && parsed !== null);
-  return parsed as GateResult;
+  return { result: parsed as GateResult };
 }
 
 function formatMs(value: number | undefined): string {
@@ -300,12 +319,17 @@ function runComparison(run: ComparisonRun): void {
   }
 
   const comparisons: Comparison[] = [];
+  let cellIndex = 0;
   for (const fixture of fixtures) {
     const fixtureName = fixture.slice(fixture.lastIndexOf("/") + 1);
     for (const operation of operations) {
       if (operation === "encrypted-open" && encryptedFixture === undefined) continue;
-      const results: Partial<Record<"base" | "head", GateResult | undefined>> = {};
-      for (const side of ["base", "head"] as const) {
+      const results: Partial<Record<"base" | "head", GateOutcome>> = {};
+      // Alternate which side runs first so background load does not bias
+      // one revision consistently.
+      const order = cellIndex % 2 === 0 ? (["base", "head"] as const) : (["head", "base"] as const);
+      cellIndex += 1;
+      for (const side of order) {
         results[side] = runGate(
           worktrees[side],
           operation,
@@ -317,13 +341,23 @@ function runComparison(run: ComparisonRun): void {
           password,
         );
       }
-      const base = results.base;
-      const head = results.head;
+      const baseOutcome = results.base;
+      const headOutcome = results.head;
+      const base = baseOutcome !== undefined && "result" in baseOutcome ? baseOutcome.result : undefined;
+      const head = headOutcome !== undefined && "result" in headOutcome ? headOutcome.result : undefined;
       const deltaPercent =
         base !== undefined && head !== undefined && base.medianMs > 0
           ? ((head.medianMs - base.medianMs) / base.medianMs) * 100
           : undefined;
-      comparisons.push({ operation, fixture: fixtureName, base, head, deltaPercent });
+      comparisons.push({
+        operation,
+        fixture: fixtureName,
+        base,
+        head,
+        deltaPercent,
+        baseError: baseOutcome !== undefined && "error" in baseOutcome ? baseOutcome.error : undefined,
+        headError: headOutcome !== undefined && "error" in headOutcome ? headOutcome.error : undefined,
+      });
     }
   }
 
@@ -337,12 +371,28 @@ function runComparison(run: ComparisonRun): void {
   ];
   let regressions = 0;
   let missingResults = 0;
+  let skipped = 0;
   for (const item of comparisons) {
     const regressed = item.deltaPercent !== undefined && item.deltaPercent > threshold;
-    const missing = item.base === undefined || item.head === undefined;
+    // Both sides failing with the same error (for example a workload that
+    // exceeds a default output limit on this fixture) is a skipped cell,
+    // not an incomplete comparison.
+    const sameFailure =
+      item.base === undefined &&
+      item.head === undefined &&
+      item.baseError !== undefined &&
+      item.baseError === item.headError;
+    const missing = !sameFailure && (item.base === undefined || item.head === undefined);
     if (regressed) regressions += 1;
     if (missing) missingResults += 1;
-    const verdict = missing ? "missing" : regressed ? "REGRESSION" : "ok";
+    if (sameFailure) skipped += 1;
+    const verdict = sameFailure
+      ? `skipped (${item.baseError ?? "unknown"})`
+      : missing
+        ? "missing"
+        : regressed
+          ? "REGRESSION"
+          : "ok";
     lines.push(
       `| ${item.operation} | ${item.fixture} | ${formatMs(item.base?.medianMs)} | ${formatMs(item.base?.madMs)} | ${formatMs(item.head?.medianMs)} | ${formatMs(item.head?.madMs)} | ${formatDelta(item.deltaPercent)} | ${verdict} |`,
     );
@@ -353,6 +403,9 @@ function runComparison(run: ComparisonRun): void {
   console.log(report);
   console.log(`[compare] report written to ${reportPath}`);
 
+  if (skipped > 0) {
+    console.log(`[compare] ${skipped} workload(s) skipped because both revisions failed identically`);
+  }
   if (missingResults > 0) {
     console.error(`[compare] ${missingResults} measurement(s) missing; comparison incomplete`);
     process.exitCode = 1;
