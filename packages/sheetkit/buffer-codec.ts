@@ -751,13 +751,24 @@ export interface ValidatedBufferV2 {
 
 export type ValidatedBuffer = ValidatedBufferV1 | ValidatedBufferV2;
 
+/**
+ * Re-wrap a native buffer in a zero-copy JS view. Buffers created by the
+ * binding share a prototype-transitioned hidden class that V8 may discard
+ * once the previous buffer is collected, which deoptimizes decode loops
+ * specialized on it; a Buffer constructed from JS keeps a stable map.
+ */
+function stableBufferView(buf: Buffer): Buffer {
+  return Buffer.from(buf.buffer, buf.byteOffset, buf.byteLength);
+}
+
 function parseRowsBufferInternal(
-  buf: Buffer | null,
+  input: Buffer | null,
   validateUtf8: boolean,
 ): ValidatedBuffer | null {
-  if (!buf || buf.length === 0) {
+  if (!input || input.length === 0) {
     return null;
   }
+  const buf = stableBufferView(input);
   if (buf.length < HEADER_SIZE) throw new Error('Invalid buffer: truncated header');
   const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
   const magic = detectMagic(view);
@@ -778,8 +789,9 @@ export function parseRowsBuffer(buf: Buffer | null): ValidatedBuffer | null {
 }
 
 /** Decode a binary buffer (v1 or v2) into JsRowData objects. */
-export function decodeRowsBuffer(buf: Buffer | null): JsRowData[] {
-  if (!buf || buf.length === 0) return [];
+export function decodeRowsBuffer(input: Buffer | null): JsRowData[] {
+  if (!input || input.length === 0) return [];
+  const buf = stableBufferView(input);
   if (buf.length < HEADER_SIZE) throw new Error('Invalid buffer: truncated header');
   const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
   const magic = detectMagic(view);

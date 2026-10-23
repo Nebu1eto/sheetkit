@@ -32,6 +32,19 @@ describe('decodeRowsBuffer v2 string decoding', () => {
     expect(decoded).toStrictEqual(values);
   });
 
+  it('decodes only the viewed range of a larger backing store', () => {
+    const source = sourceBuffer();
+    const backing = new ArrayBuffer(source.length + 32);
+    const view = Buffer.from(backing, 16, source.length);
+    source.copy(view);
+    new Uint8Array(backing).fill(0xff, 0, 16);
+    new Uint8Array(backing).fill(0xff, 16 + source.length);
+    expect(decodeRowsBuffer(view)).toStrictEqual(decodeRowsBuffer(source));
+
+    const withTrailing = Buffer.from(backing, 16, source.length + 1);
+    expect(() => decodeRowsBuffer(withTrailing)).toThrow('trailing data');
+  });
+
   it('still rejects malformed UTF-8 in otherwise ASCII text', () => {
     const buf = sourceBuffer();
     buf[offsetOf(buf, 'plain ascii') + 3] = 0xff;

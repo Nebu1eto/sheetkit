@@ -1152,7 +1152,8 @@ class StreamBatchDecoder {
   #pos = 0;
 
   constructor(buf: Buffer) {
-    this.#buf = buf;
+    // Zero-copy JS view with a stable hidden class; see buffer-codec.ts.
+    this.#buf = Buffer.from(buf.buffer, buf.byteOffset, buf.byteLength);
     this.#view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
   }
 
