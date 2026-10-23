@@ -8,7 +8,8 @@
     "bench": "node --expose-gc --import tsx benchmark.ts",
     "bench:all": "node --expose-gc --import tsx benchmark.ts && node --expose-gc --import tsx benchmark.ts --format=markdown",
     "bench:baseline": "node --expose-gc --import tsx bench-baseline.ts",
-    "bench:release-gate": "node --expose-gc --import tsx release-gate.ts"
+    "bench:release-gate": "node --expose-gc --import tsx release-gate.ts",
+    "bench:compare": "node --import tsx compare-revisions.ts"
   },
   "dependencies": {
     "@sheetkit/node": "workspace:*",
