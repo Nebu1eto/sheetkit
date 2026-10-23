@@ -9,7 +9,7 @@ Node.js package의 생성 declaration은 Node.js 24와 Node-API 8을 기준으�
 ## 먼저 확인할 변경 사항
 
 | 영역 | 0.5.1 동작 | 1.0 동작 | 필요한 조치 |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | 워크북 열기 | ZIP, 암호화 container, XML의 일부 자원 사용이 사실상 무제한이었습니다. | `OpenLimits`, `CryptLimits`, `VbaLimits`가 유한한 기본값과 해제할 수 없는 상한을 적용합니다. | `ResourceLimitError`를 처리하고, 신뢰할 수 있는 큰 파일에만 필요한 항목을 유한하게 높이세요. |
 | 읽기 기본값 | eager 처리와 dense 결과를 전제로 한 코드가 있었습니다. | lazy/deferred open과 sparse traversal이 기본값입니다. | 빈 행과 열을 암묵적으로 세던 코드를 수정하고, 필요한 경우에만 bounded dense v1 형식을 선택하세요. |
 | 날짜와 수식 | Node.js에서 날짜와 수식 cached result가 평탄화되거나 손실될 수 있었습니다. | `DateValue`와 `FormulaValue`가 직접 호출, raw transfer, stream에서 보존됩니다. | TypeScript의 value narrowing과 직렬화 코드를 갱신하세요. |
@@ -26,7 +26,7 @@ Node.js package의 생성 declaration은 Node.js 24와 Node-API 8을 기준으�
 주요 기본 제한은 다음과 같습니다.
 
 | Profile | 주요 기본값 |
-|---|---|
+| --- | --- |
 | Open | outer input 128 MiB, archive entry 4,096개, aggregate expanded data 512 MiB, XML part 256 MiB, compression ratio 100배입니다. |
 | Formula | formula당 input 32 KiB, operation 누적 input 4 MiB, cached result를 포함한 누적 output 16 MiB입니다. |
 | Traversal | row 1,048,576개, column 16,384개, cell 10,000,000개, output 512 MiB입니다. |
@@ -34,6 +34,8 @@ Node.js package의 생성 declaration은 Node.js 24와 Node-API 8을 기준으�
 | Stream | row XML 16 MiB, total row XML 512 MiB, row 1,048,576개, cell 10,000,000개입니다. |
 | JSON import | row 1,048,576개, column 16,384개, cell 10,000,000개, retained data 512 MiB입니다. |
 | CSV return | UTF-8 output 64 MiB입니다. |
+
+- 100배 compression ratio 제한은 압축 해제 후 8 MiB를 넘는 ZIP entry에만 적용되므로 shared strings처럼 작고 반복적인 part는 기본값으로 열립니다. floor는 Node.js의 `compressionRatioFloorBytes` 또는 Rust의 `OpenOptions::compression_ratio_floor_bytes`로 변경하며, `0`을 지정하면 모든 entry를 검사합니다. compressed byte가 0인 비어 있지 않은 entry는 항상 거부됩니다.
 
 Node.js에서는 자원 제한 오류를 다음과 같이 구분할 수 있습니다. `limit`과 `observed`는 정밀도를 보존하기 위해 `bigint`입니다.
 
@@ -299,7 +301,7 @@ CLI의 table, JSON, CSV 출력은 byte 제한을 넘으면 성공한 prefix를 s
 다음 표는 0.5.1 이후 1.0에 포함된 23개 공개 또는 contributor 변경을 빠짐없이 연결합니다.
 
 | 변경 영역 | 1.0에서 확인할 내용 |
-|---|---|
+| --- | --- |
 | AI contribution policy | Runtime 변경은 없으며 contributor는 `AI_POLICY.md`와 commit trailer 규칙을 따릅니다. |
 | Unsafe workbook input 정리 | formatting, formula, raw transfer, stream, sheet edit가 panic이나 partial mutation 대신 오류를 반환합니다. |
 | Reference-aware structural edit | row/column 변경이 formula와 모든 reference-bearing part를 token 단위로 원자적으로 갱신합니다. |

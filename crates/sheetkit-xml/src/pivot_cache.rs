@@ -9,10 +9,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename = "pivotCacheDefinition")]
 pub struct PivotCacheDefinition {
-    #[serde(rename = "@xmlns")]
+    #[serde(rename = "@xmlns", default = "crate::default_spreadsheet_ml_ns")]
     pub xmlns: String,
 
-    #[serde(rename = "@xmlns:r")]
+    #[serde(rename = "@xmlns:r", default = "crate::default_relationships_ns")]
     pub xmlns_r: String,
 
     #[serde(
@@ -124,10 +124,10 @@ pub struct NumberItem {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename = "pivotCacheRecords")]
 pub struct PivotCacheRecords {
-    #[serde(rename = "@xmlns")]
+    #[serde(rename = "@xmlns", default = "crate::default_spreadsheet_ml_ns")]
     pub xmlns: String,
 
-    #[serde(rename = "@xmlns:r")]
+    #[serde(rename = "@xmlns:r", default = "crate::default_relationships_ns")]
     pub xmlns_r: String,
 
     #[serde(rename = "@count", skip_serializing_if = "Option::is_none")]

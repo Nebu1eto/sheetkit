@@ -10,7 +10,7 @@ use crate::namespaces;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename = "Relationships")]
 pub struct Relationships {
-    #[serde(rename = "@xmlns")]
+    #[serde(rename = "@xmlns", default = "default_package_relationships_ns")]
     pub xmlns: String,
 
     #[serde(rename = "Relationship", default)]
@@ -155,6 +155,10 @@ pub mod rel_types {
     pub const SLICER: &str = "http://schemas.microsoft.com/office/2007/relationships/slicer";
     pub const SLICER_CACHE: &str =
         "http://schemas.microsoft.com/office/2007/relationships/slicerCache";
+}
+
+fn default_package_relationships_ns() -> String {
+    crate::namespaces::PACKAGE_RELATIONSHIPS.to_string()
 }
 
 #[cfg(test)]

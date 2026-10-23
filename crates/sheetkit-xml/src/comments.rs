@@ -10,7 +10,7 @@ use crate::namespaces;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename = "comments")]
 pub struct Comments {
-    #[serde(rename = "@xmlns")]
+    #[serde(rename = "@xmlns", default = "crate::default_spreadsheet_ml_ns")]
     pub xmlns: String,
 
     #[serde(rename = "authors")]

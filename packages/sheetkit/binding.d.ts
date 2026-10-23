@@ -811,6 +811,11 @@ export interface JsOpenOptions {
   maxOuterInputBytes?: number
   /** Maximum bytes read from one XML part, including lazy hydration. */
   maxXmlPartBytes?: number
+  /**
+   * Decompressed entry size at or below which the compression ratio is
+   * not enforced. Default: 8 MiB. `0` enforces the ratio for every entry.
+   */
+  compressionRatioFloorBytes?: number
   /** Maximum rows read per sheet. Omit to use the worksheet format maximum. */
   sheetRows?: number
   /** Only parse sheets whose names are in this list. Omit to parse all sheets. */

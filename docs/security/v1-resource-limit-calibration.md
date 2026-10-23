@@ -70,6 +70,7 @@ must be charged from bytes read or produced and cannot trust ZIP metadata.
 | Aggregate declared bytes | 512 MiB | 12.85x | 4 GiB |
 | Aggregate actual bytes | 512 MiB | 12.85x declared proxy | 4 GiB |
 | Compression ratio | 100:1 | 3.81x | 1,000:1 |
+| Compression-ratio floor | 8 MiB | Not corpus-derived | 1 GiB |
 | Single XML part bytes | 256 MiB | 7.76x | 1 GiB |
 | Retained package bytes | 512 MiB | 10.88x archive-material proxy | 2 GiB |
 
@@ -90,6 +91,35 @@ continues to bound the package-wide sum. Retained package bytes count owned raw
 package buffers that remain live after extraction or transfer; releasing a
 temporary buffer may release its retained charge, while total actual bytes read
 remain cumulative for the operation.
+
+## Compression-ratio floor revision
+
+The 26:1 corpus maximum understated ordinary spreadsheet content. A real-file
+compatibility run found that SheetKit's own output can exceed 100:1: reopening
+`crates/sheetkit/tests/fixtures/csv-output-limit.xlsx` after one save failed
+with `dimension=compression_ratio limit=100 observed=162`. The shared-strings
+part expands 32,942 bytes from 332 compressed bytes (about 99:1), and the saved
+worksheet reaches 162:1. Repetitive XML routinely compresses this well, and
+DEFLATE allows roughly 1,032:1, so a per-entry ratio alone cannot separate a
+bomb from repetitive data. The absolute entry, aggregate, and XML byte limits
+remain the primary expansion bound.
+
+The ratio is therefore enforced only for entries larger than
+`compression_ratio_floor_bytes` (default 8 MiB, hard ceiling 1 GiB, equal to the
+per-entry actual-byte ceiling). The rule is:
+
+- An entry whose declared size (inspect stage) or actual decompressed size
+  (read stage) is at or below the floor is never rejected for ratio.
+- Above the floor, the existing ratio check applies to the whole entry, not
+  only to the bytes past the floor.
+- A non-empty entry with zero compressed bytes is always rejected as an
+  unbounded ratio, regardless of the floor.
+- `0` is a valid floor and restores enforcement for every entry.
+
+The 100:1 default and 1,000:1 hard ceiling are unchanged, so expansion of large
+entries keeps the same posture. The floor bounds the worst-case extra
+allocation admitted by ratio exemption to 8 MiB per entry, which the aggregate
+actual-byte budget still caps across the package.
 
 ## Unmeasured dimensions and follow-up
 

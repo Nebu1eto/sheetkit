@@ -1413,6 +1413,11 @@ pub(crate) fn js_open_options_to_core(
         defaults.limits.xml_bytes,
         "maxXmlPartBytes",
     )?;
+    limits.compression_ratio_floor_bytes = optional_finite_limit(
+        js.compression_ratio_floor_bytes,
+        defaults.limits.compression_ratio_floor_bytes,
+        "compressionRatioFloorBytes",
+    )?;
     Ok(sheetkit_core::workbook::OpenOptions {
         sheet_rows: checked_opt_u32("sheetRows", js.sheet_rows)?,
         sheets: js.sheets.clone(),
@@ -2102,6 +2107,7 @@ mod tests {
             max_zip_entries: None,
             max_outer_input_bytes: None,
             max_xml_part_bytes: None,
+            compression_ratio_floor_bytes: None,
             crypt_limits: None,
             vba_limits: None,
             read_mode: None,
@@ -2110,6 +2116,10 @@ mod tests {
             date_interpretation: None,
         };
         let defaults = js_open_options_to_core(Some(&options(None))).unwrap();
+        assert_eq!(
+            defaults.limits,
+            sheetkit_core::workbook::OpenLimits::default()
+        );
         assert!(matches!(
             defaults.read_mode,
             sheetkit_core::workbook::ReadMode::Lazy

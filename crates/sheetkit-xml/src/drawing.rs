@@ -10,13 +10,13 @@ use crate::namespaces;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename = "wsDr")]
 pub struct WsDr {
-    #[serde(rename = "@xmlns:xdr")]
+    #[serde(rename = "@xmlns:xdr", default = "default_spreadsheet_drawing_ns")]
     pub xmlns_xdr: String,
 
-    #[serde(rename = "@xmlns:a")]
+    #[serde(rename = "@xmlns:a", default = "default_drawing_ml_ns")]
     pub xmlns_a: String,
 
-    #[serde(rename = "@xmlns:r")]
+    #[serde(rename = "@xmlns:r", default = "crate::default_relationships_ns")]
     pub xmlns_r: String,
 
     #[serde(rename = "xdr:twoCellAnchor", default)]
@@ -485,6 +485,14 @@ pub struct RunProperties {
 /// Client data (empty element required by spec).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ClientData {}
+
+fn default_spreadsheet_drawing_ns() -> String {
+    namespaces::DRAWING_ML_SPREADSHEET.to_string()
+}
+
+fn default_drawing_ml_ns() -> String {
+    namespaces::DRAWING_ML.to_string()
+}
 
 #[cfg(test)]
 mod tests {

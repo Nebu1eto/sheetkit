@@ -10,7 +10,7 @@ use crate::namespaces;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename = "sst")]
 pub struct Sst {
-    #[serde(rename = "@xmlns")]
+    #[serde(rename = "@xmlns", default = "crate::default_spreadsheet_ml_ns")]
     pub xmlns: String,
 
     /// Total reference count of shared strings in the workbook.

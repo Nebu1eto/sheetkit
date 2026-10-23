@@ -33,3 +33,13 @@ pub mod theme;
 pub mod threaded_comment;
 pub mod workbook;
 pub mod worksheet;
+
+/// Canonical SpreadsheetML main namespace, used when a root omits `xmlns`.
+pub(crate) fn default_spreadsheet_ml_ns() -> String {
+    namespaces::SPREADSHEET_ML.to_string()
+}
+
+/// Canonical relationships namespace, used when a root omits `xmlns:r`.
+pub(crate) fn default_relationships_ns() -> String {
+    namespaces::RELATIONSHIPS.to_string()
+}

@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename = "slicers")]
 pub struct SlicerDefinitions {
-    #[serde(rename = "@xmlns")]
+    #[serde(rename = "@xmlns", default = "default_slicer_ns")]
     pub xmlns: String,
 
     #[serde(rename = "@xmlns:mc", skip_serializing_if = "Option::is_none")]
@@ -195,6 +195,10 @@ fn escape_xml_attr(s: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+fn default_slicer_ns() -> String {
+    crate::namespaces::SLICER_2009.to_string()
 }
 
 #[cfg(test)]

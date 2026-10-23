@@ -169,6 +169,13 @@ impl OpenOptions {
         self
     }
 
+    /// Override the decompressed entry size at or below which the expansion
+    /// ratio is not enforced. `0` enforces the ratio for every entry.
+    pub fn compression_ratio_floor_bytes(mut self, bytes: u64) -> Self {
+        self.limits.compression_ratio_floor_bytes = bytes;
+        self
+    }
+
     /// Override the actual byte limit for each XML part.
     pub fn max_xml_part_bytes(mut self, bytes: u64) -> Self {
         self.limits.xml_bytes = bytes;

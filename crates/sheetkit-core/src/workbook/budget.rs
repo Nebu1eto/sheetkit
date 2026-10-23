@@ -22,6 +22,10 @@ pub struct OpenLimits {
     pub aggregate_actual_bytes: u64,
     /// Maximum uncompressed-to-compressed ratio for one entry.
     pub compression_ratio: u64,
+    /// Decompressed entry size at or below which the ratio is not enforced.
+    /// Above it, the ratio applies to the whole entry. Non-empty entries with
+    /// zero compressed bytes are always rejected. `0` enforces every entry.
+    pub compression_ratio_floor_bytes: u64,
     /// Maximum bytes actually read from one XML part.
     pub xml_bytes: u64,
     /// Maximum raw package bytes retained by the resulting workbook.
@@ -38,6 +42,7 @@ impl Default for OpenLimits {
             aggregate_declared_bytes: 512 * MIB,
             aggregate_actual_bytes: 512 * MIB,
             compression_ratio: 100,
+            compression_ratio_floor_bytes: 8 * MIB,
             xml_bytes: 256 * MIB,
             retained_package_bytes: 512 * MIB,
         }
@@ -55,6 +60,7 @@ impl OpenLimits {
             aggregate_declared_bytes: 4 * 1024 * MIB,
             aggregate_actual_bytes: 4 * 1024 * MIB,
             compression_ratio: 1_000,
+            compression_ratio_floor_bytes: 1024 * MIB,
             xml_bytes: 1024 * MIB,
             retained_package_bytes: 2 * 1024 * MIB,
         }
@@ -62,6 +68,15 @@ impl OpenLimits {
 
     pub(crate) fn validate(self) -> Result<Self> {
         let ceiling = Self::hard_ceiling();
+        // The floor only relaxes enforcement, so zero (strictest) is allowed.
+        if self.compression_ratio_floor_bytes > ceiling.compression_ratio_floor_bytes {
+            return Err(limit_error(
+                ResourceDimension::CompressionRatioFloorBytes,
+                ceiling.compression_ratio_floor_bytes,
+                self.compression_ratio_floor_bytes,
+                ResourceStage::Validate,
+            ));
+        }
         for (dimension, value, maximum) in [
             (
                 ResourceDimension::InputBytes,
@@ -182,12 +197,7 @@ impl OpenBudget {
             aggregate,
             ResourceStage::Inspect,
         )?;
-        check_ratio(
-            declared,
-            compressed,
-            self.limits.compression_ratio,
-            ResourceStage::Inspect,
-        )?;
+        check_ratio(declared, compressed, self.limits, ResourceStage::Inspect)?;
         self.aggregate_declared = aggregate;
         Ok(())
     }
@@ -214,12 +224,7 @@ impl OpenBudget {
                 ResourceStage::Read,
             )?;
         }
-        check_ratio(
-            entry_observed,
-            compressed,
-            self.limits.compression_ratio,
-            ResourceStage::Read,
-        )?;
+        check_ratio(entry_observed, compressed, self.limits, ResourceStage::Read)?;
         let aggregate = checked_total(self.aggregate_actual, amount);
         check(
             ResourceDimension::AggregateActualBytes,
@@ -278,7 +283,17 @@ fn check(
     Ok(())
 }
 
-fn check_ratio(actual: u64, compressed: u64, limit: u64, stage: ResourceStage) -> Result<()> {
+/// Enforce the per-entry ratio once `actual` exceeds the configured floor.
+/// A non-empty entry with zero compressed bytes is rejected regardless.
+fn check_ratio(
+    actual: u64,
+    compressed: u64,
+    limits: OpenLimits,
+    stage: ResourceStage,
+) -> Result<()> {
+    if compressed != 0 && actual <= limits.compression_ratio_floor_bytes {
+        return Ok(());
+    }
     let observed = if actual == 0 {
         0
     } else if compressed == 0 {
@@ -286,7 +301,12 @@ fn check_ratio(actual: u64, compressed: u64, limit: u64, stage: ResourceStage) -
     } else {
         actual / compressed + u64::from(!actual.is_multiple_of(compressed))
     };
-    check(ResourceDimension::CompressionRatio, limit, observed, stage)
+    check(
+        ResourceDimension::CompressionRatio,
+        limits.compression_ratio,
+        observed,
+        stage,
+    )
 }
 
 pub(crate) fn limit_error(
@@ -354,6 +374,7 @@ mod tests {
         let mut budget = OpenBudget::new(OpenLimits {
             retained_package_bytes: 8,
             compression_ratio: 4,
+            compression_ratio_floor_bytes: 0,
             ..OpenLimits::default()
         })
         .unwrap();
@@ -370,6 +391,32 @@ mod tests {
             ratio.resource_metadata().unwrap().dimension(),
             ResourceDimension::CompressionRatio
         );
+    }
+
+    #[test]
+    fn ratio_floor_is_inclusive_and_zero_compressed_ignores_it() {
+        let limits = OpenLimits {
+            compression_ratio: 4,
+            compression_ratio_floor_bytes: 64,
+            ..OpenLimits::default()
+        };
+        let mut budget = OpenBudget::new(limits).unwrap();
+        budget.preflight_entry(64, 1).unwrap();
+        assert_eq!(budget.charge_actual(0, 64, 1, false).unwrap(), 64);
+        let above = budget.charge_actual(64, 1, 1, false).unwrap_err();
+        assert_eq!(
+            above.resource_metadata().unwrap().observed(),
+            65,
+            "ratio covers the whole entry, not only bytes past the floor"
+        );
+        let mut budget = OpenBudget::new(limits).unwrap();
+        let declared = budget.preflight_entry(65, 1).unwrap_err();
+        assert_eq!(
+            declared.resource_metadata().unwrap().dimension(),
+            ResourceDimension::CompressionRatio
+        );
+        let zero = budget.preflight_entry(1, 0).unwrap_err();
+        assert_eq!(zero.resource_metadata().unwrap().observed(), u64::MAX);
     }
 
     #[test]

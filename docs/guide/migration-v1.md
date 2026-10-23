@@ -52,7 +52,7 @@ Limits apply to one operation. They do not alter process-global state or store
 an unlimited policy on a workbook.
 
 | Operation | Rust policy | Node policy | Selected default ceilings |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | Open | `OpenOptions`, `OpenLimits`, `CryptLimits`, `VbaLimits` | `OpenOptions` | 128 MiB outer input, 4,096 ZIP entries, 512 MiB aggregate expansion, 256 MiB XML part |
 | Formula | `FormulaLimits` | `FormulaLimits` | 32 KiB per formula input, 4 MiB cumulative input, 16 MiB cumulative output |
 | Traversal | `TraversalOptions`, `TraversalLimits` | `TraversalOptions` | 1,048,576 rows, 16,384 columns, 10 million cells, 512 MiB output |
@@ -146,6 +146,12 @@ falling back.
 alone does not admit an XML ZIP entry above the separate 256 MiB per-entry
 declared and actual defaults; Node 1.0 does not expose those two per-entry
 overrides.
+
+- The 100:1 compression-ratio limit applies only to ZIP entries larger than
+  8 MiB after decompression, so small repetitive parts such as shared strings
+  open at defaults. Set `compressionRatioFloorBytes` (Node) or
+  `OpenOptions::compression_ratio_floor_bytes` (Rust) to change the floor; `0`
+  checks every entry. Non-empty entries with zero compressed bytes always fail.
 
 ## 2. Open, lazy hydration, and date interpretation
 
@@ -580,7 +586,7 @@ v0.5.1-decoded text.
 The destination extension controls macro retention:
 
 | Target | 1.0 behavior |
-|---|---|
+| --- | --- |
 | XLSX, XLTX | Remove VBA bytes, relationships, and macro content types |
 | XLSM, XLTM, XLAM | Preserve canonical VBA content |
 
@@ -690,7 +696,7 @@ This map accounts for the 23 public or contributor changes included between
 v0.5.1 and the 1.0 security work.
 
 | Change area | What to verify in 1.0 |
-|---|---|
+| --- | --- |
 | AI contribution policy | Runtime behavior is unchanged. Contributors follow `AI_POLICY.md` and the repository's commit trailer rules. |
 | Unsafe workbook inputs | Formatting, formula, raw-transfer, stream, and sheet-edit paths return errors instead of panicking or leaving partial mutations. |
 | Reference-aware structural edits | Row and column changes update formulas and other reference-bearing parts atomically using token-aware shifts. |

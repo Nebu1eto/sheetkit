@@ -242,6 +242,11 @@ export interface OpenOptions {
   maxOuterInputBytes?: number;
   /** Maximum bytes read from one XML part, including lazy hydration. */
   maxXmlPartBytes?: number;
+  /**
+   * Decompressed entry size at or below which the compression ratio is not
+   * enforced. Default: 8 MiB. `0` enforces the ratio for every entry.
+   */
+  compressionRatioFloorBytes?: number;
   /** Read mode: "lazy" (recommended for read-only), "eager", or "stream". Default: "lazy". */
   readMode?: ReadMode;
   /** Only parse sheets whose names are in this list. Omit to parse all sheets. */
@@ -306,6 +311,7 @@ const RESOURCE_DIMENSIONS = [
   'aggregate_declared_bytes',
   'aggregate_actual_bytes',
   'compression_ratio',
+  'compression_ratio_floor_bytes',
   'xml_bytes',
   'nesting_depth',
   'token_count',

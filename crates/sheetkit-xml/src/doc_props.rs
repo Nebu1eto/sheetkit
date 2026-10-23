@@ -210,7 +210,7 @@ const DC_MITYPE: &str = "http://purl.org/dc/dcmitype/";
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename = "Properties")]
 pub struct ExtendedProperties {
-    #[serde(rename = "@xmlns")]
+    #[serde(rename = "@xmlns", default = "default_extended_properties_ns")]
     pub xmlns: String,
     #[serde(rename = "@xmlns:vt", skip_serializing_if = "Option::is_none")]
     pub xmlns_vt: Option<String>,
@@ -498,6 +498,10 @@ pub fn deserialize_custom_properties(xml: &str) -> Result<CustomProperties, Stri
     }
 
     Ok(props)
+}
+
+fn default_extended_properties_ns() -> String {
+    namespaces::EXTENDED_PROPERTIES.to_string()
 }
 
 #[cfg(test)]

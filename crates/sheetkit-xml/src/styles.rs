@@ -11,7 +11,7 @@ use crate::namespaces;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename = "styleSheet")]
 pub struct StyleSheet {
-    #[serde(rename = "@xmlns")]
+    #[serde(rename = "@xmlns", default = "crate::default_spreadsheet_ml_ns")]
     pub xmlns: String,
 
     #[serde(rename = "numFmts", skip_serializing_if = "Option::is_none")]

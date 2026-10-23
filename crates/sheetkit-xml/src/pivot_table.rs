@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename = "pivotTableDefinition")]
 pub struct PivotTableDefinition {
-    #[serde(rename = "@xmlns")]
+    #[serde(rename = "@xmlns", default = "crate::default_spreadsheet_ml_ns")]
     pub xmlns: String,
 
     #[serde(rename = "@name")]

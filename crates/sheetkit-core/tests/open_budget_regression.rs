@@ -205,7 +205,9 @@ fn high_ratio_entry_rejects_without_echoing_its_name() {
     assert_dimension(
         Workbook::open_from_buffer_with_options(
             &data,
-            &OpenOptions::new().max_compression_ratio(10),
+            &OpenOptions::new()
+                .max_compression_ratio(10)
+                .compression_ratio_floor_bytes(0),
         ),
         ResourceDimension::CompressionRatio,
     );
@@ -416,11 +418,12 @@ fn stored_unknown_part_consumes_retained_raw_budget() {
 #[test]
 fn trusted_override_does_not_change_the_next_default_open() {
     let data = high_ratio_package();
-    let trusted = OpenOptions::new().max_compression_ratio(1_000);
+    let strict = OpenOptions::new().compression_ratio_floor_bytes(0);
+    let trusted = strict.clone().max_compression_ratio(1_000);
     Workbook::open_from_buffer_with_options(&data, &trusted)
         .expect("finite trusted override applies to this call");
     assert_dimension(
-        Workbook::open_from_buffer(&data),
+        Workbook::open_from_buffer_with_options(&data, &strict),
         ResourceDimension::CompressionRatio,
     );
 }

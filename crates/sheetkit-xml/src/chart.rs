@@ -10,13 +10,13 @@ use crate::namespaces;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename = "chartSpace")]
 pub struct ChartSpace {
-    #[serde(rename = "@xmlns:c")]
+    #[serde(rename = "@xmlns:c", default = "default_chart_ns")]
     pub xmlns_c: String,
 
-    #[serde(rename = "@xmlns:a")]
+    #[serde(rename = "@xmlns:a", default = "default_drawing_ml_ns")]
     pub xmlns_a: String,
 
-    #[serde(rename = "@xmlns:r")]
+    #[serde(rename = "@xmlns:r", default = "crate::default_relationships_ns")]
     pub xmlns_r: String,
 
     #[serde(rename = "c:chart")]
@@ -674,6 +674,14 @@ pub struct IntVal {
 pub struct BoolVal {
     #[serde(rename = "@val")]
     pub val: bool,
+}
+
+fn default_chart_ns() -> String {
+    namespaces::DRAWING_ML_CHART.to_string()
+}
+
+fn default_drawing_ml_ns() -> String {
+    namespaces::DRAWING_ML.to_string()
 }
 
 #[cfg(test)]

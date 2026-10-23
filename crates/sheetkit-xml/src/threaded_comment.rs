@@ -27,7 +27,7 @@ pub const REL_TYPE_PERSON: &str =
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename = "ThreadedComments")]
 pub struct ThreadedComments {
-    #[serde(rename = "@xmlns")]
+    #[serde(rename = "@xmlns", default = "default_threaded_comments_ns")]
     pub xmlns: String,
 
     #[serde(rename = "threadedComment", default)]
@@ -63,7 +63,7 @@ pub struct ThreadedComment {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename = "personList")]
 pub struct PersonList {
-    #[serde(rename = "@xmlns")]
+    #[serde(rename = "@xmlns", default = "default_threaded_comments_ns")]
     pub xmlns: String,
 
     #[serde(rename = "person", default)]
@@ -102,6 +102,10 @@ impl Default for PersonList {
             persons: Vec::new(),
         }
     }
+}
+
+fn default_threaded_comments_ns() -> String {
+    THREADED_COMMENTS_NS.to_string()
 }
 
 #[cfg(test)]

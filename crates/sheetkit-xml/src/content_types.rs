@@ -10,7 +10,7 @@ use crate::namespaces;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename = "Types")]
 pub struct ContentTypes {
-    #[serde(rename = "@xmlns")]
+    #[serde(rename = "@xmlns", default = "default_content_types_ns")]
     pub xmlns: String,
 
     #[serde(rename = "Default", default)]
@@ -151,6 +151,10 @@ pub mod mime_types {
         "application/vnd.openxmlformats-officedocument.extended-properties+xml";
     pub const CUSTOM_PROPERTIES: &str =
         "application/vnd.openxmlformats-officedocument.custom-properties+xml";
+}
+
+fn default_content_types_ns() -> String {
+    namespaces::CONTENT_TYPES.to_string()
 }
 
 #[cfg(test)]

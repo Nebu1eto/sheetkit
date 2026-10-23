@@ -169,7 +169,7 @@ await wb.save("macros.xlsm");
 ### WorkbookFormat
 
 | Rust | TypeScript | Extension | Description |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `WorkbookFormat::Xlsx` | `"xlsx"` | `.xlsx` | Standard spreadsheet (default) |
 | `WorkbookFormat::Xlsm` | `"xlsm"` | `.xlsm` | Macro-enabled spreadsheet |
 | `WorkbookFormat::Xltx` | `"xltx"` | `.xltx` | Template |
@@ -220,7 +220,7 @@ await wb.save("with_macros.xlsm"); // VBA preserved
 Options for controlling how a workbook is opened and parsed. All fields are optional.
 
 | Field | Rust type | TypeScript type | Default | Description |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | `read_mode` / `readMode` | `ReadMode` | `'lazy' \| 'eager' \| 'stream'?` | `'lazy'` | Controls how much of the file is parsed during open. |
 | `aux_parts` / `auxParts` | `AuxParts` | `'deferred' \| 'eager'?` | `'deferred'` | Controls when auxiliary parts (comments, charts, images) are parsed. |
 | `sheet_rows` / `sheetRows` | `Option<u32>` | `number?` | no row filter | Maximum number of rows to read per sheet. Rows beyond this limit are discarded; the finite open limits still apply when omitted. |
@@ -228,12 +228,13 @@ Options for controlling how a workbook is opened and parsed. All fields are opti
 | `max_unzip_size` / `maxUnzipSize` | `Option<u64>` | `number?` | 512 MiB | Compatibility override for aggregate declared and actual ZIP bytes. |
 | `max_zip_entries` / `maxZipEntries` | `Option<usize>` | `number?` | 4,096 | Compatibility override for the archive entry limit. |
 | `limits` | `OpenLimits` | `JsOpenLimits?` | finite secure defaults | Independent limits for input, entries, XML, compression ratio, and retained package bytes. |
+| `limits.compression_ratio_floor_bytes` / `compressionRatioFloorBytes` | `u64` | `number?` | 8 MiB | Entries at or below this decompressed size skip the compression-ratio check; larger entries are checked as a whole. `0` checks every entry; hard ceiling 1 GiB. Non-empty entries with zero compressed bytes always reject. |
 | `date_interpretation` / `dateInterpretation` | `DateInterpretation` | `'cellType' \| 'numFmt'?` | `'numFmt'` | Controls how date-formatted number cells are surfaced while reading. |
 
 #### ReadMode
 
 | Value | Description |
-|-------|-------------|
+| ------- | ------------- |
 | `'lazy'` | Parse ZIP index and metadata only. Sheet XML is parsed on first access. Default for Node.js. |
 | `'eager'` | Parse all sheets and auxiliary parts during open. Same behavior as previous versions. |
 | `'stream'` | In the current Rust implementation, it follows the same open-path behavior as `'lazy'`: deferred sheet XML hydration and skipped eager auxiliary-part parsing. Keep using this mode for forward compatibility and streaming-oriented intent, and pair it with `openSheetReader()` when needed. |
@@ -374,7 +375,7 @@ Forward-only streaming reader for worksheet data. Created via `Workbook.openShee
 **Methods:**
 
 | Method | Return Type | Description |
-|---|---|---|
+| --- | --- | --- |
 | `next(batchSize?)` | `Promise<JsRowData[] \| null>` | Read the next batch. Returns `null` when done. |
 | `close()` | `Promise<void>` | Release resources. Called automatically by `for await`. |
 | `[Symbol.asyncIterator]()` | `AsyncGenerator<JsRowData[]>` | Async iterator yielding batches. |
