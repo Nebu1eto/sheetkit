@@ -843,6 +843,8 @@ wb.deleteConditionalFormat("Sheet1", "A1:A100");
 
 시트에 테이블을 생성합니다. 테이블 이름은 워크북 전체에서 고유해야 합니다.
 
+테이블 이름과 display name은 Excel 규칙을 따릅니다. 길이는 1~255자이며, 문자, 밑줄, 백슬래시로 시작하고 이후에는 문자, 숫자, 마침표, 밑줄만 사용할 수 있습니다. `A1`, `R1C1`처럼 A1 또는 R1C1 cell reference로 읽히는 이름은 거부됩니다. Display name이 비어 있으면 테이블 이름을 사용합니다. 고유성은 대소문자를 구분하지 않으며 테이블 이름, display name, defined name 전체에 적용됩니다. 다른 테이블과 겹치면 `TableAlreadyExists`를, 잘못된 이름이거나 defined name과 겹치면 `InvalidArgument`를 반환합니다.
+
 **Rust:**
 
 ```rust

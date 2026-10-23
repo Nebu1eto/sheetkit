@@ -1159,7 +1159,7 @@ await wb.save("large_data.xlsx");
 
 #### `add_merge_cell(reference)` / `addMergeCell(reference)`
 
-셀 병합을 추가합니다 (예: "A1:C3").
+셀 병합을 추가합니다 (예: "A1:C3"). Range는 canonical 형태로 저장됩니다. `$` 표시는 제거되고 문자는 대문자로 바뀌며, 뒤집힌 끝점은 순서가 정렬됩니다. 같은 range를 다시 추가하면 아무 작업도 하지 않으며, 이미 등록된 다른 range와 겹치면 `MergeCellOverlap`을 반환합니다.
 
 #### `apply_stream_writer(writer)` / `applyStreamWriter(writer)`
 
@@ -2083,6 +2083,8 @@ const raw: Buffer | null = wb.getVbaProject();
 ### `get_vba_modules()` / `getVbaModules()`
 
 VBA 프로젝트 바이너리를 파싱하고, 모듈 소스 코드를 압축 해제하여 모듈 배열을 반환합니다. VBA 프로젝트가 없으면 `None`/`null`을 반환합니다. VBA 프로젝트가 손상된 경우 에러를 발생시킵니다.
+
+Codepage 1252와 65001(UTF-8) source는 완전히 decode됩니다. CP932, CP949, CP936 source는 lossy하게 decode됩니다. ASCII와 CP932의 반각 가타카나는 유지되며, 그 밖의 double-byte 문자는 U+FFFD로 바뀌고 project의 `warnings` 목록에 module별 치환 개수가 기록됩니다. Module 이름은 Unicode stream-name record가 있으면 이를 우선 사용합니다.
 
 **Rust:**
 

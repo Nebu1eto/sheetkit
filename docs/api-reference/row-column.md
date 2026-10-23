@@ -4,7 +4,7 @@ All row numbers are 1-based.
 
 ### `insert_rows(sheet, row, count)` / `insertRows(sheet, row, count)`
 
-Insert `count` empty rows starting at `row`, shifting existing rows at and below that position downward. Cell references in shifted rows are updated automatically.
+Insert `count` empty rows starting at `row`, shifting existing rows at and below that position downward. Cell references in shifted rows are updated automatically. Returns an error without changing the workbook if a comment would move past the last row.
 
 **Rust:**
 
@@ -20,7 +20,7 @@ wb.insertRows("Sheet1", 3, 2);
 
 ### `remove_row(sheet, row)` / `removeRow(sheet, row)`
 
-Delete a single row and shift rows below it upward by one.
+Delete a single row and shift rows below it upward by one. Formula references to the deleted row become `#REF!`, and ranges that included it shrink. Merges, data validations, conditional formats, hyperlinks, comments, and page breaks are shrunk or dropped the same way. Deleting a table's header row, totals row, or last data row returns an error without changing the workbook.
 
 **Rust:**
 
@@ -36,7 +36,7 @@ wb.removeRow("Sheet1", 5);
 
 ### `duplicate_row(sheet, row)` / `duplicateRow(sheet, row)`
 
-Copy a row and insert the duplicate directly below the source row. Existing rows below are shifted down.
+Copy a row and insert the duplicate directly below the source row. Existing rows below are shifted down. Shared formulas in the copied row are written as ordinary formulas.
 
 **Rust:**
 
@@ -168,7 +168,7 @@ const visible: boolean = wb.getColVisible("Sheet1", "C");
 
 ### `insert_cols(sheet, col, count)` / `insertCols(sheet, col, count)`
 
-Insert `count` empty columns starting at the given column letter, shifting existing columns to the right. Cell references are updated automatically.
+Insert `count` empty columns starting at the given column letter, shifting existing columns to the right. Cell references are updated automatically. Returns an error without changing the workbook if a comment would move past the last column.
 
 **Rust:**
 
@@ -184,7 +184,7 @@ wb.insertCols("Sheet1", "B", 3);
 
 ### `remove_col(sheet, col)` / `removeCol(sheet, col)`
 
-Delete a single column and shift columns to its right leftward by one.
+Delete a single column and shift columns to its right leftward by one. Formula references to the deleted column become `#REF!`, and ranges that included it shrink, as with `remove_row`. A column inside a table is removed from the table; deleting a table's last column returns an error without changing the workbook.
 
 **Rust:**
 

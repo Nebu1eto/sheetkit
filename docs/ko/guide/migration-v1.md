@@ -236,6 +236,8 @@ let limits = SaveLimits {
 workbook.save_with_limits("report.xlsx", limits)?;
 ```
 
+1.0.0 후보는 다시 serialize하지 않고 복사한 clean worksheet에 `xml_part_bytes`를 적용하지 않았으며, 원자적 교체 과정에서 symlink 대상을 일반 파일로 바꾸고 기존 permission bit를 유지하지 않았습니다. 두 문제 모두 수정되었습니다. 자세한 내용은 [Audit v2 동작 변경](#audit-v2-behavior-changes)을 참고하세요.
+
 Standard와 Agile encryption parsing, password derivation, package HMAC는 Office-compatible 동작으로 정리되었습니다. `CryptLimits`는 outer CFB, named stream, encrypted package, KDF iteration과 work를 제한하며 `VbaLimits`는 compressed, decoded, retained, output byte와 module 수를 한 operation에서 누적합니다. 기존에 만든 비표준 암호화 fixture는 Office나 msoffcrypto로 다시 검증하세요.
 
 저장 대상 확장자가 최종 형식을 결정합니다. `.xlsx`와 `.xltx`는 VBA를 제거하며 `.xlsm`, `.xltm`, `.xlam`은 canonical VBA package를 보존합니다.
@@ -347,3 +349,62 @@ CLI의 table, JSON, CSV 출력은 byte 제한을 넘으면 성공한 prefix를 s
 - byte-for-byte ZIP 비교 대신 save/reopen과 Excel/LibreOffice 의미 검증을 수행하세요.
 - CLI automation은 human text 대신 JSON을 사용하세요.
 - 실제 workload가 release fixture와 크게 다르면 같은 방식으로 application fixture를 다시 측정하세요.
+
+<a id="audit-v2-behavior-changes"></a>
+
+## Audit v2 동작 변경
+
+1.0.0 후보에 대한 두 번째 audit에서 아래 수정이 적용되었습니다. 각 수정은 application이 의존할 수 있는 동작을 바꿉니다. Finding ID는 [보안 finding ledger](../../security/v1-finding-ledger.md#audit-v2-post-1-0-0-candidate)에 정리되어 있습니다.
+
+### 열기와 저장
+
+- Path 저장은 symlink를 따라가 대상 파일을 교체하므로 link 자체는 그대로 남습니다. Unix에서는 기존 대상 파일의 permission bit를 유지하며, 새 파일은 `0o666`에서 process umask를 적용한 mode로 생성됩니다.
+- 어떤 part든 CRC 또는 압축 해제 검사에 실패하면 모든 read mode에서 open이 실패합니다. 이전 후보는 이런 part를 조용히 제외했습니다. 내용은 손상되지 않았지만 XML 형식이 잘못된 optional part는 계속 보존됩니다.
+- Worksheet relationship이 다른 part를 가리키는 alias이거나, package 밖을 가리키거나, external이면 open이 실패합니다.
+- ZIP entry 이름이 중복되거나 대소문자만 다른 part 이름이 있으면 open이 실패합니다.
+- 선언된 크기와 실제 내용이 다른 entry는 거부됩니다. Eager open은 즉시 실패하며, lazy workbook은 해당 part를 hydrate하거나 저장 중 복사할 때 실패합니다.
+- 저장 시 `xml_part_bytes`(`xmlPartBytes`)는 모든 worksheet에 대해 실제로 쓰는 byte 수를 기준으로 적용됩니다. Lazy 저장과 sheet filtering이 다시 serialize하지 않고 복사하는 clean worksheet도 포함됩니다. 낮은 limit으로 통과하던 저장이 이제 실패할 수 있습니다.
+- Lazy workbook은 open 시점의 package를 계속 읽습니다. 이후 원본 path를 교체하거나 다시 써도 읽기 결과는 바뀌지 않습니다.
+
+### 구조 편집
+
+- `removeRow`와 `removeCol`은 삭제된 cell을 가리키는 reference를 `#REF!`로 바꾸고, 행이나 열을 잃은 range를 축소합니다. Defined name도 같은 규칙을 따릅니다. Merge, data validation, conditional format, hyperlink, auto-filter, comment, threaded comment, 행 page break도 축소되거나 제거됩니다.
+- Table 안의 열을 삭제하면 해당 table column도 제거됩니다. Table의 header 행, totals 행, 모든 data 행, 모든 열을 제거하는 편집은 workbook을 변경하지 않고 거부됩니다.
+- Comment가 grid 밖으로 밀려나는 경우 `insertRows`와 `insertCols`가 실패합니다.
+- `duplicateRow`는 복사본의 shared formula를 일반 formula로 펼칩니다.
+- `A:A`, `1:1` 같은 전체 열/행 reference도 이동합니다. 전체 sheet span(`1:1048576`, `A:XFD`)과 3-D reference는 이동하지 않습니다.
+- `copySheet`는 기존 table 이름 및 defined name과 대소문자 구분 없이 겹치지 않는 table 이름을 생성합니다.
+
+```typescript
+workbook.setCellFormula('Sheet1', 'B1', 'A5+SUM(A1:A5)');
+workbook.removeRow('Sheet1', 5);
+// B1의 값은 '#REF!+SUM(A1:A4)'가 됩니다.
+```
+
+### 수식 결과
+
+- `SUM`, `AVERAGE`, `MIN`, `MAX`, `PRODUCT`, `MEDIAN`, `LARGE`, `SMALL`, `RANK` 같은 numeric aggregate는 reference 안의 boolean, text, 빈 cell을 무시합니다. 숫자가 없는 reference에 대한 `AVERAGE`는 `#DIV/0!`를 반환합니다. 수식에 직접 입력한 scalar 인수는 기존 coercion을 유지하므로 `SUM("5", TRUE)`는 여전히 6입니다.
+- 연도가 0..=9999 범위를 벗어난 `DATE`는 `#NUM!`을 반환합니다. `DATE`, `EDATE`, `EOMONTH`, `WORKDAY`는 결과가 Excel 날짜 범위를 벗어나면 `#NUM!`을 반환하며, `WORKDAY`는 serial 1 이전의 결과에도 `#NUM!`을 반환합니다.
+- `LEFT`, `RIGHT`, `MID`, `REPT`, `REPLACE`는 음수 count에 `#VALUE!`를 반환합니다. 매우 큰 count는 overflow 대신 clamp됩니다.
+- `ROUND`, `ROUNDUP`, `ROUNDDOWN`은 NaN이나 infinity를 반환하지 않습니다. `f64` 정밀도를 넘는 digit 수는 값을 그대로 두거나 0으로 만들며, non-finite 결과가 될 경우 `#NUM!`을 반환합니다.
+- Cross-sheet reference로 도달한 formula는 unqualified reference, `ROW()`, `COLUMN()`을 해당 formula의 sheet와 cell 기준으로 계산합니다.
+
+### ID와 저장 값
+
+- 새 sheet relationship ID, sheet ID, hyperlink relationship ID, custom property `pid`, pivot `cacheId`, table ID, custom number format ID는 사용되지 않은 가장 작은 값을 사용합니다. `rId2`를 삭제한 뒤 추가하는 relationship은 `rId4`가 아니라 `rId2`가 됩니다. Conditional format priority는 평가 순서가 바뀌지 않도록 계속 현재 최댓값에 1을 더한 값을 사용합니다.
+- 같은 text를 가진 rich text 문자열과 일반 문자열은 더 이상 shared string entry를 공유하지 않습니다.
+- Custom document property는 빈 문자열을 유지하고 XML entity를 decode합니다. Slicer cache attribute도 entity를 decode합니다.
+
+### Node.js 인수와 출력
+
+- 정수 인수와 numeric option은 소수, NaN, infinity, safe integer를 넘는 값, 범위를 벗어난 값을 잘라내거나 wrap하지 않고 거부합니다.
+- 알 수 없는 style 및 conditional format enum 문자열은 허용되는 값 목록과 함께 오류를 발생시킵니다.
+- `toHTML`은 최종 UTF-8 HTML 크기를 `limits.maxOutputBytes`에 반영합니다.
+- `StreamWriter.addMergeCell`은 range를 canonical 형태로 저장하며 겹치는 range에는 오류를 발생시킵니다.
+- Stream reader는 잘린 worksheet에서 일부 행을 반환하지 않고 오류를 발생시킵니다.
+- Table 이름은 Excel 규칙을 따릅니다. 길이는 1~255자이며 cell reference처럼 보이는 이름은 사용할 수 없고, table과 defined name 전체에서 대소문자 구분 없이 고유해야 합니다. 자세한 내용은 [API parity matrix](../../security/v1-api-parity-matrix.md)를 참고하세요.
+
+### 암호화와 VBA
+
+- Agile decryption은 password key와 package key의 크기가 다른 파일도 읽습니다. 잘못된 numeric attribute와 1..=65536 범위를 벗어난 `saltSize`는 거부합니다.
+- VBA module 이름은 Unicode stream-name record를 우선 사용합니다. CP932, CP949, CP936 source code는 lossy하게 decode됩니다. ASCII와 CP932의 반각 가타카나는 유지되며 그 밖의 double-byte 문자는 U+FFFD로 바뀝니다. 영향을 받은 module마다 project의 `warnings` 목록에 warning이 추가됩니다.

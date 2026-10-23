@@ -788,6 +788,8 @@ Tables are structured data ranges with headers, styling, and optional auto-filte
 
 Create a table on a sheet. The table name must be unique across the entire workbook. Returns an error if the name is already taken, the configuration is invalid, or the sheet does not exist.
 
+Table names and display names follow Excel rules: 1 to 255 characters, starting with a letter, underscore, or backslash and continuing with letters, digits, periods, or underscores. Names that read as A1 or R1C1 cell references (such as `A1` or `R1C1`) are rejected. An empty display name falls back to the table name. Uniqueness is case-insensitive and covers table names, display names, and defined names. A clash with another table returns `TableAlreadyExists`; an invalid name or a clash with a defined name returns `InvalidArgument`.
+
 **Rust:**
 
 ```rust

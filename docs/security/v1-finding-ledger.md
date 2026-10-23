@@ -18,7 +18,7 @@ performance receipt.
 ## Root-Control Workstreams
 
 | Key | Root control / workstream |
-|---|---|
+| --- | --- |
 | RC-U2 | Operation-scoped archive admission and expansion budgets |
 | RC-U3 | Bounded container, encryption, VBA, and macro-format handling |
 | RC-U4 | Depth- and work-bounded formula parsing, ranges, and graph setup |
@@ -33,7 +33,7 @@ performance receipt.
 ## Finding Ledger
 
 | ID | Severity | Title | Root control / workstream | U-ID | Regression scenario / evidence placeholder | Migration impact / status |
-|---|---|---|---|---|---|---|
+| --- | --- | --- | --- | --- | --- | --- |
 | SK-DS-015 | High | Default path-based workbook open has no ZIP expansion limits | RC-U2 | U2 | Fixed — `open_budget_regression` 19/19, vendored ZIP security tests 23/23, upstream fork tests 121/121, doc tests 10/10, structured path/buffer sync/async parity, independent final review, and the U14 clean open benchmark pass. | Default/error break — Handle typed resource failures; raise only explicit finite dimensions. [G1 guide](../guide/migration-v1.md#2-open-lazy-hydration-and-date-interpretation). Migration classification and clean performance evidence are final. |
 | SK-DS-001 | Medium | Unary-prefix formula nesting can overflow the process stack | RC-U4 | U4 | Fixed — cumulative pre-AST depth admission, exact/+1 and postfix-chain replay; formula 365/365 and independent re-review clean. | New limit/error — Handle formula resource errors; simplify extreme generated formulas. [G2 guide](../guide/migration-v1.md#3-formula-values-mutation-and-recalculation). |
 | SK-DS-003 | Medium | Nested function calls can overflow the formula parser stack | RC-U4 | U4 | Fixed — per-frame function depth with quoted-sheet isolation and exact/+1 rejection; independent re-review clean. | New limit/error — Bound generated nesting and handle typed failures. [G2 guide](../guide/migration-v1.md#3-formula-values-mutation-and-recalculation). |
@@ -70,7 +70,7 @@ performance receipt.
 | SK-DS-057 | Medium | DEC2OCT accepts an unbounded places width | RC-U5 | U5 | Fixed — checked finite/range conversion precedes allocation and widths are bounded to 1..=10; exact/one-over, huge, NaN, infinity, fractional, and negative semantics pass. | Invalid input rejects — Validate formula-generated widths. [G2 guide](../guide/migration-v1.md#3-formula-values-mutation-and-recalculation). |
 | SK-DS-060 | Medium | OCT2BIN accepts an unbounded places width | RC-U5 | U5 | Fixed — all adjacent width-enabled conversions route through the bounded formatter; formula 374/374, core 2,155 unit, Clippy, and independent review pass. | Invalid input rejects — Validate formula-generated widths. [G2 guide](../guide/migration-v1.md#3-formula-values-mutation-and-recalculation). |
 | SK-DS-061 | Medium | OCT2HEX accepts an unbounded places width | RC-U5 | U5 | Fixed — all adjacent width-enabled conversions route through the bounded formatter; formula 374/374, core 2,155 unit, Clippy, and independent review pass. | Invalid input rejects — Validate formula-generated widths. [G2 guide](../guide/migration-v1.md#3-formula-values-mutation-and-recalculation). |
-| SK-DS-078 | Medium | Saving a macro workbook as .xlsx preserves VBA content | RC-U3 | U3 | Fixed — normal and encrypted saves infer the target format, strip all VBA bytes/relationships/content types for XLSX, preserve canonical XLSM content, and publish atomically; independent review is clean. | Intentional content break — Save as XLSM/XLTM/XLAM to preserve macros; inspect conversion output. [G5 guide](../guide/migration-v1.md#6-save-async-work-encryption-and-macros). |
+| SK-DS-078 | Medium | Saving a macro workbook as .xlsx preserves VBA content | RC-U3 | U3 | Fixed — normal and encrypted saves infer the target format, strip all VBA bytes/relationships/content types for XLSX, preserve canonical XLSM content, and publish atomically; independent review is clean. Audit v2 note: the linked G5 "bounded, atomic save" guidance overstated two properties of the 1.0.0 candidate. `xml_part_bytes` was not enforced for clean raw-copied worksheets (IO-F1), and atomic publish replaced a symlinked destination with a regular file and did not keep the destination's permission bits (IO-F2). See [Audit v2](#audit-v2-post-1-0-0-candidate). | Intentional content break — Save as XLSM/XLTM/XLAM to preserve macros; inspect conversion output. [G5 guide](../guide/migration-v1.md#6-save-async-work-encryption-and-macros). |
 | SK-DS-002 | Low | Parenthesized formula nesting can overflow the process stack | RC-U9 | U9 | Fixed — U4 depth admission was replayed through the final shared FormulaBudget with exact/+1 typed rejection and no alternate parser path. | New limit/error — Bound generated nesting and handle formula errors. [G2 guide](../guide/migration-v1.md#3-formula-values-mutation-and-recalculation). |
 | SK-DS-004 | Low | Long flat binary formulas create a left-deep AST that crashes recursive consumers | RC-U9 | U9 | Fixed — token, node, depth, and evaluation work remain finite for wide formulas; U9 final formula 275/275 and full core 2,189/2,189 pass. | Extreme formulas may reject — Split generated formulas or select finite trusted limits. [G2 guide](../guide/migration-v1.md#3-formula-values-mutation-and-recalculation). |
 | SK-DS-007 | Low | FACT accepts effectively unbounded iteration counts | RC-U9 | U9 | Fixed — checked conversion and analytical work admission precede the factorial loop; exact/+1 and accepted examples pass. | Extreme input rejects — Validate factorial arguments. [G2 guide](../guide/migration-v1.md#3-formula-values-mutation-and-recalculation). |
@@ -159,3 +159,43 @@ Rust core and facade, CLI, napi, TypeScript wrapper, raw codecs, compatibility
 adapters, formula entry points, traversal paths, and save/export surfaces. The
 census records the completed U12 integration rows and final adapter-freeze
 evidence. The U14 clean-environment receipt closes the performance gate.
+
+## Audit v2 (post-1.0.0 candidate)
+
+A second audit of the 1.0.0 candidate (`73819d8`) reported the findings
+below. All are fixed. Severities are not recorded in this ledger. Where one
+row lists several IDs, the fix landed as one unit and the repository does not
+record a per-ID split. Regression tests live in
+`crates/sheetkit-core/tests/audit_*.rs`, the co-located unit tests of each
+listed module, `vendor/zip/tests/duplicate_entry_names.rs`, and the Node specs
+`core-contract.spec.ts` and `numeric-boundary.spec.ts`.
+
+| ID | Location | Status | User-visible behavior |
+| --- | --- | --- | --- |
+| IO-F1 | `workbook/io.rs`, `workbook/source.rs`, `workbook/package_reader.rs` | Fixed | Save charges `xml_part_bytes` against the bytes actually decompressed, including clean worksheets raw-copied by lazy saves and sheets excluded by eager sheet filtering. An entry whose declared size disagrees with its content is rejected: eager open fails, and lazy workbooks fail on hydration or passthrough save. |
+| IO-F2 | `workbook/io.rs` | Fixed | Path saves follow symlinks and replace the link target, leaving the link in place. On Unix an existing destination keeps its permission bits, and a new file gets `0o666` narrowed by the process umask. |
+| IO-F3 | `workbook/io.rs`, `workbook/source.rs` | Fixed | A part that fails its CRC or decompression check fails open with a ZIP error in every read mode, including unknown, optional, and deferred parts, instead of being dropped. Intact but malformed optional parts are still preserved. |
+| IO-F4 | `workbook/io.rs` | Fixed | Worksheet relationships that alias another part, escape the package, or use `TargetMode="External"` reject open with `InvalidArgument` in every read mode. |
+| IO-F5 | `workbook/io.rs` | Fixed | `AuxParts::EagerLoad` reads each worksheet once, so the aggregate-bytes budget is no longer charged twice. |
+| IO-F6 | `workbook/source.rs` | Fixed | Lazy reads use the central-directory index and file handle captured at open. Renaming, replacing, or rewriting the source path in place cannot change later reads. |
+| IO-F7 | `vendor/zip/src/read.rs`, `workbook/source.rs` | Fixed | Duplicate ZIP entry names fail open with a ZIP error. Part names that differ only by case fail open with `InvalidArgument`. |
+| S-F1, S-F2, S-F3, S-F4, S-F6, S-F7 | `cell_ref_shift.rs`, `col.rs`, `workbook/sheet_ops.rs` | Fixed | `remove_row`/`remove_col` write `#REF!` for deleted references and shrink or drop ranges, defined names, merges, validations, conditional formats, hyperlinks, auto-filters, comments, threaded comments, and page breaks. Whole-row and whole-column references (`A:A`, `1:1`) shift. Edits that remove a table header, totals row, every data row, or every column are rejected without mutation. Insert edits that push a comment off the grid fail. `duplicate_row` expands shared formulas. `copy_sheet` table names avoid case-insensitive and defined-name collisions. Out-of-range `<col>` bounds reject instead of overflowing. |
+| S-F5 | `sst.rs` | Fixed | Rich-text and plain strings with the same text no longer share an SST entry, and rich entries deduplicate on their formatting. |
+| S-F8, S-F9, S-F10 | `stream.rs`, `stream_reader.rs` | Fixed | `StreamWriter::add_merge_cell` stores ranges in canonical form and returns `MergeCellOverlap` for overlapping ranges. The stream reader returns an XML parse error on a truncated worksheet instead of partial rows. `StreamWriter` is `Send` without an `unsafe impl`. |
+| F-F1 | `numfmt.rs` | Fixed | Number formats with multibyte or case-expanding text before an exponent no longer panic. |
+| F-F2 | `formula/functions/date_time.rs`, `cell.rs` | Fixed | `DATE` with a year outside 0..=9999, and `DATE`/`EDATE`/`EOMONTH`/`WORKDAY` results outside the Excel date range, return `#NUM!`. `WORKDAY` results before serial 1 also return `#NUM!`. |
+| F-F3 | `formula/functions/date_time.rs` | Fixed | `WORKDAY` sorts holidays once and charges the holiday walk against the evaluation budget. |
+| F-F4 | `formula/eval.rs` | Fixed | A formula reached through a cross-sheet reference evaluates unqualified references, `ROW()`, and `COLUMN()` in its own sheet and cell. Cycle detection is sheet-qualified. |
+| F-F5 | `formula/functions/*.rs` | Fixed | Numeric aggregates over references ignore booleans, text, and empty cells; `AVERAGE` with no numeric cells returns `#DIV/0!`. Direct scalar arguments keep their coercion. |
+| F-F6 | `formula/functions/text.rs` | Fixed | `REPLACE` no longer overflows on huge counts. `LEFT`, `RIGHT`, `MID`, `REPT`, and `REPLACE` return `#VALUE!` for negative counts. |
+| F-F7 | `formula/functions/math.rs` | Fixed | `ROUND`, `ROUNDUP`, and `ROUNDDOWN` never return NaN or infinity. Digit counts beyond `f64` precision keep the value or collapse it to zero, and a non-finite result returns `#NUM!`. |
+| O-01, O-04 | `hyperlink.rs`, `style.rs` | Fixed | Hyperlink relationship IDs take the lowest unused `rIdN`, skipping dangling `r:id` references. Removing a hyperlink keeps a relationship that another hyperlink still uses. Custom number formats take the lowest unused ID of 164 or above that no style references. |
+| O-02, O-03 | `sheetkit-xml/src/table.rs`, `table.rs`, `workbook/features.rs`, `workbook/aux_parts.rs` | Fixed | Table parts keep `sortState`, `extLst`, column formulas, and prefixed attributes through edits and `copy_sheet`. Table names follow Excel rules; see the [API parity matrix](v1-api-parity-matrix.md). New tables take the lowest unused table ID. |
+| O-05, O-06 | `sheetkit-xml/src/doc_props.rs`, `sheetkit-xml/src/slicer.rs` | Fixed | Core and custom document properties keep empty, whitespace-only, and CDATA values and decode entities. Slicer cache attributes decode entities and are matched by namespace. |
+| VML-01, VML-02 | `vml.rs` | Fixed | Comment shapes are detected by namespace, so any prefix, quote style, or attribute whitespace works. Malformed VML no longer panics. |
+| N-01 | `packages/sheetkit/src/conversions.rs`, `lib.rs`, `stream.rs` | Fixed | Node integer arguments and numeric options reject fractional, NaN, infinite, unsafe, and out-of-range values with `InvalidArgument` instead of truncating or wrapping. |
+| E-01 | `crypt/agile.rs`, `crypt/mod.rs`, `crypt/standard.rs` | Fixed | Agile decryption accepts different password and package key sizes. It rejects malformed numeric attributes and a `saltSize` outside 1..=65536. Key material is zeroized and verifiers are compared in constant time. |
+| V-01, V-02 | `vba.rs` | Fixed | VBA module stream names prefer the Unicode record. CP932, CP949, and CP936 source is decoded lossily, and each affected module emits a warning with the replacement count. |
+| id-allocators | `sheet.rs`, `conditional.rs`, `doc_props.rs`, `page_layout.rs`, `workbook/data.rs` | Fixed | Sheet relationship IDs, sheet IDs, custom-property `pid`s (2 or above), and pivot `cacheId`s take the lowest unused value, so gaps are reused. Conditional-format priorities stay `max + 1` and reject values beyond `i32::MAX`. Page-break IDs outside the grid are skipped on read. |
+| serial-date | `cell.rs` | Fixed | `serial_to_date` and `serial_to_datetime` return `None` for non-finite or out-of-range serials instead of saturating or panicking. |
+| node-boundary | `packages/sheetkit/index.ts`, `src/conversions.rs` | Fixed | Node `toHTML` charges the final UTF-8 HTML against `maxOutputBytes`. Unknown style and conditional-format enum strings throw and list the accepted values. |

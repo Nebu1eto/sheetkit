@@ -1057,7 +1057,7 @@ Write a row of values. Row numbers are 1-based and must be written in ascending 
 
 #### `add_merge_cell(reference)` / `addMergeCell(reference)`
 
-Register a merge cell range (e.g., "A1:C1").
+Register a merge cell range (e.g., "A1:C1"). The range is stored in canonical form: `$` markers are dropped, letters are uppercased, and reversed endpoints are reordered. Adding an equivalent range again does nothing; a range that overlaps a different registered range returns `MergeCellOverlap`.
 
 **Rust:**
 
@@ -2004,6 +2004,8 @@ const raw: Buffer | null = wb.getVbaProject();
 ### `get_vba_modules()` / `getVbaModules()`
 
 Parses the VBA project binary, decompresses module source code, and returns an array of modules. Returns `None`/`null` if no VBA project is present. Raises an error if the VBA project is corrupt.
+
+Source in codepages 1252 and 65001 (UTF-8) is decoded fully. CP932, CP949, and CP936 source is decoded lossily: ASCII, and half-width katakana for CP932, is kept, while other double-byte characters become U+FFFD and the project's `warnings` list reports the count for each affected module. Module names prefer the Unicode stream-name record when present.
 
 **Rust:**
 

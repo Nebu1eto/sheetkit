@@ -4,7 +4,7 @@
 
 ### `insert_rows(sheet, start_row, count)` / `insertRows(sheet, startRow, count)`
 
-지정한 행 번호부터 빈 행을 삽입합니다.
+지정한 행 번호부터 빈 행을 삽입합니다. Comment가 마지막 행을 넘어가게 되면 workbook을 변경하지 않고 오류를 반환합니다.
 
 **Rust:**
 
@@ -20,7 +20,7 @@ wb.insertRows("Sheet1", 3, 2);
 
 ### `remove_row(sheet, row)` / `removeRow(sheet, row)`
 
-행을 삭제합니다. 아래쪽 행이 위로 이동합니다.
+행을 삭제합니다. 아래쪽 행이 위로 이동합니다. 삭제된 행을 가리키는 formula reference는 `#REF!`가 되고, 그 행을 포함하던 range는 축소됩니다. Merge, data validation, conditional format, hyperlink, comment, page break도 같은 방식으로 축소되거나 제거됩니다. Table의 header 행, totals 행, 마지막 data 행을 삭제하면 workbook을 변경하지 않고 오류를 반환합니다.
 
 **Rust:**
 
@@ -36,7 +36,7 @@ wb.removeRow("Sheet1", 5);
 
 ### `duplicate_row(sheet, row)` / `duplicateRow(sheet, row)`
 
-지정한 행을 바로 아래에 복제합니다.
+지정한 행을 바로 아래에 복제합니다. 복제되는 행의 shared formula는 일반 formula로 기록됩니다.
 
 **Rust:**
 
@@ -168,7 +168,7 @@ const visible: boolean = wb.getColVisible("Sheet1", "B");
 
 ### `insert_cols(sheet, col, count)` / `insertCols(sheet, col, count)`
 
-지정한 열부터 빈 열을 삽입합니다.
+지정한 열부터 빈 열을 삽입합니다. Comment가 마지막 열을 넘어가게 되면 workbook을 변경하지 않고 오류를 반환합니다.
 
 **Rust:**
 
@@ -184,7 +184,7 @@ wb.insertCols("Sheet1", "C", 3);
 
 ### `remove_col(sheet, col)` / `removeCol(sheet, col)`
 
-열을 삭제합니다. 오른쪽 열이 왼쪽으로 이동합니다.
+열을 삭제합니다. 오른쪽 열이 왼쪽으로 이동합니다. `remove_row`와 마찬가지로 삭제된 열을 가리키는 formula reference는 `#REF!`가 되고, 그 열을 포함하던 range는 축소됩니다. Table 안의 열은 table에서도 제거되며, table의 마지막 열을 삭제하면 workbook을 변경하지 않고 오류를 반환합니다.
 
 **Rust:**
 

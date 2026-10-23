@@ -32,6 +32,9 @@ Plan for these changes before updating:
 - Strict cell references, transfer buffers, table ownership, style colors, and
   advanced OOXML package graphs may reject malformed data that previously
   loaded or mutated partially.
+- A second audit of the 1.0.0 candidate changed save, open, structural-edit,
+  formula, ID-allocation, and Node argument behavior. See
+  [Audit v2 behavior changes](#audit-v2-behavior-changes).
 
 Recompile Rust and TypeScript consumers after upgrading. The generated Node
 declarations compile with Node 24 types, and the addon uses Node-API 8.
@@ -517,6 +520,12 @@ Path saves use a same-directory temporary file and replace the destination only
 after a complete write. If a limit or I/O error occurs, an existing destination
 remains intact. Buffer save is all-or-error under the same save policy.
 
+The 1.0.0 candidate did not apply `xml_part_bytes` to clean worksheets copied
+without re-serialization, and its atomic replace turned a symlinked destination
+into a regular file without keeping the destination's permission bits. Both
+are fixed; see
+[Audit v2 behavior changes](#audit-v2-behavior-changes).
+
 Lazy saves copy unchanged package-backed parts without parsing and
 re-serializing them. Edited sheets and auxiliary parts hydrate on demand;
 unrelated preserved OOXML can therefore remain byte-identical while changed
@@ -779,3 +788,109 @@ workbook or machine.
 Contributor-only changes do not affect runtime migration. AI-assisted
 contributions must follow `AI_POLICY.md` and the repository's commit trailer
 convention.
+
+<a id="audit-v2-behavior-changes"></a>
+
+## 12. Audit v2 behavior changes
+
+A second audit of the 1.0.0 candidate produced the fixes below. Each fix
+changes behavior that an application may depend on. The finding IDs are listed
+in the [security finding ledger](../security/v1-finding-ledger.md#audit-v2-post-1-0-0-candidate).
+
+### Open and save
+
+- Path saves follow symlinks and replace the target file, so the link stays in
+  place. On Unix an existing destination keeps its permission bits, and a new
+  file is created with `0o666` narrowed by the process umask.
+- Open fails in every read mode when any part fails its CRC or decompression
+  check. Earlier candidates dropped such parts silently. A part that is intact
+  but contains malformed XML is still preserved.
+- Open fails when a worksheet relationship aliases another part, points
+  outside the package, or is external.
+- Open fails on duplicate ZIP entry names and on part names that differ only
+  by case.
+- An entry whose declared size does not match its content is rejected: eager
+  open fails, and a lazy workbook fails when the part is hydrated or copied
+  during save.
+- Save charges `xml_part_bytes` (`xmlPartBytes`) against the bytes actually
+  written for every worksheet, including clean worksheets that lazy saves and
+  sheet filtering copy without re-serializing. A save that passed under a low
+  limit may now fail.
+- A lazy workbook keeps reading the package that was open when it was opened.
+  Replacing or rewriting the source path afterward does not change its reads.
+
+### Structural edits
+
+- `removeRow` and `removeCol` write `#REF!` for references to deleted cells and
+  shrink ranges that lose rows or columns. Defined names follow the same rule.
+  Merges, data validations, conditional formats, hyperlinks, auto-filters,
+  comments, threaded comments, and row page breaks are shrunk or dropped.
+- Removing a column inside a table drops that table column. An edit that would
+  remove a table's header row, totals row, every data row, or every column is
+  rejected without changing the workbook.
+- `insertRows` and `insertCols` fail when a comment would move off the grid.
+- `duplicateRow` expands shared formulas into ordinary formulas on the copy.
+- Whole-column and whole-row references such as `A:A` and `1:1` now shift.
+  Whole-sheet spans (`1:1048576`, `A:XFD`) and 3-D references do not.
+- `copySheet` generates table names that avoid existing table and defined
+  names case-insensitively.
+
+```typescript
+workbook.setCellFormula('Sheet1', 'B1', 'A5+SUM(A1:A5)');
+workbook.removeRow('Sheet1', 5);
+// B1 now holds '#REF!+SUM(A1:A4)'.
+```
+
+### Formula results
+
+- Numeric aggregates such as `SUM`, `AVERAGE`, `MIN`, `MAX`, `PRODUCT`,
+  `MEDIAN`, `LARGE`, `SMALL`, and `RANK` ignore booleans, text, and empty cells
+  in references. `AVERAGE` over a reference with no numbers returns `#DIV/0!`.
+  Scalar arguments typed directly into the formula keep their coercion, so
+  `SUM("5", TRUE)` is still 6.
+- `DATE` with a year outside 0..=9999 returns `#NUM!`. `DATE`, `EDATE`,
+  `EOMONTH`, and `WORKDAY` return `#NUM!` when the result falls outside the
+  Excel date range, and `WORKDAY` also returns `#NUM!` before serial 1.
+- `LEFT`, `RIGHT`, `MID`, `REPT`, and `REPLACE` return `#VALUE!` for negative
+  counts. Huge counts are clamped instead of overflowing.
+- `ROUND`, `ROUNDUP`, and `ROUNDDOWN` never return NaN or infinity. Digit counts
+  beyond `f64` precision keep the value or collapse it to zero. A result that
+  would be non-finite returns `#NUM!`.
+- A formula reached through a cross-sheet reference evaluates its unqualified
+  references, `ROW()`, and `COLUMN()` in its own sheet and cell.
+
+### IDs and stored values
+
+- New sheet relationship IDs, sheet IDs, hyperlink relationship IDs, custom
+  property `pid`s, pivot `cacheId`s, table IDs, and custom number format IDs
+  take the lowest unused value. After deleting `rId2`, the next relationship is
+  `rId2`, not `rId4`. Conditional-format priorities still use the current
+  maximum plus one so evaluation order does not change.
+- Rich-text and plain strings with the same text no longer share a shared
+  string entry.
+- Custom document properties keep empty strings and decode XML entities.
+  Slicer cache attributes decode entities.
+
+### Node arguments and output
+
+- Integer arguments and numeric options reject fractional, NaN, infinite,
+  unsafe, and out-of-range numbers instead of truncating or wrapping them.
+- Unknown style and conditional-format enum strings throw and list the accepted
+  values.
+- `toHTML` charges the final UTF-8 HTML against `limits.maxOutputBytes`.
+- `StreamWriter.addMergeCell` stores canonical ranges and throws on overlap.
+- The stream reader throws on a truncated worksheet instead of returning
+  partial rows.
+- Table names follow Excel rules: 1 to 255 characters, no cell-reference-like
+  names, and case-insensitive uniqueness across tables and defined names. See
+  the [API parity matrix](../security/v1-api-parity-matrix.md).
+
+### Encryption and VBA
+
+- Agile decryption accepts files whose password key and package key differ in
+  size. It rejects malformed numeric attributes and a `saltSize` outside
+  1..=65536.
+- VBA module names prefer the Unicode stream-name record. Source code in
+  CP932, CP949, or CP936 is decoded lossily: ASCII, plus half-width katakana
+  for CP932, is kept, and other double-byte characters become U+FFFD. Each
+  affected module adds a warning to the project's `warnings` list.
