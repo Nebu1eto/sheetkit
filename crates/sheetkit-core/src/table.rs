@@ -328,7 +328,7 @@ fn range_without_last_row(range: &str) -> Option<String> {
 fn structured_reference_column(name: &str) -> String {
     let mut escaped = String::with_capacity(name.len());
     for c in name.chars() {
-        if matches!(c, '\'' | '#' | '[' | ']') {
+        if matches!(c, '\'' | '#' | '[' | ']' | '@') {
             escaped.push('\'');
         }
         escaped.push(c);

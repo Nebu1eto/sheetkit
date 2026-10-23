@@ -4304,6 +4304,7 @@ fn partition_slicer_rids<'a>(
 struct TableSlicerIndex {
     cache_paths: HashMap<String, bool>,
     table_cache_names: HashSet<String>,
+    parsed_cache_names: HashSet<String>,
     slicer_parts: HashMap<String, Vec<String>>,
 }
 
@@ -4317,11 +4318,19 @@ impl TableSlicerIndex {
     /// Whether any slicer in the part references a table-backed cache, or
     /// `None` when the part was not parsed.
     fn slicer_part_is_table(&self, path: &str) -> Option<bool> {
-        self.slicer_parts.get(path).map(|caches| {
-            caches
-                .iter()
-                .any(|cache| self.table_cache_names.contains(cache))
-        })
+        let caches = self.slicer_parts.get(path)?;
+        if caches
+            .iter()
+            .any(|cache| self.table_cache_names.contains(cache))
+        {
+            return Some(true);
+        }
+        // Only classify as pivot-backed when every referenced cache was
+        // actually parsed; an unparsable cache keeps the source listing.
+        caches
+            .iter()
+            .all(|cache| self.parsed_cache_names.contains(cache))
+            .then_some(false)
     }
 }
 
@@ -4334,11 +4343,13 @@ impl Workbook {
         let mut index = TableSlicerIndex {
             cache_paths: HashMap::new(),
             table_cache_names: HashSet::new(),
+            parsed_cache_names: HashSet::new(),
             slicer_parts: HashMap::new(),
         };
         let mut add_cache = |path: &str, cache: &sheetkit_xml::slicer::SlicerCacheDefinition| {
             let is_table = cache.table_slicer_cache.is_some();
             index.cache_paths.insert(path.to_string(), is_table);
+            index.parsed_cache_names.insert(cache.name.clone());
             if is_table {
                 index.table_cache_names.insert(cache.name.clone());
             }

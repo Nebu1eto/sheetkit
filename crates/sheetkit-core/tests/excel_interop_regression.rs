@@ -391,6 +391,119 @@ fn table_totals_row_is_declared_and_populated() {
 }
 
 #[test]
+fn totals_formulas_escape_at_signs_in_column_names() {
+    let mut wb = Workbook::new();
+    wb.set_cell_value("Sheet1", "B2", 3.0).unwrap();
+    wb.add_table(
+        "Sheet1",
+        &TableConfig {
+            name: "T".to_string(),
+            display_name: "T".to_string(),
+            range: "B1:B3".to_string(),
+            columns: vec![TableColumn {
+                name: "@Qty".to_string(),
+                totals_row_function: Some("sum".to_string()),
+                totals_row_label: None,
+            }],
+            ..TableConfig::default()
+        },
+    )
+    .unwrap();
+    let buffer = wb.save_to_buffer().unwrap();
+    let reopened = Workbook::open_from_buffer(&buffer).unwrap();
+    match reopened.get_cell_value("Sheet1", "B3").unwrap() {
+        sheetkit_core::cell::CellValue::Formula { expr, .. } => {
+            // [@Qty] would be a current-row reference to a column named Qty.
+            assert_eq!(expr, "SUBTOTAL(109,['@Qty])");
+        }
+        other => panic!("expected formula, got {other:?}"),
+    }
+}
+
+#[test]
+fn deleting_a_thread_keeps_an_ordinary_note_that_mentions_the_placeholder() {
+    let mut wb = Workbook::new();
+    let id = wb
+        .add_threaded_comment("Sheet1", "A1", &threaded_input("Alice", "thread", None))
+        .unwrap();
+    // A foreign file may carry an ordinary note on a threaded cell whose text
+    // starts with Excel's placeholder label. Rewrite the saved legacy part to
+    // that state and reopen it.
+    let saved = wb.save_to_buffer().unwrap();
+    let patched = rewrite_part(&saved, "xl/comments1.xml", |xml| {
+        let author_start = xml.find("<author>").unwrap();
+        let author_end = xml.find("</author>").unwrap() + "</author>".len();
+        let xml = format!(
+            "{}<author>Bob</author>{}",
+            &xml[..author_start],
+            &xml[author_end..]
+        );
+        let text_start = xml.find("<text>").unwrap();
+        let text_end = xml.find("</text>").unwrap() + "</text>".len();
+        format!(
+            "{}<text><t>[Threaded comment] is a literal label in this ordinary note</t></text>{}",
+            &xml[..text_start],
+            &xml[text_end..]
+        )
+    });
+    let mut wb = Workbook::open_from_buffer(&patched).unwrap();
+    let notes = wb.get_comments("Sheet1").unwrap();
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert_eq!(notes[0].author, "Bob");
+    wb.delete_threaded_comment("Sheet1", &id).unwrap();
+    let notes = wb.get_comments("Sheet1").unwrap();
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert_eq!(notes[0].author, "Bob");
+}
+
+#[test]
+fn note_operations_on_a_threaded_cell_are_rejected_so_the_thread_keeps_its_twin() {
+    let mut wb = Workbook::new();
+    wb.add_threaded_comment("Sheet1", "A1", &threaded_input("Alice", "thread", None))
+        .unwrap();
+    let add = wb.add_comment(
+        "Sheet1",
+        &CommentConfig {
+            cell: "A1".to_string(),
+            author: "Carol".to_string(),
+            text: "plain note".to_string(),
+        },
+    );
+    assert!(
+        matches!(add, Err(sheetkit_core::error::Error::InvalidArgument(_))),
+        "{add:?}"
+    );
+    let remove = wb.remove_comment("Sheet1", "A1");
+    assert!(
+        matches!(remove, Err(sheetkit_core::error::Error::InvalidArgument(_))),
+        "{remove:?}"
+    );
+    let twins = legacy_comments(&wb.save_to_buffer().unwrap());
+    assert_eq!(twins.len(), 1, "{twins:?}");
+    assert!(twins[0].1.starts_with("tc="), "{twins:?}");
+}
+
+#[test]
+fn deleting_a_thread_root_removes_its_replies_and_twin() {
+    let mut wb = Workbook::new();
+    let root = wb
+        .add_threaded_comment("Sheet1", "A1", &threaded_input("Alice", "root", None))
+        .unwrap();
+    wb.add_threaded_comment(
+        "Sheet1",
+        "A1",
+        &threaded_input("Bob", "reply", Some(root.clone())),
+    )
+    .unwrap();
+    assert_eq!(wb.get_threaded_comments("Sheet1").unwrap().len(), 2);
+    wb.delete_threaded_comment("Sheet1", &root).unwrap();
+    assert!(wb.get_threaded_comments("Sheet1").unwrap().is_empty());
+    let saved = wb.save_to_buffer().unwrap();
+    assert!(part(&saved, "xl/threadedComments/threadedComment1.xml").is_none());
+    assert!(legacy_comments(&saved).is_empty());
+}
+
+#[test]
 fn table_totals_row_config_is_validated() {
     let config = |range: &str, function: &str| TableConfig {
         name: "T".to_string(),
@@ -427,4 +540,85 @@ fn table_without_totals_keeps_autofilter_on_full_range() {
     let table = required_part(&wb.save_to_buffer().unwrap(), "xl/tables/table1.xml");
     assert!(!table.contains("totalsRowCount"), "{table}");
     assert!(table.contains("<autoFilter ref=\"A1:A3\""), "{table}");
+}
+
+fn rewrite_part(buffer: &[u8], name: &str, edit: impl Fn(&str) -> String) -> Vec<u8> {
+    let mut archive = ZipArchive::new(Cursor::new(buffer.to_vec())).unwrap();
+    let mut out = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(zip::CompressionMethod::Deflated);
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).unwrap();
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes).unwrap();
+        let bytes = if entry.name() == name {
+            edit(&String::from_utf8(bytes).unwrap()).into_bytes()
+        } else {
+            bytes
+        };
+        out.start_file(entry.name().to_string(), options).unwrap();
+        std::io::Write::write_all(&mut out, &bytes).unwrap();
+    }
+    out.finish().unwrap().into_inner()
+}
+
+#[test]
+fn unparsable_slicer_cache_keeps_the_source_extension_on_the_sheet() {
+    let buffer = slicer_workbook().save_to_buffer().unwrap();
+    let broken = rewrite_part(&buffer, "xl/slicerCaches/slicerCache1.xml", |xml| {
+        xml.replacen("sourceName=", "srcName=", 1)
+    });
+    for mode in [
+        sheetkit_core::workbook::ReadMode::Eager,
+        sheetkit_core::workbook::ReadMode::Lazy,
+    ] {
+        let options = sheetkit_core::workbook::OpenOptions::new().read_mode(mode);
+        let wb = Workbook::open_from_buffer_with_options(&broken, &options).unwrap();
+        let saved = wb.save_to_buffer().unwrap();
+        let sheet = required_part(&saved, "xl/worksheets/sheet1.xml");
+        assert!(
+            ext_block(&sheet, "3A4CF648-6AED-40f4-86FF-DC5316D8AED3").is_some(),
+            "{mode:?}: table slicer list must survive an unparsable cache: {sheet}"
+        );
+        assert!(
+            ext_block(&sheet, "A8765BA9-456A-4DAB-B4F3-ACF838C121DE").is_none(),
+            "{mode:?}: slicer must not move to the pivot list: {sheet}"
+        );
+        let workbook = required_part(&saved, "xl/workbook.xml");
+        assert!(
+            workbook.contains("x15:slicerCaches"),
+            "{mode:?}: {workbook}"
+        );
+    }
+}
+
+#[test]
+fn threaded_comment_on_a_cell_with_a_note_is_rejected_and_the_note_survives() {
+    let mut wb = Workbook::new();
+    wb.add_comment(
+        "Sheet1",
+        &CommentConfig {
+            cell: "A1".to_string(),
+            author: "Reviewer".to_string(),
+            text: "plain note".to_string(),
+        },
+    )
+    .unwrap();
+    let error = wb
+        .add_threaded_comment("Sheet1", "A1", &threaded_input("Alice", "thread", None))
+        .unwrap_err();
+    assert!(
+        matches!(error, sheetkit_core::error::Error::InvalidArgument(_)),
+        "{error}"
+    );
+    let notes = wb.get_comments("Sheet1").unwrap();
+    assert_eq!(notes.len(), 1);
+    assert_eq!(notes[0].text, "plain note");
+    assert!(wb.get_threaded_comments("Sheet1").unwrap().is_empty());
+    // A thread on a free cell still works, and its twin is hidden from notes.
+    wb.add_threaded_comment("Sheet1", "B1", &threaded_input("Alice", "thread", None))
+        .unwrap();
+    let notes = wb.get_comments("Sheet1").unwrap();
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert_eq!(notes[0].cell, "A1");
 }

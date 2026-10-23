@@ -237,7 +237,9 @@ pub fn delete_threaded_comment(
 ) -> Result<()> {
     if let Some(ref mut tc) = threaded_comments {
         let before = tc.comments.len();
-        tc.comments.retain(|c| c.id != comment_id);
+        // Excel removes a whole thread with its root; drop replies too.
+        tc.comments
+            .retain(|c| c.id != comment_id && c.parent_id.as_deref() != Some(comment_id));
         if tc.comments.len() == before {
             return Err(Error::ThreadedCommentNotFound {
                 id: comment_id.to_string(),
@@ -285,6 +287,13 @@ const LEGACY_PLACEHOLDER_NOTICE: &str = "Your version of Excel allows you to rea
 /// comment.
 pub fn is_legacy_placeholder(text: &str) -> bool {
     text.starts_with(LEGACY_PLACEHOLDER_PREFIX)
+}
+
+/// Whether a legacy comment is the placeholder twin Excel writes for a
+/// thread: the author carries the thread id (`tc=<guid>`) and the text
+/// starts with Excel's placeholder. Ordinary notes never match.
+pub fn is_legacy_twin(author: &str, text: &str) -> bool {
+    author.starts_with("tc=") && is_legacy_placeholder(text)
 }
 
 /// Build the legacy comment Excel requires for the thread on `cell`.

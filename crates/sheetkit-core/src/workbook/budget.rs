@@ -158,6 +158,7 @@ impl OpenBudget {
         })
     }
 
+    #[cfg(feature = "encryption")]
     pub(crate) const fn limits(&self) -> OpenLimits {
         self.limits
     }

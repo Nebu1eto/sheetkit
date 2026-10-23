@@ -171,6 +171,7 @@ impl Workbook {
         let idx = self.sheet_index(sheet)?;
         self.hydrate_comments(idx);
         self.hydrate_form_controls(idx);
+        self.reject_note_change_on_threaded_cell(idx, &config.cell)?;
         crate::comment::add_comment(&mut self.sheet_comments[idx], config);
         self.mark_sheet_dirty(idx);
         if idx < self.sheet_vml.len() {
@@ -194,10 +195,7 @@ impl Workbook {
         self.hydrate_comments(idx);
         Ok(crate::comment::get_all_comments(&self.sheet_comments[idx])
             .into_iter()
-            .filter(|c| {
-                !(c.author.starts_with("tc=")
-                    && crate::threaded_comment::is_legacy_placeholder(&c.text))
-            })
+            .filter(|c| !crate::threaded_comment::is_legacy_twin(&c.author, &c.text))
             .collect())
     }
 
@@ -209,6 +207,7 @@ impl Workbook {
         let idx = self.sheet_index(sheet)?;
         self.hydrate_comments(idx);
         self.hydrate_form_controls(idx);
+        self.reject_note_change_on_threaded_cell(idx, cell)?;
         if crate::comment::remove_comment(&mut self.sheet_comments[idx], cell) {
             self.mark_sheet_dirty(idx);
             if idx < self.sheet_vml.len() {
@@ -225,6 +224,8 @@ impl Workbook {
     /// Returns the generated comment ID. If the author does not exist in the
     /// person list, they are added automatically. The legacy comment Excel
     /// requires alongside each thread is created or updated on the same cell.
+    /// Fails when the cell already holds an ordinary note: Excel keeps either
+    /// a note or a thread on a cell, never both.
     pub fn add_threaded_comment(
         &mut self,
         sheet: &str,
@@ -233,6 +234,14 @@ impl Workbook {
     ) -> Result<String> {
         self.hydrate_threaded_comments();
         let idx = self.sheet_index(sheet)?;
+        self.hydrate_comments(idx);
+        if let Some(existing) = crate::comment::get_comment(&self.sheet_comments[idx], cell) {
+            if !crate::threaded_comment::is_legacy_twin(&existing.author, &existing.text) {
+                return Err(Error::InvalidArgument(format!(
+                    "cell {cell} already has a note; Excel keeps either a note or a threaded comment on a cell, remove the note first"
+                )));
+            }
+        }
         let id = crate::threaded_comment::add_threaded_comment(
             &mut self.sheet_threaded_comments[idx],
             &mut self.person_list,
@@ -241,6 +250,24 @@ impl Workbook {
         )?;
         self.sync_threaded_comment_legacy_twin(idx, cell);
         Ok(id)
+    }
+
+    /// Rewrite the legacy comment that mirrors the thread on `cell`.
+    ///
+    /// Excel ignores threaded comments without a legacy twin carrying the
+    /// `[Threaded comment]` placeholder. When the cell has no thread left,
+    /// only a placeholder twin is removed; ordinary notes are kept.
+    /// Reject note edits on a cell whose legacy comment is a thread twin, so
+    /// the thread keeps the twin Excel needs; delete the thread instead.
+    fn reject_note_change_on_threaded_cell(&self, idx: usize, cell: &str) -> Result<()> {
+        let is_twin = crate::comment::get_comment(&self.sheet_comments[idx], cell)
+            .is_some_and(|c| crate::threaded_comment::is_legacy_twin(&c.author, &c.text));
+        if is_twin {
+            return Err(Error::InvalidArgument(format!(
+                "cell {cell} holds a threaded comment; delete the thread instead of editing its note"
+            )));
+        }
+        Ok(())
     }
 
     /// Rewrite the legacy comment that mirrors the thread on `cell`.
@@ -265,7 +292,7 @@ impl Workbook {
             ),
             None => {
                 let is_twin = crate::comment::get_comment(&self.sheet_comments[idx], cell)
-                    .is_some_and(|c| crate::threaded_comment::is_legacy_placeholder(&c.text));
+                    .is_some_and(|c| crate::threaded_comment::is_legacy_twin(&c.author, &c.text));
                 if !is_twin {
                     return;
                 }
