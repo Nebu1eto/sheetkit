@@ -139,6 +139,8 @@ fn corpus_files() -> Vec<(usize, PathBuf)> {
                 "normal.seed",
                 "replace-huge-count.seed",
                 "round-huge-digits.seed",
+                "text-fraction-huge-denominator.seed",
+                "text-fraction-huge-value.seed",
                 "text-multibyte-exponent.seed",
                 "wildcard-near-limit.seed",
                 "workday-consecutive-holidays.seed",
@@ -186,7 +188,7 @@ fn corpus_files() -> Vec<(usize, PathBuf)> {
         files.extend(target_files.into_iter().map(|path| (target, path)));
     }
     let formula_seeds = files.iter().filter(|(target, _)| *target == 2).count();
-    assert_eq!(formula_seeds, 14, "formula corpus must include regressions");
+    assert_eq!(formula_seeds, 16, "formula corpus must include regressions");
     files
 }
 

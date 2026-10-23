@@ -1275,6 +1275,11 @@ fn count_exponent_zeros(format: &str) -> usize {
 }
 
 fn format_fraction(value: f64, format: &str) -> String {
+    // Fractions only make sense for finite values whose whole part fits i64;
+    // anything else renders as a plain number, matching Excel's fallback.
+    if !value.is_finite() || value.abs() >= i64::MAX as f64 {
+        return format_general(value);
+    }
     let abs = value.abs();
     let mut whole = abs.floor() as i64;
     let frac = abs - whole as f64;
@@ -1289,7 +1294,7 @@ fn format_fraction(value: f64, format: &str) -> String {
     }
 
     let (mut num, den) = if let Some(den) = fixed_fraction_denominator(format) {
-        ((frac * den as f64).round() as u64, den)
+        (((frac * den as f64).round() as u64).min(den), den)
     } else {
         let denom_q_count = format
             .split('/')
@@ -1306,7 +1311,7 @@ fn format_fraction(value: f64, format: &str) -> String {
     };
 
     if num == den {
-        whole += 1;
+        whole = whole.saturating_add(1);
         num = 0;
     }
 
@@ -1323,18 +1328,26 @@ fn format_fraction(value: f64, format: &str) -> String {
             format!("{}{}/{}", sign, num, den)
         }
     } else {
-        let total_num = whole as u64 * den + num;
-        format!("{}{}/{}", sign, total_num, den)
+        match (whole as u64)
+            .checked_mul(den)
+            .and_then(|product| product.checked_add(num))
+        {
+            Some(total_num) => format!("{}{}/{}", sign, total_num, den),
+            None => format!("{}{} {}/{}", sign, whole, num, den),
+        }
     }
 }
 
 fn fixed_fraction_denominator(format: &str) -> Option<u64> {
+    // Excel accepts at most a five-digit literal denominator.
+    const MAX_FIXED_DENOMINATOR: u64 = 99_999;
     let denominator = format.split_once('/')?.1;
     let digits: String = denominator
         .chars()
         .take_while(|ch| ch.is_ascii_digit())
         .collect();
-    (!digits.is_empty()).then(|| digits.parse().ok()).flatten()
+    let den: u64 = digits.parse().ok()?;
+    (1..=MAX_FIXED_DENOMINATOR).contains(&den).then_some(den)
 }
 
 fn best_fraction(value: f64, max_denom: u64) -> (u64, u64) {
@@ -1669,6 +1682,27 @@ mod tests {
     fn test_format_fraction_fixed_denominator() {
         assert_eq!(format_number(1.25, "# ?/8"), "1 2/8");
         assert_eq!(format_number(0.125, "?/16"), "2/16");
+    }
+
+    #[test]
+    fn test_format_fraction_extreme_inputs_do_not_panic() {
+        // Values beyond i64 and user denominators near u64::MAX must not overflow.
+        for (value, format) in [
+            (42949672964294967296.0, "/?"),
+            (1.5, "?/18446744073709551615"),
+            (f64::MAX, "# ?/?"),
+            (-1.0e19, "?/??"),
+            (f64::INFINITY, "?/?"),
+            (f64::NAN, "?/?"),
+            (1.5, "?/0"),
+        ] {
+            let rendered = format_number(value, format);
+            assert!(!rendered.is_empty(), "{value} {format}");
+        }
+        // A zero or oversized literal denominator falls back to the best fraction.
+        assert_eq!(format_number(1.5, "# ?/0"), "1 1/2");
+        assert_eq!(format_number(1.5, "# ?/18446744073709551615"), "1 1/2");
+        assert_eq!(format_number(0.5, "?/18446744073709551615"), "1/2");
     }
 
     #[test]
