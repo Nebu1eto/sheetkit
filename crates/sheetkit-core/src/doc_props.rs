@@ -10,6 +10,8 @@ use sheetkit_xml::doc_props::{
 use sheetkit_xml::namespaces;
 use sheetkit_xml::workbook::{CalcPr, WorkbookPr};
 
+use crate::error::{Error, Result};
+
 /// User-facing document core properties.
 #[derive(Debug, Clone, Default)]
 pub struct DocProperties {
@@ -154,24 +156,25 @@ pub(crate) fn find_custom_property(
 }
 
 /// Set a custom property by name (insert or update).
-/// Returns the next available pid.
+///
+/// A new property gets the lowest unused pid in `2..=u32::MAX` (pids 0 and 1
+/// are reserved by OOXML), so gaps left by deleted properties are reused.
+/// Returns `Error::InvalidArgument` without modifying `props` when every
+/// valid pid is taken.
 pub(crate) fn set_custom_property(
     props: &mut sheetkit_xml::doc_props::CustomProperties,
     name: &str,
     value: CustomPropertyValue,
-) {
+) -> Result<()> {
     if let Some(existing) = props.properties.iter_mut().find(|p| p.name == name) {
         existing.value = value.to_xml();
-        return;
+        return Ok(());
     }
 
-    let next_pid = props
-        .properties
-        .iter()
-        .map(|p| p.pid)
-        .max()
-        .map(|m| m + 1)
-        .unwrap_or(2);
+    let used: std::collections::HashSet<u32> = props.properties.iter().map(|p| p.pid).collect();
+    let next_pid = (2..=u32::MAX)
+        .find(|pid| !used.contains(pid))
+        .ok_or_else(|| Error::InvalidArgument("no unused custom property pid available".into()))?;
 
     props.properties.push(CustomProperty {
         fmtid: CUSTOM_PROPERTY_FMTID.to_string(),
@@ -179,6 +182,7 @@ pub(crate) fn set_custom_property(
         name: name.to_string(),
         value: value.to_xml(),
     });
+    Ok(())
 }
 
 /// Remove a custom property by name. Returns true if found and removed.
@@ -445,7 +449,8 @@ mod tests {
             &mut props,
             "Project",
             CustomPropertyValue::String("SK".to_string()),
-        );
+        )
+        .unwrap();
         let found = find_custom_property(&props, "Project");
         assert_eq!(found, Some(CustomPropertyValue::String("SK".to_string())));
         assert_eq!(props.properties[0].pid, 2);
@@ -458,12 +463,14 @@ mod tests {
             &mut props,
             "Key",
             CustomPropertyValue::String("old".to_string()),
-        );
+        )
+        .unwrap();
         set_custom_property(
             &mut props,
             "Key",
             CustomPropertyValue::String("new".to_string()),
-        );
+        )
+        .unwrap();
         assert_eq!(props.properties.len(), 1);
         assert_eq!(
             find_custom_property(&props, "Key"),
@@ -474,7 +481,7 @@ mod tests {
     #[test]
     fn test_delete_custom_property() {
         let mut props = sheetkit_xml::doc_props::CustomProperties::default();
-        set_custom_property(&mut props, "Key", CustomPropertyValue::Int(1));
+        set_custom_property(&mut props, "Key", CustomPropertyValue::Int(1)).unwrap();
         assert!(delete_custom_property(&mut props, "Key"));
         assert!(!delete_custom_property(&mut props, "Key")); // already gone
         assert!(find_custom_property(&props, "Key").is_none());
@@ -483,12 +490,32 @@ mod tests {
     #[test]
     fn test_custom_property_pid_auto_increment() {
         let mut props = sheetkit_xml::doc_props::CustomProperties::default();
-        set_custom_property(&mut props, "A", CustomPropertyValue::Int(1));
-        set_custom_property(&mut props, "B", CustomPropertyValue::Int(2));
-        set_custom_property(&mut props, "C", CustomPropertyValue::Int(3));
+        set_custom_property(&mut props, "A", CustomPropertyValue::Int(1)).unwrap();
+        set_custom_property(&mut props, "B", CustomPropertyValue::Int(2)).unwrap();
+        set_custom_property(&mut props, "C", CustomPropertyValue::Int(3)).unwrap();
         assert_eq!(props.properties[0].pid, 2);
         assert_eq!(props.properties[1].pid, 3);
         assert_eq!(props.properties[2].pid, 4);
+    }
+
+    #[test]
+    fn test_custom_property_pid_after_parsed_u32_max_reuses_free_pid() {
+        let mut props = sheetkit_xml::doc_props::CustomProperties::default();
+        set_custom_property(&mut props, "A", CustomPropertyValue::Int(1)).unwrap();
+        props.properties[0].pid = u32::MAX;
+        set_custom_property(&mut props, "B", CustomPropertyValue::Int(2)).unwrap();
+        set_custom_property(&mut props, "C", CustomPropertyValue::Int(3)).unwrap();
+        let pids: Vec<u32> = props.properties.iter().map(|p| p.pid).collect();
+        assert_eq!(pids, vec![u32::MAX, 2, 3]);
+    }
+
+    #[test]
+    fn test_custom_property_pid_never_uses_reserved_values() {
+        let mut props = sheetkit_xml::doc_props::CustomProperties::default();
+        set_custom_property(&mut props, "A", CustomPropertyValue::Int(1)).unwrap();
+        props.properties[0].pid = 0;
+        set_custom_property(&mut props, "B", CustomPropertyValue::Int(2)).unwrap();
+        assert_eq!(props.properties[1].pid, 2);
     }
 
     // WorkbookSettings tests

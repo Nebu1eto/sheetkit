@@ -5,7 +5,7 @@
 //! formula-based rules, color scales, data bars, duplicate/unique values,
 //! top/bottom N, above/below average, and text-based rules.
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::style::{
     BorderLineStyle, BorderSideStyle, BorderStyle, FillStyle, FontStyle, NumFmtStyle, PatternType,
     StyleColor,
@@ -460,8 +460,15 @@ fn parse_border_line_style(s: &str) -> Option<BorderLineStyle> {
     }
 }
 
+/// Largest priority allowed by the schema (`xsd:int`).
+const MAX_CF_PRIORITY: u32 = i32::MAX as u32;
+
 /// Compute the next priority across all existing conditional formatting rules.
-fn next_priority(ws: &WorksheetXml) -> u32 {
+///
+/// Returns one greater than the current maximum so new rules keep the lowest
+/// precedence; gaps are not reused because that would reorder evaluation.
+/// The result is `None` when it would exceed `MAX_CF_PRIORITY`.
+fn next_priority(ws: &WorksheetXml) -> Option<u32> {
     let max = ws
         .conditional_formatting
         .iter()
@@ -469,7 +476,7 @@ fn next_priority(ws: &WorksheetXml) -> u32 {
         .map(|r| r.priority)
         .max()
         .unwrap_or(0);
-    max + 1
+    max.checked_add(1).filter(|p| *p <= MAX_CF_PRIORITY)
 }
 
 /// Convert a `ConditionalFormatRule` to an XML `CfRule`, adding a DXF to the
@@ -1075,18 +1082,36 @@ fn xml_to_rule(cf_rule: &CfRule, stylesheet: &StyleSheet) -> ConditionalFormatRu
 
 /// Set conditional formatting rules on a cell range. Each call adds a new
 /// `conditionalFormatting` element with one or more `cfRule` children.
+///
+/// Rules without an explicit priority get one greater than the current
+/// maximum. Returns `Error::InvalidArgument` without modifying the worksheet
+/// or stylesheet when such a priority would exceed `i32::MAX`.
 pub fn set_conditional_format(
     ws: &mut WorksheetXml,
     stylesheet: &mut StyleSheet,
     sqref: &str,
     rules: &[ConditionalFormatRule],
 ) -> Result<()> {
-    let mut xml_rules = Vec::with_capacity(rules.len());
+    let mut priorities = Vec::with_capacity(rules.len());
     let mut auto_priority = next_priority(ws);
-    let first_cell = first_cell_reference(sqref);
     for rule in rules {
-        let priority = rule.priority.unwrap_or(auto_priority);
-        auto_priority = auto_priority.max(priority.saturating_add(1));
+        let priority = match rule.priority {
+            Some(priority) => priority,
+            None => auto_priority.ok_or_else(|| {
+                Error::InvalidArgument("no conditional formatting priority available".to_string())
+            })?,
+        };
+        let following = priority.checked_add(1).filter(|p| *p <= MAX_CF_PRIORITY);
+        auto_priority = match (auto_priority, following) {
+            (Some(current), Some(next)) => Some(current.max(next)),
+            _ => None,
+        };
+        priorities.push(priority);
+    }
+
+    let mut xml_rules = Vec::with_capacity(rules.len());
+    let first_cell = first_cell_reference(sqref);
+    for (rule, priority) in rules.iter().zip(priorities) {
         let cf_rule = rule_to_xml(rule, stylesheet, priority, first_cell);
         xml_rules.push(cf_rule);
     }
@@ -2177,6 +2202,74 @@ mod tests {
             .map(|dxf| dxf.num_fmt.as_ref().unwrap().num_fmt_id)
             .collect();
         assert_eq!(ids, vec![165, 166]);
+    }
+
+    fn duplicate_rule(priority: Option<u32>, bold: bool) -> ConditionalFormatRule {
+        ConditionalFormatRule {
+            rule_type: ConditionalFormatType::DuplicateValues,
+            format: bold.then(|| ConditionalStyle {
+                font: Some(FontStyle {
+                    bold: true,
+                    ..FontStyle::default()
+                }),
+                ..ConditionalStyle::default()
+            }),
+            priority,
+            stop_if_true: false,
+        }
+    }
+
+    #[test]
+    fn test_auto_priority_after_parsed_u32_max_errors_without_mutation() {
+        let mut ws = WorksheetXml::default();
+        let mut ss = default_stylesheet();
+        set_conditional_format(&mut ws, &mut ss, "A1", &[duplicate_rule(Some(1), false)]).unwrap();
+        ws.conditional_formatting[0].cf_rules[0].priority = u32::MAX;
+        let ws_before = ws.clone();
+        let ss_before = ss.clone();
+
+        let result = set_conditional_format(&mut ws, &mut ss, "B1", &[duplicate_rule(None, true)]);
+
+        assert!(matches!(result, Err(Error::InvalidArgument(_))));
+        assert_eq!(ws, ws_before);
+        assert_eq!(ss, ss_before);
+    }
+
+    #[test]
+    fn test_auto_priority_at_i32_max_boundary() {
+        let mut ws = WorksheetXml::default();
+        let mut ss = default_stylesheet();
+        let max = i32::MAX as u32;
+        set_conditional_format(
+            &mut ws,
+            &mut ss,
+            "A1",
+            &[duplicate_rule(Some(max - 1), false)],
+        )
+        .unwrap();
+        set_conditional_format(&mut ws, &mut ss, "B1", &[duplicate_rule(None, false)]).unwrap();
+        assert_eq!(ws.conditional_formatting[1].cf_rules[0].priority, max);
+
+        let ws_before = ws.clone();
+        let ss_before = ss.clone();
+        let result = set_conditional_format(&mut ws, &mut ss, "C1", &[duplicate_rule(None, true)]);
+        assert!(matches!(result, Err(Error::InvalidArgument(_))));
+        assert_eq!(ws, ws_before);
+        assert_eq!(ss, ss_before);
+    }
+
+    #[test]
+    fn test_auto_priority_after_explicit_i32_max_in_same_call_errors() {
+        let mut ws = WorksheetXml::default();
+        let mut ss = default_stylesheet();
+        let rules = [
+            duplicate_rule(Some(i32::MAX as u32), true),
+            duplicate_rule(None, true),
+        ];
+        let result = set_conditional_format(&mut ws, &mut ss, "A1", &rules);
+        assert!(matches!(result, Err(Error::InvalidArgument(_))));
+        assert!(ws.conditional_formatting.is_empty());
+        assert!(ss.dxfs.is_none());
     }
 
     #[test]

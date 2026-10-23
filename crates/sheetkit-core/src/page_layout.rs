@@ -348,9 +348,13 @@ pub fn remove_page_break(ws: &mut WorksheetXml, row: u32) -> Result<()> {
 }
 
 /// Get all row page break positions (1-based row numbers).
+///
+/// Parsed break IDs that do not map to a row in `1..=MAX_ROWS` (including
+/// `u32::MAX`) are skipped; the signature has no error channel and such a
+/// break cannot be addressed by `insert_page_break`/`remove_page_break`.
 pub fn get_page_breaks(ws: &WorksheetXml) -> Vec<u32> {
     match &ws.row_breaks {
-        Some(rb) => rb.brk.iter().map(|b| b.id + 1).collect(),
+        Some(rb) => break_coordinates(&rb.brk, MAX_ROWS),
         None => vec![],
     }
 }
@@ -402,11 +406,23 @@ pub fn remove_column_page_break(ws: &mut WorksheetXml, column: u32) -> Result<()
 }
 
 /// Get all column page break positions (1-based column numbers).
+///
+/// Parsed break IDs that do not map to a column in `1..=MAX_COLUMNS` are
+/// skipped for the same reason as in [`get_page_breaks`].
 pub fn get_column_page_breaks(ws: &WorksheetXml) -> Vec<u32> {
     match &ws.col_breaks {
-        Some(cb) => cb.brk.iter().map(|b| b.id + 1).collect(),
+        Some(cb) => break_coordinates(&cb.brk, MAX_COLUMNS),
         None => vec![],
     }
+}
+
+/// Convert 0-based break IDs to 1-based coordinates within `1..=max_coordinate`.
+fn break_coordinates(breaks: &[Break], max_coordinate: u32) -> Vec<u32> {
+    breaks
+        .iter()
+        .filter_map(|b| b.id.checked_add(1))
+        .filter(|coordinate| *coordinate <= max_coordinate)
+        .collect()
 }
 
 fn page_break_id(
@@ -761,6 +777,41 @@ mod tests {
         assert!(xml.contains(r#"max="1048575""#));
         let reopened: WorksheetXml = quick_xml::de::from_str(&xml).unwrap();
         assert_eq!(get_column_page_breaks(&reopened), vec![1, 8_000, 16_384]);
+    }
+
+    #[test]
+    fn test_get_page_breaks_skips_parsed_out_of_grid_ids() {
+        let break_at = |id| Break {
+            id,
+            max: None,
+            man: Some(true),
+        };
+        let ws = WorksheetXml {
+            row_breaks: Some(RowBreaks {
+                count: Some(4),
+                manual_break_count: Some(4),
+                brk: vec![
+                    break_at(4),
+                    break_at(MAX_ROWS - 1),
+                    break_at(MAX_ROWS),
+                    break_at(u32::MAX),
+                ],
+            }),
+            col_breaks: Some(RowBreaks {
+                count: Some(4),
+                manual_break_count: Some(4),
+                brk: vec![
+                    break_at(2),
+                    break_at(MAX_COLUMNS - 1),
+                    break_at(MAX_COLUMNS),
+                    break_at(u32::MAX),
+                ],
+            }),
+            ..WorksheetXml::default()
+        };
+
+        assert_eq!(get_page_breaks(&ws), vec![5, MAX_ROWS]);
+        assert_eq!(get_column_page_breaks(&ws), vec![3, MAX_COLUMNS]);
     }
 
     #[test]

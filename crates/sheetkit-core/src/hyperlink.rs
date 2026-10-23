@@ -7,7 +7,9 @@
 use sheetkit_xml::relationships::{rel_types, Relationship, Relationships};
 use sheetkit_xml::worksheet::{Hyperlink, Hyperlinks, WorksheetXml};
 
-use crate::error::Result;
+use std::collections::HashSet;
+
+use crate::error::{Error, Result};
 
 /// Type of hyperlink target.
 #[derive(Debug, Clone, PartialEq)]
@@ -47,6 +49,12 @@ pub fn set_cell_hyperlink(
     display: Option<&str>,
     tooltip: Option<&str>,
 ) -> Result<()> {
+    // Allocate before mutating so an allocation failure leaves state intact.
+    let new_rid = match link {
+        HyperlinkType::External(_) | HyperlinkType::Email(_) => Some(next_rel_id(ws, rels)?),
+        HyperlinkType::Internal(_) => None,
+    };
+
     // Remove any existing hyperlink on this cell first.
     delete_cell_hyperlink(ws, rels, cell)?;
 
@@ -56,7 +64,9 @@ pub fn set_cell_hyperlink(
 
     match link {
         HyperlinkType::External(url) | HyperlinkType::Email(url) => {
-            let rid = next_rel_id(rels);
+            let rid = new_rid.ok_or_else(|| {
+                Error::Internal("hyperlink relationship ID was not allocated".to_string())
+            })?;
             rels.relationships.push(Relationship {
                 id: rid.clone(),
                 rel_type: rel_types::HYPERLINK.to_string(),
@@ -136,8 +146,9 @@ pub fn get_cell_hyperlink(
 
 /// Delete a hyperlink from a cell.
 ///
-/// Removes the hyperlink element from the worksheet XML and, if the hyperlink
-/// used a relationship, removes the corresponding relationship entry.
+/// Removes the hyperlink element from the worksheet XML. A hyperlink
+/// relationship it referenced is removed only when no remaining hyperlink
+/// still references it; relationships of other types are never removed.
 pub fn delete_cell_hyperlink(
     ws: &mut WorksheetXml,
     rels: &mut Relationships,
@@ -154,11 +165,19 @@ pub fn delete_cell_hyperlink(
         .extract_if(.., |h| h.reference == cell)
         .collect();
 
-    // Remove associated relationships.
-    for hl in &removed {
-        if let Some(ref rid) = hl.r_id {
-            rels.relationships.retain(|r| r.id != *rid);
-        }
+    let still_referenced: HashSet<&str> = hyperlinks
+        .hyperlinks
+        .iter()
+        .filter_map(|h| h.r_id.as_deref())
+        .collect();
+    let orphaned: HashSet<&str> = removed
+        .iter()
+        .filter_map(|h| h.r_id.as_deref())
+        .filter(|rid| !still_referenced.contains(rid))
+        .collect();
+    if !orphaned.is_empty() {
+        rels.relationships
+            .retain(|r| !(orphaned.contains(r.id.as_str()) && r.rel_type == rel_types::HYPERLINK));
     }
 
     // If no hyperlinks remain, remove the container.
@@ -169,15 +188,29 @@ pub fn delete_cell_hyperlink(
     Ok(())
 }
 
-/// Generate the next relationship ID for a rels collection.
-fn next_rel_id(rels: &Relationships) -> String {
-    let max = rels
+/// Return the lowest unused `rId{n}` (n >= 1) for a worksheet rels collection.
+///
+/// IDs used by existing relationships and by hyperlink `r:id` references in
+/// the worksheet (including dangling ones) are skipped. Never overflows.
+fn next_rel_id(ws: &WorksheetXml, rels: &Relationships) -> Result<String> {
+    let hyperlink_rids = ws
+        .hyperlinks
+        .iter()
+        .flat_map(|h| h.hyperlinks.iter())
+        .filter_map(|h| h.r_id.as_deref());
+    let used: HashSet<u32> = rels
         .relationships
         .iter()
-        .filter_map(|r| r.id.strip_prefix("rId").and_then(|n| n.parse::<u32>().ok()))
-        .max()
-        .unwrap_or(0);
-    format!("rId{}", max + 1)
+        .map(|r| r.id.as_str())
+        .chain(hyperlink_rids)
+        .filter_map(|id| id.strip_prefix("rId").and_then(|n| n.parse::<u32>().ok()))
+        .collect();
+    (1..=u32::MAX)
+        .find(|n| !used.contains(n))
+        .map(|n| format!("rId{n}"))
+        .ok_or_else(|| {
+            Error::InvalidArgument("no unused worksheet relationship ID available".to_string())
+        })
 }
 
 #[cfg(test)]
@@ -636,12 +669,6 @@ mod tests {
     }
 
     #[test]
-    fn test_next_rel_id_empty() {
-        let rels = empty_rels();
-        assert_eq!(next_rel_id(&rels), "rId1");
-    }
-
-    #[test]
     fn test_next_rel_id_with_existing() {
         let rels = Relationships {
             xmlns: namespaces::PACKAGE_RELATIONSHIPS.to_string(),
@@ -660,6 +687,150 @@ mod tests {
                 },
             ],
         };
-        assert_eq!(next_rel_id(&rels), "rId4");
+        assert_eq!(
+            next_rel_id(&WorksheetXml::default(), &rels).unwrap(),
+            "rId2"
+        );
+    }
+    fn ext_rel(id: &str, target: &str) -> Relationship {
+        Relationship {
+            id: id.to_string(),
+            rel_type: rel_types::HYPERLINK.to_string(),
+            target: target.to_string(),
+            target_mode: Some("External".to_string()),
+        }
+    }
+
+    fn rid_hyperlink(cell: &str, rid: &str) -> Hyperlink {
+        Hyperlink {
+            reference: cell.to_string(),
+            r_id: Some(rid.to_string()),
+            location: None,
+            display: None,
+            tooltip: None,
+        }
+    }
+
+    #[test]
+    fn test_set_hyperlink_with_max_rid_does_not_overflow() {
+        let mut ws = WorksheetXml::default();
+        let mut rels = empty_rels();
+        rels.relationships.push(Relationship {
+            id: format!("rId{}", u32::MAX),
+            rel_type: rel_types::DRAWING.to_string(),
+            target: "../drawings/drawing1.xml".to_string(),
+            target_mode: None,
+        });
+
+        set_cell_hyperlink(
+            &mut ws,
+            &mut rels,
+            "A1",
+            &HyperlinkType::External("https://example.com".to_string()),
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(rels.relationships.len(), 2);
+        let new_rid = ws.hyperlinks.as_ref().unwrap().hyperlinks[0]
+            .r_id
+            .clone()
+            .unwrap();
+        assert_eq!(new_rid, "rId1");
+        assert_eq!(rels.relationships[0].rel_type, rel_types::DRAWING);
+        let info = get_cell_hyperlink(&ws, &rels, "A1").unwrap().unwrap();
+        assert_eq!(
+            info.link_type,
+            HyperlinkType::External("https://example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn test_next_rel_id_skips_dangling_hyperlink_rids() {
+        let mut ws = WorksheetXml::default();
+        ws.hyperlinks = Some(Hyperlinks {
+            hyperlinks: vec![rid_hyperlink("A1", "rId1")],
+        });
+        let rels = empty_rels();
+        assert_eq!(next_rel_id(&ws, &rels).unwrap(), "rId2");
+    }
+
+    fn shared_rel_fixture() -> (WorksheetXml, Relationships) {
+        let mut ws = WorksheetXml::default();
+        ws.hyperlinks = Some(Hyperlinks {
+            hyperlinks: vec![rid_hyperlink("A1", "rId1"), rid_hyperlink("B1", "rId1")],
+        });
+        let mut rels = empty_rels();
+        rels.relationships
+            .push(ext_rel("rId1", "https://shared.com"));
+        (ws, rels)
+    }
+
+    #[test]
+    fn test_delete_hyperlink_keeps_shared_relationship() {
+        let (mut ws, mut rels) = shared_rel_fixture();
+
+        delete_cell_hyperlink(&mut ws, &mut rels, "A1").unwrap();
+
+        assert!(get_cell_hyperlink(&ws, &rels, "A1").unwrap().is_none());
+        let info = get_cell_hyperlink(&ws, &rels, "B1").unwrap().unwrap();
+        assert_eq!(
+            info.link_type,
+            HyperlinkType::External("https://shared.com".to_string())
+        );
+        assert_eq!(rels.relationships.len(), 1);
+
+        // Deleting the last reference removes the relationship.
+        delete_cell_hyperlink(&mut ws, &mut rels, "B1").unwrap();
+        assert!(rels.relationships.is_empty());
+        assert!(ws.hyperlinks.is_none());
+    }
+
+    #[test]
+    fn test_replace_hyperlink_keeps_shared_relationship() {
+        let (mut ws, mut rels) = shared_rel_fixture();
+
+        set_cell_hyperlink(
+            &mut ws,
+            &mut rels,
+            "A1",
+            &HyperlinkType::External("https://new.com".to_string()),
+            None,
+            None,
+        )
+        .unwrap();
+
+        let a1 = get_cell_hyperlink(&ws, &rels, "A1").unwrap().unwrap();
+        assert_eq!(
+            a1.link_type,
+            HyperlinkType::External("https://new.com".to_string())
+        );
+        let b1 = get_cell_hyperlink(&ws, &rels, "B1").unwrap().unwrap();
+        assert_eq!(
+            b1.link_type,
+            HyperlinkType::External("https://shared.com".to_string())
+        );
+        assert_eq!(rels.relationships.len(), 2);
+    }
+
+    #[test]
+    fn test_delete_hyperlink_keeps_non_hyperlink_relationship() {
+        let mut ws = WorksheetXml::default();
+        ws.hyperlinks = Some(Hyperlinks {
+            hyperlinks: vec![rid_hyperlink("A1", "rId1")],
+        });
+        let mut rels = empty_rels();
+        rels.relationships.push(Relationship {
+            id: "rId1".to_string(),
+            rel_type: rel_types::DRAWING.to_string(),
+            target: "../drawings/drawing1.xml".to_string(),
+            target_mode: None,
+        });
+
+        delete_cell_hyperlink(&mut ws, &mut rels, "A1").unwrap();
+
+        assert_eq!(rels.relationships.len(), 1);
+        assert_eq!(rels.relationships[0].rel_type, rel_types::DRAWING);
     }
 }

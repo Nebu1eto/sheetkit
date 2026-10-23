@@ -124,7 +124,9 @@ impl Workbook {
             ));
         }
 
-        let cache_id = self
+        // Lowest unused cache ID across pivot tables and workbook caches;
+        // gaps are reused and parsed IDs near u32::MAX cannot overflow.
+        let used_cache_ids: std::collections::HashSet<u32> = self
             .pivot_tables
             .iter()
             .map(|(_, pt)| pt.cache_id)
@@ -134,9 +136,10 @@ impl Workbook {
                     .iter()
                     .flat_map(|caches| caches.caches.iter().map(|cache| cache.cache_id)),
             )
-            .max()
-            .map(|m| m + 1)
-            .unwrap_or(0);
+            .collect();
+        let cache_id = (0..=u32::MAX)
+            .find(|id| !used_cache_ids.contains(id))
+            .ok_or_else(|| Error::InvalidArgument("no unused pivot cache ID available".into()))?;
 
         let mut occupied_paths = self.occupied_part_paths();
         let allocate_part =
@@ -1214,6 +1217,9 @@ impl Workbook {
 
     /// Set a custom property by name. If a property with the same name already
     /// exists, its value is replaced.
+    ///
+    /// A new property gets the lowest unused pid (>= 2). In the unreachable
+    /// case that every pid is taken, the workbook is left unchanged.
     pub fn set_custom_property(
         &mut self,
         name: &str,
@@ -1223,7 +1229,11 @@ impl Workbook {
         let props = self
             .custom_properties
             .get_or_insert_with(sheetkit_xml::doc_props::CustomProperties::default);
-        crate::doc_props::set_custom_property(props, name, value);
+        // Exhaustion needs more than four billion properties; the signature
+        // has no error channel, so skip the write rather than panic.
+        if crate::doc_props::set_custom_property(props, name, value).is_err() {
+            return;
+        }
         self.mark_doc_prop_dirty("docProps/custom.xml");
         self.ensure_custom_props_content_types();
     }
@@ -1314,9 +1324,9 @@ impl Workbook {
             .iter()
             .any(|r| r.rel_type == rel_types::CUSTOM_PROPERTIES);
         if !has_custom_rel {
-            let next_id = self.package_rels.relationships.len() + 1;
+            let rid = crate::sheet::next_rid(&self.package_rels.relationships);
             self.package_rels.relationships.push(Relationship {
-                id: format!("rId{next_id}"),
+                id: rid,
                 rel_type: rel_types::CUSTOM_PROPERTIES.to_string(),
                 target: "docProps/custom.xml".to_string(),
                 target_mode: None,
@@ -3118,6 +3128,61 @@ mod tests {
         assert_eq!(got.app_version.as_deref(), Some("1.0.0"));
         assert_eq!(got.manager.as_deref(), Some("Boss"));
         assert_eq!(got.template.as_deref(), Some("default.xltx"));
+    }
+
+    #[test]
+    fn test_add_pivot_table_after_parsed_u32_max_cache_id() {
+        let mut wb = make_pivot_workbook();
+        wb.add_pivot_table(&basic_pivot_config()).unwrap();
+        wb.pivot_tables[0].1.cache_id = u32::MAX;
+        wb.workbook_xml.pivot_caches.as_mut().unwrap().caches[0].cache_id = u32::MAX;
+
+        let mut config = basic_pivot_config();
+        config.name = "PivotTable2".to_string();
+        config.target_cell = "I1".to_string();
+        wb.add_pivot_table(&config).unwrap();
+
+        assert_eq!(wb.pivot_tables[1].1.cache_id, 0);
+        let caches = &wb.workbook_xml.pivot_caches.as_ref().unwrap().caches;
+        let ids: Vec<u32> = caches.iter().map(|cache| cache.cache_id).collect();
+        assert_eq!(ids, vec![u32::MAX, 0]);
+    }
+
+    #[test]
+    fn test_add_pivot_table_reuses_lowest_free_cache_id() {
+        let mut wb = make_pivot_workbook();
+        wb.add_pivot_table(&basic_pivot_config()).unwrap();
+        wb.pivot_tables[0].1.cache_id = 5;
+        wb.workbook_xml.pivot_caches.as_mut().unwrap().caches[0].cache_id = 5;
+
+        let mut config = basic_pivot_config();
+        config.name = "PivotTable2".to_string();
+        config.target_cell = "I1".to_string();
+        wb.add_pivot_table(&config).unwrap();
+
+        assert_eq!(wb.pivot_tables[1].1.cache_id, 0);
+    }
+
+    #[test]
+    fn test_custom_property_package_rel_id_does_not_collide() {
+        let mut wb = Workbook::new();
+        let count = wb.package_rels.relationships.len();
+        wb.package_rels.relationships[0].id = format!("rId{}", count + 1);
+
+        wb.set_custom_property("Key", crate::doc_props::CustomPropertyValue::Int(1));
+
+        let ids: std::collections::HashSet<&str> = wb
+            .package_rels
+            .relationships
+            .iter()
+            .map(|rel| rel.id.as_str())
+            .collect();
+        assert_eq!(ids.len(), wb.package_rels.relationships.len());
+        assert!(wb
+            .package_rels
+            .relationships
+            .iter()
+            .any(|rel| rel.rel_type == rel_types::CUSTOM_PROPERTIES));
     }
 
     #[test]

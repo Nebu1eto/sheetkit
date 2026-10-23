@@ -3,6 +3,7 @@
 //! Contains validation helpers and internal functions used by [`crate::workbook::Workbook`]
 //! for creating, deleting, renaming, and copying worksheets.
 
+use std::collections::HashSet;
 use std::sync::OnceLock;
 
 use sheetkit_xml::content_types::{mime_types, ContentTypeOverride, ContentTypes};
@@ -65,29 +66,33 @@ pub fn validate_sheet_name(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Generate the next available rId for workbook relationships.
+/// Generate the lowest unused `rId{n}` (n >= 1) for a relationship collection.
 ///
-/// Scans existing relationship IDs of the form `rIdN` and returns `rId{max+1}`.
+/// Every existing relationship ID of the form `rIdN` is treated as used, so
+/// gaps left by removed relationships are reused. With `len` relationships at
+/// least one of `1..=len + 1` is free, so the search never overflows.
 pub fn next_rid(existing_rels: &[Relationship]) -> String {
-    let max = existing_rels
+    let used: HashSet<u64> = existing_rels
         .iter()
-        .filter_map(|r| r.id.strip_prefix("rId").and_then(|n| n.parse::<u32>().ok()))
-        .max()
-        .unwrap_or(0);
-    format!("rId{}", max + 1)
+        .filter_map(|r| r.id.strip_prefix("rId").and_then(|n| n.parse::<u64>().ok()))
+        .collect();
+    let candidates = existing_rels.len() as u64 + 1;
+    let n = (1..=candidates)
+        .find(|n| !used.contains(n))
+        .unwrap_or(candidates);
+    format!("rId{n}")
 }
 
-/// Generate the next available sheet ID.
+/// Generate the lowest unused sheet ID in `1..=u32::MAX`.
 ///
-/// Sheet IDs in a workbook are unique but not necessarily contiguous. This
-/// function returns one greater than the current maximum.
-pub fn next_sheet_id(existing_sheets: &[SheetEntry]) -> u32 {
-    existing_sheets
-        .iter()
-        .map(|s| s.sheet_id)
-        .max()
-        .unwrap_or(0)
-        + 1
+/// Sheet IDs in a workbook are unique but not necessarily contiguous; gaps
+/// left by deleted sheets are reused. Returns `Error::InvalidArgument` when
+/// every valid ID is taken.
+pub fn next_sheet_id(existing_sheets: &[SheetEntry]) -> Result<u32> {
+    let used: HashSet<u32> = existing_sheets.iter().map(|s| s.sheet_id).collect();
+    (1..=u32::MAX)
+        .find(|n| !used.contains(n))
+        .ok_or_else(|| Error::InvalidArgument("no unused sheet ID available".to_string()))
 }
 
 fn next_worksheet_target(
@@ -180,7 +185,7 @@ pub(crate) fn add_sheet_with_occupied_paths(
     }
 
     let rid = next_rid(&workbook_rels.relationships);
-    let sheet_id = next_sheet_id(&workbook_xml.sheets.sheets);
+    let sheet_id = next_sheet_id(&workbook_xml.sheets.sheets)?;
     let target = next_worksheet_target(&workbook_rels.relationships, content_types, occupied_paths);
 
     workbook_xml.sheets.sheets.push(SheetEntry {
@@ -1035,12 +1040,35 @@ mod tests {
                 target_mode: None,
             },
         ];
-        assert_eq!(next_rid(&rels), "rId4");
+        assert_eq!(next_rid(&rels), "rId2");
     }
 
     #[test]
     fn test_next_rid_empty() {
         assert_eq!(next_rid(&[]), "rId1");
+    }
+
+    fn rel(id: &str) -> Relationship {
+        Relationship {
+            id: id.to_string(),
+            rel_type: "".to_string(),
+            target: "".to_string(),
+            target_mode: None,
+        }
+    }
+
+    #[test]
+    fn test_next_rid_with_u32_max_does_not_overflow() {
+        let rels = vec![rel("rId1"), rel(&format!("rId{}", u32::MAX))];
+        assert_eq!(next_rid(&rels), "rId2");
+    }
+
+    #[test]
+    fn test_next_rid_skips_all_used_ids_and_non_numeric() {
+        let rels = vec![rel("rId1"), rel("rId2"), rel("rIdX"), rel("custom")];
+        let rid = next_rid(&rels);
+        assert!(rels.iter().all(|r| r.id != rid));
+        assert_eq!(rid, "rId3");
     }
 
     #[test]
@@ -1059,12 +1087,47 @@ mod tests {
                 r_id: "rId2".to_string(),
             },
         ];
-        assert_eq!(next_sheet_id(&sheets), 6);
+        assert_eq!(next_sheet_id(&sheets).unwrap(), 2);
     }
 
     #[test]
     fn test_next_sheet_id_empty() {
-        assert_eq!(next_sheet_id(&[]), 1);
+        assert_eq!(next_sheet_id(&[]).unwrap(), 1);
+    }
+
+    #[test]
+    fn test_add_sheet_with_u32_max_ids_allocates_free_ids() {
+        let (mut wb_xml, mut wb_rels, mut ct, mut ws) = test_workbook_parts();
+        for entry in &mut wb_xml.sheets.sheets {
+            entry.sheet_id = u32::MAX;
+            entry.r_id = format!("rId{}", u32::MAX);
+        }
+        for relationship in &mut wb_rels.relationships {
+            if relationship.rel_type == rel_types::WORKSHEET {
+                relationship.id = format!("rId{}", u32::MAX);
+            }
+        }
+
+        add_sheet(
+            &mut wb_xml,
+            &mut wb_rels,
+            &mut ct,
+            &mut ws,
+            "Sheet2",
+            WorksheetXml::default(),
+        )
+        .unwrap();
+
+        let new_entry = wb_xml.sheets.sheets.last().unwrap();
+        assert_eq!(new_entry.name, "Sheet2");
+        assert_eq!(new_entry.sheet_id, 1);
+        let ids: HashSet<&str> = wb_rels
+            .relationships
+            .iter()
+            .map(|r| r.id.as_str())
+            .collect();
+        assert_eq!(ids.len(), wb_rels.relationships.len());
+        assert!(ids.contains(new_entry.r_id.as_str()));
     }
 
     /// Helper to create default test workbook internals.

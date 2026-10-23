@@ -5,6 +5,8 @@
 //! stylesheet with deduplication: identical style components share the same
 //! index.
 
+use std::collections::HashSet;
+
 use sheetkit_xml::styles::{
     Alignment, Border, BorderSide, Borders, Color, Fill, Fills, Font, Fonts, NumFmt, NumFmts,
     PatternFill, Protection, StyleSheet, Xf,
@@ -1031,37 +1033,58 @@ fn add_or_find_border(borders: &mut Borders, border: &BorderStyle) -> u32 {
     id
 }
 
-/// Register a custom number format, return its ID (starting from 164).
+/// Register a custom number format, return its ID (164 or greater).
 /// If an identical format code already exists, returns the existing ID.
-fn add_or_find_num_fmt(stylesheet: &mut StyleSheet, fmt: &str) -> u32 {
+/// A new format gets the lowest ID >= 164 not defined in `numFmts` and not
+/// referenced by any cell, cell-style, or differential format. Returns an
+/// error without mutating the stylesheet if no such ID remains.
+fn add_or_find_num_fmt(stylesheet: &mut StyleSheet, fmt: &str) -> Result<u32> {
+    if let Some(existing) = stylesheet
+        .num_fmts
+        .iter()
+        .flat_map(|nfs| nfs.num_fmts.iter())
+        .find(|nf| nf.format_code == fmt)
+    {
+        return Ok(existing.num_fmt_id);
+    }
+
+    let used: HashSet<u32> = stylesheet
+        .num_fmts
+        .iter()
+        .flat_map(|nfs| nfs.num_fmts.iter().map(|nf| nf.num_fmt_id))
+        .chain(
+            stylesheet
+                .cell_xfs
+                .xfs
+                .iter()
+                .chain(stylesheet.cell_style_xfs.iter().flat_map(|c| c.xfs.iter()))
+                .filter_map(|xf| xf.num_fmt_id),
+        )
+        .chain(
+            stylesheet
+                .dxfs
+                .iter()
+                .flat_map(|d| d.dxfs.iter())
+                .filter_map(|dxf| dxf.num_fmt.as_ref().map(|nf| nf.num_fmt_id)),
+        )
+        .collect();
+    let next_id = (CUSTOM_NUM_FMT_BASE..=u32::MAX)
+        .find(|id| !used.contains(id))
+        .ok_or_else(|| {
+            Error::InvalidArgument("no unused custom number format ID available".to_string())
+        })?;
+
     let num_fmts = stylesheet.num_fmts.get_or_insert_with(|| NumFmts {
         count: Some(0),
         num_fmts: Vec::new(),
     });
-
-    for nf in &num_fmts.num_fmts {
-        if nf.format_code == fmt {
-            return nf.num_fmt_id;
-        }
-    }
-
-    let next_id = num_fmts
-        .num_fmts
-        .iter()
-        .map(|nf| nf.num_fmt_id)
-        .max()
-        .map(|max_id| max_id + 1)
-        .unwrap_or(CUSTOM_NUM_FMT_BASE);
-
-    let next_id = next_id.max(CUSTOM_NUM_FMT_BASE);
-
     num_fmts.num_fmts.push(NumFmt {
         num_fmt_id: next_id,
         format_code: fmt.to_string(),
     });
     num_fmts.count = Some(num_fmts.num_fmts.len() as u32);
 
-    next_id
+    Ok(next_id)
 }
 
 /// Convert a high-level `Style` to XML components and register in the stylesheet.
@@ -1070,6 +1093,14 @@ pub fn add_style(stylesheet: &mut StyleSheet, style: &Style) -> Result<u32> {
     if stylesheet.cell_xfs.xfs.len() >= MAX_CELL_XFS {
         return Err(Error::CellStylesExceeded { max: MAX_CELL_XFS });
     }
+
+    // Resolve the fallible number format first so an error leaves the
+    // stylesheet unchanged.
+    let num_fmt_id = match &style.num_fmt {
+        Some(NumFmtStyle::Builtin(id)) => *id,
+        Some(NumFmtStyle::Custom(code)) => add_or_find_num_fmt(stylesheet, code)?,
+        None => 0, // General
+    };
 
     let font_id = match &style.font {
         Some(font) => add_or_find_font(&mut stylesheet.fonts, font),
@@ -1084,12 +1115,6 @@ pub fn add_style(stylesheet: &mut StyleSheet, style: &Style) -> Result<u32> {
     let border_id = match &style.border {
         Some(border) => add_or_find_border(&mut stylesheet.borders, border),
         None => 0, // default border (empty)
-    };
-
-    let num_fmt_id = match &style.num_fmt {
-        Some(NumFmtStyle::Builtin(id)) => *id,
-        Some(NumFmtStyle::Custom(code)) => add_or_find_num_fmt(stylesheet, code),
-        None => 0, // General
     };
 
     let alignment = style.alignment.as_ref().map(alignment_style_to_xml);
@@ -2177,14 +2202,59 @@ mod tests {
     #[test]
     fn test_multiple_custom_num_fmts() {
         let mut ss = default_stylesheet();
-        let id1 = add_or_find_num_fmt(&mut ss, "0.0%");
-        let id2 = add_or_find_num_fmt(&mut ss, "#,##0");
+        let id1 = add_or_find_num_fmt(&mut ss, "0.0%").unwrap();
+        let id2 = add_or_find_num_fmt(&mut ss, "#,##0").unwrap();
         assert_eq!(id1, 164);
         assert_eq!(id2, 165);
 
         // Same format returns same id.
-        let id3 = add_or_find_num_fmt(&mut ss, "0.0%");
+        let id3 = add_or_find_num_fmt(&mut ss, "0.0%").unwrap();
         assert_eq!(id3, 164);
+    }
+
+    fn stylesheet_with_num_fmts(ids: &[u32]) -> StyleSheet {
+        let mut ss = default_stylesheet();
+        ss.num_fmts = Some(NumFmts {
+            count: Some(ids.len() as u32),
+            num_fmts: ids
+                .iter()
+                .map(|id| NumFmt {
+                    num_fmt_id: *id,
+                    format_code: format!("\"fmt{id}\" 0"),
+                })
+                .collect(),
+        });
+        ss
+    }
+
+    #[test]
+    fn test_custom_num_fmt_with_max_existing_id_does_not_overflow() {
+        let mut ss = stylesheet_with_num_fmts(&[164, u32::MAX]);
+        let style = Style {
+            num_fmt: Some(NumFmtStyle::Custom("0.000".to_string())),
+            ..Style::default()
+        };
+
+        let style_id = add_style(&mut ss, &style).unwrap();
+
+        let nfs = &ss.num_fmts.as_ref().unwrap().num_fmts;
+        assert_eq!(nfs.len(), 3);
+        let new_id = ss.cell_xfs.xfs[style_id as usize].num_fmt_id.unwrap();
+        assert_eq!(new_id, 165);
+        assert_eq!(nfs.iter().filter(|nf| nf.num_fmt_id == new_id).count(), 1);
+        let back = get_style(&ss, style_id).unwrap();
+        assert!(matches!(back.num_fmt, Some(NumFmtStyle::Custom(ref c)) if c == "0.000"));
+    }
+
+    #[test]
+    fn test_custom_num_fmt_skips_ids_referenced_by_xfs() {
+        let mut ss = default_stylesheet();
+        let mut xf = ss.cell_xfs.xfs[0].clone();
+        xf.num_fmt_id = Some(164);
+        ss.cell_xfs.xfs.push(xf);
+        ss.cell_xfs.count = Some(ss.cell_xfs.xfs.len() as u32);
+
+        assert_eq!(add_or_find_num_fmt(&mut ss, "0.0000").unwrap(), 165);
     }
 
     #[test]
