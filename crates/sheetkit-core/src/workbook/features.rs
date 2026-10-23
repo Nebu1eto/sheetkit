@@ -392,15 +392,39 @@ impl Workbook {
         let sheet_idx = self.sheet_index(sheet)?;
         self.hydrate_tables();
 
-        // Check for duplicate table name across the entire workbook.
-        if self.tables.iter().any(|(_, t, _)| t.name == config.name) {
+        // Table names share one case-insensitive namespace with every other
+        // table name, table display name, and defined name in the workbook.
+        let display_name = crate::table::effective_display_name(config);
+        let new_names = [config.name.to_lowercase(), display_name.to_lowercase()];
+        let collides = |existing: &str| {
+            let existing = existing.to_lowercase();
+            new_names.contains(&existing)
+        };
+        if self
+            .tables
+            .iter()
+            .any(|(_, t, _)| collides(&t.name) || collides(&t.display_name))
+        {
             return Err(Error::TableAlreadyExists {
                 name: config.name.clone(),
             });
         }
+        if let Some(defined) = crate::defined_names::get_all_defined_names(&self.workbook_xml)
+            .into_iter()
+            .find(|dn| collides(&dn.name))
+        {
+            return Err(Error::InvalidArgument(format!(
+                "table name conflicts with defined name: {}",
+                defined.name
+            )));
+        }
 
-        // Assign a unique table ID (max existing + 1).
-        let table_id = self.tables.iter().map(|(_, t, _)| t.id).max().unwrap_or(0) + 1;
+        // Assign the lowest table ID not used by any table in the workbook.
+        let used_ids: std::collections::HashSet<u32> =
+            self.tables.iter().map(|(_, t, _)| t.id).collect();
+        let table_id = (1..=u32::MAX)
+            .find(|id| !used_ids.contains(id))
+            .ok_or_else(|| Error::InvalidArgument("no table id available".into()))?;
 
         let table_path = self.next_available_part_path("xl/tables/table", ".xml");
         let table_xml = crate::table::build_table_xml(config, table_id);
@@ -2180,8 +2204,8 @@ mod tests {
 
         let mut wb = Workbook::new();
         let config = TableConfig {
-            name: "T1".to_string(),
-            display_name: "T1".to_string(),
+            name: "TestTable1".to_string(),
+            display_name: "TestTable1".to_string(),
             range: "A1:A5".to_string(),
             columns: vec![TableColumn {
                 name: "Col".to_string(),
@@ -2347,8 +2371,8 @@ mod tests {
 
         let mut wb = Workbook::new();
         let config = TableConfig {
-            name: "T1".to_string(),
-            display_name: "T1".to_string(),
+            name: "TestTable1".to_string(),
+            display_name: "TestTable1".to_string(),
             range: "A1:A5".to_string(),
             columns: vec![TableColumn {
                 name: "Col".to_string(),
@@ -2417,8 +2441,8 @@ mod tests {
 
         let mut wb = Workbook::new();
         let config = TableConfig {
-            name: "T1".to_string(),
-            display_name: "T1".to_string(),
+            name: "TestTable1".to_string(),
+            display_name: "TestTable1".to_string(),
             range: "A1:A5".to_string(),
             columns: vec![TableColumn {
                 name: "Col".to_string(),
@@ -2430,7 +2454,7 @@ mod tests {
         wb.add_table("Sheet1", &config).unwrap();
         assert_eq!(wb.get_tables("Sheet1").unwrap().len(), 1);
 
-        wb.delete_table("Sheet1", "T1").unwrap();
+        wb.delete_table("Sheet1", "TestTable1").unwrap();
         assert!(wb.get_tables("Sheet1").unwrap().is_empty());
     }
 
@@ -2448,8 +2472,8 @@ mod tests {
         let mut wb = Workbook::new();
         wb.new_sheet("Sheet2").unwrap();
         let config = TableConfig {
-            name: "T1".to_string(),
-            display_name: "T1".to_string(),
+            name: "TestTable1".to_string(),
+            display_name: "TestTable1".to_string(),
             range: "A1:A5".to_string(),
             columns: vec![TableColumn {
                 name: "Col".to_string(),
@@ -2460,7 +2484,7 @@ mod tests {
         };
         wb.add_table("Sheet1", &config).unwrap();
 
-        let result = wb.delete_table("Sheet2", "T1");
+        let result = wb.delete_table("Sheet2", "TestTable1");
         assert!(matches!(result.unwrap_err(), Error::TableNotFound { .. }));
         // Table should still exist on Sheet1.
         assert_eq!(wb.get_tables("Sheet1").unwrap().len(), 1);
@@ -2472,8 +2496,8 @@ mod tests {
 
         let mut wb = Workbook::new();
         let config1 = TableConfig {
-            name: "T1".to_string(),
-            display_name: "T1".to_string(),
+            name: "TestTable1".to_string(),
+            display_name: "TestTable1".to_string(),
             range: "A1:B5".to_string(),
             columns: vec![
                 TableColumn {
@@ -2490,8 +2514,8 @@ mod tests {
             ..TableConfig::default()
         };
         let config2 = TableConfig {
-            name: "T2".to_string(),
-            display_name: "T2".to_string(),
+            name: "TestTable2".to_string(),
+            display_name: "TestTable2".to_string(),
             range: "D1:E5".to_string(),
             columns: vec![
                 TableColumn {
@@ -2512,8 +2536,8 @@ mod tests {
 
         let tables = wb.get_tables("Sheet1").unwrap();
         assert_eq!(tables.len(), 2);
-        assert_eq!(tables[0].name, "T1");
-        assert_eq!(tables[1].name, "T2");
+        assert_eq!(tables[0].name, "TestTable1");
+        assert_eq!(tables[1].name, "TestTable2");
     }
 
     #[test]
@@ -2523,8 +2547,8 @@ mod tests {
         let mut wb = Workbook::new();
         wb.new_sheet("Sheet2").unwrap();
         let config1 = TableConfig {
-            name: "T1".to_string(),
-            display_name: "T1".to_string(),
+            name: "TestTable1".to_string(),
+            display_name: "TestTable1".to_string(),
             range: "A1:A5".to_string(),
             columns: vec![TableColumn {
                 name: "Col1".to_string(),
@@ -2534,8 +2558,8 @@ mod tests {
             ..TableConfig::default()
         };
         let config2 = TableConfig {
-            name: "T2".to_string(),
-            display_name: "T2".to_string(),
+            name: "TestTable2".to_string(),
+            display_name: "TestTable2".to_string(),
             range: "A1:A5".to_string(),
             columns: vec![TableColumn {
                 name: "Col2".to_string(),
@@ -2549,8 +2573,8 @@ mod tests {
 
         assert_eq!(wb.get_tables("Sheet1").unwrap().len(), 1);
         assert_eq!(wb.get_tables("Sheet2").unwrap().len(), 1);
-        assert_eq!(wb.get_tables("Sheet1").unwrap()[0].name, "T1");
-        assert_eq!(wb.get_tables("Sheet2").unwrap()[0].name, "T2");
+        assert_eq!(wb.get_tables("Sheet1").unwrap()[0].name, "TestTable1");
+        assert_eq!(wb.get_tables("Sheet2").unwrap()[0].name, "TestTable2");
     }
 
     #[test]
@@ -2729,8 +2753,8 @@ mod tests {
         wb.add_table(
             "Sheet1",
             &TableConfig {
-                name: "T1".to_string(),
-                display_name: "T1".to_string(),
+                name: "TestTable1".to_string(),
+                display_name: "TestTable1".to_string(),
                 range: "A1:B5".to_string(),
                 columns: vec![
                     TableColumn {
@@ -2751,8 +2775,8 @@ mod tests {
         wb.add_table(
             "Sheet2",
             &TableConfig {
-                name: "T2".to_string(),
-                display_name: "T2".to_string(),
+                name: "TestTable2".to_string(),
+                display_name: "TestTable2".to_string(),
                 range: "C1:D8".to_string(),
                 columns: vec![
                     TableColumn {
@@ -2776,12 +2800,12 @@ mod tests {
         let wb2 = Workbook::open(&path).unwrap();
         let t1 = wb2.get_tables("Sheet1").unwrap();
         assert_eq!(t1.len(), 1);
-        assert_eq!(t1[0].name, "T1");
+        assert_eq!(t1[0].name, "TestTable1");
         assert_eq!(t1[0].range, "A1:B5");
 
         let t2 = wb2.get_tables("Sheet2").unwrap();
         assert_eq!(t2.len(), 1);
-        assert_eq!(t2[0].name, "T2");
+        assert_eq!(t2[0].name, "TestTable2");
         assert_eq!(t2[0].range, "C1:D8");
         assert!(!t2[0].auto_filter);
     }
@@ -2798,8 +2822,8 @@ mod tests {
         wb.add_table(
             "Sheet1",
             &TableConfig {
-                name: "T1".to_string(),
-                display_name: "T1".to_string(),
+                name: "TestTable1".to_string(),
+                display_name: "TestTable1".to_string(),
                 range: "A1:B3".to_string(),
                 columns: vec![
                     TableColumn {
@@ -2825,7 +2849,7 @@ mod tests {
         let wb3 = Workbook::open(&path2).unwrap();
         let tables = wb3.get_tables("Sheet1").unwrap();
         assert_eq!(tables.len(), 1);
-        assert_eq!(tables[0].name, "T1");
+        assert_eq!(tables[0].name, "TestTable1");
         assert_eq!(tables[0].columns, vec!["X", "Y"]);
     }
 
@@ -2853,8 +2877,8 @@ mod tests {
         wb.add_table(
             "Sheet1",
             &TableConfig {
-                name: "T1".to_string(),
-                display_name: "T1".to_string(),
+                name: "TestTable1".to_string(),
+                display_name: "TestTable1".to_string(),
                 range: "A1:A5".to_string(),
                 columns: vec![TableColumn {
                     name: "Col".to_string(),
@@ -2868,8 +2892,8 @@ mod tests {
         wb.add_table(
             "Sheet2",
             &TableConfig {
-                name: "T2".to_string(),
-                display_name: "T2".to_string(),
+                name: "TestTable2".to_string(),
+                display_name: "TestTable2".to_string(),
                 range: "A1:A5".to_string(),
                 columns: vec![TableColumn {
                     name: "Col".to_string(),
@@ -2885,7 +2909,7 @@ mod tests {
         // T1 should be gone, T2 should still exist on Sheet2.
         let tables = wb.get_tables("Sheet2").unwrap();
         assert_eq!(tables.len(), 1);
-        assert_eq!(tables[0].name, "T2");
+        assert_eq!(tables[0].name, "TestTable2");
     }
 
     #[test]
@@ -3257,10 +3281,13 @@ mod tests {
             ..TableConfig::default()
         };
 
-        wb.add_table("Sheet1", &make_config("T1", "A1:B5")).unwrap();
-        wb.add_table("Sheet1", &make_config("T2", "D1:E5")).unwrap();
-        wb.delete_table("Sheet1", "T1").unwrap();
-        wb.add_table("Sheet1", &make_config("T3", "G1:H5")).unwrap();
+        wb.add_table("Sheet1", &make_config("TestTable1", "A1:B5"))
+            .unwrap();
+        wb.add_table("Sheet1", &make_config("TestTable2", "D1:E5"))
+            .unwrap();
+        wb.delete_table("Sheet1", "TestTable1").unwrap();
+        wb.add_table("Sheet1", &make_config("TestTable3", "G1:H5"))
+            .unwrap();
 
         let paths: Vec<&str> = wb.tables.iter().map(|(p, _, _)| p.as_str()).collect();
         let mut unique_paths = paths.clone();
@@ -3278,8 +3305,8 @@ mod tests {
         let tables = wb2.get_tables("Sheet1").unwrap();
         assert_eq!(tables.len(), 2);
         let names: Vec<&str> = tables.iter().map(|t| t.name.as_str()).collect();
-        assert!(names.contains(&"T2"));
-        assert!(names.contains(&"T3"));
+        assert!(names.contains(&"TestTable2"));
+        assert!(names.contains(&"TestTable3"));
     }
 
     #[test]
@@ -3294,8 +3321,8 @@ mod tests {
         wb.add_table(
             "Sheet1",
             &TableConfig {
-                name: "T1".to_string(),
-                display_name: "T1".to_string(),
+                name: "TestTable1".to_string(),
+                display_name: "TestTable1".to_string(),
                 range: "A1:B5".to_string(),
                 columns: vec![
                     TableColumn {
@@ -3317,7 +3344,7 @@ mod tests {
 
         let mut wb2 = Workbook::open(&path1).unwrap();
         assert_eq!(wb2.get_tables("Sheet1").unwrap().len(), 1);
-        wb2.delete_table("Sheet1", "T1").unwrap();
+        wb2.delete_table("Sheet1", "TestTable1").unwrap();
         wb2.save(&path2).unwrap();
 
         let file = std::fs::File::open(&path2).unwrap();

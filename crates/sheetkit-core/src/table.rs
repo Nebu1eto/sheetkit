@@ -5,6 +5,7 @@
 
 use crate::error::{Error, Result};
 use crate::utils::cell_ref::{cell_name_to_coordinates, coordinates_to_cell_name};
+use crate::utils::constants::{MAX_COLUMNS, MAX_ROWS};
 use sheetkit_xml::table::{
     TableAutoFilter, TableColumnXml, TableColumnsXml, TableStyleInfoXml, TableXml,
 };
@@ -85,6 +86,89 @@ pub struct TableInfo {
     pub style_name: Option<String>,
 }
 
+/// Maximum length, in characters, of a table name or display name.
+pub const MAX_TABLE_NAME_LEN: usize = 255;
+
+/// Return the display name written for `config`: the configured display
+/// name, or the table name when the display name is empty.
+pub(crate) fn effective_display_name(config: &TableConfig) -> &str {
+    if config.display_name.is_empty() {
+        &config.name
+    } else {
+        &config.display_name
+    }
+}
+
+/// Returns true when `name` would be read by Excel as an A1 cell reference
+/// within sheet bounds (e.g. `A1`, `XFD1048576`).
+fn is_a1_cell_reference(name: &str) -> bool {
+    let letters = name.chars().take_while(char::is_ascii_alphabetic).count();
+    if !(1..=3).contains(&letters) || letters == name.len() {
+        return false;
+    }
+    let (col_part, row_part) = name.split_at(letters);
+    if !row_part.chars().all(|c| c.is_ascii_digit()) {
+        return false;
+    }
+    let col = col_part.chars().fold(0u32, |acc, c| {
+        acc * 26 + (c.to_ascii_uppercase() as u32 - 'A' as u32 + 1)
+    });
+    let row = row_part.parse::<u64>().unwrap_or(u64::MAX);
+    col <= MAX_COLUMNS && (1..=u64::from(MAX_ROWS)).contains(&row)
+}
+
+/// Returns true when `name` would be read by Excel as an R1C1 reference
+/// (`R`, `C`, `RC`, `R1`, `C1`, `R1C1`, ...).
+fn is_r1c1_reference(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    let digits = |s: &str| s.chars().all(|c| c.is_ascii_digit());
+    if let Some(rest) = upper.strip_prefix('R') {
+        match rest.split_once('C') {
+            Some((row, col)) => digits(row) && digits(col),
+            None => digits(rest),
+        }
+    } else if let Some(rest) = upper.strip_prefix('C') {
+        digits(rest)
+    } else {
+        false
+    }
+}
+
+/// Validate a table name or display name against Excel naming rules.
+///
+/// The name must be 1 to 255 characters, start with a letter, underscore,
+/// or backslash, continue with letters, digits, periods, or underscores,
+/// and must not look like an A1 or R1C1 cell reference.
+pub(crate) fn validate_table_name(kind: &str, name: &str) -> Result<()> {
+    let len = name.chars().count();
+    if len == 0 {
+        return Err(Error::InvalidArgument(format!("{kind} cannot be empty")));
+    }
+    if len > MAX_TABLE_NAME_LEN {
+        return Err(Error::InvalidArgument(format!(
+            "{kind} exceeds {MAX_TABLE_NAME_LEN} characters"
+        )));
+    }
+    let mut chars = name.chars();
+    let first = chars.next().unwrap_or_default();
+    if !(first.is_alphabetic() || first == '_' || first == '\\') {
+        return Err(Error::InvalidArgument(format!(
+            "{kind} must start with a letter, underscore, or backslash: {name}"
+        )));
+    }
+    if let Some(bad) = chars.find(|c| !(c.is_alphanumeric() || *c == '.' || *c == '_')) {
+        return Err(Error::InvalidArgument(format!(
+            "{kind} contains invalid character {bad:?}: {name}"
+        )));
+    }
+    if is_a1_cell_reference(name) || is_r1c1_reference(name) {
+        return Err(Error::InvalidArgument(format!(
+            "{kind} must not be a cell reference: {name}"
+        )));
+    }
+    Ok(())
+}
+
 /// Build a `TableXml` from a `TableConfig` and a unique table ID.
 pub(crate) fn build_table_xml(config: &TableConfig, table_id: u32) -> TableXml {
     let columns: Vec<TableColumnXml> = config
@@ -96,12 +180,14 @@ pub(crate) fn build_table_xml(config: &TableConfig, table_id: u32) -> TableXml {
             name: col.name.clone(),
             totals_row_function: col.totals_row_function.clone(),
             totals_row_label: col.totals_row_label.clone(),
+            ..Default::default()
         })
         .collect();
 
     let auto_filter = if config.auto_filter {
         Some(TableAutoFilter {
             reference: config.range.clone(),
+            ..Default::default()
         })
     } else {
         None
@@ -134,7 +220,7 @@ pub(crate) fn build_table_xml(config: &TableConfig, table_id: u32) -> TableXml {
         xmlns: sheetkit_xml::namespaces::SPREADSHEET_ML.to_string(),
         id: table_id,
         name: config.name.clone(),
-        display_name: config.display_name.clone(),
+        display_name: effective_display_name(config).to_string(),
         reference: config.range.clone(),
         totals_row_count: None,
         totals_row_shown: None,
@@ -145,6 +231,7 @@ pub(crate) fn build_table_xml(config: &TableConfig, table_id: u32) -> TableXml {
             columns,
         },
         table_style_info: style_info,
+        ..Default::default()
     }
 }
 
@@ -216,9 +303,8 @@ pub(crate) fn table_header_cells(config: &TableConfig) -> Result<Vec<(String, St
 
 /// Validate that a table name, range, and column definitions are consistent.
 pub(crate) fn validate_table_config(config: &TableConfig) -> Result<()> {
-    if config.name.is_empty() {
-        return Err(Error::InvalidArgument("table name cannot be empty".into()));
-    }
+    validate_table_name("table name", &config.name)?;
+    validate_table_name("table display name", effective_display_name(config))?;
     if config.range.is_empty() {
         return Err(Error::InvalidArgument("table range cannot be empty".into()));
     }
@@ -386,8 +472,8 @@ mod tests {
     #[test]
     fn test_build_table_xml_no_header() {
         let config = TableConfig {
-            name: "T1".to_string(),
-            display_name: "T1".to_string(),
+            name: "TestTable1".to_string(),
+            display_name: "TestTable1".to_string(),
             range: "A1:B5".to_string(),
             columns: vec![TableColumn {
                 name: "Col1".to_string(),
@@ -415,6 +501,7 @@ mod tests {
             header_row_count: None,
             auto_filter: Some(TableAutoFilter {
                 reference: "A1:D20".to_string(),
+                ..Default::default()
             }),
             table_columns: TableColumnsXml {
                 count: 4,
@@ -424,24 +511,28 @@ mod tests {
                         name: "Item".to_string(),
                         totals_row_function: None,
                         totals_row_label: None,
+                        ..Default::default()
                     },
                     TableColumnXml {
                         id: 2,
                         name: "Stock".to_string(),
                         totals_row_function: None,
                         totals_row_label: None,
+                        ..Default::default()
                     },
                     TableColumnXml {
                         id: 3,
                         name: "Price".to_string(),
                         totals_row_function: None,
                         totals_row_label: None,
+                        ..Default::default()
                     },
                     TableColumnXml {
                         id: 4,
                         name: "Supplier".to_string(),
                         totals_row_function: None,
                         totals_row_label: None,
+                        ..Default::default()
                     },
                 ],
             },
@@ -452,6 +543,7 @@ mod tests {
                 show_row_stripes: Some(true),
                 show_column_stripes: Some(false),
             }),
+            ..Default::default()
         };
 
         let info = table_xml_to_info(&table_xml);
@@ -482,7 +574,7 @@ mod tests {
     #[test]
     fn test_validate_table_config_empty_range() {
         let config = TableConfig {
-            name: "T1".to_string(),
+            name: "TestTable1".to_string(),
             range: String::new(),
             columns: vec![TableColumn {
                 name: "Col".to_string(),
@@ -497,7 +589,7 @@ mod tests {
     #[test]
     fn test_validate_table_config_no_columns() {
         let config = TableConfig {
-            name: "T1".to_string(),
+            name: "TestTable1".to_string(),
             range: "A1:B5".to_string(),
             columns: vec![],
             ..TableConfig::default()
@@ -508,8 +600,8 @@ mod tests {
     #[test]
     fn test_validate_table_config_valid() {
         let config = TableConfig {
-            name: "T1".to_string(),
-            display_name: "T1".to_string(),
+            name: "TestTable1".to_string(),
+            display_name: "TestTable1".to_string(),
             range: "A1:A5".to_string(),
             columns: vec![TableColumn {
                 name: "Col".to_string(),
@@ -524,8 +616,8 @@ mod tests {
     #[test]
     fn test_validate_table_config_rejects_range_width_mismatch() {
         let config = TableConfig {
-            name: "T1".to_string(),
-            display_name: "T1".to_string(),
+            name: "TestTable1".to_string(),
+            display_name: "TestTable1".to_string(),
             range: "A1:B5".to_string(),
             columns: vec![TableColumn {
                 name: "Only column".to_string(),

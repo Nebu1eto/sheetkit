@@ -284,9 +284,7 @@ impl Workbook {
         let table_entries = self.deferred_parts.take(AuxCategory::Tables);
         for (path, bytes) in table_entries {
             let xml_str = String::from_utf8_lossy(&bytes);
-            if let Ok(table_xml) =
-                quick_xml::de::from_str::<sheetkit_xml::table::TableXml>(&xml_str)
-            {
+            if let Ok(table_xml) = sheetkit_xml::table::parse_table_xml(&xml_str) {
                 if let Some(sheet_idx) = self.find_sheet_for_table_path(&path) {
                     self.tables.push((path, table_xml, sheet_idx));
                 }

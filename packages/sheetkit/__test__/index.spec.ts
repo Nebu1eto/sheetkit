@@ -3879,23 +3879,23 @@ describe('Table CRUD', () => {
     wb.newSheet('Sheet2');
 
     wb.addTable('Sheet1', {
-      name: 'T1',
-      displayName: 'T1',
+      name: 'TestTable1',
+      displayName: 'TestTable1',
       range: 'A1:B5',
       columns: [{ name: 'X' }, { name: 'Y' }],
     });
 
     wb.addTable('Sheet2', {
-      name: 'T2',
-      displayName: 'T2',
+      name: 'TestTable2',
+      displayName: 'TestTable2',
       range: 'A1:C3',
       columns: [{ name: 'A' }, { name: 'B' }, { name: 'C' }],
     });
 
     expect(wb.getTables('Sheet1')).toHaveLength(1);
     expect(wb.getTables('Sheet2')).toHaveLength(1);
-    expect(wb.getTables('Sheet1')[0].name).toBe('T1');
-    expect(wb.getTables('Sheet2')[0].name).toBe('T2');
+    expect(wb.getTables('Sheet1')[0].name).toBe('TestTable1');
+    expect(wb.getTables('Sheet2')[0].name).toBe('TestTable2');
   });
 
   it('should roundtrip tables through save/open', async () => {
@@ -4505,8 +4505,8 @@ describe('Slicers', () => {
   it('should delete a slicer', () => {
     const wb = new Workbook();
     wb.addTable('Sheet1', {
-      name: 'T1',
-      displayName: 'T1',
+      name: 'TestTable1',
+      displayName: 'TestTable1',
       range: 'A1:B10',
       columns: [{ name: 'Col1' }, { name: 'Col2' }],
       showHeaderRow: true,
@@ -4515,7 +4515,7 @@ describe('Slicers', () => {
     wb.addSlicer('Sheet1', {
       name: 'S1',
       cell: 'F1',
-      tableName: 'T1',
+      tableName: 'TestTable1',
       columnName: 'Col1',
     });
 
@@ -4554,8 +4554,8 @@ describe('Slicers', () => {
   it('should throw on duplicate slicer name', () => {
     const wb = new Workbook();
     wb.addTable('Sheet1', {
-      name: 'T1',
-      displayName: 'T1',
+      name: 'TestTable1',
+      displayName: 'TestTable1',
       range: 'A1:B10',
       columns: [{ name: 'Col1' }, { name: 'Col2' }],
       showHeaderRow: true,
@@ -4564,7 +4564,7 @@ describe('Slicers', () => {
     wb.addSlicer('Sheet1', {
       name: 'S1',
       cell: 'F1',
-      tableName: 'T1',
+      tableName: 'TestTable1',
       columnName: 'Col1',
     });
 
@@ -4572,7 +4572,7 @@ describe('Slicers', () => {
       wb.addSlicer('Sheet1', {
         name: 'S1',
         cell: 'G1',
-        tableName: 'T1',
+        tableName: 'TestTable1',
         columnName: 'Col2',
       }),
     ).toThrow(/already exists/);
@@ -4586,8 +4586,8 @@ describe('Slicers', () => {
   it('should support multiple slicers on same sheet', () => {
     const wb = new Workbook();
     wb.addTable('Sheet1', {
-      name: 'T1',
-      displayName: 'T1',
+      name: 'TestTable1',
+      displayName: 'TestTable1',
       range: 'A1:B10',
       columns: [{ name: 'Col1' }, { name: 'Col2' }],
       showHeaderRow: true,
@@ -4596,13 +4596,13 @@ describe('Slicers', () => {
     wb.addSlicer('Sheet1', {
       name: 'S1',
       cell: 'F1',
-      tableName: 'T1',
+      tableName: 'TestTable1',
       columnName: 'Col1',
     });
     wb.addSlicer('Sheet1', {
       name: 'S2',
       cell: 'G1',
-      tableName: 'T1',
+      tableName: 'TestTable1',
       columnName: 'Col2',
     });
 
@@ -4625,8 +4625,8 @@ describe('Slicers', () => {
   it('should throw on non-existent column', () => {
     const wb = new Workbook();
     wb.addTable('Sheet1', {
-      name: 'T1',
-      displayName: 'T1',
+      name: 'TestTable1',
+      displayName: 'TestTable1',
       range: 'A1:B10',
       columns: [{ name: 'Col1' }, { name: 'Col2' }],
       showHeaderRow: true,
@@ -4636,7 +4636,7 @@ describe('Slicers', () => {
       wb.addSlicer('Sheet1', {
         name: 'S1',
         cell: 'F1',
-        tableName: 'T1',
+        tableName: 'TestTable1',
         columnName: 'NoSuchCol',
       }),
     ).toThrow(/column.*not found/i);
@@ -4688,16 +4688,16 @@ describe('Tables', () => {
   it('should add multiple tables', () => {
     const wb = new Workbook();
     wb.addTable('Sheet1', {
-      name: 'T1',
-      displayName: 'T1',
+      name: 'TestTable1',
+      displayName: 'TestTable1',
       range: 'A1:B10',
       columns: [{ name: 'Col1' }, { name: 'Col2' }],
       showHeaderRow: true,
       autoFilter: false,
     });
     wb.addTable('Sheet1', {
-      name: 'T2',
-      displayName: 'T2',
+      name: 'TestTable2',
+      displayName: 'TestTable2',
       range: 'D1:F10',
       columns: [{ name: 'X' }, { name: 'Y' }, { name: 'Z' }],
       showHeaderRow: true,
@@ -4706,15 +4706,15 @@ describe('Tables', () => {
 
     const tables = wb.getTables('Sheet1');
     expect(tables.length).toBe(2);
-    expect(tables[0].name).toBe('T1');
-    expect(tables[1].name).toBe('T2');
+    expect(tables[0].name).toBe('TestTable1');
+    expect(tables[1].name).toBe('TestTable2');
   });
 
   it('should throw on duplicate table name', () => {
     const wb = new Workbook();
     wb.addTable('Sheet1', {
-      name: 'T1',
-      displayName: 'T1',
+      name: 'TestTable1',
+      displayName: 'TestTable1',
       range: 'A1:B10',
       columns: [{ name: 'Col1' }, { name: 'Col2' }],
       showHeaderRow: true,
@@ -4722,8 +4722,8 @@ describe('Tables', () => {
     });
     expect(() =>
       wb.addTable('Sheet1', {
-        name: 'T1',
-        displayName: 'T1',
+        name: 'TestTable1',
+        displayName: 'TestTable1',
         range: 'D1:E10',
         columns: [{ name: 'X' }, { name: 'Y' }],
         showHeaderRow: true,
