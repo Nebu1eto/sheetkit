@@ -379,13 +379,14 @@ pub struct Cell {
     #[serde(rename = "@t", default, skip_serializing_if = "CellTypeTag::is_none")]
     pub t: CellTypeTag,
 
-    /// Cell value.
-    #[serde(rename = "v", skip_serializing_if = "Option::is_none")]
-    pub v: Option<String>,
-
-    /// Cell formula.
+    /// Cell formula. Declared before the value because CT_Cell is the
+    /// sequence (f, v, is) and serde serializes in field order.
     #[serde(rename = "f", skip_serializing_if = "Option::is_none")]
     pub f: Option<Box<CellFormula>>,
+
+    /// Cached cell value.
+    #[serde(rename = "v", skip_serializing_if = "Option::is_none")]
+    pub v: Option<String>,
 
     /// Inline string.
     #[serde(rename = "is", skip_serializing_if = "Option::is_none")]
@@ -1070,9 +1071,15 @@ mod tests {
         };
         let xml = quick_xml::se::to_string(&cell).unwrap();
         assert!(xml.contains("A1+B1"));
+        // CT_Cell is a sequence (f, v, is); Excel repairs files that put v first.
+        let f_at = xml.find("<f>").unwrap();
+        let v_at = xml.find("<v>").unwrap();
+        assert!(f_at < v_at, "formula must precede cached value: {xml}");
+        assert!(xml.contains("</f><v>84</v>"), "{xml}");
         let parsed: Cell = quick_xml::de::from_str(&xml).unwrap();
         assert!(parsed.f.is_some());
         assert_eq!(parsed.f.unwrap().value, Some("A1+B1".to_string()));
+        assert_eq!(parsed.v, Some("84".to_string()));
     }
 
     #[test]
