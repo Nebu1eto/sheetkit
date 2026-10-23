@@ -199,7 +199,7 @@ wb.addChart("Sheet1", "D1", "K15", {
 ### ChartConfig
 
 | Field | Rust Type | TS Type | Description |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `chart_type` | `ChartType` | `string` | Chart type (see table below) |
 | `title` | `Option<String>` | `string?` | Chart title |
 | `series` | `Vec<ChartSeries>` | `JsChartSeries[]` | Data series |
@@ -209,7 +209,7 @@ wb.addChart("Sheet1", "D1", "K15", {
 ### ChartSeries
 
 | Field | Rust Type | TS Type | Description |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `name` | `String` | `string` | Series name |
 | `categories` | `String` | `string` | Category axis range (e.g., "Sheet1!$A$2:$A$5") |
 | `values` | `String` | `string` | Value axis range (e.g., "Sheet1!$B$2:$B$5") |
@@ -221,7 +221,7 @@ wb.addChart("Sheet1", "D1", "K15", {
 **Column charts:**
 
 | Rust | TypeScript | Description |
-|---|---|---|
+| --- | --- | --- |
 | `ChartType::Col` | `"col"` | Clustered column |
 | `ChartType::ColStacked` | `"colStacked"` | Stacked column |
 | `ChartType::ColPercentStacked` | `"colPercentStacked"` | 100% stacked column |
@@ -232,7 +232,7 @@ wb.addChart("Sheet1", "D1", "K15", {
 **Bar charts:**
 
 | Rust | TypeScript | Description |
-|---|---|---|
+| --- | --- | --- |
 | `ChartType::Bar` | `"bar"` | Clustered bar |
 | `ChartType::BarStacked` | `"barStacked"` | Stacked bar |
 | `ChartType::BarPercentStacked` | `"barPercentStacked"` | 100% stacked bar |
@@ -243,7 +243,7 @@ wb.addChart("Sheet1", "D1", "K15", {
 **Line charts:**
 
 | Rust | TypeScript | Description |
-|---|---|---|
+| --- | --- | --- |
 | `ChartType::Line` | `"line"` | Line |
 | `ChartType::LineStacked` | `"lineStacked"` | Stacked line |
 | `ChartType::LinePercentStacked` | `"linePercentStacked"` | 100% stacked line |
@@ -252,14 +252,14 @@ wb.addChart("Sheet1", "D1", "K15", {
 **Pie charts:**
 
 | Rust | TypeScript | Description |
-|---|---|---|
+| --- | --- | --- |
 | `ChartType::Pie` | `"pie"` | Pie |
 | `ChartType::Pie3D` | `"pie3D"` | 3D pie |
 
 **Area charts:**
 
 | Rust | TypeScript | Description |
-|---|---|---|
+| --- | --- | --- |
 | `ChartType::Area` | `"area"` | Area |
 | `ChartType::AreaStacked` | `"areaStacked"` | Stacked area |
 | `ChartType::AreaPercentStacked` | `"areaPercentStacked"` | 100% stacked area |
@@ -270,7 +270,7 @@ wb.addChart("Sheet1", "D1", "K15", {
 **Scatter charts:**
 
 | Rust | TypeScript | Description |
-|---|---|---|
+| --- | --- | --- |
 | `ChartType::Scatter` | `"scatter"` | Scatter (markers only) |
 | `ChartType::ScatterSmooth` | `"scatterSmooth"` | Scatter with smooth lines |
 | `ChartType::ScatterLine` | `"scatterLine"` | Scatter with straight lines |
@@ -278,7 +278,7 @@ wb.addChart("Sheet1", "D1", "K15", {
 **Radar charts:**
 
 | Rust | TypeScript | Description |
-|---|---|---|
+| --- | --- | --- |
 | `ChartType::Radar` | `"radar"` | Radar |
 | `ChartType::RadarFilled` | `"radarFilled"` | Filled radar |
 | `ChartType::RadarMarker` | `"radarMarker"` | Radar with markers |
@@ -286,7 +286,7 @@ wb.addChart("Sheet1", "D1", "K15", {
 **Stock charts:**
 
 | Rust | TypeScript | Description |
-|---|---|---|
+| --- | --- | --- |
 | `ChartType::StockHLC` | `"stockHLC"` | High-Low-Close |
 | `ChartType::StockOHLC` | `"stockOHLC"` | Open-High-Low-Close |
 | `ChartType::StockVHLC` | `"stockVHLC"` | Volume-High-Low-Close |
@@ -295,7 +295,7 @@ wb.addChart("Sheet1", "D1", "K15", {
 **Surface charts:**
 
 | Rust | TypeScript | Description |
-|---|---|---|
+| --- | --- | --- |
 | `ChartType::Surface` | `"surface"` | 3D surface |
 | `ChartType::Surface3D` | `"surface3D"` | 3D surface (top view) |
 | `ChartType::SurfaceWireframe` | `"surfaceWireframe"` | Wireframe surface |
@@ -304,14 +304,14 @@ wb.addChart("Sheet1", "D1", "K15", {
 **Other charts:**
 
 | Rust | TypeScript | Description |
-|---|---|---|
+| --- | --- | --- |
 | `ChartType::Doughnut` | `"doughnut"` | Doughnut |
 | `ChartType::Bubble` | `"bubble"` | Bubble |
 
 **Combo charts:**
 
 | Rust | TypeScript | Description |
-|---|---|---|
+| --- | --- | --- |
 | `ChartType::ColLine` | `"colLine"` | Column + line combo |
 | `ChartType::ColLineStacked` | `"colLineStacked"` | Stacked column + line |
 | `ChartType::ColLinePercentStacked` | `"colLinePercentStacked"` | 100% stacked column + line |
@@ -319,7 +319,7 @@ wb.addChart("Sheet1", "D1", "K15", {
 ### View3DConfig
 
 | Field | Rust Type | TS Type | Description |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `rot_x` | `Option<i32>` | `number?` | X-axis rotation angle |
 | `rot_y` | `Option<i32>` | `number?` | Y-axis rotation angle |
 | `depth_percent` | `Option<u32>` | `number?` | Depth as percentage of chart width |
@@ -370,7 +370,7 @@ wb.addImage("Sheet1", {
 ### ImageConfig
 
 | Field | Rust Type | TS Type | Description |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `data` | `Vec<u8>` | `Buffer` | Raw image bytes |
 | `format` | `ImageFormat` | `string` | 11 formats supported (see [Images](./image.md#supported-formats)) |
 | `from_cell` | `String` | `string` | Anchor cell (top-left corner) |
@@ -466,7 +466,7 @@ wb.removeDataValidation("Sheet1", "B2:B100");
 ### Validation Types
 
 | Rust | TypeScript | Description |
-|---|---|---|
+| --- | --- | --- |
 | `ValidationType::None` | `"none"` | No constraint (prompt/message only) |
 | `ValidationType::Whole` | `"whole"` | Whole number |
 | `ValidationType::Decimal` | `"decimal"` | Decimal number |
@@ -481,7 +481,7 @@ wb.removeDataValidation("Sheet1", "B2:B100");
 Used with `Whole`, `Decimal`, `Date`, `Time`, and `TextLength` types. TypeScript input is case-insensitive; output uses camelCase matching the OOXML spec:
 
 | Rust | TypeScript |
-|---|---|
+| --- | --- |
 | `ValidationOperator::Between` | `"between"` |
 | `ValidationOperator::NotBetween` | `"notBetween"` |
 | `ValidationOperator::Equal` | `"equal"` |
@@ -494,7 +494,7 @@ Used with `Whole`, `Decimal`, `Date`, `Time`, and `TextLength` types. TypeScript
 ### Error Styles
 
 | Rust | TypeScript | Description |
-|---|---|---|
+| --- | --- | --- |
 | `ErrorStyle::Stop` | `"stop"` | Reject invalid input |
 | `ErrorStyle::Warning` | `"warning"` | Warn but allow |
 | `ErrorStyle::Information` | `"information"` | Inform only |
@@ -633,8 +633,10 @@ Apply one or more conditional formatting rules to a cell range.
 **Rust:**
 
 ```rust
-use sheetkit::conditional::*;
-use sheetkit::style::*;
+use sheetkit::{
+    CfOperator, ConditionalFormatRule, ConditionalFormatType, ConditionalStyle, FillStyle,
+    FontStyle, PatternType, StyleColor,
+};
 
 // Highlight cells greater than 100 in red
 let rules = vec![ConditionalFormatRule {
@@ -652,6 +654,7 @@ let rules = vec![ConditionalFormatRule {
             pattern: PatternType::Solid,
             fg_color: Some(StyleColor::Rgb("#FFCCCC".to_string())),
             bg_color: None,
+            gradient: None,
         }),
         border: None,
         num_fmt: None,
@@ -715,7 +718,7 @@ wb.deleteConditionalFormat("Sheet1", "A1:A100");
 ### Rule Types (17 types)
 
 | Rule Type | Description | Key Fields |
-|---|---|---|
+| --- | --- | --- |
 | `cellIs` | Compare cell value against formula(s) | `operator`, `formula`, `formula2` |
 | `expression` | Custom formula evaluates to true/false | `formula` |
 | `colorScale` | Gradient color scale (2 or 3 colors) | `min/mid/max_type`, `min/mid/max_value`, `min/mid/max_color` |
@@ -789,6 +792,10 @@ Tables are structured data ranges with headers, styling, and optional auto-filte
 Create a table on a sheet. The table name must be unique across the entire workbook. Returns an error if the name is already taken, the configuration is invalid, or the sheet does not exist.
 
 Table names and display names follow Excel rules: 1 to 255 characters, starting with a letter, underscore, or backslash and continuing with letters, digits, periods, or underscores. Names that read as A1 or R1C1 cell references (such as `A1` or `R1C1`) are rejected. An empty display name falls back to the table name. Uniqueness is case-insensitive and covers table names, display names, and defined names. A clash with another table returns `TableAlreadyExists`; an invalid name or a clash with a defined name returns `InvalidArgument`.
+
+When any column sets `totals_row_function` or `totals_row_label`, the table gets a totals row. The `range` must then include the totals row as its last row, after the header and at least one data row. The auto-filter covers the range without the totals row, and `add_table` writes each label, or a `SUBTOTAL` formula for each function, into the totals row cells. Supported functions are `sum`, `min`, `max`, `average`, `count`, `countNums`, `stdDev`, `var`, and `none`; any other value returns `InvalidArgument`.
+
+Calculated column formulas (`calculatedColumnFormula`) and custom totals row formulas (`totalsRowFormula`) in existing files are preserved on round trip, but they cannot yet be set through `TableConfig`.
 
 **Rust:**
 
@@ -871,7 +878,7 @@ wb.deleteTable("Sheet1", "Sales");
 ### TableConfig
 
 | Field | Rust Type | TS Type | Description |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `name` | `String` | `string` | Internal table name (must be unique in workbook) |
 | `display_name` | `String` | `string` | Display name shown in the UI |
 | `range` | `String` | `string` | Cell range (e.g. "A1:D10") |
@@ -887,7 +894,7 @@ wb.deleteTable("Sheet1", "Sales");
 ### TableColumn
 
 | Field | Rust Type | TS Type | Description |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `name` | `String` | `string` | Column header name |
 | `totals_row_function` | `Option<String>` | `string?` | Totals row function (e.g. "sum", "count", "average") |
 | `totals_row_label` | `Option<String>` | `string?` | Totals row label (for the first column) |
@@ -895,7 +902,7 @@ wb.deleteTable("Sheet1", "Sales");
 ### TableInfo (returned by `get_tables`)
 
 | Field | Rust Type | TS Type | Description |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `name` | `String` | `string` | Table name |
 | `display_name` | `String` | `string` | Display name |
 | `range` | `String` | `string` | Cell range |
@@ -970,14 +977,14 @@ wb.fromJSON("Sheet1", data, { startCell: "B2", writeHeaders: true });
 **ToJSONOptions:**
 
 | Field | Type | Default | Description |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `headerRow` | `number` | `1` | Row number to use as column headers (1-based) |
 | `range` | `string?` | `undefined` | Limit to a specific cell range |
 
 **ToCSVOptions:**
 
 | Field | Type | Default | Description |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `delimiter` | `string` | `","` | Field delimiter |
 | `quote` | `string` | `"\""` | Quote character |
 | `lineEnding` | `string` | `"\n"` | Line ending |
@@ -987,14 +994,14 @@ wb.fromJSON("Sheet1", data, { startCell: "B2", writeHeaders: true });
 **ToHTMLOptions:**
 
 | Field | Type | Default | Description |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `tableClass` | `string?` | `undefined` | CSS class for the `<table>` element |
 | `includeHeaders` | `boolean` | `true` | Include a `<thead>` section |
 
 **FromJSONOptions:**
 
 | Field | Type | Default | Description |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `startCell` | `string` | `"A1"` | Top-left cell to start writing |
 | `writeHeaders` | `boolean` | `true` | Write object keys as the header row |
 

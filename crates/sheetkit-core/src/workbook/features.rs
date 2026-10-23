@@ -185,10 +185,20 @@ impl Workbook {
     ///
     /// If the workbook was opened in Lazy mode, deferred comment data is
     /// hydrated on demand before returning results.
+    ///
+    /// Legacy comments that only mirror a threaded comment (author `tc=...`
+    /// with the `[Threaded comment]` placeholder text) are excluded, matching
+    /// Excel, which lists them as threaded comments rather than notes.
     pub fn get_comments(&mut self, sheet: &str) -> Result<Vec<CommentConfig>> {
         let idx = self.sheet_index(sheet)?;
         self.hydrate_comments(idx);
-        Ok(crate::comment::get_all_comments(&self.sheet_comments[idx]))
+        Ok(crate::comment::get_all_comments(&self.sheet_comments[idx])
+            .into_iter()
+            .filter(|c| {
+                !(c.author.starts_with("tc=")
+                    && crate::threaded_comment::is_legacy_placeholder(&c.text))
+            })
+            .collect())
     }
 
     /// Remove a comment from a cell on the given sheet.
@@ -213,7 +223,8 @@ impl Workbook {
     /// Add a threaded comment to a cell on the given sheet.
     ///
     /// Returns the generated comment ID. If the author does not exist in the
-    /// person list, they are added automatically.
+    /// person list, they are added automatically. The legacy comment Excel
+    /// requires alongside each thread is created or updated on the same cell.
     pub fn add_threaded_comment(
         &mut self,
         sheet: &str,
@@ -222,12 +233,51 @@ impl Workbook {
     ) -> Result<String> {
         self.hydrate_threaded_comments();
         let idx = self.sheet_index(sheet)?;
-        crate::threaded_comment::add_threaded_comment(
+        let id = crate::threaded_comment::add_threaded_comment(
             &mut self.sheet_threaded_comments[idx],
             &mut self.person_list,
             cell,
             input,
-        )
+        )?;
+        self.sync_threaded_comment_legacy_twin(idx, cell);
+        Ok(id)
+    }
+
+    /// Rewrite the legacy comment that mirrors the thread on `cell`.
+    ///
+    /// Excel ignores threaded comments without a legacy twin carrying the
+    /// `[Threaded comment]` placeholder. When the cell has no thread left,
+    /// only a placeholder twin is removed; ordinary notes are kept.
+    fn sync_threaded_comment_legacy_twin(&mut self, idx: usize, cell: &str) {
+        self.hydrate_comments(idx);
+        self.hydrate_form_controls(idx);
+        match crate::threaded_comment::legacy_comment_for_cell(
+            &self.sheet_threaded_comments[idx],
+            cell,
+        ) {
+            Some((author, text)) => crate::comment::add_comment(
+                &mut self.sheet_comments[idx],
+                &CommentConfig {
+                    cell: cell.to_string(),
+                    author,
+                    text,
+                },
+            ),
+            None => {
+                let is_twin = crate::comment::get_comment(&self.sheet_comments[idx], cell)
+                    .is_some_and(|c| crate::threaded_comment::is_legacy_placeholder(&c.text));
+                if !is_twin {
+                    return;
+                }
+                crate::comment::remove_comment(&mut self.sheet_comments[idx], cell);
+            }
+        }
+        self.mark_sheet_dirty(idx);
+        if idx < self.sheet_vml.len() {
+            self.sheet_vml[idx] = self.sheet_vml[idx]
+                .as_deref()
+                .and_then(crate::vml::strip_vml_comment_shapes_from_vml);
+        }
     }
 
     /// Get all threaded comments for a sheet.
@@ -261,10 +311,20 @@ impl Workbook {
     pub fn delete_threaded_comment(&mut self, sheet: &str, comment_id: &str) -> Result<()> {
         self.hydrate_threaded_comments();
         let idx = self.sheet_index(sheet)?;
+        let cell = self.sheet_threaded_comments[idx].as_ref().and_then(|tc| {
+            tc.comments
+                .iter()
+                .find(|c| c.id == comment_id)
+                .map(|c| c.cell_ref.clone())
+        });
         crate::threaded_comment::delete_threaded_comment(
             &mut self.sheet_threaded_comments[idx],
             comment_id,
-        )
+        )?;
+        if let Some(cell) = cell {
+            self.sync_threaded_comment_legacy_twin(idx, &cell);
+        }
+        Ok(())
     }
 
     /// Set the resolved (done) state of a threaded comment.
@@ -384,11 +444,15 @@ impl Workbook {
     ///
     /// Creates the table XML part, adds the appropriate relationship and
     /// content type entries. The table name must be unique within the workbook.
+    /// Header names are written into the header row; when a column defines a
+    /// totals label or function, the label or `SUBTOTAL` formula is written into
+    /// the last row of `config.range`, which is the totals row.
     pub fn add_table(&mut self, sheet: &str, config: &crate::table::TableConfig) -> Result<()> {
         use crate::workbook::aux::AuxCategory;
 
         crate::table::validate_table_config(config)?;
         let header_cells = crate::table::table_header_cells(config)?;
+        let totals_cells = crate::table::table_totals_cells(config)?;
         let sheet_idx = self.sheet_index(sheet)?;
         self.hydrate_tables();
 
@@ -431,6 +495,16 @@ impl Workbook {
 
         for (cell, name) in header_cells {
             self.set_cell_value(sheet, &cell, name)?;
+        }
+        for (cell, content) in totals_cells {
+            match content {
+                crate::table::TotalsCell::Label(label) => {
+                    self.set_cell_value(sheet, &cell, label)?;
+                }
+                crate::table::TotalsCell::Formula(formula) => {
+                    self.set_cell_formula(sheet, &cell, &formula)?;
+                }
+            }
         }
         self.tables.push((table_path, table_xml, sheet_idx));
         self.deferred_parts.mark_dirty(AuxCategory::Tables);

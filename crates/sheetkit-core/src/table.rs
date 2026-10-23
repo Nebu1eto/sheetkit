@@ -12,13 +12,20 @@ use sheetkit_xml::table::{
 use sheetkit_xml::worksheet::{AutoFilter, WorksheetXml};
 
 /// Configuration for creating a table.
+///
+/// When any column sets `totals_row_function` or `totals_row_label`, the
+/// table gets a totals row: `range` must then include it as its last row
+/// (header, at least one data row, totals row), the auto-filter covers the
+/// range without the totals row, and `add_table` writes each label or
+/// `SUBTOTAL` formula into the totals row cells.
 #[derive(Debug, Clone)]
 pub struct TableConfig {
     /// The table name (used internally, must be unique within the workbook).
     pub name: String,
     /// The display name shown in the UI.
     pub display_name: String,
-    /// The cell range (e.g. "A1:D10").
+    /// The cell range (e.g. "A1:D10"), including the header row and, when
+    /// present, the totals row.
     pub range: String,
     /// Column definitions.
     pub columns: Vec<TableColumn>,
@@ -61,9 +68,11 @@ impl Default for TableConfig {
 pub struct TableColumn {
     /// The column header name.
     pub name: String,
-    /// Optional totals row function (e.g., "sum", "count", "average").
+    /// Optional totals row function: "sum", "min", "max", "average",
+    /// "count", "countNums", "stdDev", "var", or "none".
     pub totals_row_function: Option<String>,
     /// Optional totals row label (used for the first column in totals row).
+    /// Takes precedence over `totals_row_function` for the cell content.
     pub totals_row_label: Option<String>,
 }
 
@@ -184,9 +193,14 @@ pub(crate) fn build_table_xml(config: &TableConfig, table_id: u32) -> TableXml {
         })
         .collect();
 
+    let totals_row = has_totals_row(config);
     let auto_filter = if config.auto_filter {
         Some(TableAutoFilter {
-            reference: config.range.clone(),
+            reference: if totals_row {
+                range_without_last_row(&config.range).unwrap_or_else(|| config.range.clone())
+            } else {
+                config.range.clone()
+            },
             ..Default::default()
         })
     } else {
@@ -222,7 +236,7 @@ pub(crate) fn build_table_xml(config: &TableConfig, table_id: u32) -> TableXml {
         name: config.name.clone(),
         display_name: effective_display_name(config).to_string(),
         reference: config.range.clone(),
-        totals_row_count: None,
+        totals_row_count: totals_row.then_some(1),
         totals_row_shown: None,
         header_row_count,
         auto_filter,
@@ -281,6 +295,85 @@ fn table_range_bounds(range: &str) -> Result<(u32, u32, u32, u32)> {
     ))
 }
 
+/// Totals row functions accepted by `TableColumn::totals_row_function` and
+/// the `SUBTOTAL` function number written for each.
+const TOTALS_ROW_FUNCTIONS: [(&str, Option<u32>); 9] = [
+    ("none", None),
+    ("sum", Some(109)),
+    ("min", Some(105)),
+    ("max", Some(104)),
+    ("average", Some(101)),
+    ("count", Some(103)),
+    ("countNums", Some(102)),
+    ("stdDev", Some(107)),
+    ("var", Some(110)),
+];
+
+/// Returns true when any column defines a totals row label or function.
+pub(crate) fn has_totals_row(config: &TableConfig) -> bool {
+    config
+        .columns
+        .iter()
+        .any(|c| c.totals_row_function.is_some() || c.totals_row_label.is_some())
+}
+
+fn range_without_last_row(range: &str) -> Option<String> {
+    let (start_col, start_row, end_col, end_row) = table_range_bounds(range).ok()?;
+    let start = coordinates_to_cell_name(start_col, start_row).ok()?;
+    let end = coordinates_to_cell_name(end_col, end_row.checked_sub(1)?).ok()?;
+    Some(format!("{start}:{end}"))
+}
+
+/// Quote a column name for use inside a structured reference.
+fn structured_reference_column(name: &str) -> String {
+    let mut escaped = String::with_capacity(name.len());
+    for c in name.chars() {
+        if matches!(c, '\'' | '#' | '[' | ']') {
+            escaped.push('\'');
+        }
+        escaped.push(c);
+    }
+    escaped
+}
+
+/// Content written into a totals row cell.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum TotalsCell {
+    Label(String),
+    Formula(String),
+}
+
+/// Return the totals row cell reference and content for each column that
+/// defines a label or a non-`none` function. Empty without a totals row.
+pub(crate) fn table_totals_cells(config: &TableConfig) -> Result<Vec<(String, TotalsCell)>> {
+    if !has_totals_row(config) {
+        return Ok(Vec::new());
+    }
+    let (start_col, _, _, end_row) = table_range_bounds(&config.range)?;
+    let mut cells = Vec::new();
+    for (offset, column) in config.columns.iter().enumerate() {
+        let cell = coordinates_to_cell_name(start_col + offset as u32, end_row)?;
+        if let Some(label) = &column.totals_row_label {
+            cells.push((cell, TotalsCell::Label(label.clone())));
+        } else if let Some(function) = &column.totals_row_function {
+            let code = TOTALS_ROW_FUNCTIONS
+                .iter()
+                .find(|(name, _)| name == function)
+                .and_then(|(_, code)| *code);
+            if let Some(code) = code {
+                cells.push((
+                    cell,
+                    TotalsCell::Formula(format!(
+                        "SUBTOTAL({code},[{}])",
+                        structured_reference_column(&column.name)
+                    )),
+                ));
+            }
+        }
+    }
+    Ok(cells)
+}
+
 /// Return the header cell reference and name for each configured table column.
 pub(crate) fn table_header_cells(config: &TableConfig) -> Result<Vec<(String, String)>> {
     if !config.show_header_row {
@@ -314,13 +407,36 @@ pub(crate) fn validate_table_config(config: &TableConfig) -> Result<()> {
         ));
     }
 
-    let (start_col, _, end_col, _) = table_range_bounds(&config.range)?;
+    let (start_col, start_row, end_col, end_row) = table_range_bounds(&config.range)?;
     let range_width = end_col - start_col + 1;
     if range_width != config.columns.len() as u32 {
         return Err(Error::InvalidArgument(format!(
             "table range width ({range_width}) must match column count ({})",
             config.columns.len()
         )));
+    }
+    for column in &config.columns {
+        if let Some(function) = &column.totals_row_function {
+            if !TOTALS_ROW_FUNCTIONS
+                .iter()
+                .any(|(name, _)| name == function)
+            {
+                return Err(Error::InvalidArgument(format!(
+                    "unsupported totals row function {function:?} for column {}",
+                    column.name
+                )));
+            }
+        }
+    }
+    if has_totals_row(config) {
+        let header_rows = u32::from(config.show_header_row);
+        let rows = end_row - start_row + 1;
+        if rows < header_rows + 2 {
+            return Err(Error::InvalidArgument(format!(
+                "table range {} must include at least one data row and the totals row",
+                config.range
+            )));
+        }
     }
     Ok(())
 }

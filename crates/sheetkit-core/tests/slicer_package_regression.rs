@@ -326,7 +326,7 @@ fn saved_slicers_have_complete_package_graph_and_deterministic_placement() {
         assert!(has_element(
             &workbook_xml,
             "ext",
-            &[("uri", "{BBE1A952-AA13-448E-AADC-164F8A28A991}")],
+            &[("uri", "{46BE6895-7355-4a93-B00E-2C351335B9C9}")],
         ));
         let cache_defined_names = elements(&workbook_xml, "definedName");
         let defined_name_values = defined_name_values(&workbook_xml);
@@ -406,7 +406,7 @@ fn saved_slicers_have_complete_package_graph_and_deterministic_placement() {
             assert!(has_element(
                 worksheet,
                 "ext",
-                &[("uri", "{A8765BA9-456A-4DAB-B4F3-ACF838C121DE}")],
+                &[("uri", "{3A4CF648-6AED-40f4-86FF-DC5316D8AED3}")],
             ));
             let rels = xml_part(
                 &mut archive,

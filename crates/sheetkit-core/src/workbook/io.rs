@@ -1859,11 +1859,15 @@ impl Workbook {
         )?;
 
         // xl/workbook.xml
-        let slicer_cache_rids: Vec<&str> = workbook_rels
+        let slicer_index = self.table_slicer_index();
+        let slicer_cache_rids: Vec<(&str, Option<bool>)> = workbook_rels
             .relationships
             .iter()
             .filter(|rel| rel.rel_type == rel_types::SLICER_CACHE)
-            .map(|rel| rel.id.as_str())
+            .map(|rel| {
+                let path = resolve_relationship_target("xl/workbook.xml", &rel.target);
+                (rel.id.as_str(), slicer_index.cache_is_table(&path))
+            })
             .collect();
         let workbook_needs_slicer_extensions = !slicer_cache_rids.is_empty();
         if workbook_needs_slicer_extensions {
@@ -1939,13 +1943,18 @@ impl Workbook {
             // The passthrough is also disabled when auxiliary parts (comments,
             // tables, sparklines) require XML injection into the worksheet,
             // since the raw bytes would lack those references.
-            let slicer_rids: Vec<&str> = worksheet_rels
+            let sheet_path_for_slicers = self.sheet_part_path(i);
+            let slicer_rids: Vec<(&str, Option<bool>)> = worksheet_rels
                 .get(&i)
                 .map(|rels| {
                     rels.relationships
                         .iter()
                         .filter(|rel| rel.rel_type == rel_types::SLICER)
-                        .map(|rel| rel.id.as_str())
+                        .map(|rel| {
+                            let path =
+                                resolve_relationship_target(&sheet_path_for_slicers, &rel.target);
+                            (rel.id.as_str(), slicer_index.slicer_part_is_table(&path))
+                        })
                         .collect()
                 })
                 .unwrap_or_default();
@@ -3978,7 +3987,7 @@ fn serialize_worksheet_with_slicer_extras(
     sparklines: &[crate::sparkline::SparklineConfig],
     legacy_drawing_rid: Option<&str>,
     raw_sheet: Option<&[u8]>,
-    slicer_rids: &[&str],
+    slicer_rids: &[(&str, Option<bool>)],
     controls: &[(usize, String, String)],
     controls_dirty: bool,
 ) -> Result<String> {
@@ -4010,27 +4019,50 @@ fn serialize_worksheet_with_slicer_extras(
     }
     let generated_entries = ext_list_contents(&xml).unwrap_or_default();
     xml = remove_extension_list(xml);
-    let raw_entries = raw_sheet
+    let raw_ext = raw_sheet
         .and_then(|bytes| std::str::from_utf8(bytes).ok())
-        .and_then(ext_list_contents)
+        .and_then(ext_list_contents);
+    let (table_rids, pivot_rids) =
+        partition_slicer_rids(slicer_rids, raw_ext.as_deref(), TABLE_SLICER_LIST_EXT_URI);
+    let raw_entries = raw_ext
         .map(|contents| {
-            let contents =
-                remove_known_slicer_extensions(contents, "A8765BA9-456A-4DAB-B4F3-ACF838C121DE");
+            let contents = remove_known_slicer_extensions(contents, PIVOT_SLICER_LIST_EXT_URI);
+            let contents = remove_known_slicer_extensions(contents, TABLE_SLICER_LIST_EXT_URI);
             remove_known_slicer_extensions(contents, "05C60535-1F16-4fd2-B633-F4F36F0B64E0")
         })
         .unwrap_or_default();
     let entries = format!("{raw_entries}{generated_entries}");
-    let slicers = slicer_rids
-        .iter()
-        .map(|rid| {
-            format!(
-                "<x14:slicer r:id=\"{}\" xmlns:r=\"{}\"/>",
-                rid,
-                sheetkit_xml::namespaces::RELATIONSHIPS,
-            )
-        })
-        .collect::<String>();
-    let extension = format!("<extLst>{entries}<ext uri=\"{{A8765BA9-456A-4DAB-B4F3-ACF838C121DE}}\"><x14:slicerList xmlns:x14=\"{}\">{slicers}</x14:slicerList></ext></extLst>", sheetkit_xml::namespaces::SLICER_2009);
+    let slicer_list = |rids: &[&str]| {
+        let slicers = rids
+            .iter()
+            .map(|rid| {
+                format!(
+                    "<x14:slicer r:id=\"{}\" xmlns:r=\"{}\"/>",
+                    rid,
+                    sheetkit_xml::namespaces::RELATIONSHIPS,
+                )
+            })
+            .collect::<String>();
+        format!(
+            "<x14:slicerList xmlns:x14=\"{}\">{slicers}</x14:slicerList>",
+            sheetkit_xml::namespaces::SLICER_2009
+        )
+    };
+    let mut slicer_entries = String::new();
+    if !pivot_rids.is_empty() {
+        slicer_entries.push_str(&format!(
+            "<ext uri=\"{{{PIVOT_SLICER_LIST_EXT_URI}}}\">{}</ext>",
+            slicer_list(&pivot_rids)
+        ));
+    }
+    if !table_rids.is_empty() {
+        slicer_entries.push_str(&format!(
+            "<ext uri=\"{{{TABLE_SLICER_LIST_EXT_URI}}}\" xmlns:x15=\"{}\">{}</ext>",
+            sheetkit_xml::namespaces::SLICER_2010,
+            slicer_list(&table_rids)
+        ));
+    }
+    let extension = format!("<extLst>{entries}{slicer_entries}</extLst>");
     let closing = "</worksheet>";
     let position = xml
         .rfind(closing)
@@ -4172,33 +4204,182 @@ fn next_numbered_package_path(existing: &HashSet<String>, prefix: &str, suffix: 
 fn serialize_workbook_with_slicer_extensions(
     workbook: &WorkbookXml,
     raw_workbook: Option<&[u8]>,
-    slicer_cache_rids: &[&str],
+    slicer_cache_rids: &[(&str, Option<bool>)],
 ) -> Result<String> {
     let mut body =
         quick_xml::se::to_string(workbook).map_err(|error| Error::XmlParse(error.to_string()))?;
-    let entries = raw_workbook
+    let raw_ext = raw_workbook
         .and_then(|bytes| std::str::from_utf8(bytes).ok())
-        .and_then(ext_list_contents)
+        .and_then(ext_list_contents);
+    let (table_rids, pivot_rids) = partition_slicer_rids(
+        slicer_cache_rids,
+        raw_ext.as_deref(),
+        TABLE_SLICER_CACHES_EXT_URI,
+    );
+    let entries = raw_ext
         .map(|contents| {
-            remove_known_slicer_extensions(contents, "BBE1A952-AA13-448E-AADC-164F8A28A991")
+            let contents = remove_known_slicer_extensions(contents, PIVOT_SLICER_CACHES_EXT_URI);
+            remove_known_slicer_extensions(contents, TABLE_SLICER_CACHES_EXT_URI)
         })
         .unwrap_or_default();
-    let caches = slicer_cache_rids
-        .iter()
-        .map(|rid| {
-            format!(
-                "<x14:slicerCache r:id=\"{}\" xmlns:r=\"{}\"/>",
-                rid,
-                sheetkit_xml::namespaces::RELATIONSHIPS,
-            )
-        })
-        .collect::<String>();
+    let caches = |rids: &[&str]| {
+        rids.iter()
+            .map(|rid| {
+                format!(
+                    "<x14:slicerCache r:id=\"{}\" xmlns:r=\"{}\"/>",
+                    rid,
+                    sheetkit_xml::namespaces::RELATIONSHIPS,
+                )
+            })
+            .collect::<String>()
+    };
+    let x14 = sheetkit_xml::namespaces::SLICER_2009;
+    let x15 = sheetkit_xml::namespaces::SLICER_2010;
+    let mut slicer_entries = String::new();
+    if !pivot_rids.is_empty() {
+        slicer_entries.push_str(&format!(
+            "<ext uri=\"{{{PIVOT_SLICER_CACHES_EXT_URI}}}\"><x14:slicerCaches xmlns:x14=\"{x14}\">{}</x14:slicerCaches></ext>",
+            caches(&pivot_rids)
+        ));
+    }
+    if !table_rids.is_empty() {
+        slicer_entries.push_str(&format!(
+            "<ext uri=\"{{{TABLE_SLICER_CACHES_EXT_URI}}}\" xmlns:x15=\"{x15}\"><x15:slicerCaches xmlns:x14=\"{x14}\">{}</x15:slicerCaches></ext>",
+            caches(&table_rids)
+        ));
+    }
     let closing = "</workbook>";
     let position = body
         .rfind(closing)
         .ok_or_else(|| Error::XmlParse("workbook closing tag missing".to_string()))?;
-    body.insert_str(position, &format!("<extLst>{entries}<ext uri=\"{{BBE1A952-AA13-448E-AADC-164F8A28A991}}\"><x14:slicerCaches xmlns:x14=\"{}\">{caches}</x14:slicerCaches></ext></extLst>", sheetkit_xml::namespaces::SLICER_2009));
+    body.insert_str(
+        position,
+        &format!("<extLst>{entries}{slicer_entries}</extLst>"),
+    );
     Ok(format!("{XML_DECLARATION}\n{body}"))
+}
+
+/// Workbook extension listing pivot-table slicer caches (`x14:slicerCaches`).
+const PIVOT_SLICER_CACHES_EXT_URI: &str = "BBE1A952-AA13-448E-AADC-164F8A28A991";
+/// Workbook extension listing table slicer caches (`x15:slicerCaches`).
+const TABLE_SLICER_CACHES_EXT_URI: &str = "46BE6895-7355-4a93-B00E-2C351335B9C9";
+/// Worksheet extension listing pivot-table slicer parts.
+const PIVOT_SLICER_LIST_EXT_URI: &str = "A8765BA9-456A-4DAB-B4F3-ACF838C121DE";
+/// Worksheet extension listing table slicer parts.
+const TABLE_SLICER_LIST_EXT_URI: &str = "3A4CF648-6AED-40f4-86FF-DC5316D8AED3";
+
+/// Split slicer relationship IDs into (table-backed, pivot-backed) lists.
+///
+/// Entries with unknown backing keep the extension the source file listed
+/// them under (`table_uri` in `raw_ext`) and default to pivot-backed.
+fn partition_slicer_rids<'a>(
+    rids: &[(&'a str, Option<bool>)],
+    raw_ext: Option<&str>,
+    table_uri: &str,
+) -> (Vec<&'a str>, Vec<&'a str>) {
+    let raw_table_block = raw_ext.and_then(|contents| {
+        let lower = contents.to_ascii_lowercase();
+        let offset = lower.find(&table_uri.to_ascii_lowercase())?;
+        let end = contents[offset..].find("</ext>")? + offset;
+        Some(contents[offset..end].to_string())
+    });
+    let mut table = Vec::new();
+    let mut pivot = Vec::new();
+    for (rid, backing) in rids {
+        let is_table = backing.unwrap_or_else(|| {
+            raw_table_block
+                .as_deref()
+                .is_some_and(|block| block.contains(&format!("id=\"{rid}\"")))
+        });
+        if is_table {
+            table.push(*rid);
+        } else {
+            pivot.push(*rid);
+        }
+    }
+    (table, pivot)
+}
+
+/// Index of slicer cache parts and names that are backed by a table.
+struct TableSlicerIndex {
+    cache_paths: HashMap<String, bool>,
+    table_cache_names: HashSet<String>,
+    slicer_parts: HashMap<String, Vec<String>>,
+}
+
+impl TableSlicerIndex {
+    /// `Some(true)` for a table-backed cache part, `Some(false)` for a
+    /// pivot-backed one, `None` when the part was not parsed.
+    fn cache_is_table(&self, path: &str) -> Option<bool> {
+        self.cache_paths.get(path).copied()
+    }
+
+    /// Whether any slicer in the part references a table-backed cache, or
+    /// `None` when the part was not parsed.
+    fn slicer_part_is_table(&self, path: &str) -> Option<bool> {
+        self.slicer_parts.get(path).map(|caches| {
+            caches
+                .iter()
+                .any(|cache| self.table_cache_names.contains(cache))
+        })
+    }
+}
+
+impl Workbook {
+    /// Build the table/pivot classification of every parsed or deferred
+    /// slicer and slicer cache part.
+    fn table_slicer_index(&self) -> TableSlicerIndex {
+        use crate::workbook::aux::AuxCategory;
+
+        let mut index = TableSlicerIndex {
+            cache_paths: HashMap::new(),
+            table_cache_names: HashSet::new(),
+            slicer_parts: HashMap::new(),
+        };
+        let mut add_cache = |path: &str, cache: &sheetkit_xml::slicer::SlicerCacheDefinition| {
+            let is_table = cache.table_slicer_cache.is_some();
+            index.cache_paths.insert(path.to_string(), is_table);
+            if is_table {
+                index.table_cache_names.insert(cache.name.clone());
+            }
+        };
+        for (path, cache) in &self.slicer_caches {
+            add_cache(path, cache);
+        }
+        for (path, bytes) in self
+            .deferred_parts
+            .entries(AuxCategory::SlicerCaches)
+            .unwrap_or_default()
+        {
+            if let Some(cache) = std::str::from_utf8(bytes)
+                .ok()
+                .and_then(sheetkit_xml::slicer::parse_slicer_cache)
+            {
+                add_cache(path, &cache);
+            }
+        }
+        for (path, defs) in &self.slicer_defs {
+            index.slicer_parts.insert(
+                path.clone(),
+                defs.slicers.iter().map(|s| s.cache.clone()).collect(),
+            );
+        }
+        for (path, bytes) in self
+            .deferred_parts
+            .entries(AuxCategory::Slicers)
+            .unwrap_or_default()
+        {
+            if let Some(defs) = std::str::from_utf8(bytes).ok().and_then(|xml| {
+                quick_xml::de::from_str::<sheetkit_xml::slicer::SlicerDefinitions>(xml).ok()
+            }) {
+                index.slicer_parts.insert(
+                    path.clone(),
+                    defs.slicers.into_iter().map(|s| s.cache).collect(),
+                );
+            }
+        }
+        index
+    }
 }
 
 fn ext_list_contents(xml: &str) -> Option<String> {
@@ -4630,8 +4811,15 @@ mod tests {
         assert!(saved_sheet.contains("urn:sheetkit:sheet"));
         assert_eq!(saved_workbook.matches("<extLst>").count(), 1);
         assert_eq!(saved_sheet.matches("<extLst>").count(), 1);
-        assert_eq!(saved_workbook.matches("<x14:slicerCaches").count(), 1);
+        // Table-backed caches belong in the x15 extension; the stale pivot
+        // extension from the source is replaced, not duplicated.
+        assert_eq!(saved_workbook.matches("<x14:slicerCaches").count(), 0);
+        assert_eq!(saved_workbook.matches("<x15:slicerCaches").count(), 1);
         assert_eq!(saved_sheet.matches("<x14:slicerList").count(), 1);
+        assert!(saved_sheet.contains("3A4CF648-6AED-40f4-86FF-DC5316D8AED3"));
+        assert!(!saved_sheet
+            .to_ascii_lowercase()
+            .contains("a8765ba9-456a-4dab-b4f3-acf838c121de"));
     }
 
     fn zip_part(buffer: &[u8], name: &str) -> Vec<u8> {

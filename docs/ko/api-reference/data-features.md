@@ -216,7 +216,7 @@ wb.addChart("Sheet1", "E1", "L15", {
 ### ChartSeries 구조
 
 | 속성 | 타입 | 필수 | 설명 |
-|------|------|------|------|
+| ------ | ------ | ------ | ------ |
 | `name` | `string` | O | 시리즈 이름 또는 셀 참조 |
 | `categories` | `string` | O | 카테고리 데이터 범위 |
 | `values` | `string` | O | 값 데이터 범위 |
@@ -228,7 +228,7 @@ wb.addChart("Sheet1", "E1", "L15", {
 3D 차트의 시점을 설정합니다. 3D 차트 유형에서는 지정하지 않으면 자동으로 기본값이 적용됩니다.
 
 | 속성 | 타입 | 설명 |
-|------|------|------|
+| ------ | ------ | ------ |
 | `rot_x` / `rotX` | `i32?` / `number?` | X축 회전 각도 |
 | `rot_y` / `rotY` | `i32?` / `number?` | Y축 회전 각도 |
 | `depth_percent` / `depthPercent` | `u32?` / `number?` | 깊이 비율 (100 = 기본) |
@@ -240,7 +240,7 @@ wb.addChart("Sheet1", "E1", "L15", {
 #### 세로 막대 (Column) 차트
 
 | 타입 문자열 | Rust Enum | 설명 |
-|------------|-----------|------|
+| ------------ | ----------- | ------ |
 | `col` | `ChartType::Col` | 세로 막대 |
 | `colStacked` | `ChartType::ColStacked` | 누적 세로 막대 |
 | `colPercentStacked` | `ChartType::ColPercentStacked` | 100% 누적 세로 막대 |
@@ -251,7 +251,7 @@ wb.addChart("Sheet1", "E1", "L15", {
 #### 가로 막대 (Bar) 차트
 
 | 타입 문자열 | Rust Enum | 설명 |
-|------------|-----------|------|
+| ------------ | ----------- | ------ |
 | `bar` | `ChartType::Bar` | 가로 막대 |
 | `barStacked` | `ChartType::BarStacked` | 누적 가로 막대 |
 | `barPercentStacked` | `ChartType::BarPercentStacked` | 100% 누적 가로 막대 |
@@ -262,7 +262,7 @@ wb.addChart("Sheet1", "E1", "L15", {
 #### 꺾은선 (Line) 차트
 
 | 타입 문자열 | Rust Enum | 설명 |
-|------------|-----------|------|
+| ------------ | ----------- | ------ |
 | `line` | `ChartType::Line` | 꺾은선 |
 | `lineStacked` | `ChartType::LineStacked` | 누적 꺾은선 |
 | `linePercentStacked` | `ChartType::LinePercentStacked` | 100% 누적 꺾은선 |
@@ -271,7 +271,7 @@ wb.addChart("Sheet1", "E1", "L15", {
 #### 원형 (Pie) 차트
 
 | 타입 문자열 | Rust Enum | 설명 |
-|------------|-----------|------|
+| ------------ | ----------- | ------ |
 | `pie` | `ChartType::Pie` | 원형 |
 | `pie3D` | `ChartType::Pie3D` | 3D 원형 |
 | `doughnut` | `ChartType::Doughnut` | 도넛형 |
@@ -279,7 +279,7 @@ wb.addChart("Sheet1", "E1", "L15", {
 #### 영역 (Area) 차트
 
 | 타입 문자열 | Rust Enum | 설명 |
-|------------|-----------|------|
+| ------------ | ----------- | ------ |
 | `area` | `ChartType::Area` | 영역 |
 | `areaStacked` | `ChartType::AreaStacked` | 누적 영역 |
 | `areaPercentStacked` | `ChartType::AreaPercentStacked` | 100% 누적 영역 |
@@ -290,7 +290,7 @@ wb.addChart("Sheet1", "E1", "L15", {
 #### 분산형 (Scatter) 차트
 
 | 타입 문자열 | Rust Enum | 설명 |
-|------------|-----------|------|
+| ------------ | ----------- | ------ |
 | `scatter` | `ChartType::Scatter` | 분산형 (표식만) |
 | `scatterSmooth` | `ChartType::ScatterSmooth` | 부드러운 선 |
 | `scatterStraight` | `ChartType::ScatterLine` | 직선 |
@@ -298,7 +298,7 @@ wb.addChart("Sheet1", "E1", "L15", {
 #### 방사형 (Radar) 차트
 
 | 타입 문자열 | Rust Enum | 설명 |
-|------------|-----------|------|
+| ------------ | ----------- | ------ |
 | `radar` | `ChartType::Radar` | 방사형 |
 | `radarFilled` | `ChartType::RadarFilled` | 채워진 방사형 |
 | `radarMarker` | `ChartType::RadarMarker` | 표식이 있는 방사형 |
@@ -306,7 +306,7 @@ wb.addChart("Sheet1", "E1", "L15", {
 #### 주식 (Stock) 차트
 
 | 타입 문자열 | Rust Enum | 설명 |
-|------------|-----------|------|
+| ------------ | ----------- | ------ |
 | `stockHLC` | `ChartType::StockHLC` | 고가-저가-종가 |
 | `stockOHLC` | `ChartType::StockOHLC` | 시가-고가-저가-종가 |
 | `stockVHLC` | `ChartType::StockVHLC` | 거래량-고가-저가-종가 |
@@ -315,7 +315,7 @@ wb.addChart("Sheet1", "E1", "L15", {
 #### 기타 차트
 
 | 타입 문자열 | Rust Enum | 설명 |
-|------------|-----------|------|
+| ------------ | ----------- | ------ |
 | `bubble` | `ChartType::Bubble` | 거품형 |
 | `surface` | `ChartType::Surface` | 표면형 |
 | `surfaceTop` | `ChartType::Surface3D` | 3D 표면형 |
@@ -325,7 +325,7 @@ wb.addChart("Sheet1", "E1", "L15", {
 #### 콤보 (Combo) 차트
 
 | 타입 문자열 | Rust Enum | 설명 |
-|------------|-----------|------|
+| ------------ | ----------- | ------ |
 | `colLine` | `ChartType::ColLine` | 세로 막대 + 꺾은선 |
 | `colLineStacked` | `ChartType::ColLineStacked` | 누적 세로 막대 + 꺾은선 |
 | `colLinePercentStacked` | `ChartType::ColLinePercentStacked` | 100% 누적 세로 막대 + 꺾은선 |
@@ -373,7 +373,7 @@ wb.addImage("Sheet1", {
 ### ImageConfig 구조
 
 | 속성 | 타입 | 설명 |
-|------|------|------|
+| ------ | ------ | ------ |
 | `data` | `Vec<u8>` / `Buffer` | 이미지 바이너리 데이터 |
 | `format` | `ImageFormat` / `string` | 11가지 형식 지원 ([이미지](./image.md#지원-형식) 참조) |
 | `from_cell` / `fromCell` | `string` | 이미지 시작 위치 셀 |
@@ -497,7 +497,7 @@ wb.removeDataValidation("Sheet1", "A1:A100");
 ### 유효성 검사 유형 (8종)
 
 | 값 | 설명 |
-|----|------|
+| ---- | ------ |
 | `none` | 제한 없음 (프롬프트/메시지만 표시) |
 | `whole` | 정수 |
 | `decimal` | 소수 |
@@ -512,7 +512,7 @@ wb.removeDataValidation("Sheet1", "A1:A100");
 TypeScript 입력은 대소문자를 구분하지 않으며, 출력은 OOXML 규격에 맞는 camelCase를 사용합니다:
 
 | 값 | 설명 |
-|----|------|
+| ---- | ------ |
 | `between` | 사이 (범위) |
 | `notBetween` | 사이 아님 |
 | `equal` | 같음 |
@@ -525,7 +525,7 @@ TypeScript 입력은 대소문자를 구분하지 않으며, 출력은 OOXML 규
 ### 오류 스타일 (3종)
 
 | 값 | 설명 |
-|----|------|
+| ---- | ------ |
 | `stop` | 입력 차단 (기본) |
 | `warning` | 경고 (사용자가 무시 가능) |
 | `information` | 정보 (사용자가 무시 가능) |
@@ -667,8 +667,10 @@ wb.removeAutoFilter("Sheet1");
 **Rust:**
 
 ```rust
-use sheetkit::conditional::*;
-use sheetkit::style::*;
+use sheetkit::{
+    CfOperator, ConditionalFormatRule, ConditionalFormatType, ConditionalStyle, FillStyle,
+    FontStyle, PatternType, StyleColor,
+};
 
 // cellIs rule
 wb.set_conditional_format("Sheet1", "A1:A100", &[
@@ -688,6 +690,7 @@ wb.set_conditional_format("Sheet1", "A1:A100", &[
                 pattern: PatternType::Solid,
                 fg_color: Some(StyleColor::Rgb("#C6EFCE".into())),
                 bg_color: None,
+                gradient: None,
             }),
             border: None,
             num_fmt: None,
@@ -802,7 +805,7 @@ wb.deleteConditionalFormat("Sheet1", "A1:A100");
 ### 규칙 유형 (18종)
 
 | 규칙 유형 | 설명 | 필수 속성 |
-|-----------|------|-----------|
+| ----------- | ------ | ----------- |
 | `cellIs` | 셀 값 비교 | `operator`, `formula`, `formula2`(between용) |
 | `expression` | 수식 결과 기반 | `formula` |
 | `colorScale` | 색상 스케일 | `minType/minColor`, `maxType/maxColor`, `midType/midColor`(선택) |
@@ -825,7 +828,7 @@ wb.deleteConditionalFormat("Sheet1", "A1:A100");
 ### CfValueType (색상 스케일/데이터 막대용)
 
 | 값 | 설명 |
-|----|------|
+| ---- | ------ |
 | `num` | 숫자 값 |
 | `percent` | 백분율 |
 | `min` | 최소값 |
@@ -844,6 +847,10 @@ wb.deleteConditionalFormat("Sheet1", "A1:A100");
 시트에 테이블을 생성합니다. 테이블 이름은 워크북 전체에서 고유해야 합니다.
 
 테이블 이름과 display name은 Excel 규칙을 따릅니다. 길이는 1~255자이며, 문자, 밑줄, 백슬래시로 시작하고 이후에는 문자, 숫자, 마침표, 밑줄만 사용할 수 있습니다. `A1`, `R1C1`처럼 A1 또는 R1C1 cell reference로 읽히는 이름은 거부됩니다. Display name이 비어 있으면 테이블 이름을 사용합니다. 고유성은 대소문자를 구분하지 않으며 테이블 이름, display name, defined name 전체에 적용됩니다. 다른 테이블과 겹치면 `TableAlreadyExists`를, 잘못된 이름이거나 defined name과 겹치면 `InvalidArgument`를 반환합니다.
+
+어느 열이든 `totals_row_function` 또는 `totals_row_label`을 지정하면 테이블에 합계 행이 생깁니다. 이때 `range`는 헤더와 최소 한 개의 데이터 행 뒤에 오는 합계 행을 마지막 행으로 포함해야 합니다. 자동 필터는 합계 행을 제외한 범위에 적용되며, `add_table`은 합계 행 셀에 레이블 또는 함수별 `SUBTOTAL` 수식을 기록합니다. 지원하는 함수는 `sum`, `min`, `max`, `average`, `count`, `countNums`, `stdDev`, `var`, `none`이며, 그 밖의 값은 `InvalidArgument`를 반환합니다.
+
+기존 파일의 계산 열 수식(`calculatedColumnFormula`)과 사용자 지정 합계 행 수식(`totalsRowFormula`)은 round trip 시 보존되지만, 아직 `TableConfig`로 설정할 수는 없습니다.
 
 **Rust:**
 
@@ -926,7 +933,7 @@ wb.deleteTable("Sheet1", "Sales");
 ### TableConfig
 
 | 필드 | Rust 타입 | TS 타입 | 설명 |
-|------|-----------|---------|------|
+| ------ | ----------- | --------- | ------ |
 | `name` | `String` | `string` | 내부 테이블 이름 (워크북 내 고유) |
 | `display_name` | `String` | `string` | UI에 표시되는 이름 |
 | `range` | `String` | `string` | 셀 범위 (예: "A1:D10") |
@@ -942,7 +949,7 @@ wb.deleteTable("Sheet1", "Sales");
 ### TableColumn
 
 | 필드 | Rust 타입 | TS 타입 | 설명 |
-|------|-----------|---------|------|
+| ------ | ----------- | --------- | ------ |
 | `name` | `String` | `string` | 열 헤더 이름 |
 | `totals_row_function` | `Option<String>` | `string?` | 합계 행 함수 (예: "sum", "count", "average") |
 | `totals_row_label` | `Option<String>` | `string?` | 합계 행 레이블 (첫 번째 열용) |
@@ -950,7 +957,7 @@ wb.deleteTable("Sheet1", "Sales");
 ### TableInfo (`get_tables` 반환 타입)
 
 | 필드 | Rust 타입 | TS 타입 | 설명 |
-|------|-----------|---------|------|
+| ------ | ----------- | --------- | ------ |
 | `name` | `String` | `string` | 테이블 이름 |
 | `display_name` | `String` | `string` | 표시 이름 |
 | `range` | `String` | `string` | 셀 범위 |
@@ -1032,7 +1039,7 @@ wb.fromJSON("Sheet1", data, { startCell: "B2", writeHeaders: true });
 **ToCSVOptions:**
 
 | 필드 | 타입 | 기본값 | 설명 |
-|------|------|--------|------|
+| ------ | ------ | -------- | ------ |
 | `delimiter` | `string` | `","` | 필드 구분자입니다 |
 | `quote` | `string` | `"\""` | 인용 문자입니다 |
 | `lineEnding` | `string` | `"\n"` | 줄 바꿈 문자 |

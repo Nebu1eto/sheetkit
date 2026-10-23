@@ -92,12 +92,47 @@ pub struct SlicerAlternateContent {
     pub fallback: SlicerFallback,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// The `mc:Choice` branch of a slicer anchor.
+///
+/// Serialization declares each known prefix named in `Requires` (`sle`,
+/// `sle15`) on the `mc:Choice` element itself, because Markup Compatibility
+/// requires those prefixes to be in scope where `Requires` is evaluated.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct SlicerChoice {
     #[serde(rename = "@Requires")]
     pub requires: String,
     #[serde(rename = "xdr:graphicFrame")]
     pub graphic_frame: SlicerGraphicFrame,
+}
+
+/// Namespace URI bound to the `sle` prefix (Office 2010 slicer drawing).
+pub const SLICER_DRAWING_2010_NS: &str = "http://schemas.microsoft.com/office/drawing/2010/slicer";
+
+/// Namespace URI bound to the `sle15` prefix (Office 2013 table slicer drawing).
+pub const SLICER_DRAWING_2012_NS: &str = "http://schemas.microsoft.com/office/drawing/2012/slicer";
+
+impl Serialize for SlicerChoice {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(Serialize)]
+        struct Repr<'a> {
+            #[serde(rename = "@Requires")]
+            requires: &'a str,
+            #[serde(rename = "@xmlns:sle", skip_serializing_if = "Option::is_none")]
+            xmlns_sle: Option<&'static str>,
+            #[serde(rename = "@xmlns:sle15", skip_serializing_if = "Option::is_none")]
+            xmlns_sle15: Option<&'static str>,
+            #[serde(rename = "xdr:graphicFrame")]
+            graphic_frame: &'a SlicerGraphicFrame,
+        }
+        let requires = |prefix: &str| self.requires.split_whitespace().any(|p| p == prefix);
+        Repr {
+            xmlns_sle: requires("sle").then_some(SLICER_DRAWING_2010_NS),
+            xmlns_sle15: requires("sle15").then_some(SLICER_DRAWING_2012_NS),
+            requires: &self.requires,
+            graphic_frame: &self.graphic_frame,
+        }
+        .serialize(serializer)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

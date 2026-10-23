@@ -56,6 +56,7 @@ pub use sheetkit_core::style::{
     GradientFillStyle, GradientStop, GradientType, HorizontalAlign, NumFmtStyle, PatternType,
     ProtectionStyle, Style, StyleColor, VerticalAlign,
 };
+pub use sheetkit_core::table::{TableColumn, TableConfig, TableInfo};
 pub use sheetkit_core::threaded_comment::{
     PersonData, PersonInput, ThreadedCommentData, ThreadedCommentInput,
 };
@@ -72,4 +73,34 @@ pub mod utils {
         coordinates_to_cell_name,
     };
     pub use sheetkit_core::utils::constants;
+}
+
+/// Table configuration types, also available at the crate root.
+pub mod table {
+    pub use sheetkit_core::table::{TableColumn, TableConfig, TableInfo};
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn table_types_are_reachable_through_the_facade() {
+        use crate::table::{TableColumn, TableConfig};
+
+        let mut wb = crate::Workbook::new();
+        let config = TableConfig {
+            name: "Sales".to_string(),
+            display_name: "Sales".to_string(),
+            range: "A1:A3".to_string(),
+            columns: vec![TableColumn {
+                name: "Qty".to_string(),
+                totals_row_function: None,
+                totals_row_label: None,
+            }],
+            ..TableConfig::default()
+        };
+        wb.add_table("Sheet1", &config).unwrap();
+        let tables: Vec<crate::TableInfo> = wb.get_tables("Sheet1").unwrap();
+        assert_eq!(tables[0].name, "Sales");
+        let _: crate::TableColumn = config.columns[0].clone();
+    }
 }

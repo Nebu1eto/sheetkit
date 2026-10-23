@@ -275,6 +275,48 @@ pub fn resolve_threaded_comment(
     })
 }
 
+/// Text prefix Excel writes into the legacy comment that mirrors a
+/// threaded comment.
+pub const LEGACY_PLACEHOLDER_PREFIX: &str = "[Threaded comment]";
+
+const LEGACY_PLACEHOLDER_NOTICE: &str = "Your version of Excel allows you to read this threaded comment; however, any edits to it will get removed if the file is opened in a newer version of Excel. Learn more: https://go.microsoft.com/fwlink/?linkid=870924";
+
+/// Returns true when `text` is a legacy comment that mirrors a threaded
+/// comment.
+pub fn is_legacy_placeholder(text: &str) -> bool {
+    text.starts_with(LEGACY_PLACEHOLDER_PREFIX)
+}
+
+/// Build the legacy comment Excel requires for the thread on `cell`.
+///
+/// Returns `(author, text)` where the author is `tc=` followed by the thread
+/// root ID and the text is Excel's placeholder followed by the root comment
+/// and each reply. Returns `None` when the cell has no threaded comment.
+pub fn legacy_comment_for_cell(
+    threaded_comments: &Option<ThreadedComments>,
+    cell: &str,
+) -> Option<(String, String)> {
+    let comments: Vec<&ThreadedComment> = threaded_comments
+        .as_ref()?
+        .comments
+        .iter()
+        .filter(|c| c.cell_ref == cell)
+        .collect();
+    let root = comments
+        .iter()
+        .find(|c| c.parent_id.is_none())
+        .or_else(|| comments.first())?;
+    let mut text = format!(
+        "{LEGACY_PLACEHOLDER_PREFIX}\n\n{LEGACY_PLACEHOLDER_NOTICE}\n\nComment:\n    {}",
+        root.text
+    );
+    for reply in comments.iter().filter(|c| c.id != root.id) {
+        text.push_str("\nReply:\n    ");
+        text.push_str(&reply.text);
+    }
+    Some((format!("tc={}", root.id), text))
+}
+
 /// Add a person to the person list. Returns the person ID.
 pub fn add_person(person_list: &mut PersonList, input: &PersonInput) -> String {
     find_or_create_person(
