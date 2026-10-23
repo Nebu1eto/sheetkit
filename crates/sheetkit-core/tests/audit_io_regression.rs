@@ -422,6 +422,52 @@ fn io_f4_valid_worksheet_targets_still_open_in_every_mode() {
 }
 
 #[test]
+fn io_f4_explicit_internal_target_mode_still_opens_in_every_mode() {
+    let mut workbook = Workbook::new();
+    workbook
+        .set_cell_value("Sheet1", "A1", CellValue::String("x".into()))
+        .unwrap();
+    let table = sheetkit_core::table::TableConfig {
+        name: "Items".into(),
+        display_name: "Items".into(),
+        range: "A1:A2".into(),
+        columns: vec![sheetkit_core::table::TableColumn {
+            name: "x".into(),
+            totals_row_function: None,
+            totals_row_label: None,
+        }],
+        ..Default::default()
+    };
+    workbook.add_table("Sheet1", &table).unwrap();
+    let base = workbook.save_to_buffer().unwrap();
+    let buffer = rewrite_part(&base, "xl/_rels/workbook.xml.rels", |bytes| {
+        String::from_utf8(bytes.to_vec())
+            .unwrap()
+            .replacen(
+                "Target=\"worksheets/sheet1.xml\"",
+                "Target=\"worksheets/sheet1.xml\" TargetMode=\"Internal\"",
+                1,
+            )
+            .into_bytes()
+    });
+    let buffer = rewrite_part(&buffer, "xl/worksheets/_rels/sheet1.xml.rels", |bytes| {
+        let text = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(text.contains("Target=\"../tables/table1.xml\""));
+        text.replacen(
+            "Target=\"../tables/table1.xml\"",
+            "Target=\"../tables/table1.xml\" TargetMode=\"Internal\"",
+            1,
+        )
+        .into_bytes()
+    });
+    for mode in ALL_MODES {
+        let workbook = open(&buffer, &OpenOptions::new().read_mode(mode))
+            .unwrap_or_else(|error| panic!("{mode:?}: {error}"));
+        workbook.save_to_buffer().unwrap();
+    }
+}
+
+#[test]
 fn io_f5_eager_load_reads_each_worksheet_once() {
     let mut workbook = Workbook::new();
     for row in 1..=20_000u32 {

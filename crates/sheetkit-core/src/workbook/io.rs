@@ -3062,7 +3062,7 @@ fn validate_table_relationship_ownership(
             if relationship.rel_type != rel_types::TABLE {
                 continue;
             }
-            if relationship.target_mode.is_some() {
+            if !relationship_target_is_internal(relationship) {
                 return Err(Error::InvalidArgument(format!(
                     "external table relationship is not allowed: {}",
                     relationship.id
@@ -3568,7 +3568,7 @@ fn resolve_worksheet_paths(
                     sheet.name
                 ))
             })?;
-        if relationship.target_mode.is_some() {
+        if !relationship_target_is_internal(relationship) {
             return Err(Error::InvalidArgument(format!(
                 "external worksheet relationship is not allowed: {}",
                 relationship.id
@@ -3613,6 +3613,14 @@ fn resolve_worksheet_paths(
 
 /// Whether a relative or absolute target leaves the package root or uses a
 /// URI scheme instead of a package part name.
+/// Returns true when a relationship resolves inside the package: either the
+/// TargetMode attribute is absent or it is explicitly "Internal".
+fn relationship_target_is_internal(
+    relationship: &sheetkit_xml::relationships::Relationship,
+) -> bool {
+    matches!(relationship.target_mode.as_deref(), None | Some("Internal"))
+}
+
 fn relationship_target_escapes(source_part: &str, target: &str) -> bool {
     if target.is_empty() || target.contains('\\') || target.contains(':') {
         return true;
