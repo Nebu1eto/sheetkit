@@ -107,12 +107,18 @@ function run(command: string, args: readonly string[], cwd: string, extraEnv: No
   }
 }
 
-function prepareWorktree(revision: string, sha: string, scratch: string): string {
-  const path = join(scratch, `worktree-${sha.slice(0, 12)}`);
+function prepareWorktree(
+  revision: string,
+  sha: string,
+  scratch: string,
+  owned: string[],
+): string {
+  const path = join(scratch, `worktree-${owned.length}-${sha.slice(0, 12)}`);
   if (existsSync(path)) {
     git(["worktree", "remove", "--force", path]);
   }
   git(["worktree", "add", "--detach", path, sha]);
+  owned.push(path);
   const lock = join(repositoryRoot, "Cargo.lock");
   if (existsSync(lock)) {
     copyFileSync(lock, join(path, "Cargo.lock"));
@@ -203,11 +209,85 @@ function main(): void {
   const label = `compare-${baseSha.slice(0, 7)}-${headSha.slice(0, 7)}`;
   const outputDirectory = join(scriptDirectory, "output", label);
   mkdirSync(outputDirectory, { recursive: true });
-  mkdirSync(scratch, { recursive: true });
+  // Everything this run creates lives in one run-owned child directory so
+  // cleanup never touches unrelated contents of the scratch root.
+  const runScratch = join(scratch, `${label}-${process.pid}`);
+  mkdirSync(runScratch, { recursive: true });
+  const ownedWorktrees: string[] = [];
+  const cleanup = (): void => {
+    if (keep) {
+      console.log(`[compare] keeping ${runScratch}`);
+      return;
+    }
+    for (const path of ownedWorktrees) {
+      try {
+        git(["worktree", "remove", "--force", path]);
+      } catch (error) {
+        console.error(`[compare] failed to remove worktree ${path}: ${String(error)}`);
+      }
+    }
+    rmSync(runScratch, { recursive: true, force: true });
+  };
 
+  try {
+    runComparison({
+      baseRevision,
+      headRevision,
+      baseSha,
+      headSha,
+      label,
+      outputDirectory,
+      runScratch,
+      ownedWorktrees,
+      samples,
+      warmups,
+      threshold,
+      password,
+      operations,
+      fixtures,
+    });
+  } finally {
+    cleanup();
+  }
+}
+
+interface ComparisonRun {
+  baseRevision: string;
+  headRevision: string;
+  baseSha: string;
+  headSha: string;
+  label: string;
+  outputDirectory: string;
+  runScratch: string;
+  ownedWorktrees: string[];
+  samples: number;
+  warmups: number;
+  threshold: number;
+  password: string | undefined;
+  operations: Operation[];
+  fixtures: string[];
+}
+
+function runComparison(run: ComparisonRun): void {
+  const {
+    baseRevision,
+    headRevision,
+    baseSha,
+    headSha,
+    label,
+    outputDirectory,
+    runScratch,
+    ownedWorktrees,
+    samples,
+    warmups,
+    threshold,
+    password,
+    operations,
+    fixtures,
+  } = run;
   const worktrees = {
-    base: prepareWorktree(baseRevision, baseSha, scratch),
-    head: prepareWorktree(headRevision, headSha, scratch),
+    base: prepareWorktree(baseRevision, baseSha, runScratch, ownedWorktrees),
+    head: prepareWorktree(headRevision, headSha, runScratch, ownedWorktrees),
   };
 
   const encryptedFixture = password === undefined ? undefined : join(outputDirectory, "encrypted-fixture.xlsx");
@@ -256,10 +336,12 @@ function main(): void {
     "|---|---|---|---|---|---|---|---|",
   ];
   let regressions = 0;
+  let missingResults = 0;
   for (const item of comparisons) {
     const regressed = item.deltaPercent !== undefined && item.deltaPercent > threshold;
     const missing = item.base === undefined || item.head === undefined;
     if (regressed) regressions += 1;
+    if (missing) missingResults += 1;
     const verdict = missing ? "missing" : regressed ? "REGRESSION" : "ok";
     lines.push(
       `| ${item.operation} | ${item.fixture} | ${formatMs(item.base?.medianMs)} | ${formatMs(item.base?.madMs)} | ${formatMs(item.head?.medianMs)} | ${formatMs(item.head?.madMs)} | ${formatDelta(item.deltaPercent)} | ${verdict} |`,
@@ -271,11 +353,9 @@ function main(): void {
   console.log(report);
   console.log(`[compare] report written to ${reportPath}`);
 
-  if (!keep) {
-    for (const path of Object.values(worktrees)) {
-      git(["worktree", "remove", "--force", path]);
-    }
-    rmSync(scratch, { recursive: true, force: true });
+  if (missingResults > 0) {
+    console.error(`[compare] ${missingResults} measurement(s) missing; comparison incomplete`);
+    process.exitCode = 1;
   }
   if (regressions > 0) {
     console.error(`[compare] ${regressions} operation(s) regressed beyond +${threshold}%`);
@@ -284,4 +364,3 @@ function main(): void {
 }
 
 main();
-
