@@ -279,6 +279,7 @@ pub fn insert_cols(ws: &mut WorksheetXml, col: &str, count: u32) -> Result<()> {
     if furthest.checked_add(count).is_none_or(|v| v > MAX_COLUMNS) {
         return Err(Error::InvalidColumnNumber(furthest.saturating_add(count)));
     }
+    let spans = validated_col_spans(ws)?;
 
     // Shift cell references.
     for row in ws.sheet_data.rows.iter_mut() {
@@ -292,24 +293,59 @@ pub fn insert_cols(ws: &mut WorksheetXml, col: &str, count: u32) -> Result<()> {
         }
     }
 
-    // Shift Col definitions.
+    // Shift Col definitions. Spans pushed past the last column are dropped
+    // and spans reaching it stay pinned to it.
     if let Some(ref mut cols) = ws.cols {
-        for c in cols.cols.iter_mut() {
-            if c.min >= start_col {
-                c.min += count;
-            }
-            if c.max >= start_col {
-                c.max += count;
-            }
+        let mut kept = Vec::with_capacity(cols.cols.len());
+        for (mut c, (min, max)) in std::mem::take(&mut cols.cols).into_iter().zip(spans) {
+            let shift = |value: u32| {
+                if value >= start_col {
+                    value.checked_add(count)
+                } else {
+                    Some(value)
+                }
+            };
+            let Some(min) = shift(min).filter(|min| *min <= MAX_COLUMNS) else {
+                continue;
+            };
+            c.min = min;
+            c.max = shift(max).map_or(MAX_COLUMNS, |max| max.min(MAX_COLUMNS));
+            kept.push(c);
+        }
+        cols.cols = kept;
+        if cols.cols.is_empty() {
+            ws.cols = None;
         }
     }
 
     Ok(())
 }
 
+/// Validate every `<col>` span and return its bounds with `max` clamped to
+/// the last worksheet column. Spans with `min` outside `1..=MAX_COLUMNS` or
+/// `max < min` are rejected.
+fn validated_col_spans(ws: &WorksheetXml) -> Result<Vec<(u32, u32)>> {
+    let Some(cols) = &ws.cols else {
+        return Ok(Vec::new());
+    };
+    cols.cols
+        .iter()
+        .map(|c| {
+            if !(1..=MAX_COLUMNS).contains(&c.min) {
+                return Err(Error::InvalidColumnNumber(c.min));
+            }
+            if c.max < c.min {
+                return Err(Error::InvalidColumnNumber(c.max));
+            }
+            Ok((c.min, c.max.min(MAX_COLUMNS)))
+        })
+        .collect()
+}
+
 /// Remove a single column, shifting columns to its right leftward by one.
 pub fn remove_col(ws: &mut WorksheetXml, col: &str) -> Result<()> {
     let col_num = column_name_to_number(col)?;
+    let spans = validated_col_spans(ws)?;
 
     // Remove cells in the target column and shift cells to the right.
     for row in ws.sheet_data.rows.iter_mut() {
@@ -333,6 +369,10 @@ pub fn remove_col(ws: &mut WorksheetXml, col: &str) -> Result<()> {
 
     // Shift Col definitions.
     if let Some(ref mut cols) = ws.cols {
+        for (c, (min, max)) in cols.cols.iter_mut().zip(spans) {
+            c.min = min;
+            c.max = max;
+        }
         // Remove col entries that exactly span the removed column only.
         cols.cols
             .retain(|c| !(c.min == col_num && c.max == col_num));

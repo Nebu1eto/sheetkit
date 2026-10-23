@@ -1,4 +1,5 @@
 use super::*;
+use crate::cell_ref_shift::StructuralShift;
 
 fn validate_anchor_shift<F>(col: u32, row: u32, shift_cell: F) -> Result<()>
 where
@@ -16,31 +17,255 @@ where
     Ok(())
 }
 
-fn shift_references_for_owner<F>(
+/// Shift formula references owned by `owner_sheet_idx` for a structural edit
+/// of `target_sheet_idx`. Removed cells become `#REF!` and ranges shrink.
+fn shift_references_for_owner(
     text: &str,
     owner_sheet_idx: usize,
     target_sheet_idx: usize,
     target_sheet_name_lowercase: &str,
-    shift_cell: F,
-) -> Result<String>
-where
-    F: Fn(u32, u32) -> (u32, u32) + Copy,
-{
+    edit: StructuralShift,
+) -> Result<String> {
+    crate::cell_ref_shift::shift_references_structural(
+        text,
+        owner_sheet_idx == target_sheet_idx,
+        |sheet_name| crate::sheet::sheet_names_equal(sheet_name, target_sheet_name_lowercase),
+        edit,
+    )
+}
+
+/// Shift positional references (selections, panes, hyperlink targets) that
+/// must keep pointing at a surviving cell after a structural edit.
+fn shift_point_references_for_owner(
+    text: &str,
+    owner_sheet_idx: usize,
+    target_sheet_idx: usize,
+    target_sheet_name_lowercase: &str,
+    edit: StructuralShift,
+) -> Result<String> {
     crate::cell_ref_shift::shift_cell_references_with_abs_and_scope(
         text,
         owner_sheet_idx == target_sheet_idx,
         |sheet_name| crate::sheet::sheet_names_equal(sheet_name, target_sheet_name_lowercase),
-        |col, row, _, _| shift_cell(col, row),
+        |col, row, _, _| edit.shift_point(col, row),
     )
 }
 
-fn shift_duplicated_row_formula(formula: &str) -> Result<String> {
-    crate::cell_ref_shift::shift_cell_references_with_abs_and_scope(
+fn shift_duplicated_row_formula(
+    formula: &str,
+    target_sheet_name_lowercase: &str,
+    target_row: u32,
+) -> Result<String> {
+    crate::cell_ref_shift::shift_duplicated_row_references(
         formula,
+        |sheet_name| crate::sheet::sheet_names_equal(sheet_name, target_sheet_name_lowercase),
+        target_row,
+    )
+}
+
+/// Shift a single-cell anchor such as a comment reference. Returns `None`
+/// when the cell was removed; unparseable references are kept unchanged.
+fn shift_cell_anchor(reference: &str, edit: StructuralShift) -> Result<Option<String>> {
+    let Ok((col, row)) = crate::utils::cell_ref::cell_name_to_coordinates(reference) else {
+        return Ok(Some(reference.to_string()));
+    };
+    match edit.shift_cell(col, row) {
+        None => Ok(None),
+        Some((col, row)) => crate::utils::cell_ref::coordinates_to_cell_name(col, row).map(Some),
+    }
+}
+
+/// Formula state detached from a duplicated row while references shift.
+#[derive(Debug, Default)]
+struct DuplicatedFormula {
+    text: Option<String>,
+    array_ref: Option<String>,
+}
+
+fn offset_coordinate(value: u32, delta: i64) -> u32 {
+    u32::try_from(i64::from(value) + delta).unwrap_or(0)
+}
+
+/// Expand a shared-formula child at `cell_ref` from its master formula.
+fn expand_shared_formula(ws: &WorksheetXml, si: u32, cell_ref: &str) -> Result<Option<String>> {
+    let master = ws
+        .sheet_data
+        .rows
+        .iter()
+        .flat_map(|row| row.cells.iter())
+        .find_map(|cell| {
+            let formula = cell.f.as_ref()?;
+            (formula.t.as_deref() == Some("shared") && formula.si == Some(si)).then_some(())?;
+            formula.value.as_deref().map(|text| (cell.r.as_str(), text))
+        });
+    let Some((master_ref, master_text)) = master else {
+        return Ok(None);
+    };
+    let (master_col, master_row) = crate::utils::cell_ref::cell_name_to_coordinates(master_ref)?;
+    let (col, row) = crate::utils::cell_ref::cell_name_to_coordinates(cell_ref)?;
+    let col_delta = i64::from(col) - i64::from(master_col);
+    let row_delta = i64::from(row) - i64::from(master_row);
+    crate::cell_ref_shift::shift_cell_references_with_abs_and_scope(
+        master_text,
         true,
         |_| true,
-        |col, row, _abs_col, abs_row| (col, if abs_row { row } else { row.saturating_add(1) }),
+        |col, row, abs_col, abs_row| {
+            (
+                if abs_col {
+                    col
+                } else {
+                    offset_coordinate(col, col_delta)
+                },
+                if abs_row {
+                    row
+                } else {
+                    offset_coordinate(row, row_delta)
+                },
+            )
+        },
     )
+    .map(Some)
+}
+
+/// Resolve the formula text of every cell in `row`, expanding shared-formula
+/// children from their master. Cells without a resolvable formula yield `None`.
+fn duplicated_row_formula_sources(ws: &WorksheetXml, row: u32) -> Result<Vec<Option<String>>> {
+    let Some(source) = ws
+        .sheet_data
+        .rows
+        .iter()
+        .find(|candidate| candidate.r == row)
+    else {
+        return Ok(Vec::new());
+    };
+    let mut texts = Vec::with_capacity(source.cells.len());
+    for cell in &source.cells {
+        let Some(formula) = &cell.f else {
+            texts.push(None);
+            continue;
+        };
+        if let Some(text) = &formula.value {
+            texts.push(Some(text.clone()));
+            continue;
+        }
+        texts.push(match (formula.t.as_deref(), formula.si) {
+            (Some("shared"), Some(si)) => expand_shared_formula(ws, si, cell.r.as_str())?,
+            _ => None,
+        });
+    }
+    Ok(texts)
+}
+
+/// Shift page breaks on the edited axis. A break is attached to the row or
+/// column that follows it and is dropped when that row or column is removed.
+fn shift_page_breaks(
+    breaks: &mut Option<sheetkit_xml::worksheet::RowBreaks>,
+    edit: StructuralShift,
+    max_index: u32,
+) {
+    let Some(container) = breaks.as_mut() else {
+        return;
+    };
+    container.brk.retain_mut(|brk| {
+        let Some(following) = brk.id.checked_add(1) else {
+            return true;
+        };
+        match edit.shift_index(following) {
+            Some(shifted) if shifted <= max_index => {
+                brk.id = shifted - 1;
+                true
+            }
+            Some(_) | None => false,
+        }
+    });
+    if container.brk.is_empty() {
+        *breaks = None;
+        return;
+    }
+    let total = container.brk.len() as u32;
+    let manual = container
+        .brk
+        .iter()
+        .filter(|brk| brk.man == Some(true))
+        .count() as u32;
+    if container.count.is_some() {
+        container.count = Some(total);
+    }
+    if container.manual_break_count.is_some() {
+        container.manual_break_count = Some(manual);
+    }
+}
+
+/// Compute a table definition after a structural edit of its owner sheet.
+///
+/// Removing a column inside the table drops the matching table column.
+/// Removing the header row, the totals row, every data row, or the whole
+/// table is rejected because the table part cannot be kept consistent.
+fn shift_table_definition(
+    table: &sheetkit_xml::table::TableXml,
+    edit: StructuralShift,
+) -> Result<sheetkit_xml::table::TableXml> {
+    let mut shifted = table.clone();
+    let reject = |reason: &str| {
+        Error::InvalidArgument(format!(
+            "cannot structurally edit table '{}': {reason}",
+            table.name
+        ))
+    };
+    let reference = crate::cell_ref_shift::shift_sqref_structural(&table.reference, edit)?
+        .ok_or_else(|| reject("the edit removes the whole table"))?;
+    if edit.is_removal() {
+        let (start, end) = table
+            .reference
+            .split_once(':')
+            .unwrap_or((&table.reference, &table.reference));
+        let (first_col, first_row) = crate::utils::cell_ref::cell_name_to_coordinates(start)?;
+        let (last_col, last_row) = crate::utils::cell_ref::cell_name_to_coordinates(end)?;
+        if edit.is_row_axis() {
+            let header_rows = table.header_row_count.unwrap_or(1);
+            let totals_rows = table.totals_row_count.unwrap_or(0);
+            if header_rows > 0 && edit.shift_index(first_row).is_none() {
+                return Err(reject("the edit removes the header row"));
+            }
+            if totals_rows > 0 && edit.shift_index(last_row).is_none() {
+                return Err(reject("the edit removes the totals row"));
+            }
+            let (new_start, new_end) = reference
+                .split_once(':')
+                .unwrap_or((&reference, &reference));
+            let (_, new_first_row) = crate::utils::cell_ref::cell_name_to_coordinates(new_start)?;
+            let (_, new_last_row) = crate::utils::cell_ref::cell_name_to_coordinates(new_end)?;
+            let required = header_rows.saturating_add(totals_rows).saturating_add(1);
+            if new_last_row.saturating_sub(new_first_row).saturating_add(1) < required {
+                return Err(reject("the edit removes every data row"));
+            }
+        } else {
+            for col in (first_col.min(last_col)..=first_col.max(last_col)).rev() {
+                if edit.shift_index(col).is_none() {
+                    let index = (col - first_col.min(last_col)) as usize;
+                    if index < shifted.table_columns.columns.len() {
+                        shifted.table_columns.columns.remove(index);
+                    }
+                }
+            }
+            if shifted.table_columns.columns.is_empty() {
+                return Err(reject("the edit removes every table column"));
+            }
+            shifted.table_columns.count = shifted.table_columns.columns.len() as u32;
+        }
+    }
+    shifted.reference = reference;
+    if let Some(auto_filter) = &table.auto_filter {
+        match crate::cell_ref_shift::shift_sqref_structural(&auto_filter.reference, edit)? {
+            Some(reference) => {
+                if let Some(shifted_filter) = &mut shifted.auto_filter {
+                    shifted_filter.reference = reference;
+                }
+            }
+            None => shifted.auto_filter = None,
+        }
+    }
+    Ok(shifted)
 }
 
 fn next_numbered_part_path(
@@ -651,7 +876,7 @@ impl Workbook {
             quick_xml::de::from_str::<Comments>(xml).is_ok()
         })?;
         parse_entries(AuxCategory::Tables, &|xml| {
-            quick_xml::de::from_str::<sheetkit_xml::table::TableXml>(xml).is_ok()
+            sheetkit_xml::table::parse_table_xml(xml).is_ok()
         })?;
         parse_entries(AuxCategory::ThreadedComments, &|xml| {
             quick_xml::de::from_str::<sheetkit_xml::threaded_comment::ThreadedComments>(xml).is_ok()
@@ -781,7 +1006,7 @@ impl Workbook {
                 let valid =
                     match parse {
                         0 => quick_xml::de::from_str::<Comments>(xml).is_ok(),
-                        1 => quick_xml::de::from_str::<sheetkit_xml::table::TableXml>(xml).is_ok(),
+                        1 => sheetkit_xml::table::parse_table_xml(xml).is_ok(),
                         2 => quick_xml::de::from_str::<
                             sheetkit_xml::threaded_comment::ThreadedComments,
                         >(xml)
@@ -829,7 +1054,7 @@ impl Workbook {
                     .map_err(|error| Error::XmlParse(error.to_string()))?;
                 self.tables.push((
                     path,
-                    quick_xml::de::from_str(xml)
+                    sheetkit_xml::table::parse_table_xml(xml)
                         .map_err(|error| Error::XmlDeserialize(error.to_string()))?,
                     sheet_idx,
                 ));
@@ -1418,6 +1643,7 @@ impl Workbook {
             .unwrap_or(0);
         let mut reserved_table_paths = occupied_aux_paths.clone();
         let mut cloned_tables = Vec::new();
+        let mut taken_table_names = self.taken_table_names();
         for (offset, (_, source_table, _)) in self
             .tables
             .iter()
@@ -1438,19 +1664,12 @@ impl Workbook {
             let base_name = format!("{}_Copy", table.name);
             let mut name = base_name.clone();
             let mut suffix = 2usize;
-            while self
-                .tables
-                .iter()
-                .any(|(_, existing, _)| existing.name == name || existing.display_name == name)
-                || cloned_tables.iter().any(
-                    |(_, existing): &(String, sheetkit_xml::table::TableXml)| {
-                        existing.name == name || existing.display_name == name
-                    },
-                )
-            {
+            while taken_table_names.contains(&name.to_lowercase()) {
                 name = format!("{base_name}{suffix}");
                 suffix += 1;
             }
+            crate::table::validate_table_name("table name", &name)?;
+            taken_table_names.insert(name.to_lowercase());
             table.name = name.clone();
             table.display_name = name;
             cloned_tables.push((new_path, table));
@@ -1650,48 +1869,37 @@ impl Workbook {
         self.preflight_structural_target(sheet_idx, |ws| {
             crate::row::insert_rows(ws, start_row, count)
         })?;
-        self.prepare_reference_shift(sheet_idx, |col, row| {
-            if row >= start_row {
-                (col, row.saturating_add(count))
-            } else {
-                (col, row)
-            }
-        })?;
+        let edit = StructuralShift::InsertRows {
+            start: start_row,
+            count,
+        };
+        self.prepare_reference_shift(sheet_idx, edit)?;
         {
             let ws = self.worksheet_mut_by_index(sheet_idx)?;
             crate::row::insert_rows(ws, start_row, count)?;
         }
-        self.apply_reference_shift_for_sheet(sheet_idx, |col, row| {
-            if row >= start_row {
-                (col, row.saturating_add(count))
-            } else {
-                (col, row)
-            }
-        })
+        self.apply_reference_shift_for_sheet(sheet_idx, edit)
     }
 
     /// Remove a single row from the named sheet, shifting rows below it up.
+    ///
+    /// Formula references to the removed row become `#REF!`, ranges that end
+    /// or start in it shrink, and sqref-based entries (merges, validations,
+    /// conditional formats, hyperlinks, comments, page breaks) that lie only in
+    /// the removed row are dropped.
     pub fn remove_row(&mut self, sheet: &str, row: u32) -> Result<()> {
         let sheet_idx = self.sheet_index(sheet)?;
         self.preflight_structural_target(sheet_idx, |ws| crate::row::remove_row(ws, row))?;
-        self.prepare_reference_shift(sheet_idx, |col, referenced_row| {
-            if referenced_row > row {
-                (col, referenced_row - 1)
-            } else {
-                (col, referenced_row)
-            }
-        })?;
+        let edit = StructuralShift::RemoveRows {
+            start: row,
+            count: 1,
+        };
+        self.prepare_reference_shift(sheet_idx, edit)?;
         {
             let ws = self.worksheet_mut_by_index(sheet_idx)?;
             crate::row::remove_row(ws, row)?;
         }
-        self.apply_reference_shift_for_sheet(sheet_idx, |col, r| {
-            if r > row {
-                (col, r - 1)
-            } else {
-                (col, r)
-            }
-        })
+        self.apply_reference_shift_for_sheet(sheet_idx, edit)
     }
 
     /// Duplicate a row, inserting the copy directly below.
@@ -1700,25 +1908,17 @@ impl Workbook {
         let target_row = row.checked_add(1).ok_or(Error::InvalidRowNumber(row))?;
         self.preflight_structural_target(sheet_idx, |ws| crate::row::duplicate_row(ws, row))?;
         self.preflight_duplicate_formula_copy(sheet_idx, row)?;
-        self.prepare_reference_shift(sheet_idx, |col, referenced_row| {
-            if referenced_row >= target_row {
-                (col, referenced_row.saturating_add(1))
-            } else {
-                (col, referenced_row)
-            }
-        })?;
+        let edit = StructuralShift::InsertRows {
+            start: target_row,
+            count: 1,
+        };
+        self.prepare_reference_shift(sheet_idx, edit)?;
         {
             let ws = self.worksheet_mut_by_index(sheet_idx)?;
             crate::row::duplicate_row(ws, row)?;
         }
         let duplicated_formulas = self.take_duplicated_row_formulas(sheet_idx, target_row)?;
-        self.apply_reference_shift_for_sheet(sheet_idx, |col, r| {
-            if r >= target_row {
-                (col, r.saturating_add(1))
-            } else {
-                (col, r)
-            }
-        })?;
+        self.apply_reference_shift_for_sheet(sheet_idx, edit)?;
         self.restore_duplicated_row_formulas(sheet_idx, target_row, duplicated_formulas)
     }
 
@@ -1879,52 +2079,35 @@ impl Workbook {
             return Ok(());
         }
         self.preflight_structural_target(sheet_idx, |ws| crate::col::insert_cols(ws, col, count))?;
-        self.prepare_reference_shift(sheet_idx, |c, row| {
-            if c >= start_col {
-                (c.saturating_add(count), row)
-            } else {
-                (c, row)
-            }
-        })?;
+        let edit = StructuralShift::InsertCols {
+            start: start_col,
+            count,
+        };
+        self.prepare_reference_shift(sheet_idx, edit)?;
         {
             let ws = self.worksheet_mut_by_index(sheet_idx)?;
             crate::col::insert_cols(ws, col, count)?;
         }
-        self.apply_reference_shift_for_sheet(sheet_idx, |c, row| {
-            if c >= start_col {
-                (c.saturating_add(count), row)
-            } else {
-                (c, row)
-            }
-        })
+        self.apply_reference_shift_for_sheet(sheet_idx, edit)
     }
 
     /// Remove a single column from the named sheet.
+    ///
+    /// References are updated like [`Workbook::remove_row`] on the column axis.
     pub fn remove_col(&mut self, sheet: &str, col: &str) -> Result<()> {
         let sheet_idx = self.sheet_index(sheet)?;
         let col_num = column_name_to_number(col)?;
         self.preflight_structural_target(sheet_idx, |ws| crate::col::remove_col(ws, col))?;
-        self.prepare_reference_shift(
-            sheet_idx,
-            |c, row| {
-                if c > col_num {
-                    (c - 1, row)
-                } else {
-                    (c, row)
-                }
-            },
-        )?;
+        let edit = StructuralShift::RemoveCols {
+            start: col_num,
+            count: 1,
+        };
+        self.prepare_reference_shift(sheet_idx, edit)?;
         {
             let ws = self.worksheet_mut_by_index(sheet_idx)?;
             crate::col::remove_col(ws, col)?;
         }
-        self.apply_reference_shift_for_sheet(sheet_idx, |c, row| {
-            if c > col_num {
-                (c - 1, row)
-            } else {
-                (c, row)
-            }
-        })
+        self.apply_reference_shift_for_sheet(sheet_idx, edit)
     }
 
     /// Reindex per-sheet maps after deleting a sheet.
@@ -1962,10 +2145,11 @@ impl Workbook {
     ///
     /// A row-limited or streamed workbook cannot safely update references
     /// outside the materialized window, so reject it before any mutation.
-    fn prepare_reference_shift<F>(&mut self, target_sheet_idx: usize, shift_cell: F) -> Result<()>
-    where
-        F: Fn(u32, u32) -> (u32, u32) + Copy,
-    {
+    fn prepare_reference_shift(
+        &mut self,
+        target_sheet_idx: usize,
+        edit: StructuralShift,
+    ) -> Result<()> {
         if self.sheet_rows_limit.is_some() {
             return Err(Error::InvalidArgument(
                 "cannot structurally edit a workbook opened with sheet_rows".into(),
@@ -1988,26 +2172,189 @@ impl Workbook {
 
         // Validate deferred XML without consuming passthrough bytes. A failed
         // edit must not turn an untouched lazy workbook into a dirty one.
-        self.validate_deferred_drawing_and_chart_parts(target_sheet_idx, shift_cell)?;
-        self.validate_reference_shift(target_sheet_idx, shift_cell)?;
+        self.validate_deferred_drawing_and_chart_parts(target_sheet_idx, edit)?;
+        self.validate_reference_shift(target_sheet_idx, edit)?;
+        self.validate_deferred_comment_parts(target_sheet_idx)?;
         for idx in 0..self.worksheets.len() {
             self.ensure_hydrated(idx)?;
         }
         self.hydrate_drawings();
         self.hydrate_tables();
         self.validate_typed_chart_ownership()?;
-        self.validate_retained_raw_graph_patches(target_sheet_idx, shift_cell)?;
+        self.validate_retained_raw_graph_patches(target_sheet_idx, edit)?;
+        self.validate_comment_shift(target_sheet_idx, edit)?;
+        self.hydrate_comments_for_structural_edit(target_sheet_idx)?;
+        self.hydrate_threaded_comments();
         Ok(())
     }
 
-    fn validate_retained_raw_graph_patches<F>(
+    /// Lowercased names already used by tables (name and display name),
+    /// including deferred table parts, and by defined names. These share one
+    /// case-insensitive namespace.
+    fn taken_table_names(&self) -> std::collections::HashSet<String> {
+        let mut taken = std::collections::HashSet::new();
+        for (_, table, _) in &self.tables {
+            taken.insert(table.name.to_lowercase());
+            taken.insert(table.display_name.to_lowercase());
+        }
+        if let Some(entries) = self
+            .deferred_parts
+            .entries(crate::workbook::aux::AuxCategory::Tables)
+        {
+            for (_, bytes) in entries {
+                if let Ok(table) =
+                    sheetkit_xml::table::parse_table_xml(&String::from_utf8_lossy(bytes))
+                {
+                    taken.insert(table.name.to_lowercase());
+                    taken.insert(table.display_name.to_lowercase());
+                }
+            }
+        }
+        for defined in crate::defined_names::get_all_defined_names(&self.workbook_xml) {
+            taken.insert(defined.name.to_lowercase());
+        }
+        taken
+    }
+
+    /// Resolve the deferred comment, VML, and threaded-comment part paths
+    /// owned by a sheet.
+    fn owned_comment_part_paths(
+        &self,
+        sheet_idx: usize,
+    ) -> (Vec<String>, Vec<String>, Vec<String>) {
+        let sheet_path = self.sheet_part_path(sheet_idx);
+        let targets = |kind: &str| -> Vec<String> {
+            self.worksheet_rels
+                .get(&sheet_idx)
+                .into_iter()
+                .flat_map(|rels| rels.relationships.iter())
+                .filter(|rel| rel.rel_type == kind)
+                .map(|rel| resolve_relationship_target(&sheet_path, &rel.target))
+                .collect()
+        };
+        (
+            targets(rel_types::COMMENTS),
+            targets(rel_types::VML_DRAWING),
+            targets(sheetkit_xml::threaded_comment::REL_TYPE_THREADED_COMMENT),
+        )
+    }
+
+    /// Reject a structural edit when a deferred comment part of the target
+    /// sheet cannot be parsed, so its anchors cannot silently go stale.
+    fn validate_deferred_comment_parts(&self, sheet_idx: usize) -> Result<()> {
+        use crate::workbook::aux::AuxCategory;
+
+        let (comments, _, threaded) = self.owned_comment_part_paths(sheet_idx);
+        for path in &comments {
+            if let Some(bytes) = self.deferred_parts.get_path(AuxCategory::Comments, path) {
+                quick_xml::de::from_str::<Comments>(&String::from_utf8_lossy(bytes))
+                    .map_err(|error| Error::XmlDeserialize(format!("{path}: {error}")))?;
+            }
+        }
+        for path in &threaded {
+            if let Some(bytes) = self
+                .deferred_parts
+                .get_path(AuxCategory::ThreadedComments, path)
+            {
+                quick_xml::de::from_str::<sheetkit_xml::threaded_comment::ThreadedComments>(
+                    &String::from_utf8_lossy(bytes),
+                )
+                .map_err(|error| Error::XmlDeserialize(format!("{path}: {error}")))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Move the target sheet's deferred comments and VML into memory so the
+    /// structural edit can shift their anchors.
+    fn hydrate_comments_for_structural_edit(&mut self, sheet_idx: usize) -> Result<()> {
+        use crate::workbook::aux::AuxCategory;
+
+        let (comments, vml, _) = self.owned_comment_part_paths(sheet_idx);
+        let mut hydrated = false;
+        for path in comments {
+            if let Some(bytes) = self
+                .deferred_parts
+                .remove_path(AuxCategory::Comments, &path)
+            {
+                let parsed: Comments = quick_xml::de::from_str(&String::from_utf8_lossy(&bytes))
+                    .map_err(|error| Error::XmlDeserialize(format!("{path}: {error}")))?;
+                if self.sheet_comments[sheet_idx].is_none() {
+                    self.sheet_comments[sheet_idx] = Some(parsed);
+                }
+                hydrated = true;
+            }
+        }
+        for path in vml {
+            if let Some(bytes) = self.deferred_parts.remove_path(AuxCategory::Vml, &path) {
+                if self.sheet_vml[sheet_idx].is_none() {
+                    self.sheet_vml[sheet_idx] = Some(bytes);
+                }
+                hydrated = true;
+            }
+        }
+        if hydrated {
+            self.deferred_parts.mark_dirty(AuxCategory::Comments);
+            self.deferred_parts.mark_dirty(AuxCategory::Vml);
+        }
+        Ok(())
+    }
+
+    /// Reject edits that would push a comment anchor off the grid.
+    fn validate_comment_shift(&self, sheet_idx: usize, edit: StructuralShift) -> Result<()> {
+        use crate::workbook::aux::AuxCategory;
+
+        let mut anchors: Vec<String> = Vec::new();
+        if let Some(comments) = self.sheet_comments.get(sheet_idx).and_then(Option::as_ref) {
+            anchors.extend(
+                comments
+                    .comment_list
+                    .comments
+                    .iter()
+                    .map(|c| c.r#ref.clone()),
+            );
+        }
+        if let Some(threaded) = self
+            .sheet_threaded_comments
+            .get(sheet_idx)
+            .and_then(Option::as_ref)
+        {
+            anchors.extend(threaded.comments.iter().map(|c| c.cell_ref.clone()));
+        }
+        let (comments, _, threaded) = self.owned_comment_part_paths(sheet_idx);
+        for path in &comments {
+            if let Some(bytes) = self.deferred_parts.get_path(AuxCategory::Comments, path) {
+                if let Ok(parsed) =
+                    quick_xml::de::from_str::<Comments>(&String::from_utf8_lossy(bytes))
+                {
+                    anchors.extend(parsed.comment_list.comments.into_iter().map(|c| c.r#ref));
+                }
+            }
+        }
+        for path in &threaded {
+            if let Some(bytes) = self
+                .deferred_parts
+                .get_path(AuxCategory::ThreadedComments, path)
+            {
+                if let Ok(parsed) = quick_xml::de::from_str::<
+                    sheetkit_xml::threaded_comment::ThreadedComments,
+                >(&String::from_utf8_lossy(bytes))
+                {
+                    anchors.extend(parsed.comments.into_iter().map(|c| c.cell_ref));
+                }
+            }
+        }
+        for anchor in anchors {
+            shift_cell_anchor(&anchor, edit)?;
+        }
+        Ok(())
+    }
+
+    fn validate_retained_raw_graph_patches(
         &self,
         target_sheet_idx: usize,
-        shift_cell: F,
-    ) -> Result<()>
-    where
-        F: Fn(u32, u32) -> (u32, u32) + Copy,
-    {
+        edit: StructuralShift,
+    ) -> Result<()> {
         let target_sheet_name_lowercase = self.worksheets[target_sheet_idx].0.to_lowercase();
         for (path, chart) in &self.charts {
             let Some(raw) = self.raw_graph_parts.get(path) else {
@@ -2022,7 +2369,7 @@ impl Workbook {
                     owner,
                     target_sheet_idx,
                     &target_sheet_name_lowercase,
-                    shift_cell,
+                    edit,
                 )?;
                 if next != *formula {
                     replacements.push((formula.clone(), next.clone()));
@@ -2038,7 +2385,12 @@ impl Workbook {
         if let Some(&drawing_idx) = self.worksheet_drawings.get(&target_sheet_idx) {
             if let Some((path, drawing)) = self.drawings.get(drawing_idx) {
                 if let Some(raw) = self.raw_graph_parts.get(path) {
-                    patch_raw_drawing_coordinates(raw, drawing, shift_cell, path)?;
+                    patch_raw_drawing_coordinates(
+                        raw,
+                        drawing,
+                        |col, row| edit.shift_point(col, row),
+                        path,
+                    )?;
                 }
             }
         }
@@ -2062,7 +2414,7 @@ impl Workbook {
                     owner_sheet_idx,
                     target_sheet_idx,
                     &target_sheet_name_lowercase,
-                    shift_cell,
+                    edit,
                 )?;
                 if data_range != sparkline.data_range {
                     replacements.push((
@@ -2072,12 +2424,12 @@ impl Workbook {
                     ));
                 }
                 if owner_sheet_idx == target_sheet_idx {
-                    let location = shift_references_for_owner(
+                    let location = shift_point_references_for_owner(
                         &sparkline.location,
                         owner_sheet_idx,
                         target_sheet_idx,
                         &target_sheet_name_lowercase,
-                        shift_cell,
+                        edit,
                     )?;
                     if location != sparkline.location {
                         replacements.push((
@@ -2093,16 +2445,14 @@ impl Workbook {
         Ok(())
     }
 
-    fn validate_deferred_drawing_and_chart_parts<F>(
+    fn validate_deferred_drawing_and_chart_parts(
         &self,
         target_sheet_idx: usize,
-        shift_cell: F,
-    ) -> Result<()>
-    where
-        F: Fn(u32, u32) -> (u32, u32) + Copy,
-    {
+        edit: StructuralShift,
+    ) -> Result<()> {
         use crate::workbook::aux::AuxCategory;
 
+        let shift_cell = |col: u32, row: u32| edit.shift_point(col, row);
         let target_sheet_name_lowercase = self.worksheets[target_sheet_idx].0.to_lowercase();
         let validate = |text: &str, owner_sheet_idx: usize| {
             shift_references_for_owner(
@@ -2110,7 +2460,7 @@ impl Workbook {
                 owner_sheet_idx,
                 target_sheet_idx,
                 &target_sheet_name_lowercase,
-                shift_cell,
+                edit,
             )
             .map(|_| ())
         };
@@ -2262,10 +2612,12 @@ impl Workbook {
         Ok(())
     }
 
-    fn validate_reference_shift<F>(&self, target_sheet_idx: usize, shift_cell: F) -> Result<()>
-    where
-        F: Fn(u32, u32) -> (u32, u32) + Copy,
-    {
+    fn validate_reference_shift(
+        &self,
+        target_sheet_idx: usize,
+        edit: StructuralShift,
+    ) -> Result<()> {
+        let shift_cell = |col: u32, row: u32| edit.shift_point(col, row);
         let target_sheet_name_lowercase = self.worksheets[target_sheet_idx].0.to_lowercase();
         let validate = |text: &str, owner_sheet_idx: usize| {
             shift_references_for_owner(
@@ -2273,9 +2625,25 @@ impl Workbook {
                 owner_sheet_idx,
                 target_sheet_idx,
                 &target_sheet_name_lowercase,
-                shift_cell,
+                edit,
             )
             .map(|_| ())
+        };
+        let validate_point = |text: &str, owner_sheet_idx: usize| {
+            shift_point_references_for_owner(
+                text,
+                owner_sheet_idx,
+                target_sheet_idx,
+                &target_sheet_name_lowercase,
+                edit,
+            )
+            .map(|_| ())
+        };
+        let validate_sqref = |text: &str, owner_sheet_idx: usize| {
+            if owner_sheet_idx == target_sheet_idx {
+                crate::cell_ref_shift::shift_sqref_structural(text, edit)?;
+            }
+            Ok::<(), Error>(())
         };
 
         for owner_sheet_idx in 0..self.worksheets.len() {
@@ -2287,22 +2655,22 @@ impl Workbook {
                             validate(expr, owner_sheet_idx)?;
                         }
                         if let Some(reference) = &formula.reference {
-                            validate(reference, owner_sheet_idx)?;
+                            validate_sqref(reference, owner_sheet_idx)?;
                         }
                     }
                 }
             }
             if let Some(merges) = &ws.merge_cells {
                 for merge in &merges.merge_cells {
-                    validate(&merge.reference, owner_sheet_idx)?;
+                    validate_sqref(&merge.reference, owner_sheet_idx)?;
                 }
             }
             if let Some(auto_filter) = &ws.auto_filter {
-                validate(&auto_filter.reference, owner_sheet_idx)?;
+                validate_sqref(&auto_filter.reference, owner_sheet_idx)?;
             }
             if let Some(validations) = &ws.data_validations {
                 for validation in &validations.data_validations {
-                    validate(&validation.sqref, owner_sheet_idx)?;
+                    validate_sqref(&validation.sqref, owner_sheet_idx)?;
                     if let Some(formula) = &validation.formula1 {
                         validate(formula, owner_sheet_idx)?;
                     }
@@ -2312,7 +2680,7 @@ impl Workbook {
                 }
             }
             for formatting in &ws.conditional_formatting {
-                validate(&formatting.sqref, owner_sheet_idx)?;
+                validate_sqref(&formatting.sqref, owner_sheet_idx)?;
                 for rule in &formatting.cf_rules {
                     for formula in &rule.formulas {
                         validate(formula, owner_sheet_idx)?;
@@ -2321,9 +2689,9 @@ impl Workbook {
             }
             if let Some(hyperlinks) = &ws.hyperlinks {
                 for hyperlink in &hyperlinks.hyperlinks {
-                    validate(&hyperlink.reference, owner_sheet_idx)?;
+                    validate_sqref(&hyperlink.reference, owner_sheet_idx)?;
                     if let Some(location) = &hyperlink.location {
-                        validate(location, owner_sheet_idx)?;
+                        validate_point(location, owner_sheet_idx)?;
                     }
                 }
             }
@@ -2331,15 +2699,15 @@ impl Workbook {
                 for view in &views.sheet_views {
                     if let Some(pane) = &view.pane {
                         if let Some(top_left) = &pane.top_left_cell {
-                            validate(top_left, owner_sheet_idx)?;
+                            validate_point(top_left, owner_sheet_idx)?;
                         }
                     }
                     for selection in &view.selection {
                         if let Some(active_cell) = &selection.active_cell {
-                            validate(active_cell, owner_sheet_idx)?;
+                            validate_point(active_cell, owner_sheet_idx)?;
                         }
                         if let Some(sqref) = &selection.sqref {
-                            validate(sqref, owner_sheet_idx)?;
+                            validate_point(sqref, owner_sheet_idx)?;
                         }
                     }
                 }
@@ -2347,11 +2715,11 @@ impl Workbook {
         }
         if let Some(defined_names) = &self.workbook_xml.defined_names {
             for defined_name in &defined_names.defined_names {
-                crate::cell_ref_shift::shift_cell_references_with_abs_and_scope(
+                crate::cell_ref_shift::shift_references_structural(
                     &defined_name.value,
                     defined_name.local_sheet_id == Some(target_sheet_idx as u32),
                     |name| crate::sheet::sheet_names_equal(name, &target_sheet_name_lowercase),
-                    |col, row, _, _| shift_cell(col, row),
+                    edit,
                 )?;
             }
         }
@@ -2359,16 +2727,13 @@ impl Workbook {
             for sparkline in sparklines {
                 validate(&sparkline.data_range, owner_sheet_idx)?;
                 if owner_sheet_idx == target_sheet_idx {
-                    validate(&sparkline.location, owner_sheet_idx)?;
+                    validate_point(&sparkline.location, owner_sheet_idx)?;
                 }
             }
         }
         for (_, table, owner_sheet_idx) in &self.tables {
             if *owner_sheet_idx == target_sheet_idx {
-                validate(&table.reference, target_sheet_idx)?;
-                if let Some(auto_filter) = &table.auto_filter {
-                    validate(&auto_filter.reference, target_sheet_idx)?;
-                }
+                shift_table_definition(table, edit)?;
             }
         }
         for (path, chart) in &self.charts {
@@ -2392,10 +2757,8 @@ impl Workbook {
             .entries(crate::workbook::aux::AuxCategory::Tables)
         {
             for (path, bytes) in entries {
-                let table = quick_xml::de::from_str::<sheetkit_xml::table::TableXml>(
-                    &String::from_utf8_lossy(bytes),
-                )
-                .map_err(|error| Error::XmlDeserialize(error.to_string()))?;
+                let table = sheetkit_xml::table::parse_table_xml(&String::from_utf8_lossy(bytes))
+                    .map_err(|error| Error::XmlDeserialize(error.to_string()))?;
                 let owner_sheet_idx = self
                     .worksheet_rels
                     .iter()
@@ -2413,10 +2776,7 @@ impl Workbook {
                 if owner_sheet_idx != target_sheet_idx {
                     continue;
                 }
-                validate(&table.reference, target_sheet_idx)?;
-                if let Some(auto_filter) = &table.auto_filter {
-                    validate(&auto_filter.reference, target_sheet_idx)?;
-                }
+                shift_table_definition(&table, edit)?;
             }
         }
         Ok(())
@@ -2460,27 +2820,35 @@ impl Workbook {
 
     fn preflight_duplicate_formula_copy(&self, sheet_idx: usize, row: u32) -> Result<()> {
         let worksheet = self.preflight_worksheet(sheet_idx)?;
-        let source = worksheet
+        if !worksheet
             .sheet_data
             .rows
             .iter()
-            .find(|candidate| candidate.r == row)
-            .ok_or(Error::InvalidRowNumber(row))?;
-        for cell in &source.cells {
-            let Some(formula) = cell.f.as_ref().and_then(|formula| formula.value.as_deref()) else {
-                continue;
-            };
-            shift_duplicated_row_formula(formula)?;
+            .any(|candidate| candidate.r == row)
+        {
+            return Err(Error::InvalidRowNumber(row));
+        }
+        let target_row = row.checked_add(1).ok_or(Error::InvalidRowNumber(row))?;
+        let target_sheet_name_lowercase = self.worksheets[sheet_idx].0.to_lowercase();
+        for formula in duplicated_row_formula_sources(&worksheet, row)?
+            .into_iter()
+            .flatten()
+        {
+            shift_duplicated_row_formula(&formula, &target_sheet_name_lowercase, target_row)?;
         }
         Ok(())
     }
 
+    /// Detach the formulas of the freshly duplicated row so the structural
+    /// shift does not touch them. Shared-formula copies become standalone
+    /// formulas expanded from their master.
     fn take_duplicated_row_formulas(
         &mut self,
         sheet_idx: usize,
         row: u32,
-    ) -> Result<Vec<Option<String>>> {
+    ) -> Result<Vec<DuplicatedFormula>> {
         let ws = self.worksheet_mut_by_index(sheet_idx)?;
+        let sources = duplicated_row_formula_sources(ws, row.saturating_sub(1))?;
         let Some(duplicated) = ws
             .sheet_data
             .rows
@@ -2492,7 +2860,25 @@ impl Workbook {
         Ok(duplicated
             .cells
             .iter_mut()
-            .map(|cell| cell.f.as_mut().and_then(|formula| formula.value.take()))
+            .zip(sources.into_iter().chain(std::iter::repeat(None)))
+            .map(|(cell, text)| {
+                let mut taken = DuplicatedFormula::default();
+                let (Some(formula), Some(text)) = (cell.f.as_mut(), text) else {
+                    return taken;
+                };
+                formula.value = None;
+                match formula.t.as_deref() {
+                    Some("shared") => {
+                        formula.t = None;
+                        formula.si = None;
+                        formula.reference = None;
+                    }
+                    Some("array") => taken.array_ref = formula.reference.take(),
+                    _ => {}
+                }
+                taken.text = Some(text);
+                taken
+            })
             .collect())
     }
 
@@ -2500,8 +2886,9 @@ impl Workbook {
         &mut self,
         sheet_idx: usize,
         row: u32,
-        formulas: Vec<Option<String>>,
+        formulas: Vec<DuplicatedFormula>,
     ) -> Result<()> {
+        let target_sheet_name_lowercase = self.worksheets[sheet_idx].0.to_lowercase();
         let ws = self.worksheet_mut_by_index(sheet_idx)?;
         let Some(duplicated) = ws
             .sheet_data
@@ -2512,24 +2899,47 @@ impl Workbook {
             return Ok(());
         };
         for (cell, formula) in duplicated.cells.iter_mut().zip(formulas) {
-            if let (Some(cell_formula), Some(formula)) = (&mut cell.f, formula) {
-                cell_formula.value = Some(shift_duplicated_row_formula(&formula)?);
+            let Some(cell_formula) = &mut cell.f else {
+                continue;
+            };
+            if let Some(text) = formula.text {
+                cell_formula.value = Some(shift_duplicated_row_formula(
+                    &text,
+                    &target_sheet_name_lowercase,
+                    row,
+                )?);
+            }
+            if let Some(array_ref) = formula.array_ref {
+                cell_formula.reference = Some(
+                    crate::cell_ref_shift::shift_cell_references_with_abs_and_scope(
+                        &array_ref,
+                        true,
+                        |_| true,
+                        |col, referenced_row, _, _| (col, referenced_row.saturating_add(1)),
+                    )?,
+                );
             }
         }
         Ok(())
     }
 
-    /// Apply a cell-reference shift transformation to sheet-scoped structures.
-    pub(crate) fn apply_reference_shift_for_sheet<F>(
+    /// Apply a structural edit to every reference that addresses the edited
+    /// sheet: formulas, sqref-based worksheet entries, defined names,
+    /// sparklines, tables, charts, drawings, comments, and page breaks.
+    ///
+    /// Formula references to removed cells become `#REF!`. Sqref-based
+    /// entries that lie only inside a removed band are dropped and partially
+    /// covered entries shrink.
+    pub(crate) fn apply_reference_shift_for_sheet(
         &mut self,
         sheet_idx: usize,
-        shift_cell: F,
-    ) -> Result<()>
-    where
-        F: Fn(u32, u32) -> (u32, u32) + Copy,
-    {
+        edit: StructuralShift,
+    ) -> Result<()> {
+        let shift_cell = |col: u32, row: u32| edit.shift_point(col, row);
         let target_sheet_name_lowercase = self.worksheets[sheet_idx].0.to_lowercase();
+        let mut removed_hyperlink_rids: Vec<String> = Vec::new();
         for owner_sheet_idx in 0..self.worksheets.len() {
+            let is_target = owner_sheet_idx == sheet_idx;
             let changed = {
                 let ws = self.worksheets[owner_sheet_idx]
                     .1
@@ -2540,132 +2950,184 @@ impl Workbook {
                         )
                     })?;
                 let before = ws.clone();
+                let shift_formula = |text: &str| {
+                    shift_references_for_owner(
+                        text,
+                        owner_sheet_idx,
+                        sheet_idx,
+                        &target_sheet_name_lowercase,
+                        edit,
+                    )
+                };
+                let shift_position = |text: &str| {
+                    shift_point_references_for_owner(
+                        text,
+                        owner_sheet_idx,
+                        sheet_idx,
+                        &target_sheet_name_lowercase,
+                        edit,
+                    )
+                };
 
                 for row in &mut ws.sheet_data.rows {
                     for cell in &mut row.cells {
                         if let Some(formula) = &mut cell.f {
                             if let Some(expr) = &mut formula.value {
-                                *expr = shift_references_for_owner(
-                                    expr,
-                                    owner_sheet_idx,
-                                    sheet_idx,
-                                    &target_sheet_name_lowercase,
-                                    shift_cell,
-                                )?;
+                                *expr = shift_formula(expr)?;
+                            }
+                            if !is_target {
+                                continue;
                             }
                             if let Some(reference) = &mut formula.reference {
-                                *reference = shift_references_for_owner(
-                                    reference,
-                                    owner_sheet_idx,
-                                    sheet_idx,
-                                    &target_sheet_name_lowercase,
-                                    shift_cell,
-                                )?;
+                                // A fully removed range means its anchor cell
+                                // was removed with it.
+                                if let Some(shifted) =
+                                    crate::cell_ref_shift::shift_sqref_structural(reference, edit)?
+                                {
+                                    *reference = shifted;
+                                }
                             }
                         }
                     }
                 }
 
-                if let Some(merges) = &mut ws.merge_cells {
-                    for merge in &mut merges.merge_cells {
-                        merge.reference = shift_references_for_owner(
-                            &merge.reference,
-                            owner_sheet_idx,
-                            sheet_idx,
-                            &target_sheet_name_lowercase,
-                            shift_cell,
-                        )?;
+                if is_target {
+                    let mut drop_merges = false;
+                    if let Some(merges) = &mut ws.merge_cells {
+                        let mut kept = Vec::with_capacity(merges.merge_cells.len());
+                        for mut merge in std::mem::take(&mut merges.merge_cells) {
+                            let Some(reference) = crate::cell_ref_shift::shift_sqref_structural(
+                                &merge.reference,
+                                edit,
+                            )?
+                            else {
+                                continue;
+                            };
+                            if edit.is_removal()
+                                && crate::cell_ref_shift::is_single_cell_reference(&reference)
+                            {
+                                continue;
+                            }
+                            merge.reference = reference;
+                            kept.push(merge);
+                        }
+                        merges.merge_cells = kept;
+                        merges.cached_coords.clear();
+                        if merges.count.is_some() {
+                            merges.count = Some(merges.merge_cells.len() as u32);
+                        }
+                        drop_merges = merges.merge_cells.is_empty();
                     }
-                    merges.cached_coords.clear();
+                    if drop_merges {
+                        ws.merge_cells = None;
+                    }
+
+                    if let Some(auto_filter) = &ws.auto_filter {
+                        match crate::cell_ref_shift::shift_sqref_structural(
+                            &auto_filter.reference,
+                            edit,
+                        )? {
+                            Some(reference) => {
+                                if let Some(auto_filter) = &mut ws.auto_filter {
+                                    auto_filter.reference = reference;
+                                }
+                            }
+                            None => ws.auto_filter = None,
+                        }
+                    }
                 }
 
-                if let Some(auto_filter) = &mut ws.auto_filter {
-                    auto_filter.reference = shift_references_for_owner(
-                        &auto_filter.reference,
-                        owner_sheet_idx,
-                        sheet_idx,
-                        &target_sheet_name_lowercase,
-                        shift_cell,
-                    )?;
-                }
-
+                let mut drop_validations = false;
                 if let Some(validations) = &mut ws.data_validations {
-                    for validation in &mut validations.data_validations {
-                        validation.sqref = shift_references_for_owner(
-                            &validation.sqref,
-                            owner_sheet_idx,
-                            sheet_idx,
-                            &target_sheet_name_lowercase,
-                            shift_cell,
-                        )?;
+                    let mut kept = Vec::with_capacity(validations.data_validations.len());
+                    for mut validation in std::mem::take(&mut validations.data_validations) {
+                        if is_target {
+                            match crate::cell_ref_shift::shift_sqref_structural(
+                                &validation.sqref,
+                                edit,
+                            )? {
+                                Some(sqref) => validation.sqref = sqref,
+                                None => continue,
+                            }
+                        }
                         for formula in [&mut validation.formula1, &mut validation.formula2]
                             .into_iter()
                             .flatten()
                         {
-                            *formula = shift_references_for_owner(
-                                formula,
-                                owner_sheet_idx,
-                                sheet_idx,
-                                &target_sheet_name_lowercase,
-                                shift_cell,
-                            )?;
+                            *formula = shift_formula(formula)?;
                         }
+                        kept.push(validation);
                     }
+                    validations.data_validations = kept;
+                    if validations.count.is_some() {
+                        validations.count = Some(validations.data_validations.len() as u32);
+                    }
+                    drop_validations = validations.data_validations.is_empty();
+                }
+                if drop_validations {
+                    ws.data_validations = None;
                 }
 
-                for formatting in &mut ws.conditional_formatting {
-                    formatting.sqref = shift_references_for_owner(
-                        &formatting.sqref,
-                        owner_sheet_idx,
-                        sheet_idx,
-                        &target_sheet_name_lowercase,
-                        shift_cell,
-                    )?;
+                let mut kept_formatting = Vec::with_capacity(ws.conditional_formatting.len());
+                for mut formatting in std::mem::take(&mut ws.conditional_formatting) {
+                    if is_target {
+                        match crate::cell_ref_shift::shift_sqref_structural(
+                            &formatting.sqref,
+                            edit,
+                        )? {
+                            Some(sqref) => formatting.sqref = sqref,
+                            None => continue,
+                        }
+                    }
                     for rule in &mut formatting.cf_rules {
                         for formula in &mut rule.formulas {
-                            *formula = shift_references_for_owner(
-                                formula,
-                                owner_sheet_idx,
-                                sheet_idx,
-                                &target_sheet_name_lowercase,
-                                shift_cell,
-                            )?;
+                            *formula = shift_formula(formula)?;
                         }
                     }
+                    kept_formatting.push(formatting);
                 }
+                ws.conditional_formatting = kept_formatting;
 
+                let mut drop_hyperlinks = false;
                 if let Some(hyperlinks) = &mut ws.hyperlinks {
-                    for hyperlink in &mut hyperlinks.hyperlinks {
-                        hyperlink.reference = shift_references_for_owner(
-                            &hyperlink.reference,
-                            owner_sheet_idx,
-                            sheet_idx,
-                            &target_sheet_name_lowercase,
-                            shift_cell,
-                        )?;
-                        if let Some(location) = &mut hyperlink.location {
-                            *location = shift_references_for_owner(
-                                location,
-                                owner_sheet_idx,
-                                sheet_idx,
-                                &target_sheet_name_lowercase,
-                                shift_cell,
-                            )?;
+                    let mut kept = Vec::with_capacity(hyperlinks.hyperlinks.len());
+                    for mut hyperlink in std::mem::take(&mut hyperlinks.hyperlinks) {
+                        if is_target {
+                            match crate::cell_ref_shift::shift_sqref_structural(
+                                &hyperlink.reference,
+                                edit,
+                            )? {
+                                Some(reference) => hyperlink.reference = reference,
+                                None => {
+                                    removed_hyperlink_rids.extend(hyperlink.r_id.take());
+                                    continue;
+                                }
+                            }
                         }
+                        if let Some(location) = &mut hyperlink.location {
+                            *location = shift_position(location)?;
+                        }
+                        kept.push(hyperlink);
                     }
+                    if is_target {
+                        removed_hyperlink_rids.retain(|rid| {
+                            !kept
+                                .iter()
+                                .any(|hyperlink| hyperlink.r_id.as_deref() == Some(rid.as_str()))
+                        });
+                    }
+                    hyperlinks.hyperlinks = kept;
+                    drop_hyperlinks = hyperlinks.hyperlinks.is_empty();
+                }
+                if drop_hyperlinks {
+                    ws.hyperlinks = None;
                 }
 
                 if let Some(views) = &mut ws.sheet_views {
                     for view in &mut views.sheet_views {
                         if let Some(pane) = &mut view.pane {
                             if let Some(top_left) = &mut pane.top_left_cell {
-                                *top_left = shift_references_for_owner(
-                                    top_left,
-                                    owner_sheet_idx,
-                                    sheet_idx,
-                                    &target_sheet_name_lowercase,
-                                    shift_cell,
-                                )?;
+                                *top_left = shift_position(top_left)?;
                             }
                         }
                         for selection in &mut view.selection {
@@ -2673,15 +3135,25 @@ impl Workbook {
                                 .into_iter()
                                 .flatten()
                             {
-                                *reference = shift_references_for_owner(
-                                    reference,
-                                    owner_sheet_idx,
-                                    sheet_idx,
-                                    &target_sheet_name_lowercase,
-                                    shift_cell,
-                                )?;
+                                *reference = shift_position(reference)?;
                             }
                         }
+                    }
+                }
+
+                if is_target {
+                    if edit.is_row_axis() {
+                        shift_page_breaks(
+                            &mut ws.row_breaks,
+                            edit,
+                            crate::utils::constants::MAX_ROWS,
+                        );
+                    } else {
+                        shift_page_breaks(
+                            &mut ws.col_breaks,
+                            edit,
+                            crate::utils::constants::MAX_COLUMNS,
+                        );
                     }
                 }
 
@@ -2692,16 +3164,24 @@ impl Workbook {
             }
         }
 
+        if !removed_hyperlink_rids.is_empty() {
+            if let Some(rels) = self.worksheet_rels.get_mut(&sheet_idx) {
+                rels.relationships.retain(|relationship| {
+                    !(relationship.rel_type == rel_types::HYPERLINK
+                        && removed_hyperlink_rids.contains(&relationship.id))
+                });
+            }
+        }
+
         if let Some(defined_names) = &mut self.workbook_xml.defined_names {
             for defined_name in &mut defined_names.defined_names {
                 let owner = defined_name.local_sheet_id.map(|id| id as usize);
-                defined_name.value =
-                    crate::cell_ref_shift::shift_cell_references_with_abs_and_scope(
-                        &defined_name.value,
-                        owner == Some(sheet_idx),
-                        |name| crate::sheet::sheet_names_equal(name, &target_sheet_name_lowercase),
-                        |col, row, _, _| shift_cell(col, row),
-                    )?;
+                defined_name.value = crate::cell_ref_shift::shift_references_structural(
+                    &defined_name.value,
+                    owner == Some(sheet_idx),
+                    |name| crate::sheet::sheet_names_equal(name, &target_sheet_name_lowercase),
+                    edit,
+                )?;
             }
         }
 
@@ -2713,7 +3193,7 @@ impl Workbook {
                     owner_sheet_idx,
                     sheet_idx,
                     &target_sheet_name_lowercase,
-                    shift_cell,
+                    edit,
                 )?;
                 if data_range != sparkline.data_range {
                     sparkline_raw_replacements.push((
@@ -2725,12 +3205,12 @@ impl Workbook {
                     sparkline.data_range = data_range;
                 }
                 if owner_sheet_idx == sheet_idx {
-                    let location = shift_references_for_owner(
+                    let location = shift_point_references_for_owner(
                         &sparkline.location,
                         owner_sheet_idx,
                         sheet_idx,
                         &target_sheet_name_lowercase,
-                        shift_cell,
+                        edit,
                     )?;
                     if location != sparkline.location {
                         sparkline_raw_replacements.push((
@@ -2788,25 +3268,10 @@ impl Workbook {
             if *owner_sheet_idx != sheet_idx {
                 continue;
             }
-            let shifted_reference = shift_references_for_owner(
-                &table.reference,
-                sheet_idx,
-                sheet_idx,
-                &target_sheet_name_lowercase,
-                shift_cell,
-            )?;
-            shifted_table |= shifted_reference != table.reference;
-            table.reference = shifted_reference;
-            if let Some(auto_filter) = &mut table.auto_filter {
-                let shifted_reference = shift_references_for_owner(
-                    &auto_filter.reference,
-                    sheet_idx,
-                    sheet_idx,
-                    &target_sheet_name_lowercase,
-                    shift_cell,
-                )?;
-                shifted_table |= shifted_reference != auto_filter.reference;
-                auto_filter.reference = shifted_reference;
+            let shifted = shift_table_definition(table, edit)?;
+            if shifted != *table {
+                shifted_table = true;
+                *table = shifted;
             }
         }
         if shifted_table {
@@ -2827,7 +3292,7 @@ impl Workbook {
                         owner_sheet_idx,
                         sheet_idx,
                         &target_sheet_name_lowercase,
-                        shift_cell,
+                        edit,
                     )?;
                     if shifted != *formula {
                         changed = true;
@@ -2890,6 +3355,79 @@ impl Workbook {
             }
         }
 
+        self.shift_comment_anchors(sheet_idx, edit)
+    }
+
+    /// Shift legacy and threaded comment anchors on the edited sheet and drop
+    /// comments whose cell was removed. Comment VML shapes are regenerated on
+    /// save from the shifted anchors.
+    fn shift_comment_anchors(&mut self, sheet_idx: usize, edit: StructuralShift) -> Result<()> {
+        let mut comments_changed = false;
+        let mut clear_comments = false;
+        if let Some(Some(comments)) = self.sheet_comments.get_mut(sheet_idx) {
+            let mut kept = Vec::with_capacity(comments.comment_list.comments.len());
+            for mut comment in std::mem::take(&mut comments.comment_list.comments) {
+                match shift_cell_anchor(&comment.r#ref, edit)? {
+                    Some(reference) => {
+                        comments_changed |= reference != comment.r#ref;
+                        comment.r#ref = reference;
+                        kept.push(comment);
+                    }
+                    None => comments_changed = true,
+                }
+            }
+            comments.comment_list.comments = kept;
+            clear_comments = comments.comment_list.comments.is_empty();
+        }
+        if clear_comments {
+            self.sheet_comments[sheet_idx] = None;
+        }
+        if comments_changed {
+            self.mark_sheet_dirty(sheet_idx);
+            while self.sheet_form_controls.len() <= sheet_idx {
+                self.sheet_form_controls.push(Vec::new());
+            }
+            if self.sheet_form_controls[sheet_idx].is_empty() {
+                if let Some(Some(vml)) = self.sheet_vml.get(sheet_idx) {
+                    let controls =
+                        crate::control::parse_form_control_configs(&String::from_utf8_lossy(vml));
+                    if !controls.is_empty() {
+                        self.sheet_form_controls[sheet_idx] = controls;
+                    }
+                }
+            }
+            if sheet_idx < self.sheet_vml.len() {
+                self.sheet_vml[sheet_idx] = self.sheet_vml[sheet_idx]
+                    .as_deref()
+                    .and_then(crate::vml::strip_vml_comment_shapes_from_vml);
+            }
+        }
+
+        let mut threaded_changed = false;
+        let mut clear_threaded = false;
+        if let Some(Some(threaded)) = self.sheet_threaded_comments.get_mut(sheet_idx) {
+            let mut kept = Vec::with_capacity(threaded.comments.len());
+            for mut comment in std::mem::take(&mut threaded.comments) {
+                match shift_cell_anchor(&comment.cell_ref, edit)? {
+                    Some(reference) => {
+                        threaded_changed |= reference != comment.cell_ref;
+                        comment.cell_ref = reference;
+                        kept.push(comment);
+                    }
+                    None => threaded_changed = true,
+                }
+            }
+            threaded.comments = kept;
+            clear_threaded = threaded.comments.is_empty();
+        }
+        if clear_threaded {
+            self.sheet_threaded_comments[sheet_idx] = None;
+        }
+        if threaded_changed {
+            self.mark_sheet_dirty(sheet_idx);
+            self.deferred_parts
+                .mark_dirty(crate::workbook::aux::AuxCategory::ThreadedComments);
+        }
         Ok(())
     }
 
@@ -5219,6 +5757,138 @@ mod tests {
             value => panic!("expected formula, got {value:?}"),
         }
         assert_eq!(wb.get_cell_value("Sheet1", "A2").unwrap(), CellValue::Empty);
+    }
+
+    #[test]
+    fn duplicate_row_expands_shared_formula_copies_from_master() {
+        let mut wb = Workbook::new();
+        wb.set_cell_formula("Sheet1", "B1", "A1*2").unwrap();
+        wb.set_cell_formula("Sheet1", "B2", "A2*2").unwrap();
+        {
+            let ws = wb.worksheet_mut("Sheet1").unwrap();
+            let master = ws.sheet_data.rows[0].cells[0].f.as_mut().unwrap();
+            master.t = Some("shared".into());
+            master.reference = Some("B1:B2".into());
+            master.si = Some(0);
+            let child = ws.sheet_data.rows[1].cells[0].f.as_mut().unwrap();
+            child.t = Some("shared".into());
+            child.si = Some(0);
+            child.value = None;
+        }
+
+        wb.duplicate_row("Sheet1", 2).unwrap();
+        wb.duplicate_row("Sheet1", 1).unwrap();
+
+        let ws = wb.worksheet_ref("Sheet1").unwrap();
+        let formula_at = |row: u32| {
+            ws.sheet_data
+                .rows
+                .iter()
+                .find(|candidate| candidate.r == row)
+                .unwrap()
+                .cells[0]
+                .f
+                .clone()
+                .unwrap()
+        };
+        let master_copy = formula_at(2);
+        assert_eq!(master_copy.value.as_deref(), Some("A2*2"));
+        assert_eq!(
+            (master_copy.t, master_copy.si, master_copy.reference),
+            (None, None, None)
+        );
+        let child_copy = formula_at(4);
+        assert_eq!(child_copy.value.as_deref(), Some("A4*2"));
+        assert_eq!((child_copy.t, child_copy.si), (None, None));
+        let master = formula_at(1);
+        assert_eq!(master.si, Some(0));
+        assert_eq!(master.reference.as_deref(), Some("B1:B3"));
+    }
+
+    #[test]
+    fn duplicate_row_moves_array_formula_range_with_copy() {
+        let mut wb = Workbook::new();
+        wb.set_cell_formula("Sheet1", "B3", "SUM(A3:A4)").unwrap();
+        {
+            let ws = wb.worksheet_mut("Sheet1").unwrap();
+            let formula = ws.sheet_data.rows[0].cells[0].f.as_mut().unwrap();
+            formula.t = Some("array".into());
+            formula.reference = Some("B3".into());
+        }
+
+        wb.duplicate_row("Sheet1", 3).unwrap();
+
+        let ws = wb.worksheet_ref("Sheet1").unwrap();
+        let copy = ws.sheet_data.rows[1].cells[0].f.clone().unwrap();
+        assert_eq!(copy.t.as_deref(), Some("array"));
+        assert_eq!(copy.reference.as_deref(), Some("B4"));
+        assert_eq!(copy.value.as_deref(), Some("SUM(A4:A5)"));
+        let source = ws.sheet_data.rows[0].cells[0].f.clone().unwrap();
+        assert_eq!(source.reference.as_deref(), Some("B3"));
+        assert_eq!(source.value.as_deref(), Some("SUM(A3:A5)"));
+    }
+
+    #[test]
+    fn column_edits_shift_and_drop_column_page_breaks() {
+        let mut wb = Workbook::new();
+        wb.worksheet_mut("Sheet1").unwrap().col_breaks = Some(sheetkit_xml::worksheet::RowBreaks {
+            count: Some(2),
+            manual_break_count: Some(2),
+            brk: vec![
+                sheetkit_xml::worksheet::Break {
+                    id: 2,
+                    max: None,
+                    man: Some(true),
+                },
+                sheetkit_xml::worksheet::Break {
+                    id: 5,
+                    max: None,
+                    man: Some(true),
+                },
+            ],
+        });
+
+        wb.insert_cols("Sheet1", "A", 2).unwrap();
+        wb.remove_col("Sheet1", "E").unwrap();
+
+        let breaks = wb
+            .worksheet_ref("Sheet1")
+            .unwrap()
+            .col_breaks
+            .clone()
+            .unwrap();
+        assert_eq!(
+            breaks.brk.iter().map(|brk| brk.id).collect::<Vec<_>>(),
+            vec![6]
+        );
+        assert_eq!(
+            (breaks.count, breaks.manual_break_count),
+            (Some(1), Some(1))
+        );
+        assert!(wb.worksheet_ref("Sheet1").unwrap().row_breaks.is_none());
+    }
+
+    #[test]
+    fn insert_rows_rejects_comment_pushed_off_grid_without_mutation() {
+        let mut wb = Workbook::new();
+        wb.add_comment(
+            "Sheet1",
+            &crate::comment::CommentConfig {
+                cell: "A1048576".into(),
+                author: "Author".into(),
+                text: "edge".into(),
+            },
+        )
+        .unwrap();
+        wb.set_cell_formula("Sheet1", "B1", "A2").unwrap();
+
+        let error = wb.insert_rows("Sheet1", 1, 1).unwrap_err();
+        assert!(matches!(error, Error::InvalidRowNumber(1_048_577)));
+        match wb.get_cell_value("Sheet1", "B1").unwrap() {
+            CellValue::Formula { expr, .. } => assert_eq!(expr, "A2"),
+            value => panic!("expected formula, got {value:?}"),
+        }
+        assert_eq!(wb.get_comments("Sheet1").unwrap()[0].cell, "A1048576");
     }
 
     #[test]
