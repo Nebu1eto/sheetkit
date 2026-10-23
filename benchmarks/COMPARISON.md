@@ -186,7 +186,7 @@ cd benchmarks/node
 SHEETKIT_COMPARE_BASE=73819d8 pnpm bench:compare
 ```
 
-For each revision the script creates a detached git worktree in a run-owned directory under the scratch root, copies `Cargo.lock` from the current checkout into it, runs `pnpm install --frozen-lockfile`, and builds `@sheetkit/node` in release mode with a separate `CARGO_TARGET_DIR`. `Cargo.lock` is gitignored, so both revisions build against the dependency versions resolved in your checkout rather than the versions each revision would resolve on its own. Both revisions run the `release-gate.ts` from the current checkout, so the measurement code is the same on both sides. The worktrees and build directories are removed when the run ends unless `SHEETKIT_COMPARE_KEEP=1` is set.
+For each revision the script creates a detached git worktree in a run-owned directory under the scratch root, copies `Cargo.lock` from the current checkout into it, runs `pnpm install --frozen-lockfile`, and builds `@sheetkit/node` in release mode with a separate `CARGO_TARGET_DIR`. `Cargo.lock` is gitignored, so both revisions build against the dependency versions resolved in your checkout rather than the versions each revision would resolve on its own. Each revision runs its own `benchmarks/node/release-gate.ts`; a revision that predates the gate script runs the current one instead, and the report says so. The worktrees and build directories are removed when the run ends unless `SHEETKIT_COMPARE_KEEP=1` is set.
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
@@ -205,13 +205,17 @@ Generate the fixtures first with `pnpm generate` if `benchmarks/node/fixtures` i
 
 ### Runtime
 
-The script runs everything sequentially and is CPU heavy; run it on an otherwise idle machine. Two cold release builds of the native binding come first. The measurement phase then runs every selected operation on every fixture for both revisions, each with `SAMPLES + WARMUPS` iterations. With the defaults (12 fixtures, 8 operations without a password, 23 iterations, 2 revisions) that is 192 release-gate processes, so expect the full matrix to take far longer than the builds; a full-matrix wall-clock time has not been recorded. Start with a narrow run to check the setup, for example:
+The script runs everything sequentially and is CPU heavy; run it on an otherwise idle machine. Two cold release builds of the native binding come first. The measurement phase then runs every selected operation on every fixture for both revisions, each with `SAMPLES + WARMUPS` iterations, alternating which revision goes first per row to cancel order bias. With the defaults (12 fixtures, 8 operations without a password, 23 iterations, 2 revisions) that is 192 release-gate processes. On an Apple M4 Pro with other work running, a full matrix at 30 samples took 12 to 13 minutes after the builds. Start with a narrow run to check the setup, for example:
 
 ```bash
 SHEETKIT_COMPARE_BASE=73819d8 SHEETKIT_COMPARE_SAMPLES=3 SHEETKIT_COMPARE_WARMUPS=1 \
 SHEETKIT_COMPARE_OPERATIONS=ordinary-open,output-csv SHEETKIT_COMPARE_FIXTURES=scale-1k.xlsx \
 pnpm bench:compare
 ```
+
+### Reading the report
+
+Each row gives the median and the median absolute deviation (MAD) of both revisions. Treat a row as a real change only when the difference is larger than about three times the larger MAD; a `REGRESSION` mark alone means the median moved past the threshold, not that the move is outside noise. Rows marked `skipped` failed identically on both sides (for example an output limit both revisions enforce); rows marked `missing` failed on one side only, which is a behaviour difference to investigate rather than a timing result. Sub-millisecond rows and rows with a MAD above a few percent of the median deserve a repeat run before acting on them, and a cell that flips between runs should be re-measured with more processes per side on a quiet machine.
 
 ### Reading the Output
 
