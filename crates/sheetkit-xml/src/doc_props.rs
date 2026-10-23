@@ -117,48 +117,85 @@ pub fn serialize_core_properties(props: &CoreProperties) -> String {
     String::from_utf8(writer.into_inner()).unwrap()
 }
 
+fn xml_error(e: impl std::fmt::Display) -> String {
+    format!("XML parse error: {e}")
+}
+
+/// Append the decoded content of a text or CDATA event to `buf`.
+///
+/// Other events are ignored. Entity references in text are unescaped;
+/// CDATA content is taken verbatim.
+fn append_text(buf: &mut String, event: &Event<'_>) -> Result<(), String> {
+    match event {
+        Event::Text(t) => buf.push_str(&t.unescape().map_err(xml_error)?),
+        Event::CData(c) => buf.push_str(std::str::from_utf8(c).map_err(xml_error)?),
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Store `text` into the core property field named by the local name `tag`.
+fn set_core_field(props: &mut CoreProperties, tag: &[u8], text: String) {
+    let slot = match tag {
+        b"title" => &mut props.title,
+        b"subject" => &mut props.subject,
+        b"creator" => &mut props.creator,
+        b"keywords" => &mut props.keywords,
+        b"description" => &mut props.description,
+        b"lastModifiedBy" => &mut props.last_modified_by,
+        b"revision" => &mut props.revision,
+        b"created" => &mut props.created,
+        b"modified" => &mut props.modified,
+        b"category" => &mut props.category,
+        b"contentStatus" => &mut props.content_status,
+        _ => return,
+    };
+    *slot = Some(text);
+}
+
 /// Deserialize `CoreProperties` from an XML string.
+///
+/// Fields are read from direct children of the root element, matched by local
+/// name regardless of namespace prefix. Values keep their exact text,
+/// including empty and whitespace-only strings and CDATA sections.
 pub fn deserialize_core_properties(xml: &str) -> Result<CoreProperties, String> {
     let mut reader = Reader::from_str(xml);
-    reader.config_mut().trim_text(true);
 
     let mut props = CoreProperties::default();
-    let mut current_tag: Option<String> = None;
+    let mut depth = 0usize;
+    // Local name and accumulated text of the field element currently open.
+    let mut current: Option<(Vec<u8>, String)> = None;
 
     loop {
-        match reader.read_event() {
-            Ok(Event::Start(ref e)) => {
-                let name = String::from_utf8_lossy(e.name().as_ref()).to_string();
-                current_tag = Some(name);
+        let event = reader.read_event().map_err(xml_error)?;
+        match &event {
+            Event::Start(e) => {
+                depth += 1;
+                if depth == 2 {
+                    current = Some((e.local_name().as_ref().to_vec(), String::new()));
+                }
             }
-            Ok(Event::Text(ref e)) => {
-                if let Some(ref tag) = current_tag {
-                    let text = e.unescape().unwrap_or_default().to_string();
-                    match tag.as_str() {
-                        "dc:title" | "title" => props.title = Some(text),
-                        "dc:subject" | "subject" => props.subject = Some(text),
-                        "dc:creator" | "creator" => props.creator = Some(text),
-                        "cp:keywords" | "keywords" => props.keywords = Some(text),
-                        "dc:description" | "description" => props.description = Some(text),
-                        "cp:lastModifiedBy" | "lastModifiedBy" => {
-                            props.last_modified_by = Some(text);
-                        }
-                        "cp:revision" | "revision" => props.revision = Some(text),
-                        "dcterms:created" | "created" => props.created = Some(text),
-                        "dcterms:modified" | "modified" => props.modified = Some(text),
-                        "cp:category" | "category" => props.category = Some(text),
-                        "cp:contentStatus" | "contentStatus" => {
-                            props.content_status = Some(text);
-                        }
-                        _ => {}
+            Event::Empty(e) => {
+                if depth == 1 {
+                    set_core_field(&mut props, e.local_name().as_ref(), String::new());
+                }
+            }
+            Event::Text(_) | Event::CData(_) => {
+                if depth == 2 {
+                    if let Some((_, buf)) = current.as_mut() {
+                        append_text(buf, &event)?;
                     }
                 }
             }
-            Ok(Event::End(_)) => {
-                current_tag = None;
+            Event::End(_) => {
+                if depth == 2 {
+                    if let Some((tag, text)) = current.take() {
+                        set_core_field(&mut props, &tag, text);
+                    }
+                }
+                depth = depth.saturating_sub(1);
             }
-            Ok(Event::Eof) => break,
-            Err(e) => return Err(format!("XML parse error: {e}")),
+            Event::Eof => break,
             _ => {}
         }
     }
@@ -337,79 +374,125 @@ pub fn serialize_custom_properties(props: &CustomProperties) -> String {
     String::from_utf8(writer.into_inner()).unwrap()
 }
 
+/// A `property` element whose closing tag has not been reached yet.
+struct PendingProperty {
+    fmtid: Option<String>,
+    pid: Option<u32>,
+    name: Option<String>,
+    /// Element depth of the `property` element itself.
+    depth: usize,
+    /// Number of direct child elements seen; only the first is the value.
+    value_children: usize,
+    value_tag: Option<Vec<u8>>,
+    value_text: String,
+}
+
+impl PendingProperty {
+    fn from_start(e: &BytesStart<'_>, depth: usize) -> Result<Self, String> {
+        let mut pending = Self {
+            fmtid: None,
+            pid: None,
+            name: None,
+            depth,
+            value_children: 0,
+            value_tag: None,
+            value_text: String::new(),
+        };
+        for attr in e.attributes().flatten() {
+            let slot = match attr.key.as_ref() {
+                b"fmtid" => &mut pending.fmtid,
+                b"name" => &mut pending.name,
+                b"pid" => {
+                    let raw = attr.unescape_value().map_err(xml_error)?;
+                    pending.pid = raw.trim().parse().ok();
+                    continue;
+                }
+                _ => continue,
+            };
+            *slot = Some(attr.unescape_value().map_err(xml_error)?.into_owned());
+        }
+        Ok(pending)
+    }
+
+    fn start_value(&mut self, local_name: &[u8]) {
+        self.value_children += 1;
+        if self.value_children == 1 {
+            self.value_tag = Some(local_name.to_vec());
+        }
+    }
+
+    fn finish(self) -> Option<CustomProperty> {
+        let text = self.value_text;
+        let value = match self.value_tag.as_deref()? {
+            b"lpwstr" => CustomPropertyValue::String(text),
+            b"i4" => CustomPropertyValue::Int(text.trim().parse().ok()?),
+            b"r8" => CustomPropertyValue::Float(text.trim().parse().ok()?),
+            b"bool" => {
+                let t = text.trim();
+                CustomPropertyValue::Bool(t == "true" || t == "1")
+            }
+            b"filetime" => CustomPropertyValue::DateTime(text.trim().to_string()),
+            _ => return None,
+        };
+        Some(CustomProperty {
+            fmtid: self.fmtid?,
+            pid: self.pid?,
+            name: self.name?,
+            value,
+        })
+    }
+}
+
 /// Deserialize `CustomProperties` from an XML string.
+///
+/// Each `property` element is finalized at its closing tag, so empty,
+/// whitespace-only, and CDATA string values are preserved. Attribute values
+/// are entity-decoded. Value elements are matched by local name regardless of
+/// prefix; properties with unsupported value types (e.g. `vt:vector`) are
+/// skipped.
 pub fn deserialize_custom_properties(xml: &str) -> Result<CustomProperties, String> {
     let mut reader = Reader::from_str(xml);
-    reader.config_mut().trim_text(true);
 
     let mut props = CustomProperties::default();
-
-    // State for the current property being parsed
-    let mut current_fmtid: Option<String> = None;
-    let mut current_pid: Option<u32> = None;
-    let mut current_name: Option<String> = None;
-    let mut current_value_tag: Option<String> = None;
+    let mut depth = 0usize;
+    let mut pending: Option<PendingProperty> = None;
 
     loop {
-        match reader.read_event() {
-            Ok(Event::Start(ref e)) => {
-                let tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
-                if tag == "property" {
-                    // Extract attributes
-                    for attr in e.attributes().flatten() {
-                        let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
-                        let val = String::from_utf8_lossy(&attr.value).to_string();
-                        match key.as_str() {
-                            "fmtid" => current_fmtid = Some(val),
-                            "pid" => current_pid = val.parse().ok(),
-                            "name" => current_name = Some(val),
-                            _ => {}
-                        }
+        let event = reader.read_event().map_err(xml_error)?;
+        match &event {
+            Event::Start(e) => {
+                depth += 1;
+                match pending.as_mut() {
+                    None if e.local_name().as_ref() == b"property" => {
+                        pending = Some(PendingProperty::from_start(e, depth)?);
                     }
-                } else if tag.starts_with("vt:")
-                    || matches!(tag.as_str(), "lpwstr" | "i4" | "r8" | "bool" | "filetime")
-                {
-                    current_value_tag = Some(tag);
+                    Some(p) if depth == p.depth + 1 => p.start_value(e.local_name().as_ref()),
+                    _ => {}
                 }
             }
-            Ok(Event::Text(ref e)) => {
-                if let Some(ref vtag) = current_value_tag {
-                    let text = e.unescape().unwrap_or_default().to_string();
-                    let value = match vtag.as_str() {
-                        "vt:lpwstr" | "lpwstr" => Some(CustomPropertyValue::String(text)),
-                        "vt:i4" | "i4" => text.parse::<i32>().ok().map(CustomPropertyValue::Int),
-                        "vt:r8" | "r8" => text.parse::<f64>().ok().map(CustomPropertyValue::Float),
-                        "vt:bool" | "bool" => {
-                            Some(CustomPropertyValue::Bool(text == "true" || text == "1"))
-                        }
-                        "vt:filetime" | "filetime" => Some(CustomPropertyValue::DateTime(text)),
-                        _ => None,
-                    };
-                    if let (Some(fmtid), Some(pid), Some(name), Some(val)) = (
-                        current_fmtid.take(),
-                        current_pid.take(),
-                        current_name.take(),
-                        value,
-                    ) {
-                        props.properties.push(CustomProperty {
-                            fmtid,
-                            pid,
-                            name,
-                            value: val,
-                        });
+            Event::Empty(e) => {
+                if let Some(p) = pending.as_mut() {
+                    if depth == p.depth {
+                        p.start_value(e.local_name().as_ref());
                     }
                 }
             }
-            Ok(Event::End(ref e)) => {
-                let tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
-                if tag.starts_with("vt:")
-                    || matches!(tag.as_str(), "lpwstr" | "i4" | "r8" | "bool" | "filetime")
-                {
-                    current_value_tag = None;
+            Event::Text(_) | Event::CData(_) => {
+                if let Some(p) = pending.as_mut() {
+                    if depth == p.depth + 1 && p.value_children == 1 {
+                        append_text(&mut p.value_text, &event)?;
+                    }
                 }
             }
-            Ok(Event::Eof) => break,
-            Err(e) => return Err(format!("XML parse error: {e}")),
+            Event::End(_) => {
+                if pending.as_ref().is_some_and(|p| p.depth == depth) {
+                    if let Some(prop) = pending.take().and_then(PendingProperty::finish) {
+                        props.properties.push(prop);
+                    }
+                }
+                depth = depth.saturating_sub(1);
+            }
+            Event::Eof => break,
             _ => {}
         }
     }
@@ -681,5 +764,134 @@ mod tests {
         let xml = serialize_custom_properties(&props);
         let parsed = deserialize_custom_properties(&xml).unwrap();
         assert_eq!(parsed.properties[0].value, CustomPropertyValue::Bool(false));
+    }
+
+    fn string_prop(pid: u32, name: &str, value: &str) -> CustomProperty {
+        CustomProperty {
+            fmtid: CUSTOM_PROPERTY_FMTID.to_string(),
+            pid,
+            name: name.to_string(),
+            value: CustomPropertyValue::String(value.to_string()),
+        }
+    }
+
+    #[test]
+    fn test_custom_properties_special_chars_and_empty_values_multi_cycle() {
+        let props = CustomProperties {
+            properties: vec![
+                string_prop(2, "A&B", "x&y"),
+                string_prop(3, "<lt>", "<v>"),
+                string_prop(4, "q\"uote'apos", "\"'"),
+                string_prop(5, "Empty", ""),
+                string_prop(6, "Spaces", "  "),
+                string_prop(7, "Padded", " a "),
+                CustomProperty {
+                    fmtid: CUSTOM_PROPERTY_FMTID.to_string(),
+                    pid: 8,
+                    name: "Count&Co".to_string(),
+                    value: CustomPropertyValue::Int(3),
+                },
+            ],
+        };
+
+        let mut current = props.clone();
+        for _ in 0..3 {
+            let xml = serialize_custom_properties(&current);
+            current = deserialize_custom_properties(&xml).unwrap();
+            assert_eq!(current, props);
+        }
+    }
+
+    #[test]
+    fn test_custom_properties_cdata_and_pretty_printed_values() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/custom-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes">
+  <property fmtid="{D5CDD505-2E9C-101B-9397-08002B2CF9AE}" pid="2" name='Cd&amp;ata'>
+    <vt:lpwstr><![CDATA[a<b>&amp;]]></vt:lpwstr>
+  </property>
+  <property fmtid="{D5CDD505-2E9C-101B-9397-08002B2CF9AE}" pid="3" name="Mixed"><vt:lpwstr>x &amp; <![CDATA[<y>]]></vt:lpwstr></property>
+  <property fmtid="{D5CDD505-2E9C-101B-9397-08002B2CF9AE}" pid="4" name="SelfClosed"><vt:lpwstr/></property>
+  <property fmtid="{D5CDD505-2E9C-101B-9397-08002B2CF9AE}" pid="5" name="Num">
+    <vt:i4> 7 </vt:i4>
+  </property>
+</Properties>"#;
+
+        let parsed = deserialize_custom_properties(xml).unwrap();
+        assert_eq!(
+            parsed.properties,
+            vec![
+                string_prop(2, "Cd&ata", "a<b>&amp;"),
+                string_prop(3, "Mixed", "x & <y>"),
+                string_prop(4, "SelfClosed", ""),
+                CustomProperty {
+                    fmtid: CUSTOM_PROPERTY_FMTID.to_string(),
+                    pid: 5,
+                    name: "Num".to_string(),
+                    value: CustomPropertyValue::Int(7),
+                },
+            ]
+        );
+
+        let again = deserialize_custom_properties(&serialize_custom_properties(&parsed)).unwrap();
+        assert_eq!(again, parsed);
+    }
+
+    #[test]
+    fn test_custom_properties_vector_value_does_not_leak_inner_items() {
+        let xml = r#"<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/custom-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes">
+<property fmtid="{D5CDD505-2E9C-101B-9397-08002B2CF9AE}" pid="2" name="Vec"><vt:vector size="1" baseType="lpwstr"><vt:lpwstr>inner</vt:lpwstr></vt:vector></property>
+<property fmtid="{D5CDD505-2E9C-101B-9397-08002B2CF9AE}" pid="3" name="After"><vt:lpwstr>ok</vt:lpwstr></property>
+</Properties>"#;
+
+        let parsed = deserialize_custom_properties(xml).unwrap();
+        assert_eq!(parsed.properties, vec![string_prop(3, "After", "ok")]);
+    }
+
+    #[test]
+    fn test_core_properties_special_chars_and_empty_values_multi_cycle() {
+        let props = CoreProperties {
+            title: Some("A&B <c> \"d\" 'e'".to_string()),
+            subject: Some(String::new()),
+            creator: Some("  ".to_string()),
+            keywords: Some(" k1, k2 ".to_string()),
+            ..Default::default()
+        };
+
+        let mut current = props.clone();
+        for _ in 0..3 {
+            let xml = serialize_core_properties(&current);
+            current = deserialize_core_properties(&xml).unwrap();
+            assert_eq!(current, props);
+        }
+    }
+
+    #[test]
+    fn test_core_properties_cdata_and_alternate_prefixes() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<core:coreProperties xmlns:core="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:d="http://purl.org/dc/elements/1.1/">
+  <d:title><![CDATA[T<1>&]]></d:title>
+  <d:creator/>
+  <core:keywords>a &amp; b</core:keywords>
+</core:coreProperties>"#;
+
+        let props = deserialize_core_properties(xml).unwrap();
+        assert_eq!(props.title.as_deref(), Some("T<1>&"));
+        assert_eq!(props.creator.as_deref(), Some(""));
+        assert_eq!(props.keywords.as_deref(), Some("a & b"));
+        assert_eq!(props.subject, None);
+    }
+
+    #[test]
+    fn test_extended_properties_special_chars_and_empty_values() {
+        let mut props = ExtendedProperties::with_defaults();
+        props.company = Some("A&B <c> \"d\" 'e'".to_string());
+        props.manager = Some(String::new());
+
+        let mut current = props.clone();
+        for _ in 0..3 {
+            let xml = quick_xml::se::to_string(&current).unwrap();
+            current = quick_xml::de::from_str(&xml).unwrap();
+            assert_eq!(current, props);
+        }
     }
 }

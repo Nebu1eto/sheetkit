@@ -4,6 +4,10 @@
 //! comment/note pop-up boxes in the UI. This module generates minimal VML
 //! markup for new comments and tracks preserved VML bytes for round-tripping.
 
+use quick_xml::events::{BytesStart, Event};
+use quick_xml::name::ResolveResult;
+use quick_xml::NsReader;
+
 use crate::utils::cell_ref::cell_name_to_coordinates;
 
 /// Default comment box width in columns (roughly 2 columns).
@@ -59,9 +63,20 @@ pub fn merge_vml_comments(existing_vml: &[u8], cells: &[&str], start_shape_id: u
     }
 }
 
+/// VML namespace URI for `v:` elements.
+const VML_NS: &[u8] = b"urn:schemas-microsoft-com:vml";
+/// Excel namespace URI for `x:` elements such as `x:ClientData`.
+const EXCEL_NS: &[u8] = b"urn:schemas-microsoft-com:office:excel";
+
 /// Remove comment shapes while retaining non-comment VML content.
+///
+/// A comment shape is a VML `shape` element containing an Excel `ClientData`
+/// element whose `ObjectType` is `Note`. Elements are matched by namespace and
+/// local name, so any prefix, quote style, or attribute whitespace is accepted.
+/// All other content is preserved byte-for-byte. Returns `None` when no
+/// non-comment shape remains or the VML cannot be parsed.
 pub fn strip_vml_comment_shapes_from_vml(vml_bytes: &[u8]) -> Option<Vec<u8>> {
-    filter_vml_shapes(vml_bytes, |shape| !shape.contains("ObjectType=\"Note\""))
+    filter_vml_shapes(vml_bytes, |is_note| !is_note)
 }
 
 fn build_comment_shapes(cells: &[&str], start_shape_id: usize) -> String {
@@ -82,31 +97,110 @@ fn build_comment_shapes(cells: &[&str], start_shape_id: usize) -> String {
     shapes
 }
 
+/// Whether `ns` is the namespace `uri`, also accepting an undeclared
+/// conventional prefix for leniency with hand-written VML.
+fn in_namespace(ns: &ResolveResult<'_>, uri: &[u8], conventional_prefix: &[u8]) -> bool {
+    match ns {
+        ResolveResult::Bound(bound) => bound.as_ref() == uri,
+        ResolveResult::Unknown(prefix) => prefix.as_slice() == conventional_prefix,
+        ResolveResult::Unbound => false,
+    }
+}
+
+fn is_vml_shape(ns: &ResolveResult<'_>, local_name: &[u8]) -> bool {
+    local_name == b"shape" && in_namespace(ns, VML_NS, b"v")
+}
+
+fn is_note_client_data(ns: &ResolveResult<'_>, element: &BytesStart<'_>) -> bool {
+    element.local_name().as_ref() == b"ClientData"
+        && in_namespace(ns, EXCEL_NS, b"x")
+        && element
+            .attributes()
+            .flatten()
+            .find(|attr| attr.key.as_ref() == b"ObjectType")
+            .and_then(|attr| attr.unescape_value().ok())
+            .is_some_and(|value| value.trim() == "Note")
+}
+
+/// Remove VML `shape` elements for which `keep(is_note)` returns false.
+///
+/// Byte ranges of removed shapes (plus one trailing line break) are cut from
+/// the original text; everything else is preserved. Returns `None` if no shape
+/// is kept or the markup cannot be parsed.
 fn filter_vml_shapes<F>(vml_bytes: &[u8], mut keep: F) -> Option<Vec<u8>>
 where
-    F: FnMut(&str) -> bool,
+    F: FnMut(bool) -> bool,
 {
     let vml = String::from_utf8_lossy(vml_bytes);
-    let first_shape = vml.find("<v:shape ")?;
-    let mut result = String::from(&vml[..first_shape]);
-    let mut search_from = first_shape;
+    let mut reader = NsReader::from_str(&vml);
+    // Legacy VML textboxes may contain HTML-style unclosed tags such as `<br>`.
+    reader.config_mut().check_end_names = false;
+
+    // Start offset and note flag of the shape currently open.
+    let mut open_shape: Option<(usize, bool)> = None;
+    let mut removals: Vec<(usize, usize)> = Vec::new();
     let mut retained = false;
-    while let Some(shape_start) = vml[search_from..].find("<v:shape ") {
-        let start = search_from + shape_start;
-        let end = vml[start..]
-            .find("</v:shape>")
-            .map(|offset| start + offset + "</v:shape>".len())?;
-        if keep(&vml[start..end]) {
-            result.push_str(&vml[start..end]);
-            result.push('\n');
-            retained = true;
+
+    loop {
+        let event_start = usize::try_from(reader.buffer_position()).ok()?;
+        let (ns, event) = reader.read_resolved_event().ok()?;
+        match event {
+            Event::Start(ref e) | Event::Empty(ref e) => {
+                let is_empty = matches!(event, Event::Empty(_));
+                if let Some((_, is_note)) = open_shape.as_mut() {
+                    if is_note_client_data(&ns, e) {
+                        *is_note = true;
+                    }
+                } else if is_vml_shape(&ns, e.local_name().as_ref()) {
+                    if is_empty {
+                        if keep(false) {
+                            retained = true;
+                        } else {
+                            let end = usize::try_from(reader.buffer_position()).ok()?;
+                            removals.push((event_start, end));
+                        }
+                    } else {
+                        open_shape = Some((event_start, false));
+                    }
+                }
+            }
+            Event::End(ref e) => {
+                if open_shape.is_some() && is_vml_shape(&ns, e.local_name().as_ref()) {
+                    if let Some((start, is_note)) = open_shape.take() {
+                        if keep(is_note) {
+                            retained = true;
+                        } else {
+                            let end = usize::try_from(reader.buffer_position()).ok()?;
+                            removals.push((start, end));
+                        }
+                    }
+                }
+            }
+            Event::Eof => break,
+            _ => {}
         }
-        search_from = end;
     }
-    retained.then(|| {
-        result.push_str("</xml>\n");
-        result.into_bytes()
-    })
+
+    if open_shape.is_some() || !retained {
+        return None;
+    }
+
+    let mut result = String::with_capacity(vml.len());
+    let mut cursor = 0;
+    for (start, end) in removals {
+        result.push_str(vml.get(cursor..start)?);
+        let rest = vml.get(end..)?;
+        cursor = end
+            + if rest.starts_with("\r\n") {
+                2
+            } else if rest.starts_with('\n') {
+                1
+            } else {
+                0
+            };
+    }
+    result.push_str(vml.get(cursor..)?);
+    Some(result.into_bytes())
 }
 
 /// Write a single VML shape element for a comment to the output string.
@@ -171,8 +265,8 @@ pub fn extract_vml_comment_cells(vml_xml: &str) -> Vec<(u32, u32)> {
         if let Some(val) = extract_element_value(trimmed, "x:Column") {
             current_col = val.parse().ok();
         }
-        if current_row.is_some() && current_col.is_some() {
-            cells.push((current_row.unwrap(), current_col.unwrap()));
+        if let (Some(row), Some(col)) = (current_row, current_col) {
+            cells.push((row, col));
             current_row = None;
             current_col = None;
         }
@@ -181,16 +275,16 @@ pub fn extract_vml_comment_cells(vml_xml: &str) -> Vec<(u32, u32)> {
 }
 
 /// Simple extraction of text content from an XML element like `<tag>value</tag>`.
+///
+/// The closing tag is searched only after the first opening tag, so malformed
+/// input yields `None` instead of an invalid slice.
 fn extract_element_value<'a>(line: &'a str, tag: &str) -> Option<&'a str> {
     let open = format!("<{}>", tag);
     let close = format!("</{}>", tag);
-    if let Some(start) = line.find(&open) {
-        let val_start = start + open.len();
-        if let Some(end) = line.find(&close) {
-            return Some(&line[val_start..end]);
-        }
-    }
-    None
+    let val_start = line.find(&open)? + open.len();
+    let rest = line.get(val_start..)?;
+    let len = rest.find(&close)?;
+    rest.get(..len)
 }
 
 #[cfg(test)]
@@ -255,5 +349,159 @@ mod tests {
             Some("3")
         );
         assert_eq!(extract_element_value("no match here", "x:Row"), None);
+    }
+
+    #[test]
+    fn test_extract_vml_comment_cells_never_panics_on_malformed_tags() {
+        let cases: &[(&str, Vec<(u32, u32)>)] = &[
+            ("</x:Row><x:Row>0</x:Row>", vec![]),
+            (
+                "</x:Row><x:Row>0</x:Row><x:Column>1</x:Column>",
+                vec![(0, 1)],
+            ),
+            ("</x:Column><x:Column>", vec![]),
+            ("<x:Row>1", vec![]),
+            ("<x:Row></x:Row>", vec![]),
+            (
+                "<x:Row>1</x:Row><x:Row>2</x:Row><x:Column>3</x:Column>",
+                vec![(1, 3)],
+            ),
+            (
+                "<x:Row><x:Row>4</x:Row></x:Row><x:Column>5</x:Column>",
+                vec![],
+            ),
+            ("</x:Row>", vec![]),
+            ("", vec![]),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(&extract_vml_comment_cells(input), expected, "{input}");
+        }
+
+        let pieces = [
+            "<x:Row>",
+            "</x:Row>",
+            "<x:Column>",
+            "</x:Column>",
+            "7",
+            "\n",
+            "\u{e9}",
+        ];
+        let mut input = String::new();
+        for a in pieces {
+            for b in pieces {
+                for c in pieces {
+                    for d in pieces {
+                        input.clear();
+                        input.push_str(a);
+                        input.push_str(b);
+                        input.push_str(c);
+                        input.push_str(d);
+                        let _ = extract_vml_comment_cells(&input);
+                    }
+                }
+            }
+        }
+    }
+
+    const VML_NS_HEADER: &str = "<xml xmlns:v=\"urn:schemas-microsoft-com:vml\" xmlns:o=\"urn:schemas-microsoft-com:office:office\" xmlns:x=\"urn:schemas-microsoft-com:office:excel\">";
+
+    #[test]
+    fn test_strip_comment_shapes_single_quoted_object_type() {
+        let vml = format!(
+            "{VML_NS_HEADER}\n<v:shape id='c1'><x:ClientData ObjectType='Note'><x:Row>0</x:Row></x:ClientData></v:shape>\n<v:shape id='b1'><x:ClientData ObjectType='Button'/></v:shape>\n</xml>\n"
+        );
+        let out =
+            String::from_utf8(strip_vml_comment_shapes_from_vml(vml.as_bytes()).unwrap()).unwrap();
+        assert!(!out.contains("c1"), "{out}");
+        assert!(out.contains("<v:shape id='b1'><x:ClientData ObjectType='Button'/></v:shape>"));
+        assert!(out.trim_end().ends_with("</xml>"));
+    }
+
+    #[test]
+    fn test_strip_comment_shapes_whitespace_and_newlines_in_attributes() {
+        let vml = format!(
+            "{VML_NS_HEADER}\n<v:shape\n id=\"c1\"><x:ClientData\n   ObjectType = \"Note\"\n></x:ClientData></v:shape\n>\n<v:shape\tid=\"b1\"><x:ClientData ObjectType=\"Drop\"/></v:shape>\n</xml>\n"
+        );
+        let out =
+            String::from_utf8(strip_vml_comment_shapes_from_vml(vml.as_bytes()).unwrap()).unwrap();
+        assert!(!out.contains("c1"), "{out}");
+        assert!(out.contains("<v:shape\tid=\"b1\">"));
+    }
+
+    #[test]
+    fn test_strip_comment_shapes_alternate_vml_prefix() {
+        let vml = "<xml xmlns:s=\"urn:schemas-microsoft-com:vml\" xmlns:e=\"urn:schemas-microsoft-com:office:excel\">\n<s:shape id=\"c1\"><e:ClientData ObjectType=\"Note\"/></s:shape>\n<s:shape id=\"b1\"><e:ClientData ObjectType=\"Button\"/></s:shape>\n</xml>\n";
+        let out =
+            String::from_utf8(strip_vml_comment_shapes_from_vml(vml.as_bytes()).unwrap()).unwrap();
+        assert!(!out.contains("c1"), "{out}");
+        assert!(out.contains("<s:shape id=\"b1\"><e:ClientData ObjectType=\"Button\"/></s:shape>"));
+        assert!(out.starts_with("<xml xmlns:s="));
+    }
+
+    #[test]
+    fn test_strip_comment_shapes_preserves_surrounding_content() {
+        let vml = format!(
+            "{VML_NS_HEADER}\n <o:shapelayout v:ext=\"edit\"><o:idmap v:ext=\"edit\" data=\"1\"/></o:shapelayout>\n<v:shapetype id=\"_x0000_t201\"/>\n<v:shape id=\"b1\"><x:ClientData ObjectType=\"Button\"/></v:shape>\n<v:shapetype id=\"_x0000_t202\"/>\n<v:shape id=\"c1\"><x:ClientData ObjectType=\"Note\"/></v:shape>\n<v:rect id=\"r1\"/>\n</xml>\n"
+        );
+        let out =
+            String::from_utf8(strip_vml_comment_shapes_from_vml(vml.as_bytes()).unwrap()).unwrap();
+        assert!(!out.contains("c1"), "{out}");
+        for kept in [
+            "<o:shapelayout",
+            "_x0000_t201",
+            "_x0000_t202",
+            "id=\"b1\"",
+            "<v:rect id=\"r1\"/>",
+        ] {
+            assert!(out.contains(kept), "missing {kept}: {out}");
+        }
+        assert_eq!(out.matches("</xml>").count(), 1);
+    }
+
+    #[test]
+    fn test_strip_comment_shapes_only_comments_returns_none() {
+        let vml = build_vml_drawing(&["A1", "B2"]);
+        assert!(strip_vml_comment_shapes_from_vml(vml.as_bytes()).is_none());
+    }
+
+    #[test]
+    fn test_strip_comment_shapes_ignores_foreign_namespace_lookalikes() {
+        // A `shape` element outside the VML namespace is not a VML shape, and a
+        // `ClientData` element outside the Excel namespace does not mark a note.
+        let vml = format!(
+            "{VML_NS_HEADER}<other:shape xmlns:other=\"urn:other\" id=\"f1\"/><v:shape id=\"k1\"><y:ClientData xmlns:y=\"urn:other\" ObjectType=\"Note\"/></v:shape></xml>"
+        );
+        let out =
+            String::from_utf8(strip_vml_comment_shapes_from_vml(vml.as_bytes()).unwrap()).unwrap();
+        assert!(out.contains("id=\"f1\""));
+        assert!(out.contains("id=\"k1\""));
+    }
+
+    #[test]
+    fn test_strip_comment_shapes_then_merge_has_no_stale_notes() {
+        let mut vml = build_vml_drawing(&["A1"]);
+        let button = " <v:shape id='_x0000_s2000' type='#_x0000_t201'><x:ClientData ObjectType='Button'/></v:shape>\n";
+        vml.insert_str(vml.rfind("</xml>").unwrap(), button);
+        let vml = vml.replace("ObjectType=\"Note\"", "ObjectType='Note'");
+
+        let stripped = strip_vml_comment_shapes_from_vml(vml.as_bytes()).unwrap();
+        let merged = String::from_utf8(merge_vml_comments(&stripped, &["C3"], 3000)).unwrap();
+        assert_eq!(extract_vml_comment_cells(&merged), vec![(2, 2)]);
+        assert!(merged.contains("_x0000_s2000"));
+    }
+
+    #[test]
+    fn test_strip_comment_shapes_never_panics() {
+        for input in [
+            "",
+            "<xml>",
+            "<v:shape ",
+            "<v:shape id='a'>",
+            "</v:shape><v:shape id='a'></v:shape>",
+            "<xml xmlns:v=\"urn:schemas-microsoft-com:vml\"><v:shape><v:shape></v:shape>",
+            "\u{0}\u{ff}<",
+        ] {
+            let _ = strip_vml_comment_shapes_from_vml(input.as_bytes());
+        }
     }
 }

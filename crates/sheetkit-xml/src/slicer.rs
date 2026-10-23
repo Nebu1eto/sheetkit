@@ -120,27 +120,56 @@ pub fn serialize_slicer_cache(def: &SlicerCacheDefinition) -> String {
 
 /// Parse a `SlicerCacheDefinition` from XML.
 ///
-/// Handles the namespace-prefixed `x15:tableSlicerCache` element that serde
-/// cannot deserialize. Uses simple string matching for robustness.
+/// Uses namespace-aware event parsing, so element prefixes are irrelevant and
+/// attribute values are entity-decoded with either quote style. The root must
+/// be a `slicerCacheDefinition` element with unprefixed `name` and
+/// `sourceName` attributes. The first `tableSlicerCache` element that is not
+/// bound to a foreign namespace supplies the table link. Returns `None` for
+/// malformed XML or a missing required attribute.
 pub fn parse_slicer_cache(xml: &str) -> Option<SlicerCacheDefinition> {
-    let name = extract_attr(xml, "name")?;
-    let source_name = extract_attr(xml, "sourceName")?;
+    use quick_xml::events::Event;
+    use quick_xml::name::{Namespace, ResolveResult};
+    use quick_xml::NsReader;
 
-    let table_slicer_cache = if let Some(tsc_start) = xml.find("tableSlicerCache") {
-        let remainder = &xml[tsc_start..];
-        let table_id = extract_attr(remainder, "tableId").and_then(|s| s.parse::<u32>().ok());
-        let column = extract_attr(remainder, "column").and_then(|s| s.parse::<u32>().ok());
-        match (table_id, column) {
-            (Some(tid), Some(col)) => Some(TableSlicerCache {
-                table_id: tid,
-                column: col,
-            }),
-            _ => None,
+    let x15 = Namespace(crate::namespaces::SLICER_2010.as_bytes());
+    let mut reader = NsReader::from_str(xml);
+    let mut root: Option<(String, String)> = None;
+    let mut table_slicer_cache = None;
+
+    loop {
+        let (ns, event) = reader.read_resolved_event().ok()?;
+        let element = match event {
+            Event::Start(e) | Event::Empty(e) => e,
+            Event::Eof => break,
+            _ => continue,
+        };
+        let local = element.local_name();
+        if root.is_none() {
+            if local.as_ref() != b"slicerCacheDefinition" {
+                return None;
+            }
+            let name = unprefixed_attr(&element, b"name")?;
+            let source_name = unprefixed_attr(&element, b"sourceName")?;
+            root = Some((name, source_name));
+            continue;
         }
-    } else {
-        None
-    };
+        let in_x15_or_unbound = match ns {
+            ResolveResult::Bound(bound) => bound == x15,
+            ResolveResult::Unbound | ResolveResult::Unknown(_) => true,
+        };
+        if table_slicer_cache.is_none()
+            && local.as_ref() == b"tableSlicerCache"
+            && in_x15_or_unbound
+        {
+            let number =
+                |key: &[u8]| -> Option<u32> { unprefixed_attr(&element, key)?.trim().parse().ok() };
+            if let (Some(table_id), Some(column)) = (number(b"tableId"), number(b"column")) {
+                table_slicer_cache = Some(TableSlicerCache { table_id, column });
+            }
+        }
+    }
 
+    let (name, source_name) = root?;
     Some(SlicerCacheDefinition {
         name,
         source_name,
@@ -148,13 +177,16 @@ pub fn parse_slicer_cache(xml: &str) -> Option<SlicerCacheDefinition> {
     })
 }
 
-/// Extract a named XML attribute value from an element string.
-fn extract_attr(xml: &str, attr_name: &str) -> Option<String> {
-    let pattern = format!("{}=\"", attr_name);
-    let start = xml.find(&pattern)?;
-    let after_eq = start + pattern.len();
-    let end = xml[after_eq..].find('"')?;
-    Some(xml[after_eq..after_eq + end].to_string())
+/// Look up an unprefixed attribute by name and entity-decode its value.
+///
+/// Returns `None` when the attribute is absent or its value contains an
+/// invalid entity reference.
+fn unprefixed_attr(element: &quick_xml::events::BytesStart<'_>, key: &[u8]) -> Option<String> {
+    let attr = element
+        .attributes()
+        .flatten()
+        .find(|attr| attr.key.as_ref() == key)?;
+    attr.unescape_value().ok().map(|v| v.into_owned())
 }
 
 /// Escape special characters for use in XML attribute values.
@@ -312,10 +344,76 @@ mod tests {
     }
 
     #[test]
-    fn test_extract_attr() {
-        let xml = r#"<elem name="hello" id="42">"#;
-        assert_eq!(extract_attr(xml, "name"), Some("hello".to_string()));
-        assert_eq!(extract_attr(xml, "id"), Some("42".to_string()));
-        assert_eq!(extract_attr(xml, "missing"), None);
+    fn test_slicer_cache_special_chars_roundtrip_multi_cycle() {
+        let cache = SlicerCacheDefinition {
+            name: "Slicer_A&B".to_string(),
+            source_name: "A&B <c> \"d\" 'e'".to_string(),
+            table_slicer_cache: Some(TableSlicerCache {
+                table_id: 3,
+                column: 4,
+            }),
+        };
+
+        let mut current = cache.clone();
+        for _ in 0..3 {
+            let xml = serialize_slicer_cache(&current);
+            current = parse_slicer_cache(&xml).unwrap();
+            assert_eq!(current, cache);
+        }
+    }
+
+    #[test]
+    fn test_parse_slicer_cache_single_quoted_attributes() {
+        let xml = r#"<slicerCacheDefinition xmlns='http://schemas.microsoft.com/office/spreadsheetml/2009/9/main' name='Slicer_Q' sourceName='Col &amp; Q'><extLst><ext uri='{2F2917AC-EB37-4324-AD4E-5DD8C200BD13}' xmlns:x15='http://schemas.microsoft.com/office/spreadsheetml/2010/11/main'><x15:tableSlicerCache tableId='5' column='6'/></ext></extLst></slicerCacheDefinition>"#;
+
+        let parsed = parse_slicer_cache(xml).unwrap();
+        assert_eq!(parsed.name, "Slicer_Q");
+        assert_eq!(parsed.source_name, "Col & Q");
+        assert_eq!(
+            parsed.table_slicer_cache,
+            Some(TableSlicerCache {
+                table_id: 5,
+                column: 6
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_slicer_cache_alternate_namespace_prefix() {
+        let xml = r#"<sc:slicerCacheDefinition xmlns:sc="http://schemas.microsoft.com/office/spreadsheetml/2009/9/main" sourceName="Region"
+    name="Slicer_Region"><sc:extLst><sc:ext uri="{2F2917AC-EB37-4324-AD4E-5DD8C200BD13}" xmlns:t="http://schemas.microsoft.com/office/spreadsheetml/2010/11/main"><t:tableSlicerCache column="2" tableId="9"/></sc:ext></sc:extLst></sc:slicerCacheDefinition>"#;
+
+        let parsed = parse_slicer_cache(xml).unwrap();
+        assert_eq!(parsed.name, "Slicer_Region");
+        assert_eq!(parsed.source_name, "Region");
+        assert_eq!(
+            parsed.table_slicer_cache,
+            Some(TableSlicerCache {
+                table_id: 9,
+                column: 2
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_slicer_cache_ignores_lookalike_attributes() {
+        // `xname` and a prefixed `p:name` must not satisfy the `name` lookup,
+        // and an element in a foreign namespace is not a table slicer cache.
+        let xml = r#"<slicerCacheDefinition xmlns="http://schemas.microsoft.com/office/spreadsheetml/2009/9/main" xmlns:p="urn:other" xname="wrong" p:name="wrong" name="right" sourceName="S"><extLst><ext xmlns:o="urn:other"><o:tableSlicerCache tableId="1" column="1"/></ext></extLst></slicerCacheDefinition>"#;
+
+        let parsed = parse_slicer_cache(xml).unwrap();
+        assert_eq!(parsed.name, "right");
+        assert!(parsed.table_slicer_cache.is_none());
+    }
+
+    #[test]
+    fn test_parse_slicer_cache_rejects_malformed_input() {
+        assert!(parse_slicer_cache("").is_none());
+        assert!(parse_slicer_cache("<slicerCacheDefinition sourceName=\"S\"/>").is_none());
+        assert!(parse_slicer_cache("<other name=\"N\" sourceName=\"S\"/>").is_none());
+        assert!(
+            parse_slicer_cache("<slicerCacheDefinition name=\"a&bogus;\" sourceName=\"S\"/>")
+                .is_none()
+        );
     }
 }
