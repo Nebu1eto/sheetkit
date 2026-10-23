@@ -3,6 +3,7 @@
 //! Provides [`lookup_function`] to resolve a function name to its implementation,
 //! and helper utilities used by individual function implementations.
 
+pub(crate) mod conversion;
 pub mod date_time;
 pub mod engineering;
 pub mod financial;
@@ -736,9 +737,8 @@ fn fn_round(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     let v = ctx.eval_expr(&args[0])?;
     let d = ctx.eval_expr(&args[1])?;
     let n = crate::formula::eval::coerce_to_number(&v)?;
-    let digits = crate::formula::eval::coerce_to_number(&d)? as i32;
-    let factor = 10f64.powi(digits);
-    Ok(CellValue::Number((n * factor).round() / factor))
+    let digits = crate::formula::eval::coerce_to_number(&d)?;
+    Ok(math::round_to_digits(n, digits, math::RoundMode::Nearest))
 }
 
 fn fn_mod(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
@@ -810,7 +810,11 @@ fn fn_left(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     let v = ctx.eval_expr(&args[0])?;
     let s = crate::formula::eval::coerce_to_string(&v);
     let n = if args.len() > 1 {
-        crate::formula::eval::coerce_to_number(&ctx.eval_expr(&args[1])?)? as usize
+        let count = crate::formula::eval::coerce_to_number(&ctx.eval_expr(&args[1])?)?;
+        let Some(count) = conversion::checked_trunc_count(count) else {
+            return Ok(CellValue::Error("#VALUE!".to_string()));
+        };
+        count
     } else {
         1
     };
@@ -823,7 +827,11 @@ fn fn_right(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     let v = ctx.eval_expr(&args[0])?;
     let s = crate::formula::eval::coerce_to_string(&v);
     let n = if args.len() > 1 {
-        crate::formula::eval::coerce_to_number(&ctx.eval_expr(&args[1])?)? as usize
+        let count = crate::formula::eval::coerce_to_number(&ctx.eval_expr(&args[1])?)?;
+        let Some(count) = conversion::checked_trunc_count(count) else {
+            return Ok(CellValue::Error("#VALUE!".to_string()));
+        };
+        count
     } else {
         1
     };
@@ -837,8 +845,14 @@ fn fn_mid(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("MID", args, 3, 3)?;
     let v = ctx.eval_expr(&args[0])?;
     let s = crate::formula::eval::coerce_to_string(&v);
-    let start = crate::formula::eval::coerce_to_number(&ctx.eval_expr(&args[1])?)? as usize;
-    let count = crate::formula::eval::coerce_to_number(&ctx.eval_expr(&args[2])?)? as usize;
+    let start = crate::formula::eval::coerce_to_number(&ctx.eval_expr(&args[1])?)?;
+    let count = crate::formula::eval::coerce_to_number(&ctx.eval_expr(&args[2])?)?;
+    let (Some(start), Some(count)) = (
+        conversion::checked_trunc_count(start),
+        conversion::checked_trunc_count(count),
+    ) else {
+        return Ok(CellValue::Error("#VALUE!".to_string()));
+    };
     if start < 1 {
         return Ok(CellValue::Error("#VALUE!".to_string()));
     }

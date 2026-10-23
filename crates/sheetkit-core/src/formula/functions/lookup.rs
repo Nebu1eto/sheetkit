@@ -6,6 +6,9 @@ use crate::error::{Error, Result};
 use crate::formula::ast::{CellReference, Expr};
 use crate::formula::eval::{coerce_to_number, coerce_to_string, compare_values, Evaluator};
 use crate::formula::functions::check_arg_count;
+use crate::formula::functions::conversion::{
+    checked_trunc_count, checked_trunc_i32, checked_trunc_i64,
+};
 use crate::utils::cell_ref::{column_name_to_number, column_number_to_name};
 
 /// Extract (start, end) CellReference pair from a Range expression.
@@ -38,7 +41,7 @@ pub fn fn_vlookup(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("VLOOKUP", args, 3, 4)?;
     let lookup_val = ctx.eval_expr(&args[0])?;
     let (values, num_cols, num_rows) = read_range(&args[1], ctx)?;
-    let col_index = coerce_to_number(&ctx.eval_expr(&args[2])?)? as usize;
+    let col_index = checked_trunc_count(coerce_to_number(&ctx.eval_expr(&args[2])?)?).unwrap_or(0);
     let range_lookup = if args.len() > 3 {
         match ctx.eval_expr(&args[3])? {
             CellValue::Bool(b) => b,
@@ -84,7 +87,7 @@ pub fn fn_hlookup(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("HLOOKUP", args, 3, 4)?;
     let lookup_val = ctx.eval_expr(&args[0])?;
     let (values, num_cols, num_rows) = read_range(&args[1], ctx)?;
-    let row_index = coerce_to_number(&ctx.eval_expr(&args[2])?)? as usize;
+    let row_index = checked_trunc_count(coerce_to_number(&ctx.eval_expr(&args[2])?)?).unwrap_or(0);
     let range_lookup = if args.len() > 3 {
         match ctx.eval_expr(&args[3])? {
             CellValue::Bool(b) => b,
@@ -125,9 +128,9 @@ pub fn fn_hlookup(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
 pub fn fn_index(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("INDEX", args, 2, 3)?;
     let (values, num_cols, num_rows) = read_range(&args[0], ctx)?;
-    let row_num = coerce_to_number(&ctx.eval_expr(&args[1])?)? as usize;
+    let row_num = checked_trunc_count(coerce_to_number(&ctx.eval_expr(&args[1])?)?).unwrap_or(0);
     let col_num = if args.len() > 2 {
-        coerce_to_number(&ctx.eval_expr(&args[2])?)? as usize
+        checked_trunc_count(coerce_to_number(&ctx.eval_expr(&args[2])?)?).unwrap_or(0)
     } else {
         1
     };
@@ -144,7 +147,11 @@ pub fn fn_match(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     let lookup_val = ctx.eval_expr(&args[0])?;
     let (values, num_cols, num_rows) = read_range(&args[1], ctx)?;
     let match_type = if args.len() > 2 {
-        coerce_to_number(&ctx.eval_expr(&args[2])?)? as i32
+        let value = coerce_to_number(&ctx.eval_expr(&args[2])?)?;
+        let Some(match_type) = checked_trunc_i32(value) else {
+            return Ok(CellValue::Error("#N/A".to_string()));
+        };
+        match_type
     } else {
         1
     };
@@ -289,7 +296,7 @@ pub fn fn_columns(args: &[Expr], _ctx: &mut Evaluator) -> Result<CellValue> {
 /// CHOOSE(index_num, value1, [value2], ...) - returns value at given index.
 pub fn fn_choose(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("CHOOSE", args, 2, 255)?;
-    let index = coerce_to_number(&ctx.eval_expr(&args[0])?)? as usize;
+    let index = checked_trunc_count(coerce_to_number(&ctx.eval_expr(&args[0])?)?).unwrap_or(0);
     if index < 1 || index >= args.len() {
         return Ok(CellValue::Error("#VALUE!".to_string()));
     }
@@ -299,10 +306,23 @@ pub fn fn_choose(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
 /// ADDRESS(row_num, column_num, [abs_num], [a1], [sheet_text])
 pub fn fn_address(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("ADDRESS", args, 2, 5)?;
-    let row = coerce_to_number(&ctx.eval_expr(&args[0])?)? as u32;
-    let col = coerce_to_number(&ctx.eval_expr(&args[1])?)? as u32;
+    let row = coerce_to_number(&ctx.eval_expr(&args[0])?)?;
+    let col = coerce_to_number(&ctx.eval_expr(&args[1])?)?;
+    let (Some(row), Some(col)) = (
+        checked_trunc_i64(row, 0, i64::from(u32::MAX)),
+        checked_trunc_i64(col, 0, i64::from(u32::MAX)),
+    ) else {
+        return Ok(CellValue::Error("#VALUE!".to_string()));
+    };
+    let (Ok(row), Ok(col)) = (u32::try_from(row), u32::try_from(col)) else {
+        return Ok(CellValue::Error("#VALUE!".to_string()));
+    };
     let abs_num = if args.len() > 2 {
-        coerce_to_number(&ctx.eval_expr(&args[2])?)? as i32
+        let value = coerce_to_number(&ctx.eval_expr(&args[2])?)?;
+        let Some(abs_num) = checked_trunc_i32(value) else {
+            return Ok(CellValue::Error("#VALUE!".to_string()));
+        };
+        abs_num
     } else {
         1
     };

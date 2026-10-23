@@ -4,7 +4,8 @@
 use crate::cell::CellValue;
 use crate::error::Result;
 use crate::formula::ast::Expr;
-use crate::formula::eval::{coerce_to_number, Evaluator};
+use crate::formula::eval::{coerce_to_number, reference_number, Evaluator};
+use crate::formula::functions::conversion::{checked_trunc_count, checked_trunc_i64};
 use crate::formula::functions::{
     check_arg_count, collect_criteria_range_values, matches_prepared_criteria, prepare_criteria,
 };
@@ -24,11 +25,9 @@ pub fn fn_averageif(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     let mut count = 0u64;
     for (i, rv) in range_vals.iter().enumerate() {
         if matches_prepared_criteria(rv, &criteria, ctx)? {
-            if let Some(sv) = avg_vals.get(i) {
-                if let Ok(n) = coerce_to_number(sv) {
-                    sum += n;
-                    count += 1;
-                }
+            if let Some(n) = avg_vals.get(i).and_then(reference_number) {
+                sum += n;
+                count += 1;
             }
         }
     }
@@ -69,7 +68,7 @@ pub fn fn_averageifs(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
             }
         }
         if all_match {
-            if let Ok(n) = coerce_to_number(sv) {
+            if let Some(n) = reference_number(sv) {
                 sum += n;
                 count += 1;
             }
@@ -194,9 +193,9 @@ pub fn fn_large(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("LARGE", args, 2, 2)?;
     let mut nums = collect_criteria_range_values(&args[0], ctx)?
         .iter()
-        .filter_map(|v| coerce_to_number(v).ok())
+        .filter_map(reference_number)
         .collect::<Vec<f64>>();
-    let k = coerce_to_number(&ctx.eval_expr(&args[1])?)? as usize;
+    let k = checked_trunc_count(coerce_to_number(&ctx.eval_expr(&args[1])?)?).unwrap_or(0);
     if k == 0 || k > nums.len() {
         return Ok(CellValue::Error("#NUM!".to_string()));
     }
@@ -209,9 +208,9 @@ pub fn fn_small(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("SMALL", args, 2, 2)?;
     let mut nums = collect_criteria_range_values(&args[0], ctx)?
         .iter()
-        .filter_map(|v| coerce_to_number(v).ok())
+        .filter_map(reference_number)
         .collect::<Vec<f64>>();
-    let k = coerce_to_number(&ctx.eval_expr(&args[1])?)? as usize;
+    let k = checked_trunc_count(coerce_to_number(&ctx.eval_expr(&args[1])?)?).unwrap_or(0);
     if k == 0 || k > nums.len() {
         return Ok(CellValue::Error("#NUM!".to_string()));
     }
@@ -226,14 +225,15 @@ pub fn fn_rank(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     let number = coerce_to_number(&ctx.eval_expr(&args[0])?)?;
     let ref_vals = collect_criteria_range_values(&args[1], ctx)?;
     let order = if args.len() > 2 {
-        coerce_to_number(&ctx.eval_expr(&args[2])?)? as i64
+        let value = coerce_to_number(&ctx.eval_expr(&args[2])?)?;
+        let Some(order) = checked_trunc_i64(value, i64::MIN, i64::MAX) else {
+            return Ok(CellValue::Error("#NUM!".to_string()));
+        };
+        order
     } else {
         0
     };
-    let nums: Vec<f64> = ref_vals
-        .iter()
-        .filter_map(|v| coerce_to_number(v).ok())
-        .collect();
+    let nums: Vec<f64> = ref_vals.iter().filter_map(reference_number).collect();
     let rank = if order == 0 {
         // Descending: count how many are greater than number, +1
         nums.iter().filter(|&&n| n > number).count() + 1

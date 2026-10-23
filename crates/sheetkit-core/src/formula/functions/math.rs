@@ -4,10 +4,87 @@
 use crate::cell::CellValue;
 use crate::error::Result;
 use crate::formula::ast::Expr;
-use crate::formula::eval::{coerce_to_number, Evaluator};
+use crate::formula::eval::{coerce_to_number, reference_number, Evaluator};
+use crate::formula::functions::conversion::{checked_trunc_i32_in, checked_trunc_i64};
 use crate::formula::functions::{
     check_arg_count, collect_criteria_range_values, matches_prepared_criteria, prepare_criteria,
 };
+
+/// Rounding direction shared by ROUND, ROUNDUP, and ROUNDDOWN.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RoundMode {
+    /// Nearest, with halves rounded away from zero (ROUND).
+    Nearest,
+    /// Away from zero (ROUNDUP).
+    Up,
+    /// Toward zero (ROUNDDOWN).
+    Down,
+}
+
+impl RoundMode {
+    fn apply(self, value: f64) -> f64 {
+        match self {
+            Self::Nearest => value.round(),
+            Self::Up if value >= 0.0 => value.ceil(),
+            Self::Up => value.floor(),
+            Self::Down => value.trunc(),
+        }
+    }
+}
+
+/// Largest power of ten representable as a finite `f64`.
+const MAX_DECIMAL_EXPONENT: i32 = 308;
+/// Digit counts are clamped to this magnitude; beyond it no `f64` changes.
+const MAX_ROUND_DIGITS: i32 = 400;
+/// Every `f64` at or above this magnitude is already an integer.
+const INTEGRAL_MAGNITUDE: f64 = 4_503_599_627_370_496.0;
+
+/// Round `n` to `digits` decimal places (negative digits round to the left
+/// of the decimal point), truncating `digits` toward zero.
+///
+/// Digit counts beyond what an `f64` can resolve leave the value unchanged
+/// (positive digits) or collapse it to zero (negative digits). A non-finite
+/// input, non-finite digit count, or non-finite result yields `#NUM!`; the
+/// function never returns NaN or infinity.
+pub(crate) fn round_to_digits(n: f64, digits: f64, mode: RoundMode) -> CellValue {
+    let num_error = || CellValue::Error("#NUM!".to_string());
+    if !n.is_finite() {
+        return num_error();
+    }
+    let bound = f64::from(MAX_ROUND_DIGITS);
+    let Some(digits) = checked_trunc_i32_in(
+        digits.clamp(-bound, bound),
+        -MAX_ROUND_DIGITS,
+        MAX_ROUND_DIGITS,
+    ) else {
+        return num_error();
+    };
+    let result = if digits > 0 {
+        let factor = 10f64.powi(digits.min(MAX_DECIMAL_EXPONENT));
+        let scaled = n * factor;
+        if !scaled.is_finite() || scaled.abs() >= INTEGRAL_MAGNITUDE {
+            n
+        } else {
+            mode.apply(scaled) / factor
+        }
+    } else if digits == 0 {
+        mode.apply(n)
+    } else if -digits > MAX_DECIMAL_EXPONENT {
+        // |n| < 10^309 / 2, so only rounding away from zero leaves zero.
+        if mode == RoundMode::Up && n != 0.0 {
+            return num_error();
+        }
+        0.0
+    } else {
+        let factor = 10f64.powi(-digits);
+        mode.apply(n / factor) * factor
+    };
+    if result.is_finite() {
+        CellValue::Number(result)
+    } else {
+        num_error()
+    }
+}
 
 /// SUMIF(range, criteria, [sum_range])
 pub fn fn_sumif(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
@@ -23,10 +100,8 @@ pub fn fn_sumif(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     let mut total = 0.0;
     for (i, rv) in range_vals.iter().enumerate() {
         if matches_prepared_criteria(rv, &criteria, ctx)? {
-            if let Some(sv) = sum_vals.get(i) {
-                if let Ok(n) = coerce_to_number(sv) {
-                    total += n;
-                }
+            if let Some(n) = sum_vals.get(i).and_then(reference_number) {
+                total += n;
             }
         }
     }
@@ -63,7 +138,7 @@ pub fn fn_sumifs(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
             }
         }
         if all_match {
-            if let Ok(n) = coerce_to_number(sv) {
+            if let Some(n) = reference_number(sv) {
                 total += n;
             }
         }
@@ -75,24 +150,16 @@ pub fn fn_sumifs(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
 pub fn fn_roundup(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("ROUNDUP", args, 2, 2)?;
     let n = coerce_to_number(&ctx.eval_expr(&args[0])?)?;
-    let digits = coerce_to_number(&ctx.eval_expr(&args[1])?)? as i32;
-    let factor = 10f64.powi(digits);
-    let result = if n >= 0.0 {
-        (n * factor).ceil() / factor
-    } else {
-        (n * factor).floor() / factor
-    };
-    Ok(CellValue::Number(result))
+    let digits = coerce_to_number(&ctx.eval_expr(&args[1])?)?;
+    Ok(round_to_digits(n, digits, RoundMode::Up))
 }
 
 /// ROUNDDOWN(number, digits) - round toward zero (truncate)
 pub fn fn_rounddown(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("ROUNDDOWN", args, 2, 2)?;
     let n = coerce_to_number(&ctx.eval_expr(&args[0])?)?;
-    let digits = coerce_to_number(&ctx.eval_expr(&args[1])?)? as i32;
-    let factor = 10f64.powi(digits);
-    let result = (n * factor).trunc() / factor;
-    Ok(CellValue::Number(result))
+    let digits = coerce_to_number(&ctx.eval_expr(&args[1])?)?;
+    Ok(round_to_digits(n, digits, RoundMode::Down))
 }
 
 /// CEILING(number, significance) - round up to nearest multiple of significance
@@ -155,8 +222,14 @@ pub fn fn_rand(args: &[Expr], _ctx: &mut Evaluator) -> Result<CellValue> {
 /// RANDBETWEEN(bottom, top) - random integer in [bottom, top]
 pub fn fn_randbetween(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("RANDBETWEEN", args, 2, 2)?;
-    let bottom = coerce_to_number(&ctx.eval_expr(&args[0])?)?.ceil() as i64;
-    let top = coerce_to_number(&ctx.eval_expr(&args[1])?)?.floor() as i64;
+    let bottom = coerce_to_number(&ctx.eval_expr(&args[0])?)?.ceil();
+    let top = coerce_to_number(&ctx.eval_expr(&args[1])?)?.floor();
+    let (Some(bottom), Some(top)) = (
+        checked_trunc_i64(bottom, i64::MIN, i64::MAX),
+        checked_trunc_i64(top, i64::MIN, i64::MAX),
+    ) else {
+        return Ok(CellValue::Error("#NUM!".to_string()));
+    };
     if bottom > top {
         return Ok(CellValue::Error("#NUM!".to_string()));
     }

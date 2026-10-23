@@ -131,10 +131,18 @@ fn corpus_files() -> Vec<(usize, PathBuf)> {
             &[
                 "binary-chain-exact.seed",
                 "binary-chain-over.seed",
+                "date-day-overflow.seed",
                 "depth-exact.seed",
                 "depth-over.seed",
+                "edate-month-overflow.seed",
+                "networkdays-holidays.seed",
                 "normal.seed",
+                "replace-huge-count.seed",
+                "round-huge-digits.seed",
+                "text-multibyte-exponent.seed",
                 "wildcard-near-limit.seed",
+                "workday-consecutive-holidays.seed",
+                "workday-huge-days.seed",
             ],
         ),
         (
@@ -156,11 +164,16 @@ fn corpus_files() -> Vec<(usize, PathBuf)> {
             ],
         ),
     ] {
-        let mut target_files: Vec<_> = fs::read_dir(root.join(directory))
+        let entries: Vec<_> = fs::read_dir(root.join(directory))
             .unwrap()
             .map(|entry| entry.unwrap().path())
-            .filter(|path| path.is_file())
             .collect();
+        // libFuzzer and this replay must see the same flat corpus.
+        assert!(
+            entries.iter().all(|path| path.is_file()),
+            "corpus directory {directory} must be flat"
+        );
+        let mut target_files = entries;
         target_files.sort();
         let actual_names: Vec<_> = target_files
             .iter()
@@ -172,6 +185,8 @@ fn corpus_files() -> Vec<(usize, PathBuf)> {
         );
         files.extend(target_files.into_iter().map(|path| (target, path)));
     }
+    let formula_seeds = files.iter().filter(|(target, _)| *target == 2).count();
+    assert_eq!(formula_seeds, 14, "formula corpus must include regressions");
     files
 }
 

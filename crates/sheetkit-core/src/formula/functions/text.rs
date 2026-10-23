@@ -4,6 +4,7 @@ use crate::cell::CellValue;
 use crate::error::{Error, Result};
 use crate::formula::ast::Expr;
 use crate::formula::eval::{coerce_to_number, coerce_to_string, Evaluator};
+use crate::formula::functions::conversion::checked_trunc_count;
 use crate::formula::functions::{check_arg_count, wildcard_search};
 
 /// CONCAT(text1, [text2], ...) - concatenates multiple values.
@@ -22,13 +23,16 @@ pub fn fn_find(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("FIND", args, 2, 3)?;
     let find_text = coerce_to_string(&ctx.eval_expr(&args[0])?);
     let within_text = coerce_to_string(&ctx.eval_expr(&args[1])?);
-    let start_num = if args.len() > 2 {
-        coerce_to_number(&ctx.eval_expr(&args[2])?)? as usize
+    let start_value = if args.len() > 2 {
+        coerce_to_number(&ctx.eval_expr(&args[2])?)?
     } else {
-        1
+        1.0
+    };
+    let Some(start_num) = checked_trunc_count(start_value) else {
+        return Ok(CellValue::Error("#VALUE!".to_string()));
     };
     let char_count = within_text.chars().count();
-    if start_num < 1 || start_num > char_count + 1 {
+    if start_num < 1 || start_num > char_count.saturating_add(1) {
         return Ok(CellValue::Error("#VALUE!".to_string()));
     }
     let search_in = &within_text[character_position_to_byte_offset(&within_text, start_num)..];
@@ -50,7 +54,7 @@ pub fn fn_search(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     } else {
         1.0
     };
-    let Some(start_num) = checked_truncated_usize(start_value) else {
+    let Some(start_num) = checked_trunc_count(start_value) else {
         return Ok(CellValue::Error("#VALUE!".to_string()));
     };
     let char_count = within_text.chars().count();
@@ -70,17 +74,6 @@ fn character_position_to_byte_offset(text: &str, position: usize) -> usize {
         .map_or(text.len(), |(byte_offset, _)| byte_offset)
 }
 
-fn checked_truncated_usize(value: f64) -> Option<usize> {
-    if !value.is_finite() {
-        return None;
-    }
-    let truncated = value.trunc();
-    if truncated < 0.0 || truncated > usize::MAX as f64 {
-        return None;
-    }
-    Some(truncated as usize)
-}
-
 /// SUBSTITUTE(text, old_text, new_text, [instance_num]) - replaces occurrences.
 pub fn fn_substitute(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("SUBSTITUTE", args, 3, 4)?;
@@ -92,7 +85,7 @@ pub fn fn_substitute(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     }
     if args.len() > 3 {
         let instance_value = coerce_to_number(&ctx.eval_expr(&args[3])?)?;
-        let Some(instance_num) = checked_truncated_usize(instance_value) else {
+        let Some(instance_num) = checked_trunc_count(instance_value) else {
             return Ok(CellValue::Error("#VALUE!".to_string()));
         };
         if instance_num < 1 {
@@ -164,15 +157,21 @@ fn checked_substitute_output_len(
 pub fn fn_replace(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("REPLACE", args, 4, 4)?;
     let old_text = coerce_to_string(&ctx.eval_expr(&args[0])?);
-    let start_num = coerce_to_number(&ctx.eval_expr(&args[1])?)? as usize;
-    let num_chars = coerce_to_number(&ctx.eval_expr(&args[2])?)? as usize;
+    let start_value = coerce_to_number(&ctx.eval_expr(&args[1])?)?;
+    let count_value = coerce_to_number(&ctx.eval_expr(&args[2])?)?;
     let new_text = coerce_to_string(&ctx.eval_expr(&args[3])?);
+    let (Some(start_num), Some(num_chars)) = (
+        checked_trunc_count(start_value),
+        checked_trunc_count(count_value),
+    ) else {
+        return Ok(CellValue::Error("#VALUE!".to_string()));
+    };
     if start_num < 1 {
         return Ok(CellValue::Error("#VALUE!".to_string()));
     }
     let chars: Vec<char> = old_text.chars().collect();
     let start = start_num - 1;
-    let end = (start + num_chars).min(chars.len());
+    let end = start.saturating_add(num_chars).min(chars.len());
     let mut result = String::new();
     for &ch in &chars[..start.min(chars.len())] {
         result.push(ch);
@@ -188,7 +187,10 @@ pub fn fn_replace(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
 pub fn fn_rept(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("REPT", args, 2, 2)?;
     let text = coerce_to_string(&ctx.eval_expr(&args[0])?);
-    let times = coerce_to_number(&ctx.eval_expr(&args[1])?)? as usize;
+    let times_value = coerce_to_number(&ctx.eval_expr(&args[1])?)?;
+    let Some(times) = checked_trunc_count(times_value) else {
+        return Ok(CellValue::Error("#VALUE!".to_string()));
+    };
     if text
         .chars()
         .count()

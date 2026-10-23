@@ -6,6 +6,7 @@ use crate::cell::CellValue;
 use crate::error::Result;
 use crate::formula::ast::Expr;
 use crate::formula::eval::{coerce_to_number, coerce_to_string, Evaluator};
+use crate::formula::functions::conversion::{checked_trunc_i32_in, checked_trunc_i64};
 use crate::formula::functions::{check_arg_count, finite_number_or_num_error};
 
 /// BIN2DEC(number)
@@ -450,22 +451,28 @@ pub fn fn_convert(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
 pub fn fn_besseli(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("BESSELI", args, 2, 2)?;
     let x = coerce_to_number(&ctx.eval_expr(&args[0])?)?;
-    let n = coerce_to_number(&ctx.eval_expr(&args[1])?)? as i32;
-    if !x.is_finite() || n < 0 {
+    let order = coerce_to_number(&ctx.eval_expr(&args[1])?)?;
+    let Some(n) = checked_nonnegative_i32(order) else {
+        return Ok(CellValue::Error("#NUM!".to_string()));
+    };
+    if !x.is_finite() {
         return Ok(CellValue::Error("#NUM!".to_string()));
     }
-    finite_number_or_num_error(bessel_i(x, n as f64))
+    finite_number_or_num_error(bessel_i(x, f64::from(n)))
 }
 
 /// BESSELJ(x, n)
 pub fn fn_besselj(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("BESSELJ", args, 2, 2)?;
     let x = coerce_to_number(&ctx.eval_expr(&args[0])?)?;
-    let n = coerce_to_number(&ctx.eval_expr(&args[1])?)? as i32;
-    if !x.is_finite() || n < 0 {
+    let order = coerce_to_number(&ctx.eval_expr(&args[1])?)?;
+    let Some(n) = checked_nonnegative_i32(order) else {
+        return Ok(CellValue::Error("#NUM!".to_string()));
+    };
+    if !x.is_finite() {
         return Ok(CellValue::Error("#NUM!".to_string()));
     }
-    finite_number_or_num_error(bessel_j(x, n as f64))
+    finite_number_or_num_error(bessel_j(x, f64::from(n)))
 }
 
 /// BESSELK(x, n)
@@ -512,25 +519,11 @@ enum EngineeringPlaces {
 }
 
 fn checked_truncated_i64(value: f64, min: i64, max: i64) -> Option<i64> {
-    if !value.is_finite() {
-        return None;
-    }
-    let truncated = value.trunc();
-    if truncated < min as f64 || truncated > max as f64 {
-        return None;
-    }
-    Some(truncated as i64)
+    checked_trunc_i64(value, min, max)
 }
 
 fn checked_nonnegative_i32(value: f64) -> Option<i32> {
-    if !value.is_finite() {
-        return None;
-    }
-    let truncated = value.trunc();
-    if truncated < 0.0 || truncated > f64::from(i32::MAX) {
-        return None;
-    }
-    Some(truncated as i32)
+    checked_trunc_i32_in(value, 0, i32::MAX)
 }
 
 fn engineering_places(

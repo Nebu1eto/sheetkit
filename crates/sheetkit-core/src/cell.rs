@@ -158,12 +158,19 @@ pub fn datetime_to_serial(datetime: NaiveDateTime) -> f64 {
 
 /// Convert an Excel serial number to a `NaiveDate`.
 ///
-/// Returns `None` for invalid serial numbers (< 1).
+/// Returns `None` for invalid serial numbers (< 1), non-finite values, and
+/// serials beyond the date range representable by `chrono`.
 pub fn serial_to_date(serial: f64) -> Option<NaiveDate> {
-    let serial_int = serial.floor() as i64;
-    if serial_int < 1 {
+    if !serial.is_finite() {
         return None;
     }
+    let floored = serial.floor();
+    // Reject before the saturating `as i64` cast; the 2^53 bound is far
+    // beyond chrono's date range, so checked arithmetic below still applies.
+    if !(1.0..=9_007_199_254_740_992.0).contains(&floored) {
+        return None;
+    }
+    let serial_int = floored as i64;
     let epoch = NaiveDate::from_ymd_opt(1899, 12, 31).expect("valid epoch date 1899-12-31");
     // Serial 60 = February 29, 1900 (Excel bug -- this date does not exist).
     // Map it to February 28, 1900 for practical purposes.
@@ -176,12 +183,12 @@ pub fn serial_to_date(serial: f64) -> Option<NaiveDate> {
     } else {
         serial_int
     };
-    epoch.checked_add_signed(chrono::Duration::days(adjusted))
+    epoch.checked_add_signed(chrono::Duration::try_days(adjusted)?)
 }
 
 /// Convert an Excel serial number to a `NaiveDateTime`.
 ///
-/// Returns `None` for invalid serial numbers (< 1).
+/// Returns `None` for any serial rejected by [`serial_to_date`].
 pub fn serial_to_datetime(serial: f64) -> Option<NaiveDateTime> {
     let date = serial_to_date(serial)?;
     let frac = serial.fract().abs();
@@ -385,6 +392,45 @@ mod tests {
     fn test_serial_to_date_invalid() {
         assert!(serial_to_date(0.0).is_none());
         assert!(serial_to_date(-1.0).is_none());
+    }
+
+    #[test]
+    fn test_serial_conversions_are_total_for_extreme_inputs() {
+        let extremes = [
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            1.0e11,
+            1.0e14,
+            1.0e17,
+            1.0e300,
+            f64::MAX,
+            -1.0e14,
+            -1.0e300,
+            f64::MIN,
+            i64::MAX as f64,
+            i64::MIN as f64,
+        ];
+        for serial in extremes {
+            assert!(
+                serial_to_date(serial).is_none(),
+                "serial_to_date({serial}) must be None"
+            );
+            assert!(
+                serial_to_datetime(serial).is_none(),
+                "serial_to_datetime({serial}) must be None"
+            );
+            assert_eq!(CellValue::Date(serial).to_string(), format!("{serial}"));
+        }
+    }
+
+    #[test]
+    fn test_serial_to_date_chrono_upper_boundary() {
+        let max = NaiveDate::MAX;
+        let serial = date_to_serial(max);
+        assert_eq!(serial_to_date(serial), Some(max));
+        assert!(serial_to_date(serial + 1.0).is_none());
+        assert!(serial_to_datetime(serial + 1.5).is_none());
     }
 
     #[test]

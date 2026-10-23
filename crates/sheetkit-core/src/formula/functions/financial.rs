@@ -6,17 +6,24 @@ use crate::cell::CellValue;
 use crate::error::Result;
 use crate::formula::ast::Expr;
 use crate::formula::eval::{coerce_to_number, Evaluator};
+use crate::formula::functions::conversion::checked_trunc_i32;
 use crate::formula::functions::{check_arg_count, finite_number_or_num_error};
 
-fn checked_truncated_i32(value: f64) -> Option<i32> {
-    if !value.is_finite() {
-        return None;
+/// Evaluate the optional integer argument at `index`, truncated toward zero.
+///
+/// Returns `default` when the argument is omitted and `None` when the value is
+/// non-finite or outside the `i32` range.
+fn optional_i32_arg(
+    args: &[Expr],
+    index: usize,
+    default: i32,
+    ctx: &mut Evaluator,
+) -> Result<Option<i32>> {
+    if args.len() <= index {
+        return Ok(Some(default));
     }
-    let truncated = value.trunc();
-    if truncated < f64::from(i32::MIN) || truncated > f64::from(i32::MAX) {
-        return None;
-    }
-    Some(truncated as i32)
+    let value = coerce_to_number(&ctx.eval_expr(&args[index])?)?;
+    Ok(checked_trunc_i32(value))
 }
 
 /// FV(rate, nper, pmt, [pv], [type])
@@ -30,10 +37,8 @@ pub fn fn_fv(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     } else {
         0.0
     };
-    let pmt_type = if args.len() > 4 {
-        coerce_to_number(&ctx.eval_expr(&args[4])?)? as i32
-    } else {
-        0
+    let Some(pmt_type) = optional_i32_arg(args, 4, 0, ctx)? else {
+        return Ok(CellValue::Error("#NUM!".to_string()));
     };
     let fv = calc_fv(rate, nper, pmt, pv, pmt_type);
     Ok(CellValue::Number(fv))
@@ -50,10 +55,8 @@ pub fn fn_pv(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     } else {
         0.0
     };
-    let pmt_type = if args.len() > 4 {
-        coerce_to_number(&ctx.eval_expr(&args[4])?)? as i32
-    } else {
-        0
+    let Some(pmt_type) = optional_i32_arg(args, 4, 0, ctx)? else {
+        return Ok(CellValue::Error("#NUM!".to_string()));
     };
     let pv = calc_pv(rate, nper, pmt, fv, pmt_type);
     Ok(CellValue::Number(pv))
@@ -97,10 +100,8 @@ pub fn fn_pmt(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     } else {
         0.0
     };
-    let pmt_type = if args.len() > 4 {
-        coerce_to_number(&ctx.eval_expr(&args[4])?)? as i32
-    } else {
-        0
+    let Some(pmt_type) = optional_i32_arg(args, 4, 0, ctx)? else {
+        return Ok(CellValue::Error("#NUM!".to_string()));
     };
     let pmt = calc_pmt(rate, nper, pv, fv, pmt_type);
     Ok(CellValue::Number(pmt))
@@ -118,10 +119,8 @@ pub fn fn_ipmt(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     } else {
         0.0
     };
-    let pmt_type = if args.len() > 5 {
-        coerce_to_number(&ctx.eval_expr(&args[5])?)? as i32
-    } else {
-        0
+    let Some(pmt_type) = optional_i32_arg(args, 5, 0, ctx)? else {
+        return Ok(CellValue::Error("#NUM!".to_string()));
     };
     if per < 1.0 || per > nper {
         return Ok(CellValue::Error("#NUM!".to_string()));
@@ -142,10 +141,8 @@ pub fn fn_ppmt(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     } else {
         0.0
     };
-    let pmt_type = if args.len() > 5 {
-        coerce_to_number(&ctx.eval_expr(&args[5])?)? as i32
-    } else {
-        0
+    let Some(pmt_type) = optional_i32_arg(args, 5, 0, ctx)? else {
+        return Ok(CellValue::Error("#NUM!".to_string()));
     };
     if per < 1.0 || per > nper {
         return Ok(CellValue::Error("#NUM!".to_string()));
@@ -166,10 +163,8 @@ pub fn fn_rate(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     } else {
         0.0
     };
-    let pmt_type = if args.len() > 4 {
-        coerce_to_number(&ctx.eval_expr(&args[4])?)? as i32
-    } else {
-        0
+    let Some(pmt_type) = optional_i32_arg(args, 4, 0, ctx)? else {
+        return Ok(CellValue::Error("#NUM!".to_string()));
     };
     let guess = if args.len() > 5 {
         coerce_to_number(&ctx.eval_expr(&args[5])?)?
@@ -193,10 +188,8 @@ pub fn fn_nper(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     } else {
         0.0
     };
-    let pmt_type = if args.len() > 4 {
-        coerce_to_number(&ctx.eval_expr(&args[4])?)? as i32
-    } else {
-        0
+    let Some(pmt_type) = optional_i32_arg(args, 4, 0, ctx)? else {
+        return Ok(CellValue::Error("#NUM!".to_string()));
     };
     if rate == 0.0 {
         if pmt == 0.0 {
@@ -229,9 +222,9 @@ pub fn fn_db(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
         12.0
     };
     let (Some(life), Some(period), Some(month)) = (
-        checked_truncated_i32(life_value),
-        checked_truncated_i32(period_value),
-        checked_truncated_i32(month_value),
+        checked_trunc_i32(life_value),
+        checked_trunc_i32(period_value),
+        checked_trunc_i32(month_value),
     ) else {
         return Ok(CellValue::Error("#NUM!".to_string()));
     };
@@ -297,7 +290,7 @@ pub fn fn_ddb(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     } else {
         2.0
     };
-    let Some(period_count) = checked_truncated_i32(period) else {
+    let Some(period_count) = checked_trunc_i32(period) else {
         return Ok(CellValue::Error("#NUM!".to_string()));
     };
     if !cost.is_finite()
@@ -371,7 +364,9 @@ pub fn fn_syd(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
 pub fn fn_effect(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("EFFECT", args, 2, 2)?;
     let nominal = coerce_to_number(&ctx.eval_expr(&args[0])?)?;
-    let npery = coerce_to_number(&ctx.eval_expr(&args[1])?)? as i32;
+    let Some(npery) = optional_i32_arg(args, 1, 0, ctx)? else {
+        return Ok(CellValue::Error("#NUM!".to_string()));
+    };
     if nominal <= 0.0 || npery < 1 {
         return Ok(CellValue::Error("#NUM!".to_string()));
     }
@@ -383,7 +378,9 @@ pub fn fn_effect(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
 pub fn fn_nominal(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("NOMINAL", args, 2, 2)?;
     let effect = coerce_to_number(&ctx.eval_expr(&args[0])?)?;
-    let npery = coerce_to_number(&ctx.eval_expr(&args[1])?)? as i32;
+    let Some(npery) = optional_i32_arg(args, 1, 0, ctx)? else {
+        return Ok(CellValue::Error("#NUM!".to_string()));
+    };
     if effect <= 0.0 || npery < 1 {
         return Ok(CellValue::Error("#NUM!".to_string()));
     }
@@ -395,7 +392,9 @@ pub fn fn_nominal(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
 pub fn fn_dollarde(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("DOLLARDE", args, 2, 2)?;
     let fractional = coerce_to_number(&ctx.eval_expr(&args[0])?)?;
-    let fraction = coerce_to_number(&ctx.eval_expr(&args[1])?)? as i32;
+    let Some(fraction) = optional_i32_arg(args, 1, 0, ctx)? else {
+        return Ok(CellValue::Error("#NUM!".to_string()));
+    };
     if fraction < 1 {
         return Ok(CellValue::Error("#NUM!".to_string()));
     }
@@ -413,7 +412,9 @@ pub fn fn_dollarde(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
 pub fn fn_dollarfr(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("DOLLARFR", args, 2, 2)?;
     let decimal = coerce_to_number(&ctx.eval_expr(&args[0])?)?;
-    let fraction = coerce_to_number(&ctx.eval_expr(&args[1])?)? as i32;
+    let Some(fraction) = optional_i32_arg(args, 1, 0, ctx)? else {
+        return Ok(CellValue::Error("#NUM!".to_string()));
+    };
     if fraction < 1 {
         return Ok(CellValue::Error("#NUM!".to_string()));
     }
@@ -437,9 +438,9 @@ pub fn fn_cumipmt(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     let end_value = coerce_to_number(&ctx.eval_expr(&args[4])?)?;
     let pmt_type_value = coerce_to_number(&ctx.eval_expr(&args[5])?)?;
     let (Some(start), Some(end), Some(pmt_type)) = (
-        checked_truncated_i32(start_value),
-        checked_truncated_i32(end_value),
-        checked_truncated_i32(pmt_type_value),
+        checked_trunc_i32(start_value),
+        checked_trunc_i32(end_value),
+        checked_trunc_i32(pmt_type_value),
     ) else {
         return Ok(CellValue::Error("#NUM!".to_string()));
     };

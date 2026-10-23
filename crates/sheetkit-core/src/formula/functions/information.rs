@@ -38,8 +38,11 @@ pub fn fn_iseven(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("ISEVEN", args, 1, 1)?;
     let v = ctx.eval_expr(&args[0])?;
     let n = coerce_to_number(&v)?;
-    let int_part = n.trunc() as i64;
-    Ok(CellValue::Bool(int_part % 2 == 0))
+    if !n.is_finite() {
+        return Ok(CellValue::Error("#NUM!".to_string()));
+    }
+    // Exact for every finite f64; magnitudes of 2^53 and above are even.
+    Ok(CellValue::Bool(n.trunc() % 2.0 == 0.0))
 }
 
 /// ISODD(number) - TRUE if the integer part of number is odd
@@ -47,8 +50,10 @@ pub fn fn_isodd(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("ISODD", args, 1, 1)?;
     let v = ctx.eval_expr(&args[0])?;
     let n = coerce_to_number(&v)?;
-    let int_part = n.trunc() as i64;
-    Ok(CellValue::Bool(int_part % 2 != 0))
+    if !n.is_finite() {
+        return Ok(CellValue::Error("#NUM!".to_string()));
+    }
+    Ok(CellValue::Bool(n.trunc() % 2.0 != 0.0))
 }
 
 /// TYPE(value) - returns type code: 1=number, 2=text, 4=boolean, 16=error, 64=array

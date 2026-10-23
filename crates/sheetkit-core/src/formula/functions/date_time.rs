@@ -2,17 +2,41 @@
 //! MINUTE, SECOND, DATEDIF, EDATE, EOMONTH, DATEVALUE, WEEKDAY, WEEKNUM,
 //! NETWORKDAYS, WORKDAY.
 
-use std::collections::HashSet;
+use chrono::{Datelike, Duration, Local, NaiveDate, NaiveDateTime, Timelike};
 
-use chrono::{Datelike, Duration, Local, NaiveDate, Timelike};
-
-use crate::cell::{
-    date_to_serial, datetime_to_serial, serial_to_date, serial_to_datetime, CellValue,
-};
+use crate::cell::{date_to_serial, datetime_to_serial, CellValue};
 use crate::error::Result;
 use crate::formula::ast::Expr;
 use crate::formula::eval::{coerce_to_number, coerce_to_string, Evaluator};
+use crate::formula::functions::conversion::{checked_trunc_i32, checked_trunc_i64};
 use crate::formula::functions::{check_arg_count, collect_criteria_range_values};
+
+/// One past the largest Excel date serial (9999-12-31 23:59:59).
+const MAX_DATE_SERIAL_EXCLUSIVE: f64 = 2_958_466.0;
+/// Largest year representable in an Excel date.
+const MAX_EXCEL_YEAR: i32 = 9999;
+
+fn num_error() -> CellValue {
+    CellValue::Error("#NUM!".to_string())
+}
+
+/// Convert a serial to a date, rejecting non-finite or post-9999 serials
+/// before they reach chrono arithmetic.
+fn serial_to_date(serial: f64) -> Option<NaiveDate> {
+    if !serial.is_finite() || serial >= MAX_DATE_SERIAL_EXCLUSIVE {
+        return None;
+    }
+    crate::cell::serial_to_date(serial)
+}
+
+/// Convert a serial to a date-time with the same domain check as
+/// [`serial_to_date`].
+fn serial_to_datetime(serial: f64) -> Option<NaiveDateTime> {
+    if !serial.is_finite() || serial >= MAX_DATE_SERIAL_EXCLUSIVE {
+        return None;
+    }
+    crate::cell::serial_to_datetime(serial)
+}
 
 /// Convert a CellValue to an Excel serial number.
 fn to_serial(v: &CellValue) -> std::result::Result<f64, CellValue> {
@@ -45,14 +69,23 @@ fn parse_date_string(s: &str) -> Option<NaiveDate> {
     None
 }
 
-/// Add months to a date, clamping to end of month if needed.
-fn add_months_to_date(date: NaiveDate, months: i32) -> Option<NaiveDate> {
-    let total_months = date.year() * 12 + date.month() as i32 - 1 + months;
-    let new_year = total_months.div_euclid(12);
-    let new_month = (total_months.rem_euclid(12) + 1) as u32;
+/// Add months to a date, clamping to end of month if needed. Returns `None`
+/// when the result falls outside the chrono date range.
+fn add_months_to_date(date: NaiveDate, months: i64) -> Option<NaiveDate> {
+    let total_months = i64::from(date.year())
+        .checked_mul(12)?
+        .checked_add(i64::from(date.month0()))?
+        .checked_add(months)?;
+    let new_year = i32::try_from(total_months.div_euclid(12)).ok()?;
+    let new_month = u32::try_from(total_months.rem_euclid(12) + 1).ok()?;
     let max_day = last_day_of_month(new_year, new_month);
     let new_day = date.day().min(max_day);
     NaiveDate::from_ymd_opt(new_year, new_month, new_day)
+}
+
+/// Return `date` when its year is within the Excel date range.
+fn excel_date(date: NaiveDate) -> Option<NaiveDate> {
+    (date.year() <= MAX_EXCEL_YEAR).then_some(date)
 }
 
 /// Return the last day of the given month.
@@ -79,16 +112,22 @@ fn workday_date(value: &CellValue) -> std::result::Result<NaiveDate, CellValue> 
     serial_to_date(serial).ok_or_else(|| CellValue::Error("#VALUE!".to_string()))
 }
 
+/// Collect weekday holidays as a sorted, deduplicated list.
+///
+/// Evaluation work proportional to the number of holiday values is charged
+/// before they are converted and sorted.
 fn holiday_dates(
     args: &[Expr],
     ctx: &mut Evaluator,
-) -> Result<std::result::Result<HashSet<NaiveDate>, CellValue>> {
+) -> Result<std::result::Result<Vec<NaiveDate>, CellValue>> {
     if args.len() < 3 {
-        return Ok(Ok(HashSet::new()));
+        return Ok(Ok(Vec::new()));
     }
 
-    let mut holidays = HashSet::new();
-    for value in collect_criteria_range_values(&args[2], ctx)? {
+    let values = collect_criteria_range_values(&args[2], ctx)?;
+    ctx.charge_evaluation_work(u64::try_from(values.len()).unwrap_or(u64::MAX))?;
+    let mut holidays = Vec::new();
+    for value in values {
         if value == CellValue::Empty {
             continue;
         }
@@ -97,9 +136,11 @@ fn holiday_dates(
             Err(error) => return Ok(Err(error)),
         };
         if date.weekday().num_days_from_monday() < 5 {
-            holidays.insert(date);
+            holidays.push(date);
         }
     }
+    holidays.sort_unstable();
+    holidays.dedup();
     Ok(Ok(holidays))
 }
 
@@ -118,7 +159,7 @@ fn weekday_count(start: NaiveDate, end: NaiveDate) -> i64 {
 }
 
 fn checked_add_days(date: NaiveDate, days: i64) -> Option<NaiveDate> {
-    date.checked_add_signed(Duration::days(days))
+    date.checked_add_signed(Duration::try_days(days)?)
 }
 
 fn add_weekdays(mut date: NaiveDate, mut days: u64, direction: i64) -> Option<NaiveDate> {
@@ -147,46 +188,37 @@ fn add_weekdays(mut date: NaiveDate, mut days: u64, direction: i64) -> Option<Na
     Some(date)
 }
 
-fn holidays_between(
-    holidays: &HashSet<NaiveDate>,
-    start: NaiveDate,
-    end: NaiveDate,
-    direction: i64,
-) -> u64 {
-    holidays
-        .iter()
-        .filter(|date| {
-            if direction > 0 {
-                **date > start && **date <= end
-            } else {
-                **date < start && **date >= end
-            }
-        })
-        .count() as u64
-}
-
 /// DATE(year, month, day) - constructs a date serial number.
+///
+/// Arguments are truncated toward zero. Years below 1900 are offset by 1900;
+/// month and day overflow roll into later or earlier periods. Non-finite
+/// arguments, arguments outside the `i32` range, a year outside 0..=9999, or
+/// a result after 9999-12-31 return `#NUM!`.
 pub fn fn_date(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("DATE", args, 3, 3)?;
-    let year = coerce_to_number(&ctx.eval_expr(&args[0])?)? as i32;
-    let month = coerce_to_number(&ctx.eval_expr(&args[1])?)? as i32;
-    let day = coerce_to_number(&ctx.eval_expr(&args[2])?)? as i32;
-
+    let year = coerce_to_number(&ctx.eval_expr(&args[0])?)?;
+    let month = coerce_to_number(&ctx.eval_expr(&args[1])?)?;
+    let day = coerce_to_number(&ctx.eval_expr(&args[2])?)?;
+    let (Some(year), Some(month), Some(day)) = (
+        checked_trunc_i32(year),
+        checked_trunc_i32(month),
+        checked_trunc_i32(day),
+    ) else {
+        return Ok(num_error());
+    };
+    if !(0..=MAX_EXCEL_YEAR).contains(&year) {
+        return Ok(num_error());
+    }
     let adj_year = if year < 1900 { year + 1900 } else { year };
 
-    // Handle month overflow/underflow
-    let base = NaiveDate::from_ymd_opt(adj_year, 1, 1);
-    let base = match base {
-        Some(d) => d,
-        None => return Ok(CellValue::Error("#VALUE!".to_string())),
-    };
-    let with_months = add_months_to_date(base, month - 1);
-    let with_months = match with_months {
-        Some(d) => d,
-        None => return Ok(CellValue::Error("#VALUE!".to_string())),
-    };
-    let result = with_months + Duration::days(i64::from(day) - 1);
-    Ok(CellValue::Date(date_to_serial(result)))
+    let result = NaiveDate::from_ymd_opt(adj_year, 1, 1)
+        .and_then(|base| add_months_to_date(base, i64::from(month) - 1))
+        .and_then(|with_months| checked_add_days(with_months, i64::from(day) - 1))
+        .and_then(excel_date);
+    match result {
+        Some(date) => Ok(CellValue::Date(date_to_serial(date))),
+        None => Ok(num_error()),
+    }
 }
 
 /// TODAY() - returns today's date serial number.
@@ -348,12 +380,13 @@ pub fn fn_datedif(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
             let days = if d2 >= d1_this_year {
                 (d2 - d1_this_year).num_days()
             } else {
-                let d1_last_year = NaiveDate::from_ymd_opt(
+                let Some(d1_last_year) = NaiveDate::from_ymd_opt(
                     d2.year() - 1,
                     d1.month(),
                     d1.day().min(last_day_of_month(d2.year() - 1, d1.month())),
-                )
-                .unwrap();
+                ) else {
+                    return Ok(CellValue::Error("#VALUE!".to_string()));
+                };
                 (d2 - d1_last_year).num_days()
             };
             days as f64
@@ -376,10 +409,16 @@ pub fn fn_datedif(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
 }
 
 /// EDATE(start_date, months) - date that is N months before/after start_date.
+///
+/// `months` is truncated toward zero. A non-finite month count, one outside
+/// the `i32` range, or a result after 9999-12-31 returns `#NUM!`.
 pub fn fn_edate(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("EDATE", args, 2, 2)?;
     let v = ctx.eval_expr(&args[0])?;
-    let months = coerce_to_number(&ctx.eval_expr(&args[1])?)? as i32;
+    let months = coerce_to_number(&ctx.eval_expr(&args[1])?)?;
+    let Some(months) = checked_trunc_i32(months) else {
+        return Ok(num_error());
+    };
     let serial = match to_serial(&v) {
         Ok(n) => n,
         Err(e) => return Ok(e),
@@ -388,17 +427,22 @@ pub fn fn_edate(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
         Some(d) => d,
         None => return Ok(CellValue::Error("#VALUE!".to_string())),
     };
-    match add_months_to_date(date, months) {
+    match add_months_to_date(date, i64::from(months)).and_then(excel_date) {
         Some(d) => Ok(CellValue::Date(date_to_serial(d))),
-        None => Ok(CellValue::Error("#VALUE!".to_string())),
+        None => Ok(num_error()),
     }
 }
 
 /// EOMONTH(start_date, months) - last day of the month N months away.
+///
+/// Uses the same month-count domain as EDATE and returns `#NUM!` outside it.
 pub fn fn_eomonth(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("EOMONTH", args, 2, 2)?;
     let v = ctx.eval_expr(&args[0])?;
-    let months = coerce_to_number(&ctx.eval_expr(&args[1])?)? as i32;
+    let months = coerce_to_number(&ctx.eval_expr(&args[1])?)?;
+    let Some(months) = checked_trunc_i32(months) else {
+        return Ok(num_error());
+    };
     let serial = match to_serial(&v) {
         Ok(n) => n,
         Err(e) => return Ok(e),
@@ -407,13 +451,14 @@ pub fn fn_eomonth(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
         Some(d) => d,
         None => return Ok(CellValue::Error("#VALUE!".to_string())),
     };
-    match add_months_to_date(date, months) {
-        Some(d) => {
-            let eom = last_day_of_month(d.year(), d.month());
-            let result = NaiveDate::from_ymd_opt(d.year(), d.month(), eom).unwrap();
-            Ok(CellValue::Date(date_to_serial(result)))
-        }
-        None => Ok(CellValue::Error("#VALUE!".to_string())),
+    let result = add_months_to_date(date, i64::from(months))
+        .and_then(|d| {
+            NaiveDate::from_ymd_opt(d.year(), d.month(), last_day_of_month(d.year(), d.month()))
+        })
+        .and_then(excel_date);
+    match result {
+        Some(d) => Ok(CellValue::Date(date_to_serial(d))),
+        None => Ok(num_error()),
     }
 }
 
@@ -432,7 +477,11 @@ pub fn fn_weekday(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("WEEKDAY", args, 1, 2)?;
     let v = ctx.eval_expr(&args[0])?;
     let return_type = if args.len() > 1 {
-        coerce_to_number(&ctx.eval_expr(&args[1])?)? as i32
+        let value = coerce_to_number(&ctx.eval_expr(&args[1])?)?;
+        let Some(return_type) = checked_trunc_i32(value) else {
+            return Ok(num_error());
+        };
+        return_type
     } else {
         1
     };
@@ -460,7 +509,11 @@ pub fn fn_weeknum(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("WEEKNUM", args, 1, 2)?;
     let v = ctx.eval_expr(&args[0])?;
     let return_type = if args.len() > 1 {
-        coerce_to_number(&ctx.eval_expr(&args[1])?)? as i32
+        let value = coerce_to_number(&ctx.eval_expr(&args[1])?)?;
+        let Some(return_type) = checked_trunc_i32(value) else {
+            return Ok(num_error());
+        };
+        return_type
     } else {
         1
     };
@@ -472,7 +525,9 @@ pub fn fn_weeknum(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
         Some(d) => d,
         None => return Ok(CellValue::Error("#VALUE!".to_string())),
     };
-    let jan1 = NaiveDate::from_ymd_opt(date.year(), 1, 1).unwrap();
+    let Some(jan1) = NaiveDate::from_ymd_opt(date.year(), 1, 1) else {
+        return Ok(CellValue::Error("#VALUE!".to_string()));
+    };
     let jan1_weekday = jan1.weekday().num_days_from_monday(); // Mon=0..Sun=6
     let day_of_year = date.ordinal() as i32;
 
@@ -507,15 +562,19 @@ pub fn fn_networkdays(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
         (d2, d1, -1i32)
     };
 
-    let holiday_count = holidays
-        .iter()
-        .filter(|date| **date >= start && **date <= end)
-        .count() as i64;
-    let count = weekday_count(start, end) - holiday_count;
+    let first = holidays.partition_point(|date| *date < start);
+    let past_end = holidays.partition_point(|date| *date <= end);
+    let holiday_count = i64::try_from(past_end - first).unwrap_or(i64::MAX);
+    let count = weekday_count(start, end).saturating_sub(holiday_count);
     Ok(CellValue::Number((count * i64::from(sign)) as f64))
 }
 
 /// WORKDAY(start_date, days, [holidays]) - date after N working days.
+///
+/// `days` is truncated toward zero; a non-finite value or a result outside
+/// the Excel date range returns `#NUM!`. Holidays are sorted once and walked
+/// with a monotone cursor, and the walk is charged as evaluation work before
+/// it runs.
 pub fn fn_workday(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("WORKDAY", args, 2, 3)?;
     let start = match workday_date(&ctx.eval_expr(&args[0])?) {
@@ -523,33 +582,48 @@ pub fn fn_workday(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
         Err(error) => return Ok(error),
     };
     let days = coerce_to_number(&ctx.eval_expr(&args[1])?)?;
-    if !days.is_finite() || days < i64::MIN as f64 || days > i64::MAX as f64 {
-        return Ok(CellValue::Error("#NUM!".to_string()));
-    }
-    let days = days.trunc() as i64;
+    let Some(days) = checked_trunc_i64(days, i64::MIN, i64::MAX) else {
+        return Ok(num_error());
+    };
     let holidays = match holiday_dates(args, ctx)? {
         Ok(holidays) => holidays,
         Err(error) => return Ok(error),
     };
     let direction = if days >= 0 { 1 } else { -1 };
-    let mut current = match add_weekdays(start, days.unsigned_abs(), direction) {
-        Some(date) => date,
-        None => return Ok(CellValue::Error("#NUM!".to_string())),
+    let Some(mut current) = add_weekdays(start, days.unsigned_abs(), direction) else {
+        return Ok(num_error());
     };
-    loop {
-        let skipped = holidays_between(&holidays, start, current, direction);
-        let adjusted = match add_weekdays(
-            start,
-            days.unsigned_abs().saturating_add(skipped),
-            direction,
-        ) {
-            Some(date) => date,
-            None => return Ok(CellValue::Error("#NUM!".to_string())),
+    if days != 0 {
+        // Each holiday between start and the running result pushes the result
+        // one working day further. Holidays are distinct weekdays, so a single
+        // ordered pass is exact.
+        let pending: Box<dyn Iterator<Item = &NaiveDate>> = if direction > 0 {
+            let first = holidays.partition_point(|date| *date <= start);
+            ctx.charge_evaluation_work(u64::try_from(holidays.len() - first).unwrap_or(u64::MAX))?;
+            Box::new(holidays[first..].iter())
+        } else {
+            let past_last = holidays.partition_point(|date| *date < start);
+            ctx.charge_evaluation_work(u64::try_from(past_last).unwrap_or(u64::MAX))?;
+            Box::new(holidays[..past_last].iter().rev())
         };
-        if adjusted == current {
-            return Ok(CellValue::Date(date_to_serial(current)));
+        for holiday in pending {
+            let reached = if direction > 0 {
+                *holiday <= current
+            } else {
+                *holiday >= current
+            };
+            if !reached {
+                break;
+            }
+            let Some(next) = add_weekdays(current, 1, direction) else {
+                return Ok(num_error());
+            };
+            current = next;
         }
-        current = adjusted;
+    }
+    match excel_date(current).filter(|date| date_to_serial(*date) >= 1.0) {
+        Some(date) => Ok(CellValue::Date(date_to_serial(date))),
+        None => Ok(num_error()),
     }
 }
 

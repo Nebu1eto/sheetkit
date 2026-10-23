@@ -68,11 +68,16 @@ pub fn evaluate(expr: &Expr, provider: &dyn CellDataProvider) -> Result<CellValu
 }
 
 /// Stateful evaluator that tracks recursion depth and circular references.
+///
+/// Unqualified references resolve against the evaluator's current sheet. That
+/// is the provider's sheet for the top-level formula and the owning sheet of
+/// any referenced formula cell while that cell's formula is being evaluated.
 pub struct Evaluator<'a> {
     provider: &'a dyn CellDataProvider,
     eval_stack: HashSet<(String, u32, u32)>,
     depth: usize,
     position: (u32, u32),
+    sheet_override: Option<String>,
     budget: FormulaBudget,
 }
 
@@ -89,6 +94,7 @@ impl<'a> Evaluator<'a> {
             eval_stack: HashSet::new(),
             depth: 0,
             position: (1, 1),
+            sheet_override: None,
             budget,
         }
     }
@@ -138,8 +144,13 @@ impl<'a> Evaluator<'a> {
         self.eval_expr(&args[index])
     }
 
-    /// Collect all numeric values from the argument list, expanding ranges.
-    /// Non-numeric values inside ranges are silently skipped (Excel semantics).
+    /// Collect numeric values for aggregate functions such as SUM or AVERAGE.
+    ///
+    /// Reference arguments (ranges and single-cell references) contribute only
+    /// numeric cells (see [`reference_number`]); empty, boolean, and text cells
+    /// are skipped, and an error cell aborts with that error. Other arguments
+    /// are direct values and use [`coerce_to_number`], so `TRUE` counts as 1
+    /// and numeric text is parsed.
     pub fn collect_numbers(&mut self, args: &[Expr]) -> Result<Vec<f64>> {
         let mut nums = Vec::new();
         for arg in args {
@@ -150,9 +161,18 @@ impl<'a> Evaluator<'a> {
                         if let CellValue::Error(error) = v {
                             return Err(Error::FormulaError(error));
                         }
-                        if let Ok(n) = coerce_to_number(&v) {
+                        if let Some(n) = reference_number(&v) {
                             nums.push(n);
                         }
+                    }
+                }
+                Expr::CellRef(_) => {
+                    let v = self.eval_expr(arg)?;
+                    if let CellValue::Error(error) = v {
+                        return Err(Error::FormulaError(error));
+                    }
+                    if let Some(n) = reference_number(&v) {
+                        nums.push(n);
                     }
                 }
                 _ => {
@@ -186,10 +206,10 @@ impl<'a> Evaluator<'a> {
         start: &CellReference,
         end: &CellReference,
     ) -> Result<Vec<CellValue>> {
-        let sheet = start
-            .sheet
-            .as_deref()
-            .unwrap_or_else(|| self.provider.current_sheet());
+        let sheet = match start.sheet.as_deref() {
+            Some(sheet) => sheet.to_string(),
+            None => self.current_sheet().to_string(),
+        };
         let start_col = column_name_to_number(&start.col)?;
         let end_col = column_name_to_number(&end.col)?;
         let start_row = start.row;
@@ -214,15 +234,17 @@ impl<'a> Evaluator<'a> {
             .map_err(|_| Error::Internal("formula range allocation failed".to_string()))?;
         for r in min_row..=max_row {
             for c in min_col..=max_col {
-                values.push(self.resolve_cell(sheet, c, r)?);
+                values.push(self.resolve_cell(&sheet, c, r)?);
             }
         }
         Ok(values)
     }
 
-    /// Return the current sheet name from the provider.
+    /// Return the sheet that unqualified references currently resolve against.
     pub fn current_sheet(&self) -> &str {
-        self.provider.current_sheet()
+        self.sheet_override
+            .as_deref()
+            .unwrap_or_else(|| self.provider.current_sheet())
     }
 
     /// Charge wildcard or criteria matching work before performing it.
@@ -266,7 +288,7 @@ impl<'a> Evaluator<'a> {
         let sheet = cell_ref
             .sheet
             .as_deref()
-            .unwrap_or_else(|| self.provider.current_sheet())
+            .unwrap_or_else(|| self.current_sheet())
             .to_string();
         let col = column_name_to_number(&cell_ref.col)?;
         let row = cell_ref.row;
@@ -274,6 +296,10 @@ impl<'a> Evaluator<'a> {
     }
 
     /// Resolve a single cell, following formula values and detecting cycles.
+    ///
+    /// A referenced formula is evaluated with the referenced cell's sheet and
+    /// position as context; the caller's context is restored afterwards on
+    /// both success and error. Cycle keys are sheet-qualified.
     fn resolve_cell(&mut self, sheet: &str, col: u32, row: u32) -> Result<CellValue> {
         let key = (sheet.to_string(), col, row);
         if self.eval_stack.contains(&key) {
@@ -286,8 +312,12 @@ impl<'a> Evaluator<'a> {
         match cell_value {
             CellValue::Formula { ref expr, .. } => {
                 self.eval_stack.insert(key.clone());
+                let saved_sheet = self.sheet_override.replace(sheet.to_string());
+                let saved_position = std::mem::replace(&mut self.position, (col, row));
                 let result = crate::formula::parser::parse_formula_with_budget(expr, &self.budget)
                     .and_then(|parsed| self.eval_expr(&parsed));
+                self.sheet_override = saved_sheet;
+                self.position = saved_position;
                 self.eval_stack.remove(&key);
                 result
             }
@@ -385,6 +415,23 @@ impl<'a> Evaluator<'a> {
 }
 
 // -- Type coercion helpers (pub for use by function implementations) --
+
+/// Select the numeric value of a cell reached through a reference.
+///
+/// Aggregates over references use only numeric cells: numbers and dates yield
+/// `Some`, and a cached formula result is inspected recursively. Empty,
+/// boolean, text, and error cells yield `None`; callers decide whether an
+/// error cell propagates.
+pub fn reference_number(value: &CellValue) -> Option<f64> {
+    match value {
+        CellValue::Number(n) | CellValue::Date(n) => Some(*n),
+        CellValue::Formula {
+            result: Some(inner),
+            ..
+        } => reference_number(inner),
+        _ => None,
+    }
+}
 
 /// Coerce a CellValue to f64. Booleans become 0/1, empty becomes 0,
 /// numeric strings are parsed. Non-numeric strings yield an error.

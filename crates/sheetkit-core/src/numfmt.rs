@@ -428,7 +428,13 @@ fn format_date_time(value: f64, format: &str) -> String {
     let seconds = (total_seconds % 60) as u32;
     let subsec_frac = (frac * 86_400.0) - (total_seconds as f64);
 
-    let date_opt = serial_to_date(int_part as f64 + day_carry as f64);
+    // Excel dates end at serial 2958465 (9999-12-31); larger or non-finite
+    // serials would overflow chrono arithmetic inside `serial_to_date`.
+    let date_opt = if value.is_finite() && value < 2_958_466.0 {
+        serial_to_date(int_part as f64 + day_carry as f64)
+    } else {
+        None
+    };
     let (year, month, day) = if let Some(date) = date_opt {
         (date.year() as u32, date.month(), date.day())
     } else {
@@ -1252,8 +1258,15 @@ fn scientific_integer_placeholders(format: &str) -> usize {
 }
 
 fn count_exponent_zeros(format: &str) -> usize {
-    let upper = format.to_uppercase();
-    if let Some(pos) = upper.find("E+").or_else(|| upper.find("E-")) {
+    // Search the original bytes with ASCII matching so the offset stays valid
+    // for `format`; Unicode case mapping can change byte lengths.
+    let find_marker = |sign: u8| {
+        format
+            .as_bytes()
+            .windows(2)
+            .position(|pair| pair[0].eq_ignore_ascii_case(&b'E') && pair[1] == sign)
+    };
+    if let Some(pos) = find_marker(b'+').or_else(|| find_marker(b'-')) {
         let after = &format[pos + 2..];
         after.chars().take_while(|&c| c == '0').count()
     } else {
