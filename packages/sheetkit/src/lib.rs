@@ -475,8 +475,9 @@ impl Workbook {
     /// Get the format code string for a built-in number format ID (0-49).
     /// Returns null if the ID is not recognized.
     #[napi]
-    pub fn builtin_format_code(id: u32) -> Option<String> {
-        sheetkit_core::numfmt::builtin_format_code(id).map(|s| s.to_string())
+    pub fn builtin_format_code(id: f64) -> Result<Option<String>> {
+        let id = checked_u32("id", id).map_err(invalid_arg)?;
+        Ok(sheetkit_core::numfmt::builtin_format_code(id).map(|s| s.to_string()))
     }
 
     /// Set the value of a cell. Pass string, number, boolean, DateValue, or null to clear.
@@ -520,10 +521,11 @@ impl Workbook {
         &mut self,
         env: Env,
         sheet: String,
-        row: u32,
+        row: f64,
         start_col: String,
         values: Vec<Either6<String, f64, bool, DateValue, FormulaValue, Null>>,
     ) -> Result<()> {
+        let row = checked_u32("row", row).map_err(invalid_arg)?;
         let col_num = crate::conversions::parse_column_name(&start_col)?;
         let cell_values: Vec<CellValue> = values
             .into_iter()
@@ -621,9 +623,11 @@ impl Workbook {
         &mut self,
         env: Env,
         sheet: String,
-        start_row: u32,
-        count: u32,
+        start_row: f64,
+        count: f64,
     ) -> Result<()> {
+        let start_row = checked_u32("startRow", start_row).map_err(invalid_arg)?;
+        let count = checked_u32("count", count).map_err(invalid_arg)?;
         self.inner_mut()?
             .insert_rows(&sheet, start_row, count)
             .map_err(|error| map_core_error(&env, error))
@@ -631,7 +635,8 @@ impl Workbook {
 
     /// Remove a row (1-based).
     #[napi]
-    pub fn remove_row(&mut self, env: Env, sheet: String, row: u32) -> Result<()> {
+    pub fn remove_row(&mut self, env: Env, sheet: String, row: f64) -> Result<()> {
+        let row = checked_u32("row", row).map_err(invalid_arg)?;
         self.inner_mut()?
             .remove_row(&sheet, row)
             .map_err(|error| map_core_error(&env, error))
@@ -639,7 +644,8 @@ impl Workbook {
 
     /// Duplicate a row (1-based).
     #[napi]
-    pub fn duplicate_row(&mut self, env: Env, sheet: String, row: u32) -> Result<()> {
+    pub fn duplicate_row(&mut self, env: Env, sheet: String, row: f64) -> Result<()> {
+        let row = checked_u32("row", row).map_err(invalid_arg)?;
         self.inner_mut()?
             .duplicate_row(&sheet, row)
             .map_err(|error| map_core_error(&env, error))
@@ -647,7 +653,8 @@ impl Workbook {
 
     /// Set the height of a row (1-based).
     #[napi]
-    pub fn set_row_height(&mut self, env: Env, sheet: String, row: u32, height: f64) -> Result<()> {
+    pub fn set_row_height(&mut self, env: Env, sheet: String, row: f64, height: f64) -> Result<()> {
+        let row = checked_u32("row", row).map_err(invalid_arg)?;
         self.inner_mut()?
             .set_row_height(&sheet, row, height)
             .map_err(|error| map_core_error(&env, error))
@@ -655,7 +662,8 @@ impl Workbook {
 
     /// Get the height of a row, or null if not explicitly set.
     #[napi]
-    pub fn get_row_height(&self, env: Env, sheet: String, row: u32) -> Result<Option<f64>> {
+    pub fn get_row_height(&self, env: Env, sheet: String, row: f64) -> Result<Option<f64>> {
+        let row = checked_u32("row", row).map_err(invalid_arg)?;
         self.inner
             .get_row_height(&sheet, row)
             .map_err(|error| map_core_error(&env, error))
@@ -667,9 +675,10 @@ impl Workbook {
         &mut self,
         env: Env,
         sheet: String,
-        row: u32,
+        row: f64,
         visible: bool,
     ) -> Result<()> {
+        let row = checked_u32("row", row).map_err(invalid_arg)?;
         self.inner_mut()?
             .set_row_visible(&sheet, row, visible)
             .map_err(|error| map_core_error(&env, error))
@@ -677,7 +686,8 @@ impl Workbook {
 
     /// Get whether a row is visible. Returns true if visible (not hidden).
     #[napi]
-    pub fn get_row_visible(&self, env: Env, sheet: String, row: u32) -> Result<bool> {
+    pub fn get_row_visible(&self, env: Env, sheet: String, row: f64) -> Result<bool> {
+        let row = checked_u32("row", row).map_err(invalid_arg)?;
         self.inner
             .get_row_visible(&sheet, row)
             .map_err(|error| map_core_error(&env, error))
@@ -689,9 +699,11 @@ impl Workbook {
         &mut self,
         env: Env,
         sheet: String,
-        row: u32,
-        level: u8,
+        row: f64,
+        level: f64,
     ) -> Result<()> {
+        let row = checked_u32("row", row).map_err(invalid_arg)?;
+        let level = checked_u8("level", level).map_err(invalid_arg)?;
         self.inner_mut()?
             .set_row_outline_level(&sheet, row, level)
             .map_err(|error| map_core_error(&env, error))
@@ -699,7 +711,8 @@ impl Workbook {
 
     /// Get the outline level of a row. Returns 0 if not set.
     #[napi]
-    pub fn get_row_outline_level(&self, env: Env, sheet: String, row: u32) -> Result<u8> {
+    pub fn get_row_outline_level(&self, env: Env, sheet: String, row: f64) -> Result<u8> {
+        let row = checked_u32("row", row).map_err(invalid_arg)?;
         self.inner
             .get_row_outline_level(&sheet, row)
             .map_err(|error| map_core_error(&env, error))
@@ -756,8 +769,9 @@ impl Workbook {
         env: Env,
         sheet: String,
         col: String,
-        level: u8,
+        level: f64,
     ) -> Result<()> {
+        let level = checked_u8("level", level).map_err(invalid_arg)?;
         self.inner_mut()?
             .set_col_outline_level(&sheet, &col, level)
             .map_err(|error| map_core_error(&env, error))
@@ -773,7 +787,8 @@ impl Workbook {
 
     /// Insert empty columns starting at the given column letter.
     #[napi]
-    pub fn insert_cols(&mut self, env: Env, sheet: String, col: String, count: u32) -> Result<()> {
+    pub fn insert_cols(&mut self, env: Env, sheet: String, col: String, count: f64) -> Result<()> {
+        let count = checked_u32("count", count).map_err(invalid_arg)?;
         self.inner_mut()?
             .insert_cols(&sheet, &col, count)
             .map_err(|error| map_core_error(&env, error))
@@ -790,7 +805,7 @@ impl Workbook {
     /// Add a style definition. Returns the style ID for use with setCellStyle.
     #[napi]
     pub fn add_style(&mut self, env: Env, style: JsStyle) -> Result<u32> {
-        let core_style = js_style_to_core(&style);
+        let core_style = js_style_to_core(&style)?;
         self.inner_mut()?
             .add_style(&core_style)
             .map_err(|error| map_core_error(&env, error))
@@ -811,8 +826,9 @@ impl Workbook {
         env: Env,
         sheet: String,
         cell: String,
-        style_id: u32,
+        style_id: f64,
     ) -> Result<()> {
+        let style_id = checked_u32("styleId", style_id).map_err(invalid_arg)?;
         self.inner_mut()?
             .set_cell_style(&sheet, &cell, style_id)
             .map_err(|error| map_core_error(&env, error))
@@ -824,9 +840,11 @@ impl Workbook {
         &mut self,
         env: Env,
         sheet: String,
-        row: u32,
-        style_id: u32,
+        row: f64,
+        style_id: f64,
     ) -> Result<()> {
+        let row = checked_u32("row", row).map_err(invalid_arg)?;
+        let style_id = checked_u32("styleId", style_id).map_err(invalid_arg)?;
         self.inner_mut()?
             .set_row_style(&sheet, row, style_id)
             .map_err(|error| map_core_error(&env, error))
@@ -834,7 +852,8 @@ impl Workbook {
 
     /// Get the style ID for a row. Returns 0 if not set.
     #[napi]
-    pub fn get_row_style(&self, env: Env, sheet: String, row: u32) -> Result<u32> {
+    pub fn get_row_style(&self, env: Env, sheet: String, row: f64) -> Result<u32> {
+        let row = checked_u32("row", row).map_err(invalid_arg)?;
         self.inner
             .get_row_style(&sheet, row)
             .map_err(|error| map_core_error(&env, error))
@@ -847,8 +866,9 @@ impl Workbook {
         env: Env,
         sheet: String,
         col: String,
-        style_id: u32,
+        style_id: f64,
     ) -> Result<()> {
+        let style_id = checked_u32("styleId", style_id).map_err(invalid_arg)?;
         self.inner_mut()?
             .set_col_style(&sheet, &col, style_id)
             .map_err(|error| map_core_error(&env, error))
@@ -887,13 +907,19 @@ impl Workbook {
                 })
                 .collect(),
             show_legend: config.show_legend.unwrap_or(true),
-            view_3d: config.view_3d.map(|v| View3DConfig {
-                rot_x: v.rot_x,
-                rot_y: v.rot_y,
-                depth_percent: v.depth_percent,
-                right_angle_axes: v.right_angle_axes,
-                perspective: v.perspective,
-            }),
+            view_3d: config
+                .view_3d
+                .map(|v| {
+                    Ok::<_, sheetkit_core::error::Error>(View3DConfig {
+                        rot_x: checked_opt_i32("view3d.rotX", v.rot_x)?,
+                        rot_y: checked_opt_i32("view3d.rotY", v.rot_y)?,
+                        depth_percent: checked_opt_u32("view3d.depthPercent", v.depth_percent)?,
+                        right_angle_axes: v.right_angle_axes,
+                        perspective: checked_opt_u32("view3d.perspective", v.perspective)?,
+                    })
+                })
+                .transpose()
+                .map_err(invalid_arg)?,
         };
         self.inner_mut()?
             .add_chart(&sheet, &from_cell, &to_cell, &core_config)
@@ -943,7 +969,8 @@ impl Workbook {
 
     /// Delete a form control by index.
     #[napi]
-    pub fn delete_form_control(&mut self, env: Env, sheet: String, index: u32) -> Result<()> {
+    pub fn delete_form_control(&mut self, env: Env, sheet: String, index: f64) -> Result<()> {
+        let index = checked_u32("index", index).map_err(invalid_arg)?;
         self.inner_mut()?
             .delete_form_control(&sheet, index as usize)
             .map_err(|error| map_core_error(&env, error))
@@ -956,8 +983,8 @@ impl Workbook {
             data: config.data.to_vec(),
             format: parse_image_format(&config.format)?,
             from_cell: config.from_cell,
-            width_px: config.width_px,
-            height_px: config.height_px,
+            width_px: checked_u32("widthPx", config.width_px).map_err(invalid_arg)?,
+            height_px: checked_u32("heightPx", config.height_px).map_err(invalid_arg)?,
         };
         self.inner_mut()?
             .add_image(&sheet, &core_config)
@@ -1379,7 +1406,7 @@ impl Workbook {
     #[napi]
     pub fn set_app_props(&mut self, props: JsAppProperties) -> Result<()> {
         self.inner_mut()?
-            .set_app_props(js_app_props_to_core(&props));
+            .set_app_props(js_app_props_to_core(&props)?);
         Ok(())
     }
 
@@ -1533,9 +1560,9 @@ impl Workbook {
                 &sheet,
                 orientation,
                 paper_size,
-                setup.scale,
-                setup.fit_to_width,
-                setup.fit_to_height,
+                checked_opt_u32("scale", setup.scale).map_err(invalid_arg)?,
+                checked_opt_u32("fitToWidth", setup.fit_to_width).map_err(invalid_arg)?,
+                checked_opt_u32("fitToHeight", setup.fit_to_height).map_err(invalid_arg)?,
             )
             .map_err(|error| map_core_error(&env, error))
     }
@@ -1558,9 +1585,9 @@ impl Workbook {
         Ok(JsPageSetup {
             paper_size: paper_size.as_ref().map(paper_size_to_string),
             orientation: orientation.as_ref().map(orientation_to_string),
-            scale,
-            fit_to_width,
-            fit_to_height,
+            scale: scale.map(f64::from),
+            fit_to_width: fit_to_width.map(f64::from),
+            fit_to_height: fit_to_height.map(f64::from),
         })
     }
 
@@ -1625,7 +1652,8 @@ impl Workbook {
 
     /// Insert a horizontal page break before the given 1-based row.
     #[napi]
-    pub fn insert_page_break(&mut self, env: Env, sheet: String, row: u32) -> Result<()> {
+    pub fn insert_page_break(&mut self, env: Env, sheet: String, row: f64) -> Result<()> {
+        let row = checked_u32("row", row).map_err(invalid_arg)?;
         self.inner_mut()?
             .insert_page_break(&sheet, row)
             .map_err(|error| map_core_error(&env, error))
@@ -1633,7 +1661,8 @@ impl Workbook {
 
     /// Remove a horizontal page break at the given 1-based row.
     #[napi]
-    pub fn remove_page_break(&mut self, env: Env, sheet: String, row: u32) -> Result<()> {
+    pub fn remove_page_break(&mut self, env: Env, sheet: String, row: f64) -> Result<()> {
+        let row = checked_u32("row", row).map_err(invalid_arg)?;
         self.inner_mut()?
             .remove_page_break(&sheet, row)
             .map_err(|error| map_core_error(&env, error))
@@ -2005,7 +2034,7 @@ impl Workbook {
         sheet: String,
         config: JsSparklineConfig,
     ) -> Result<()> {
-        let core_config = js_sparkline_to_core(&config);
+        let core_config = js_sparkline_to_core(&config)?;
         self.inner_mut()?
             .add_sparkline(&sheet, &core_config)
             .map_err(|error| map_core_error(&env, error))
@@ -2039,10 +2068,11 @@ impl Workbook {
             column_name: config.column_name,
             caption: config.caption,
             style: config.style,
-            width: config.width,
-            height: config.height,
+            width: checked_opt_u32("width", config.width).map_err(invalid_arg)?,
+            height: checked_opt_u32("height", config.height).map_err(invalid_arg)?,
             show_caption: config.show_caption,
-            column_count: config.column_count,
+            column_count: checked_opt_u32("columnCount", config.column_count)
+                .map_err(invalid_arg)?,
         };
         self.inner_mut()?
             .add_slicer(&sheet, &core_config)
@@ -2130,8 +2160,9 @@ impl Workbook {
     /// Resolve a theme color by index (0-11) with optional tint.
     /// Returns the ARGB hex string (e.g. "FF4472C4") or null if out of range.
     #[napi]
-    pub fn get_theme_color(&self, index: u32, tint: Option<f64>) -> Option<String> {
-        self.inner.get_theme_color(index, tint)
+    pub fn get_theme_color(&self, index: f64, tint: Option<f64>) -> Result<Option<String>> {
+        let index = checked_u32("index", index).map_err(invalid_arg)?;
+        Ok(self.inner.get_theme_color(index, tint))
     }
 
     /// Add or update a defined name. If a name with the same name and scope
@@ -2233,7 +2264,7 @@ impl Workbook {
             show_gridlines: opts.show_gridlines,
             show_formulas: opts.show_formulas,
             show_row_col_headers: opts.show_row_col_headers,
-            zoom_scale: opts.zoom_scale,
+            zoom_scale: checked_opt_u32("zoomScale", opts.zoom_scale).map_err(invalid_arg)?,
             view_mode: opts.view_mode.as_deref().map(|s| match s {
                 "pageBreak" | "pageBreakPreview" => ViewMode::PageBreak,
                 "pageLayout" => ViewMode::PageLayout,
@@ -2257,7 +2288,7 @@ impl Workbook {
             show_gridlines: opts.show_gridlines,
             show_formulas: opts.show_formulas,
             show_row_col_headers: opts.show_row_col_headers,
-            zoom_scale: opts.zoom_scale,
+            zoom_scale: opts.zoom_scale.map(f64::from),
             view_mode: opts.view_mode.map(|v| v.as_str().to_string()),
             top_left_cell: opts.top_left_cell,
         })

@@ -3,9 +3,9 @@ use napi_derive::napi;
 
 use sheetkit_core::stream::StreamWriter;
 
-use crate::conversions::js_value_to_cell_value;
 #[cfg(test)]
 use crate::conversions::JsCellInputValue;
+use crate::conversions::{checked_u32, checked_u8, invalid_arg, js_value_to_cell_value};
 use crate::error::map_core_error;
 use crate::types::{DateValue, FormulaValue};
 
@@ -30,7 +30,8 @@ impl JsStreamWriter {
 
     /// Set column width (1-based column number).
     #[napi]
-    pub fn set_col_width(&mut self, env: Env, col: u32, width: f64) -> Result<()> {
+    pub fn set_col_width(&mut self, env: Env, col: f64, width: f64) -> Result<()> {
+        let col = checked_u32("col", col).map_err(invalid_arg)?;
         let writer = self
             .inner
             .as_mut()
@@ -45,10 +46,12 @@ impl JsStreamWriter {
     pub fn set_col_width_range(
         &mut self,
         env: Env,
-        min_col: u32,
-        max_col: u32,
+        min_col: f64,
+        max_col: f64,
         width: f64,
     ) -> Result<()> {
+        let min_col = checked_u32("minCol", min_col).map_err(invalid_arg)?;
+        let max_col = checked_u32("maxCol", max_col).map_err(invalid_arg)?;
         let writer = self
             .inner
             .as_mut()
@@ -63,9 +66,10 @@ impl JsStreamWriter {
     pub fn write_row(
         &mut self,
         env: Env,
-        row: u32,
+        row: f64,
         values: Vec<Either6<String, f64, bool, DateValue, FormulaValue, Null>>,
     ) -> Result<()> {
+        let row = checked_u32("row", row).map_err(invalid_arg)?;
         let writer = self
             .inner
             .as_mut()
@@ -87,9 +91,10 @@ impl JsStreamWriter {
     pub fn write_rows(
         &mut self,
         env: Env,
-        start_row: u32,
+        start_row: f64,
         rows: Vec<Vec<Either6<String, f64, bool, DateValue, FormulaValue, Null>>>,
     ) -> Result<()> {
+        let start_row = checked_u32("startRow", start_row).map_err(invalid_arg)?;
         let writer = self
             .inner
             .as_mut()
@@ -108,10 +113,12 @@ impl JsStreamWriter {
     pub fn write_row_with_style(
         &mut self,
         env: Env,
-        row: u32,
+        row: f64,
         values: Vec<Either6<String, f64, bool, DateValue, FormulaValue, Null>>,
-        style_id: u32,
+        style_id: f64,
     ) -> Result<()> {
+        let row = checked_u32("row", row).map_err(invalid_arg)?;
+        let style_id = checked_u32("styleId", style_id).map_err(invalid_arg)?;
         let writer = self
             .inner
             .as_mut()
@@ -139,7 +146,9 @@ impl JsStreamWriter {
 
     /// Set column style for a single column (1-based).
     #[napi]
-    pub fn set_col_style(&mut self, env: Env, col: u32, style_id: u32) -> Result<()> {
+    pub fn set_col_style(&mut self, env: Env, col: f64, style_id: f64) -> Result<()> {
+        let col = checked_u32("col", col).map_err(invalid_arg)?;
+        let style_id = checked_u32("styleId", style_id).map_err(invalid_arg)?;
         let writer = self
             .inner
             .as_mut()
@@ -151,7 +160,8 @@ impl JsStreamWriter {
 
     /// Set column visibility (1-based).
     #[napi]
-    pub fn set_col_visible(&mut self, env: Env, col: u32, visible: bool) -> Result<()> {
+    pub fn set_col_visible(&mut self, env: Env, col: f64, visible: bool) -> Result<()> {
+        let col = checked_u32("col", col).map_err(invalid_arg)?;
         let writer = self
             .inner
             .as_mut()
@@ -163,7 +173,9 @@ impl JsStreamWriter {
 
     /// Set column outline level (1-based, level 0-7).
     #[napi]
-    pub fn set_col_outline_level(&mut self, env: Env, col: u32, level: u8) -> Result<()> {
+    pub fn set_col_outline_level(&mut self, env: Env, col: f64, level: f64) -> Result<()> {
+        let col = checked_u32("col", col).map_err(invalid_arg)?;
+        let level = checked_u8("level", level).map_err(invalid_arg)?;
         let writer = self
             .inner
             .as_mut()

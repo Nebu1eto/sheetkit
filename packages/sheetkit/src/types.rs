@@ -38,8 +38,8 @@ pub struct JsAlignmentStyle {
     pub horizontal: Option<String>,
     pub vertical: Option<String>,
     pub wrap_text: Option<bool>,
-    pub text_rotation: Option<u32>,
-    pub indent: Option<u32>,
+    pub text_rotation: Option<f64>,
+    pub indent: Option<f64>,
     pub shrink_to_fit: Option<bool>,
 }
 
@@ -86,7 +86,7 @@ pub struct JsStyle {
     pub fill: Option<JsFillStyle>,
     pub border: Option<JsBorderStyle>,
     pub alignment: Option<JsAlignmentStyle>,
-    pub num_fmt_id: Option<u32>,
+    pub num_fmt_id: Option<f64>,
     pub custom_num_fmt: Option<String>,
     pub protection: Option<JsProtectionStyle>,
 }
@@ -111,11 +111,11 @@ pub struct JsChartConfig {
 
 #[napi(object)]
 pub struct JsView3DConfig {
-    pub rot_x: Option<i32>,
-    pub rot_y: Option<i32>,
-    pub depth_percent: Option<u32>,
+    pub rot_x: Option<f64>,
+    pub rot_y: Option<f64>,
+    pub depth_percent: Option<f64>,
     pub right_angle_axes: Option<bool>,
-    pub perspective: Option<u32>,
+    pub perspective: Option<f64>,
 }
 
 #[napi(object)]
@@ -123,8 +123,8 @@ pub struct JsImageConfig {
     pub data: napi::bindgen_prelude::Buffer,
     pub format: String,
     pub from_cell: String,
-    pub width_px: u32,
-    pub height_px: u32,
+    pub width_px: f64,
+    pub height_px: f64,
 }
 
 #[napi(object)]
@@ -203,7 +203,7 @@ pub struct JsDocProperties {
 #[napi(object)]
 pub struct JsAppProperties {
     pub application: Option<String>,
-    pub doc_security: Option<u32>,
+    pub doc_security: Option<f64>,
     pub company: Option<String>,
     pub app_version: Option<String>,
     pub manager: Option<String>,
@@ -243,11 +243,11 @@ pub struct JsPageSetup {
     /// Orientation: "portrait" or "landscape".
     pub orientation: Option<String>,
     /// Print scale percentage (10-400).
-    pub scale: Option<u32>,
+    pub scale: Option<f64>,
     /// Fit to this many pages wide.
-    pub fit_to_width: Option<u32>,
+    pub fit_to_width: Option<f64>,
     /// Fit to this many pages tall.
-    pub fit_to_height: Option<u32>,
+    pub fit_to_height: Option<f64>,
 }
 
 /// Print options configuration.
@@ -323,7 +323,7 @@ pub struct JsConditionalFormatRule {
     /// Text for text-based rules.
     pub text: Option<String>,
     /// Rank for top10/bottom10 rules.
-    pub rank: Option<u32>,
+    pub rank: Option<f64>,
     /// Whether rank is a percentage.
     pub percent: Option<bool>,
     /// Whether rule is above average (for aboveAverage rules).
@@ -355,7 +355,7 @@ pub struct JsConditionalFormatRule {
     /// Differential style to apply.
     pub format: Option<JsConditionalStyle>,
     /// Rule priority (lower = higher precedence).
-    pub priority: Option<u32>,
+    pub priority: Option<f64>,
     /// If true, no lower-priority rules apply when this matches.
     pub stop_if_true: Option<bool>,
 }
@@ -489,7 +489,7 @@ pub struct JsSparklineConfig {
     pub negative_points: Option<bool>,
     pub show_axis: Option<bool>,
     pub line_weight: Option<f64>,
-    pub style: Option<u32>,
+    pub style: Option<f64>,
 }
 
 /// Configuration for setting a defined name.
@@ -628,13 +628,13 @@ pub struct JsOpenOptions {
     /// Maximum bytes read from one XML part, including lazy hydration.
     pub max_xml_part_bytes: Option<f64>,
     /// Maximum rows read per sheet. Omit to use the worksheet format maximum.
-    pub sheet_rows: Option<u32>,
+    pub sheet_rows: Option<f64>,
     /// Only parse sheets whose names are in this list. Omit to parse all sheets.
     pub sheets: Option<Vec<String>>,
     /// Maximum total decompressed size of all ZIP entries in bytes.
     pub max_unzip_size: Option<f64>,
     /// Maximum number of ZIP entries allowed.
-    pub max_zip_entries: Option<u32>,
+    pub max_zip_entries: Option<f64>,
     /// Finite encryption-container and password-derivation limits.
     pub crypt_limits: Option<JsCryptLimits>,
     /// Finite VBA project loading limits.
@@ -686,7 +686,7 @@ pub struct JsSheetViewOptions {
     /// Whether row and column headers are shown. Defaults to true.
     pub show_row_col_headers: Option<bool>,
     /// Zoom scale as a percentage (10-400). Defaults to 100.
-    pub zoom_scale: Option<u32>,
+    pub zoom_scale: Option<f64>,
     /// View mode: "normal", "pageBreak", or "pageLayout".
     pub view_mode: Option<String>,
     /// Top-left cell visible in the view (e.g. "A1").
@@ -830,13 +830,13 @@ pub struct JsSlicerConfig {
     /// Slicer visual style (e.g. "SlicerStyleLight1").
     pub style: Option<String>,
     /// Width in pixels.
-    pub width: Option<u32>,
+    pub width: Option<f64>,
     /// Height in pixels.
-    pub height: Option<u32>,
+    pub height: Option<f64>,
     /// Whether to show the caption header.
     pub show_caption: Option<bool>,
     /// Number of columns in the slicer item display.
-    pub column_count: Option<u32>,
+    pub column_count: Option<f64>,
 }
 
 /// Information about an existing slicer.
@@ -895,15 +895,15 @@ pub struct JsFormControlConfig {
     /// Initial checked state (CheckBox, OptionButton).
     pub checked: Option<bool>,
     /// Minimum value (SpinButton, ScrollBar).
-    pub min_value: Option<u32>,
+    pub min_value: Option<f64>,
     /// Maximum value (SpinButton, ScrollBar).
-    pub max_value: Option<u32>,
+    pub max_value: Option<f64>,
     /// Step increment (SpinButton, ScrollBar).
-    pub increment: Option<u32>,
+    pub increment: Option<f64>,
     /// Page increment (ScrollBar only).
-    pub page_increment: Option<u32>,
+    pub page_increment: Option<f64>,
     /// Current value (SpinButton, ScrollBar).
-    pub current_value: Option<u32>,
+    pub current_value: Option<f64>,
     /// Enable 3D shading.
     pub three_d: Option<bool>,
 }

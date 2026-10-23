@@ -469,7 +469,15 @@ export interface ToCsvOptions extends TraversalOptions {
   formulaPolicy?: CsvFormulaPolicy;
 }
 
+/** Default traversal output ceiling, matching the native traversal default. */
+const DEFAULT_TRAVERSAL_OUTPUT_BYTES = 512 * 1024 * 1024;
+
 export interface ToHtmlOptions extends TraversalOptions {
+  /**
+   * Traversal limits; maxOutputBytes bounds both the native transfer buffer
+   * and the returned UTF-8 HTML. Default: 512 MiB.
+   */
+  limits?: TraversalLimits;
   /** CSS class name for the table element. */
   className?: string;
 }
@@ -904,6 +912,18 @@ function csvTraversalOptions(
 
 function csvOutputLimitError(limit: number, observed: number): ResourceLimitError {
   return createResourceLimitError('resource limit exceeded during CSV serialization', {
+    code: 'resource_limit_exceeded' as const,
+    operation: 'export' as const,
+    category: 'output' as const,
+    dimension: 'output_bytes' as const,
+    limit: BigInt(limit),
+    observed: BigInt(observed),
+    stage: 'serialize' as const,
+  });
+}
+
+function htmlOutputLimitError(limit: number, observed: number): ResourceLimitError {
+  return createResourceLimitError('resource limit exceeded during HTML serialization', {
     code: 'resource_limit_exceeded' as const,
     operation: 'export' as const,
     category: 'output' as const,
@@ -2064,18 +2084,28 @@ class Workbook {
         ? sd.toArray()
         : [...sd.occupiedRows()].map(({ cells }) => cells.map(({ value }) => value));
 
-    const classAttr = className ? ` class="${escapeHtml(className)}"` : '';
-    const parts: string[] = [`<table${classAttr}>`];
-
-    for (const row of rows) {
-      parts.push('<tr>');
-      for (const cell of row) {
-        const text = escapeHtml(cellValueToString(cell));
-        parts.push(`<td>${text}</td>`);
+    const limit = options?.limits?.maxOutputBytes ?? DEFAULT_TRAVERSAL_OUTPUT_BYTES;
+    let observed = 0;
+    const parts: string[] = [];
+    const push = (part: string): void => {
+      const next = observed + Buffer.byteLength(part);
+      if (!Number.isSafeInteger(next) || next > limit) {
+        throw htmlOutputLimitError(limit, Number.isSafeInteger(next) ? next : limit + 1);
       }
-      parts.push('</tr>');
+      observed = next;
+      parts.push(part);
+    };
+
+    const classAttr = className ? ` class="${escapeHtml(className)}"` : '';
+    push(`<table${classAttr}>`);
+    for (const row of rows) {
+      push('<tr>');
+      for (const cell of row) {
+        push(`<td>${escapeHtml(cellValueToString(cell))}</td>`);
+      }
+      push('</tr>');
     }
-    parts.push('</table>');
+    push('</table>');
     return parts.join('');
   }
 

@@ -323,24 +323,56 @@ pub(crate) fn parse_style_color(s: &str) -> Option<StyleColor> {
     }
 }
 
-pub(crate) fn parse_pattern_type(s: &str) -> PatternType {
-    match s.to_lowercase().as_str() {
+fn unknown_enum_error(kind: &str, value: &str, accepted: &[&str]) -> Error {
+    invalid_arg(sheetkit_core::error::Error::InvalidArgument(format!(
+        "unknown {kind} '{value}'; expected one of: {}",
+        accepted.join(", ")
+    )))
+}
+
+const PATTERN_TYPES: &[&str] = &[
+    "none",
+    "solid",
+    "gray125",
+    "darkGray",
+    "mediumGray",
+    "lightGray",
+];
+
+/// Parse a fill pattern name (case-insensitive). Unknown names are rejected.
+pub(crate) fn parse_pattern_type(s: &str) -> Result<PatternType> {
+    Ok(match s.to_lowercase().as_str() {
         "none" => PatternType::None,
         "solid" => PatternType::Solid,
         "gray125" => PatternType::Gray125,
         "darkgray" => PatternType::DarkGray,
         "mediumgray" => PatternType::MediumGray,
         "lightgray" => PatternType::LightGray,
-        _other => {
-            #[cfg(debug_assertions)]
-            eprintln!("warning: unknown pattern type '{_other}', defaulting to None");
-            PatternType::None
-        }
-    }
+        _ => return Err(unknown_enum_error("fill pattern", s, PATTERN_TYPES)),
+    })
 }
 
-pub(crate) fn parse_border_line_style(s: &str) -> Option<BorderLineStyle> {
-    match s.to_lowercase().as_str() {
+const BORDER_LINE_STYLES: &[&str] = &[
+    "none",
+    "thin",
+    "medium",
+    "thick",
+    "dashed",
+    "dotted",
+    "double",
+    "hair",
+    "mediumDashed",
+    "dashDot",
+    "mediumDashDot",
+    "dashDotDot",
+    "mediumDashDotDot",
+    "slantDashDot",
+];
+
+/// Parse a border line style (case-insensitive). `none` yields `None`;
+/// unknown names are rejected.
+pub(crate) fn parse_border_line_style(s: &str) -> Result<Option<BorderLineStyle>> {
+    Ok(match s.to_lowercase().as_str() {
         "none" => None,
         "thin" => Some(BorderLineStyle::Thin),
         "medium" => Some(BorderLineStyle::Medium),
@@ -355,16 +387,24 @@ pub(crate) fn parse_border_line_style(s: &str) -> Option<BorderLineStyle> {
         "dashdotdot" => Some(BorderLineStyle::DashDotDot),
         "mediumdashdotdot" => Some(BorderLineStyle::MediumDashDotDot),
         "slantdashdot" => Some(BorderLineStyle::SlantDashDot),
-        _other => {
-            #[cfg(debug_assertions)]
-            eprintln!("warning: unknown border line style '{_other}', defaulting to Thin");
-            Some(BorderLineStyle::Thin)
-        }
-    }
+        _ => return Err(unknown_enum_error("border style", s, BORDER_LINE_STYLES)),
+    })
 }
 
-pub(crate) fn parse_horizontal_align(s: &str) -> HorizontalAlign {
-    match s.to_lowercase().as_str() {
+const HORIZONTAL_ALIGNS: &[&str] = &[
+    "general",
+    "left",
+    "center",
+    "right",
+    "fill",
+    "justify",
+    "centerContinuous",
+    "distributed",
+];
+
+/// Parse a horizontal alignment (case-insensitive). Unknown names are rejected.
+pub(crate) fn parse_horizontal_align(s: &str) -> Result<HorizontalAlign> {
+    Ok(match s.to_lowercase().as_str() {
         "general" => HorizontalAlign::General,
         "left" => HorizontalAlign::Left,
         "center" => HorizontalAlign::Center,
@@ -373,57 +413,98 @@ pub(crate) fn parse_horizontal_align(s: &str) -> HorizontalAlign {
         "justify" => HorizontalAlign::Justify,
         "centercontinuous" => HorizontalAlign::CenterContinuous,
         "distributed" => HorizontalAlign::Distributed,
-        _other => {
-            #[cfg(debug_assertions)]
-            eprintln!("warning: unknown horizontal alignment '{_other}', defaulting to General");
-            HorizontalAlign::General
+        _ => {
+            return Err(unknown_enum_error(
+                "horizontal alignment",
+                s,
+                HORIZONTAL_ALIGNS,
+            ))
         }
-    }
+    })
 }
 
-pub(crate) fn parse_vertical_align(s: &str) -> VerticalAlign {
-    match s.to_lowercase().as_str() {
+const VERTICAL_ALIGNS: &[&str] = &["top", "center", "bottom", "justify", "distributed"];
+
+/// Parse a vertical alignment (case-insensitive). Unknown names are rejected.
+pub(crate) fn parse_vertical_align(s: &str) -> Result<VerticalAlign> {
+    Ok(match s.to_lowercase().as_str() {
         "top" => VerticalAlign::Top,
         "center" => VerticalAlign::Center,
         "bottom" => VerticalAlign::Bottom,
         "justify" => VerticalAlign::Justify,
         "distributed" => VerticalAlign::Distributed,
-        _other => {
-            #[cfg(debug_assertions)]
-            eprintln!("warning: unknown vertical alignment '{_other}', defaulting to Bottom");
-            VerticalAlign::Bottom
-        }
-    }
+        _ => return Err(unknown_enum_error("vertical alignment", s, VERTICAL_ALIGNS)),
+    })
 }
 
-fn js_border_to_core(border: &JsBorderStyle) -> BorderStyle {
-    let side = |side: &JsBorderSideStyle| match side.style.as_deref() {
-        Some(style) => parse_border_line_style(style).map(|style| BorderSideStyle {
-            style,
-            color: side
-                .color
-                .as_ref()
-                .and_then(|color| parse_style_color(color)),
-        }),
-        None => Some(BorderSideStyle {
-            style: BorderLineStyle::Thin,
-            color: side
-                .color
-                .as_ref()
-                .and_then(|color| parse_style_color(color)),
-        }),
+fn js_border_side_to_core(side: &JsBorderSideStyle) -> Result<Option<BorderSideStyle>> {
+    let style = match side.style.as_deref() {
+        Some(style) => parse_border_line_style(style)?,
+        None => Some(BorderLineStyle::Thin),
     };
-    BorderStyle {
-        left: border.left.as_ref().and_then(side),
-        right: border.right.as_ref().and_then(side),
-        top: border.top.as_ref().and_then(side),
-        bottom: border.bottom.as_ref().and_then(side),
-        diagonal: border.diagonal.as_ref().and_then(side),
-    }
+    Ok(style.map(|style| BorderSideStyle {
+        style,
+        color: side
+            .color
+            .as_ref()
+            .and_then(|color| parse_style_color(color)),
+    }))
 }
 
-pub(crate) fn js_style_to_core(js: &JsStyle) -> Style {
-    Style {
+fn js_border_to_core(border: &JsBorderStyle) -> Result<BorderStyle> {
+    let side = |side: &Option<JsBorderSideStyle>| -> Result<Option<BorderSideStyle>> {
+        match side {
+            Some(side) => js_border_side_to_core(side),
+            None => Ok(None),
+        }
+    };
+    Ok(BorderStyle {
+        left: side(&border.left)?,
+        right: side(&border.right)?,
+        top: side(&border.top)?,
+        bottom: side(&border.bottom)?,
+        diagonal: side(&border.diagonal)?,
+    })
+}
+
+fn js_fill_to_core(f: &JsFillStyle) -> Result<FillStyle> {
+    Ok(FillStyle {
+        pattern: f
+            .pattern
+            .as_deref()
+            .map(parse_pattern_type)
+            .transpose()?
+            .unwrap_or(PatternType::None),
+        fg_color: f.fg_color.as_ref().and_then(|s| parse_style_color(s)),
+        bg_color: f.bg_color.as_ref().and_then(|s| parse_style_color(s)),
+        gradient: None,
+    })
+}
+
+fn js_alignment_to_core(a: &JsAlignmentStyle) -> Result<AlignmentStyle> {
+    Ok(AlignmentStyle {
+        horizontal: a
+            .horizontal
+            .as_deref()
+            .map(parse_horizontal_align)
+            .transpose()?,
+        vertical: a
+            .vertical
+            .as_deref()
+            .map(parse_vertical_align)
+            .transpose()?,
+        wrap_text: a.wrap_text.unwrap_or(false),
+        text_rotation: checked_opt_u32("alignment.textRotation", a.text_rotation)
+            .map_err(invalid_arg)?,
+        indent: checked_opt_u32("alignment.indent", a.indent).map_err(invalid_arg)?,
+        shrink_to_fit: a.shrink_to_fit.unwrap_or(false),
+    })
+}
+
+/// Convert a JS style to a core style, rejecting unknown enum strings and
+/// non-integer numeric fields.
+pub(crate) fn js_style_to_core(js: &JsStyle) -> Result<Style> {
+    Ok(Style {
         font: js.font.as_ref().map(|f| FontStyle {
             name: f.name.clone(),
             size: f.size,
@@ -433,35 +514,25 @@ pub(crate) fn js_style_to_core(js: &JsStyle) -> Style {
             strikethrough: f.strikethrough.unwrap_or(false),
             color: f.color.as_ref().and_then(|s| parse_style_color(s)),
         }),
-        fill: js.fill.as_ref().map(|f| FillStyle {
-            pattern: f
-                .pattern
-                .as_ref()
-                .map(|s| parse_pattern_type(s))
-                .unwrap_or(PatternType::None),
-            fg_color: f.fg_color.as_ref().and_then(|s| parse_style_color(s)),
-            bg_color: f.bg_color.as_ref().and_then(|s| parse_style_color(s)),
-            gradient: None,
-        }),
-        border: js.border.as_ref().map(js_border_to_core),
-        alignment: js.alignment.as_ref().map(|a| AlignmentStyle {
-            horizontal: a.horizontal.as_ref().map(|s| parse_horizontal_align(s)),
-            vertical: a.vertical.as_ref().map(|s| parse_vertical_align(s)),
-            wrap_text: a.wrap_text.unwrap_or(false),
-            text_rotation: a.text_rotation,
-            indent: a.indent,
-            shrink_to_fit: a.shrink_to_fit.unwrap_or(false),
-        }),
+        fill: js.fill.as_ref().map(js_fill_to_core).transpose()?,
+        border: js.border.as_ref().map(js_border_to_core).transpose()?,
+        alignment: js
+            .alignment
+            .as_ref()
+            .map(js_alignment_to_core)
+            .transpose()?,
         num_fmt: if let Some(custom) = &js.custom_num_fmt {
             Some(NumFmtStyle::Custom(custom.clone()))
         } else {
-            js.num_fmt_id.map(NumFmtStyle::Builtin)
+            checked_opt_u32("numFmtId", js.num_fmt_id)
+                .map_err(invalid_arg)?
+                .map(NumFmtStyle::Builtin)
         },
         protection: js.protection.as_ref().map(|p| ProtectionStyle {
             locked: p.locked.unwrap_or(true),
             hidden: p.hidden.unwrap_or(false),
         }),
-    }
+    })
 }
 
 pub(crate) fn parse_chart_type(s: &str) -> Result<ChartType> {
@@ -662,21 +733,21 @@ pub(crate) fn core_doc_props_to_js(props: &DocProperties) -> JsDocProperties {
     }
 }
 
-pub(crate) fn js_app_props_to_core(js: &JsAppProperties) -> AppProperties {
-    AppProperties {
+pub(crate) fn js_app_props_to_core(js: &JsAppProperties) -> Result<AppProperties> {
+    Ok(AppProperties {
         application: js.application.clone(),
-        doc_security: js.doc_security,
+        doc_security: checked_opt_u32("docSecurity", js.doc_security).map_err(invalid_arg)?,
         company: js.company.clone(),
         app_version: js.app_version.clone(),
         manager: js.manager.clone(),
         template: js.template.clone(),
-    }
+    })
 }
 
 pub(crate) fn core_app_props_to_js(props: &AppProperties) -> JsAppProperties {
     JsAppProperties {
         application: props.application.clone(),
-        doc_security: props.doc_security,
+        doc_security: props.doc_security.map(f64::from),
         company: props.company.clone(),
         app_version: props.app_version.clone(),
         manager: props.manager.clone(),
@@ -711,16 +782,31 @@ pub(crate) fn cf_operator_to_string(op: &CfOperator) -> String {
     }
 }
 
-pub(crate) fn parse_cf_value_type(s: &str) -> CfValueType {
-    match s.to_lowercase().as_str() {
+/// Parse a conditional-format value type (case-insensitive). Unknown names
+/// are rejected.
+pub(crate) fn parse_cf_value_type(s: &str) -> Result<CfValueType> {
+    Ok(match s.to_lowercase().as_str() {
         "num" => CfValueType::Num,
         "percent" => CfValueType::Percent,
         "min" => CfValueType::Min,
         "max" => CfValueType::Max,
         "percentile" => CfValueType::Percentile,
         "formula" => CfValueType::Formula,
-        _ => CfValueType::Num,
-    }
+        _ => {
+            return Err(unknown_enum_error(
+                "conditional format value type",
+                s,
+                &["num", "percent", "min", "max", "percentile", "formula"],
+            ))
+        }
+    })
+}
+
+fn parse_cf_value_type_or(value: Option<&str>, default: CfValueType) -> Result<CfValueType> {
+    Ok(value
+        .map(parse_cf_value_type)
+        .transpose()?
+        .unwrap_or(default))
 }
 
 pub(crate) fn cf_value_type_to_string(vt: &CfValueType) -> String {
@@ -734,8 +820,8 @@ pub(crate) fn cf_value_type_to_string(vt: &CfValueType) -> String {
     }
 }
 
-pub(crate) fn js_conditional_style_to_core(js: &JsConditionalStyle) -> ConditionalStyle {
-    ConditionalStyle {
+pub(crate) fn js_conditional_style_to_core(js: &JsConditionalStyle) -> Result<ConditionalStyle> {
+    Ok(ConditionalStyle {
         font: js.font.as_ref().map(|f| FontStyle {
             name: f.name.clone(),
             size: f.size,
@@ -745,32 +831,37 @@ pub(crate) fn js_conditional_style_to_core(js: &JsConditionalStyle) -> Condition
             strikethrough: f.strikethrough.unwrap_or(false),
             color: f.color.as_ref().and_then(|s| parse_style_color(s)),
         }),
-        fill: js.fill.as_ref().map(|f| FillStyle {
-            pattern: f
-                .pattern
-                .as_ref()
-                .map(|s| parse_pattern_type(s))
-                .unwrap_or(PatternType::None),
-            fg_color: f.fg_color.as_ref().and_then(|s| parse_style_color(s)),
-            bg_color: f.bg_color.as_ref().and_then(|s| parse_style_color(s)),
-            gradient: None,
-        }),
-        border: js.border.as_ref().map(js_border_to_core),
+        fill: js.fill.as_ref().map(js_fill_to_core).transpose()?,
+        border: js.border.as_ref().map(js_border_to_core).transpose()?,
         num_fmt: js
             .custom_num_fmt
             .as_ref()
             .map(|s| NumFmtStyle::Custom(s.clone())),
-    }
+    })
 }
 
 pub(crate) fn js_cf_rule_to_core(js: &JsConditionalFormatRule) -> Result<ConditionalFormatRule> {
     let rule_type = match js.rule_type.as_str() {
         "cellIs" => {
-            let operator = js
-                .operator
-                .as_ref()
-                .and_then(|s| parse_cf_operator(s))
-                .unwrap_or(CfOperator::Equal);
+            let operator = match js.operator.as_deref() {
+                None => CfOperator::Equal,
+                Some(s) => parse_cf_operator(s).ok_or_else(|| {
+                    unknown_enum_error(
+                        "conditional format operator",
+                        s,
+                        &[
+                            "lessThan",
+                            "lessThanOrEqual",
+                            "equal",
+                            "notEqual",
+                            "greaterThanOrEqual",
+                            "greaterThan",
+                            "between",
+                            "notBetween",
+                        ],
+                    )
+                })?,
+            };
             ConditionalFormatType::CellIs {
                 operator,
                 formula: js.formula.clone().unwrap_or_default(),
@@ -781,36 +872,24 @@ pub(crate) fn js_cf_rule_to_core(js: &JsConditionalFormatRule) -> Result<Conditi
             formula: js.formula.clone().unwrap_or_default(),
         },
         "colorScale" => ConditionalFormatType::ColorScale {
-            min_type: js
-                .min_type
-                .as_ref()
-                .map(|s| parse_cf_value_type(s))
-                .unwrap_or(CfValueType::Min),
+            min_type: parse_cf_value_type_or(js.min_type.as_deref(), CfValueType::Min)?,
             min_value: js.min_value.clone(),
             min_color: js.min_color.clone().unwrap_or_default(),
-            mid_type: js.mid_type.as_ref().map(|s| parse_cf_value_type(s)),
+            mid_type: js
+                .mid_type
+                .as_deref()
+                .map(parse_cf_value_type)
+                .transpose()?,
             mid_value: js.mid_value.clone(),
             mid_color: js.mid_color.clone(),
-            max_type: js
-                .max_type
-                .as_ref()
-                .map(|s| parse_cf_value_type(s))
-                .unwrap_or(CfValueType::Max),
+            max_type: parse_cf_value_type_or(js.max_type.as_deref(), CfValueType::Max)?,
             max_value: js.max_value.clone(),
             max_color: js.max_color.clone().unwrap_or_default(),
         },
         "dataBar" => ConditionalFormatType::DataBar {
-            min_type: js
-                .min_type
-                .as_ref()
-                .map(|s| parse_cf_value_type(s))
-                .unwrap_or(CfValueType::Min),
+            min_type: parse_cf_value_type_or(js.min_type.as_deref(), CfValueType::Min)?,
             min_value: js.min_value.clone(),
-            max_type: js
-                .max_type
-                .as_ref()
-                .map(|s| parse_cf_value_type(s))
-                .unwrap_or(CfValueType::Max),
+            max_type: parse_cf_value_type_or(js.max_type.as_deref(), CfValueType::Max)?,
             max_value: js.max_value.clone(),
             color: js.bar_color.clone().unwrap_or_default(),
             show_value: js.show_value.unwrap_or(true),
@@ -818,11 +897,15 @@ pub(crate) fn js_cf_rule_to_core(js: &JsConditionalFormatRule) -> Result<Conditi
         "duplicateValues" => ConditionalFormatType::DuplicateValues,
         "uniqueValues" => ConditionalFormatType::UniqueValues,
         "top10" => ConditionalFormatType::Top10 {
-            rank: js.rank.unwrap_or(10),
+            rank: checked_opt_u32("rank", js.rank)
+                .map_err(invalid_arg)?
+                .unwrap_or(10),
             percent: js.percent.unwrap_or(false),
         },
         "bottom10" => ConditionalFormatType::Bottom10 {
-            rank: js.rank.unwrap_or(10),
+            rank: checked_opt_u32("rank", js.rank)
+                .map_err(invalid_arg)?
+                .unwrap_or(10),
             percent: js.percent.unwrap_or(false),
         },
         "aboveAverage" => ConditionalFormatType::AboveAverage {
@@ -852,12 +935,16 @@ pub(crate) fn js_cf_rule_to_core(js: &JsConditionalFormatRule) -> Result<Conditi
         }
     };
 
-    let format = js.format.as_ref().map(js_conditional_style_to_core);
+    let format = js
+        .format
+        .as_ref()
+        .map(js_conditional_style_to_core)
+        .transpose()?;
 
     Ok(ConditionalFormatRule {
         rule_type,
         format,
-        priority: js.priority,
+        priority: checked_opt_u32("priority", js.priority).map_err(invalid_arg)?,
         stop_if_true: js.stop_if_true.unwrap_or(false),
     })
 }
@@ -941,7 +1028,7 @@ pub(crate) fn core_cf_rule_to_js(rule: &ConditionalFormatRule) -> JsConditionalF
                 None,
                 None,
                 None,
-                Some(*rank),
+                Some(f64::from(*rank)),
                 Some(*percent),
                 None,
                 None,
@@ -952,7 +1039,7 @@ pub(crate) fn core_cf_rule_to_js(rule: &ConditionalFormatRule) -> JsConditionalF
                 None,
                 None,
                 None,
-                Some(*rank),
+                Some(f64::from(*rank)),
                 Some(*percent),
                 None,
                 None,
@@ -1215,7 +1302,7 @@ pub(crate) fn core_cf_rule_to_js(rule: &ConditionalFormatRule) -> JsConditionalF
         bar_color,
         show_value,
         format,
-        priority: rule.priority,
+        priority: rule.priority.map(f64::from),
         stop_if_true: if rule.stop_if_true { Some(true) } else { None },
     }
 }
@@ -1327,13 +1414,24 @@ pub(crate) fn js_open_options_to_core(
         "maxXmlPartBytes",
     )?;
     Ok(sheetkit_core::workbook::OpenOptions {
-        sheet_rows: js.sheet_rows,
+        sheet_rows: checked_opt_u32("sheetRows", js.sheet_rows)?,
         sheets: js.sheets.clone(),
         max_unzip_size: js
             .max_unzip_size
             .map(|value| finite_limit(value, "maxUnzipSize"))
             .transpose()?,
-        max_zip_entries: js.max_zip_entries.map(|v| v as usize),
+        max_zip_entries: js
+            .max_zip_entries
+            .map(|value| {
+                finite_limit(value, "maxZipEntries").and_then(|value| {
+                    usize::try_from(value).map_err(|_| {
+                        sheetkit_core::error::Error::InvalidArgument(
+                            "maxZipEntries is not representable on this platform".to_string(),
+                        )
+                    })
+                })
+            })
+            .transpose()?,
         limits,
         crypt_limits,
         vba_limits,
@@ -1577,6 +1675,77 @@ pub(crate) fn js_formula_limits_to_core(
     })
 }
 
+/// Validate a JavaScript number as an integer in `min..=max`.
+///
+/// Rejects non-finite, fractional, unsafe (beyond `Number.MAX_SAFE_INTEGER`),
+/// and out-of-range values with `InvalidArgument` instead of letting napi
+/// coerce them (truncation, wrap-around, or NaN to zero).
+fn checked_integer(
+    name: &str,
+    value: f64,
+    min: f64,
+    max: f64,
+) -> std::result::Result<f64, sheetkit_core::error::Error> {
+    const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
+    if !value.is_finite()
+        || value.fract() != 0.0
+        || value.abs() > MAX_SAFE_INTEGER
+        || value < min
+        || value > max
+    {
+        return Err(sheetkit_core::error::Error::InvalidArgument(format!(
+            "{name} must be an integer from {min} to {max}, got {value}"
+        )));
+    }
+    Ok(value)
+}
+
+/// Validate a JavaScript number as a `u32` (0 to 4294967295).
+pub(crate) fn checked_u32(
+    name: &str,
+    value: f64,
+) -> std::result::Result<u32, sheetkit_core::error::Error> {
+    checked_integer(name, value, 0.0, u32::MAX as f64).map(|value| value as u32)
+}
+
+/// Validate a JavaScript number as a `u8` (0 to 255).
+pub(crate) fn checked_u8(
+    name: &str,
+    value: f64,
+) -> std::result::Result<u8, sheetkit_core::error::Error> {
+    checked_integer(name, value, 0.0, u8::MAX as f64).map(|value| value as u8)
+}
+
+/// Validate a JavaScript number as an `i32`.
+pub(crate) fn checked_i32(
+    name: &str,
+    value: f64,
+) -> std::result::Result<i32, sheetkit_core::error::Error> {
+    checked_integer(name, value, i32::MIN as f64, i32::MAX as f64).map(|value| value as i32)
+}
+
+/// Validate an optional JavaScript number as a `u32`.
+pub(crate) fn checked_opt_u32(
+    name: &str,
+    value: Option<f64>,
+) -> std::result::Result<Option<u32>, sheetkit_core::error::Error> {
+    value.map(|value| checked_u32(name, value)).transpose()
+}
+
+/// Validate an optional JavaScript number as an `i32`.
+pub(crate) fn checked_opt_i32(
+    name: &str,
+    value: Option<f64>,
+) -> std::result::Result<Option<i32>, sheetkit_core::error::Error> {
+    value.map(|value| checked_i32(name, value)).transpose()
+}
+
+/// Convert a core error from argument validation into a napi error with the
+/// same message and status that `map_core_error` uses for non-resource errors.
+pub(crate) fn invalid_arg(error: sheetkit_core::error::Error) -> napi::Error {
+    napi::Error::from_reason(error.to_string())
+}
+
 fn finite_limit(value: f64, name: &str) -> std::result::Result<u64, sheetkit_core::error::Error> {
     const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
     if !value.is_finite() || value < 0.0 || value.fract() != 0.0 || value > MAX_SAFE_INTEGER {
@@ -1679,11 +1848,11 @@ pub(crate) fn js_form_control_to_core(
         macro_name: js.macro_name.clone(),
         cell_link: js.cell_link.clone(),
         checked: js.checked,
-        min_value: js.min_value,
-        max_value: js.max_value,
-        increment: js.increment,
-        page_increment: js.page_increment,
-        current_value: js.current_value,
+        min_value: checked_opt_u32("minValue", js.min_value).map_err(invalid_arg)?,
+        max_value: checked_opt_u32("maxValue", js.max_value).map_err(invalid_arg)?,
+        increment: checked_opt_u32("increment", js.increment).map_err(invalid_arg)?,
+        page_increment: checked_opt_u32("pageIncrement", js.page_increment).map_err(invalid_arg)?,
+        current_value: checked_opt_u32("currentValue", js.current_value).map_err(invalid_arg)?,
         three_d: js.three_d,
     })
 }
@@ -1719,9 +1888,9 @@ pub(crate) fn core_form_control_info_to_js(
 
 pub(crate) fn js_sparkline_to_core(
     js: &crate::types::JsSparklineConfig,
-) -> sheetkit_core::sparkline::SparklineConfig {
+) -> Result<sheetkit_core::sparkline::SparklineConfig> {
     use sheetkit_core::sparkline::{SparklineConfig, SparklineType};
-    SparklineConfig {
+    Ok(SparklineConfig {
         data_range: js.data_range.clone(),
         location: js.location.clone(),
         sparkline_type: js
@@ -1737,8 +1906,8 @@ pub(crate) fn js_sparkline_to_core(
         negative_points: js.negative_points.unwrap_or(false),
         show_axis: js.show_axis.unwrap_or(false),
         line_weight: js.line_weight,
-        style: js.style,
-    }
+        style: checked_opt_u32("style", js.style).map_err(invalid_arg)?,
+    })
 }
 
 pub(crate) fn core_sparkline_to_js(
@@ -1765,7 +1934,7 @@ pub(crate) fn core_sparkline_to_js(
         },
         show_axis: if config.show_axis { Some(true) } else { None },
         line_weight: config.line_weight,
-        style: config.style,
+        style: config.style.map(f64::from),
     }
 }
 
@@ -1809,10 +1978,45 @@ mod tests {
             protection: None,
         };
         assert!(js_style_to_core(&style)
+            .expect("style")
             .border
             .expect("border")
             .left
             .is_none());
+    }
+
+    #[test]
+    fn checked_integers_reject_coercible_values() {
+        for value in [
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            -1.0,
+            1.9,
+            4_294_967_296.0,
+            9_007_199_254_740_992.0,
+        ] {
+            assert!(checked_u32("row", value).is_err(), "{value}");
+        }
+        assert_eq!(checked_u32("row", 4_294_967_295.0).unwrap(), u32::MAX);
+        assert_eq!(checked_u32("row", 0.0).unwrap(), 0);
+        assert!(checked_u8("level", 256.0).is_err());
+        assert_eq!(checked_u8("level", 255.0).unwrap(), 255);
+        assert!(checked_i32("rot", -2_147_483_649.0).is_err());
+        assert_eq!(checked_i32("rot", -2_147_483_648.0).unwrap(), i32::MIN);
+    }
+
+    #[test]
+    fn style_enum_strings_reject_unknown_values() {
+        assert!(parse_pattern_type("polkadot").is_err());
+        assert!(parse_border_line_style("wavy").is_err());
+        assert!(parse_horizontal_align("middle").is_err());
+        assert!(parse_vertical_align("middle").is_err());
+        assert!(parse_cf_value_type("median").is_err());
+        assert!(matches!(
+            parse_pattern_type("DarkGray"),
+            Ok(PatternType::DarkGray)
+        ));
     }
 
     #[test]
