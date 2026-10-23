@@ -4,6 +4,8 @@
 //! column widths, row heights, cell styles (fonts, fills, borders),
 //! optional gridlines, and optional row/column headers.
 
+use std::collections::HashMap;
+
 use crate::error::{Error, Result};
 use crate::resource::{
     ResourceCategory, ResourceDimension, ResourceLimitError, ResourceOperation, ResourceStage,
@@ -11,7 +13,7 @@ use crate::resource::{
 use crate::row::get_row_height;
 use crate::sst::SharedStringTable;
 use crate::style::{
-    get_style, AlignmentStyle, BorderLineStyle, FontStyle, HorizontalAlign, PatternType,
+    get_style, AlignmentStyle, BorderLineStyle, FontStyle, HorizontalAlign, PatternType, Style,
     StyleColor, VerticalAlign,
 };
 use crate::theme::{default_theme_colors, resolve_theme_color};
@@ -61,6 +63,34 @@ impl SvgOutput {
         }
     }
 
+    /// Like [`Self::stage`], reusing `buffer`'s allocation.
+    fn stage_with(&self, mut buffer: String) -> Self {
+        buffer.clear();
+        Self {
+            value: buffer,
+            limit: self.limit,
+            base_offset: self.observed_len(),
+        }
+    }
+
+    /// Return `true` when `additional` more bytes stay within the limit.
+    fn fits(&self, additional: usize) -> bool {
+        self.observed_len()
+            .saturating_add(u64::try_from(additional).unwrap_or(u64::MAX))
+            <= self.limit
+    }
+
+    /// Push formatted text as one piece, formatting into a reusable buffer
+    /// instead of allocating a new `String` per call.
+    fn push_fmt(&mut self, scratch: &mut String, args: std::fmt::Arguments<'_>) -> Result<()> {
+        use std::fmt::Write as _;
+        scratch.clear();
+        scratch
+            .write_fmt(args)
+            .map_err(|_| Error::Internal("SVG formatting failed".to_string()))?;
+        self.push_str(scratch)
+    }
+
     fn push_str(&mut self, value: &str) -> Result<()> {
         let additional = u64::try_from(value.len()).unwrap_or(u64::MAX);
         self.ensure_additional(additional)?;
@@ -69,6 +99,48 @@ impl SvgOutput {
             .try_reserve(value.len())
             .map_err(|_| Error::Internal("SVG output allocation failed".to_string()))?;
         self.value.push_str(value);
+        Ok(())
+    }
+
+    /// Push a run of unescaped characters with the same limit outcome as
+    /// pushing them one character at a time: a run that fits is pushed
+    /// whole; otherwise characters are pushed individually so the error
+    /// reports the same observed length.
+    fn push_chars(&mut self, run: &str) -> Result<()> {
+        let observed = self
+            .observed_len()
+            .saturating_add(u64::try_from(run.len()).unwrap_or(u64::MAX));
+        if observed <= self.limit {
+            return self.push_str(run);
+        }
+        for c in run.chars() {
+            let mut encoded = [0; 4];
+            self.push_str(c.encode_utf8(&mut encoded))?;
+        }
+        Ok(())
+    }
+
+    /// Push `value`, replacing each character for which `escape` returns a
+    /// replacement. Equivalent to pushing every character or replacement
+    /// individually, including the limit error.
+    fn push_escaped(
+        &mut self,
+        value: &str,
+        escape: impl Fn(char) -> Option<&'static str>,
+    ) -> Result<()> {
+        let mut start = 0;
+        for (index, c) in value.char_indices() {
+            if let Some(replacement) = escape(c) {
+                if start < index {
+                    self.push_chars(&value[start..index])?;
+                }
+                self.push_str(replacement)?;
+                start = index + c.len_utf8();
+            }
+        }
+        if start < value.len() {
+            self.push_chars(&value[start..])?;
+        }
         Ok(())
     }
 
@@ -244,6 +316,30 @@ fn find_next_unresolved(parent: &mut [usize], index: usize) -> usize {
     root
 }
 
+/// Per-render memo of [`get_style`] results. Styles are pure functions of
+/// the stylesheet, so each referenced style id is resolved once.
+struct StyleCache<'s> {
+    stylesheet: &'s StyleSheet,
+    entries: HashMap<u32, Option<Style>>,
+}
+
+impl<'s> StyleCache<'s> {
+    fn new(stylesheet: &'s StyleSheet) -> Self {
+        Self {
+            stylesheet,
+            entries: HashMap::new(),
+        }
+    }
+
+    fn get(&mut self, style_id: u32) -> Option<&Style> {
+        let stylesheet = self.stylesheet;
+        self.entries
+            .entry(style_id)
+            .or_insert_with(|| get_style(stylesheet, style_id))
+            .as_ref()
+    }
+}
+
 struct LayoutGrid<'a> {
     col_widths: &'a [f64],
     col_styles: &'a [u32],
@@ -409,7 +505,8 @@ pub(crate) fn render_to_svg_with_theme_and_limits(
     };
 
     // Render cell fills
-    render_cell_fills(&mut svg, ws, stylesheet, theme, &layouts)?;
+    let mut styles = StyleCache::new(stylesheet);
+    render_cell_fills(&mut svg, ws, &mut styles, theme, &layouts)?;
 
     // Render gridlines
     if options.show_gridlines {
@@ -425,11 +522,19 @@ pub(crate) fn render_to_svg_with_theme_and_limits(
     }
 
     // Render cell borders
-    render_cell_borders(&mut svg, ws, stylesheet, theme, &layouts, min_col, min_row)?;
+    render_cell_borders(&mut svg, ws, &mut styles, theme, &layouts, min_col, min_row)?;
 
     // Render cell text
     render_cell_text(
-        &mut svg, ws, sst, stylesheet, theme, &layouts, min_col, min_row, options,
+        &mut svg,
+        ws,
+        sst,
+        &mut styles,
+        theme,
+        &layouts,
+        min_col,
+        min_row,
+        options,
     )?;
 
     svg.push_str("</svg>")?;
@@ -614,24 +719,28 @@ fn render_row_headers(
 fn render_cell_fills(
     svg: &mut SvgOutput,
     ws: &WorksheetXml,
-    stylesheet: &StyleSheet,
+    styles: &mut StyleCache<'_>,
     theme: &ThemeColors,
     layouts: &LayoutGrid<'_>,
 ) -> Result<()> {
+    let mut scratch = String::new();
     layouts.for_each(|layout| {
         let style_id = find_cell_style(ws, layout.col, layout.row, layout.column_style);
         if style_id == 0 {
             return Ok(());
         }
-        if let Some(style) = get_style(stylesheet, style_id) {
+        if let Some(style) = styles.get(style_id) {
             if let Some(ref fill) = style.fill {
                 if fill.pattern == PatternType::Solid {
                     if let Some(ref color) = fill.fg_color {
                         let hex = style_color_to_hex(color, theme)?;
-                        svg.push_str(&format!(
-                            r#"<rect x="{}" y="{}" width="{}" height="{}" fill="{}"/>"#,
-                            layout.x, layout.y, layout.width, layout.height, hex
-                        ))?;
+                        svg.push_fmt(
+                            &mut scratch,
+                            format_args!(
+                                r#"<rect x="{}" y="{}" width="{}" height="{}" fill="{}"/>"#,
+                                layout.x, layout.y, layout.width, layout.height, hex
+                            ),
+                        )?;
                     }
                 }
             }
@@ -674,18 +783,19 @@ fn render_gridlines(
 fn render_cell_borders(
     svg: &mut SvgOutput,
     ws: &WorksheetXml,
-    stylesheet: &StyleSheet,
+    styles: &mut StyleCache<'_>,
     theme: &ThemeColors,
     layouts: &LayoutGrid<'_>,
     _min_col: u32,
     _min_row: u32,
 ) -> Result<()> {
+    let mut scratch = String::new();
     layouts.for_each(|layout| {
         let style_id = find_cell_style(ws, layout.col, layout.row, layout.column_style);
         if style_id == 0 {
             return Ok(());
         }
-        let style = match get_style(stylesheet, style_id) {
+        let style = match styles.get(style_id) {
             Some(s) => s,
             None => return Ok(()),
         };
@@ -701,25 +811,25 @@ fn render_cell_borders(
 
         if let Some(ref left) = border.left {
             let (sw, color) = border_line_attrs(left.style, left.color.as_ref(), theme)?;
-            svg.push_str(&format!(
+            svg.push_fmt(&mut scratch, format_args!(
                 r#"<line x1="{x1}" y1="{y1}" x2="{x1}" y2="{y2}" stroke="{color}" stroke-width="{sw}"/>"#,
             ))?;
         }
         if let Some(ref right) = border.right {
             let (sw, color) = border_line_attrs(right.style, right.color.as_ref(), theme)?;
-            svg.push_str(&format!(
+            svg.push_fmt(&mut scratch, format_args!(
                 r#"<line x1="{x2}" y1="{y1}" x2="{x2}" y2="{y2}" stroke="{color}" stroke-width="{sw}"/>"#,
             ))?;
         }
         if let Some(ref top) = border.top {
             let (sw, color) = border_line_attrs(top.style, top.color.as_ref(), theme)?;
-            svg.push_str(&format!(
+            svg.push_fmt(&mut scratch, format_args!(
                 r#"<line x1="{x1}" y1="{y1}" x2="{x2}" y2="{y1}" stroke="{color}" stroke-width="{sw}"/>"#,
             ))?;
         }
         if let Some(ref bottom) = border.bottom {
             let (sw, color) = border_line_attrs(bottom.style, bottom.color.as_ref(), theme)?;
-            svg.push_str(&format!(
+            svg.push_fmt(&mut scratch, format_args!(
                 r#"<line x1="{x1}" y1="{y2}" x2="{x2}" y2="{y2}" stroke="{color}" stroke-width="{sw}"/>"#,
             ))?;
         }
@@ -733,13 +843,17 @@ fn render_cell_text(
     svg: &mut SvgOutput,
     ws: &WorksheetXml,
     sst: &SharedStringTable,
-    stylesheet: &StyleSheet,
+    styles: &mut StyleCache<'_>,
     theme: &ThemeColors,
     layouts: &LayoutGrid<'_>,
     _min_col: u32,
     _min_row: u32,
     options: &RenderOptions,
 ) -> Result<()> {
+    let mut scratch = String::new();
+    let mut staged = String::new();
+    // Escaped font-family attribute values keyed by font name.
+    let mut font_families: HashMap<String, String> = HashMap::new();
     layouts.for_each(|layout| {
         let Some(cell) = find_cell(ws, layout.col, layout.row) else {
             return Ok(());
@@ -750,17 +864,17 @@ fn render_cell_text(
         }
 
         let style_id = find_cell_style(ws, layout.col, layout.row, layout.column_style);
-        let style = get_style(stylesheet, style_id);
+        let style = styles.get(style_id);
 
-        let font = style.as_ref().and_then(|s| s.font.as_ref());
-        let alignment = style.as_ref().and_then(|s| s.alignment.as_ref());
+        let font = style.and_then(|s| s.font.as_ref());
+        let alignment = style.and_then(|s| s.alignment.as_ref());
 
         let (text_x, anchor) = compute_text_x(layout, alignment);
         let text_y = compute_text_y(layout, alignment, font, options)?;
 
-        let mut attrs = svg.stage();
-        attrs.push_str(&format!(r#" x="{text_x}" y="{text_y}""#))?;
-        attrs.push_str(&format!(r#" text-anchor="{anchor}""#))?;
+        let mut attrs = svg.stage_with(std::mem::take(&mut staged));
+        attrs.push_fmt(&mut scratch, format_args!(r#" x="{text_x}" y="{text_y}""#))?;
+        attrs.push_fmt(&mut scratch, format_args!(r#" text-anchor="{anchor}""#))?;
 
         if let Some(f) = font {
             if f.bold {
@@ -771,17 +885,27 @@ fn render_cell_text(
             }
             if let Some(ref name) = f.name {
                 attrs.push_str(r#" font-family=""#)?;
-                let name = css_font_family_attribute(name, &attrs)?;
-                attrs.push_str(&name)?;
+                // A cached value that fits cannot hit any intermediate limit
+                // in css_font_family_attribute (its staged lengths never
+                // exceed the final escaped length); otherwise recompute so
+                // the outcome, including any error, is unchanged.
+                match font_families.get(name.as_str()) {
+                    Some(escaped) if attrs.fits(escaped.len()) => attrs.push_str(escaped)?,
+                    _ => {
+                        let escaped = css_font_family_attribute(name, &attrs)?;
+                        attrs.push_str(&escaped)?;
+                        font_families.insert(name.clone(), escaped);
+                    }
+                }
                 attrs.push_str("\"")?;
             }
             if let Some(size) = f.size {
                 validate_positive_finite(size, "font size must be positive and finite")?;
-                attrs.push_str(&format!(r#" font-size="{size}""#))?;
+                attrs.push_fmt(&mut scratch, format_args!(r#" font-size="{size}""#))?;
             }
             if let Some(ref color) = f.color {
                 let hex = style_color_to_hex(color, theme)?;
-                attrs.push_str(&format!(r#" fill="{hex}""#))?;
+                attrs.push_fmt(&mut scratch, format_args!(r#" fill="{hex}""#))?;
             }
             let mut decorations = Vec::new();
             if f.underline {
@@ -796,7 +920,9 @@ fn render_cell_text(
         }
 
         svg.push_str("<text")?;
-        svg.push_str(&attrs.finish())?;
+        let attrs = attrs.finish();
+        svg.push_str(&attrs)?;
+        staged = attrs;
         svg.push_str(">")?;
         cell_text.write_escaped(svg)?;
         svg.push_str("</text>")?;
@@ -1081,49 +1207,49 @@ fn push_xml_text(output: &mut SvgOutput, value: &str) -> Result<()> {
     push_xml_text_unchecked(output, value)
 }
 
+/// Validate XML characters and return the escaped text length in one pass.
 fn xml_text_escaped_len(value: &str) -> Result<u64> {
-    validate_xml_chars(value, "SVG text contains an XML-forbidden character")?;
-    Ok(value.chars().fold(0u64, |length, c| {
-        length.saturating_add(match c {
+    let mut length = 0u64;
+    for c in value.chars() {
+        if !is_xml_char(c) {
+            return Err(Error::InvalidArgument(
+                "SVG text contains an XML-forbidden character".to_string(),
+            ));
+        }
+        length = length.saturating_add(match c {
             '&' => 5,
             '<' | '>' => 4,
             _ => u64::from(c.len_utf8() as u32),
-        })
-    }))
+        });
+    }
+    Ok(length)
+}
+
+fn xml_text_escape_char(c: char) -> Option<&'static str> {
+    match c {
+        '&' => Some("&amp;"),
+        '<' => Some("&lt;"),
+        '>' => Some("&gt;"),
+        _ => None,
+    }
 }
 
 fn push_xml_text_unchecked(out: &mut SvgOutput, s: &str) -> Result<()> {
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;")?,
-            '<' => out.push_str("&lt;")?,
-            '>' => out.push_str("&gt;")?,
-            _ => {
-                let mut encoded = [0; 4];
-                out.push_str(c.encode_utf8(&mut encoded))?;
-            }
-        }
-    }
-    Ok(())
+    out.push_escaped(s, xml_text_escape_char)
 }
 
 /// Escape one XML attribute after its CSS value has been encoded.
 fn xml_attribute_escape(s: &str, parent: &SvgOutput) -> Result<String> {
     validate_xml_chars(s, "SVG attribute contains an XML-forbidden character")?;
     let mut out = parent.stage();
-    for c in s.chars() {
-        match c {
-            '&' => out.push_str("&amp;")?,
-            '<' => out.push_str("&lt;")?,
-            '>' => out.push_str("&gt;")?,
-            '"' => out.push_str("&quot;")?,
-            '\'' => out.push_str("&apos;")?,
-            _ => {
-                let mut encoded = [0; 4];
-                out.push_str(c.encode_utf8(&mut encoded))?;
-            }
-        }
-    }
+    out.push_escaped(s, |c| match c {
+        '&' => Some("&amp;"),
+        '<' => Some("&lt;"),
+        '>' => Some("&gt;"),
+        '"' => Some("&quot;"),
+        '\'' => Some("&apos;"),
+        _ => None,
+    })?;
     Ok(out.finish())
 }
 
@@ -1132,22 +1258,17 @@ fn css_font_family_attribute(value: &str, parent: &SvgOutput) -> Result<String> 
     validate_xml_chars(value, "SVG font family contains an XML-forbidden character")?;
     let mut css = parent.stage();
     css.push_str("\"")?;
-    for c in value.chars() {
-        match c {
-            '"' => css.push_str("\\\"")?,
-            '\\' => css.push_str("\\\\")?,
-            '\n' => css.push_str("\\A ")?,
-            '\r' => css.push_str("\\D ")?,
-            '\t' => css.push_str("\\9 ")?,
-            '<' => css.push_str("\\3C ")?,
-            '>' => css.push_str("\\3E ")?,
-            '&' => css.push_str("\\26 ")?,
-            _ => {
-                let mut encoded = [0; 4];
-                css.push_str(c.encode_utf8(&mut encoded))?;
-            }
-        }
-    }
+    css.push_escaped(value, |c| match c {
+        '"' => Some("\\\""),
+        '\\' => Some("\\\\"),
+        '\n' => Some("\\A "),
+        '\r' => Some("\\D "),
+        '\t' => Some("\\9 "),
+        '<' => Some("\\3C "),
+        '>' => Some("\\3E "),
+        '&' => Some("\\26 "),
+        _ => None,
+    })?;
     css.push_str("\"")?;
     xml_attribute_escape(&css.finish(), parent)
 }
@@ -1226,6 +1347,81 @@ mod tests {
             ],
         };
         (ws, sst)
+    }
+
+    /// Per-character reference for `SvgOutput::push_escaped`.
+    fn push_escaped_per_char(
+        out: &mut SvgOutput,
+        value: &str,
+        escape: impl Fn(char) -> Option<&'static str>,
+    ) -> Result<()> {
+        for c in value.chars() {
+            match escape(c) {
+                Some(replacement) => out.push_str(replacement)?,
+                None => {
+                    let mut encoded = [0; 4];
+                    out.push_str(c.encode_utf8(&mut encoded))?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn outcome(result: Result<()>, out: SvgOutput) -> std::result::Result<String, (u64, u64)> {
+        match result {
+            Ok(()) => Ok(out.finish()),
+            Err(error) => {
+                let metadata = error.resource_metadata().unwrap();
+                Err((metadata.limit(), metadata.observed()))
+            }
+        }
+    }
+
+    #[test]
+    fn push_escaped_matches_per_char_output_and_limit_errors() {
+        let value = "ab&c<d>e\"f'g\u{e9}\u{d55c}\u{1F600}hij";
+        for limit in 0..48 {
+            for prefix in [0usize, 3] {
+                let mut fast = SvgOutput::new(limit);
+                let mut slow = SvgOutput::new(limit);
+                let prefix = "x".repeat(prefix);
+                let fast_prefix = fast.push_str(&prefix);
+                let slow_prefix = slow.push_str(&prefix);
+                assert_eq!(fast_prefix.is_ok(), slow_prefix.is_ok());
+                if fast_prefix.is_err() {
+                    continue;
+                }
+                let fast_result = fast.push_escaped(value, xml_text_escape_char);
+                let slow_result = push_escaped_per_char(&mut slow, value, xml_text_escape_char);
+                assert_eq!(
+                    outcome(fast_result, fast),
+                    outcome(slow_result, slow),
+                    "limit {limit}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn repeated_font_family_matches_first_rendering() {
+        let (mut ws, sst) = simple_ws_and_sst();
+        let mut ss = StyleSheet::default();
+        let style = add_style(
+            &mut ss,
+            &StyleBuilder::new()
+                .font_name("My \"Font\" & <Co>")
+                .font_size(12.0)
+                .build(),
+        )
+        .unwrap();
+        for row in &mut ws.sheet_data.rows {
+            for cell in &mut row.cells {
+                cell.s = Some(style);
+            }
+        }
+        let svg = render_to_svg(&ws, &sst, &ss, &default_options("Sheet1")).unwrap();
+        let expected = r#" font-family="&quot;My \&quot;Font\&quot; \26  \3C Co\3E &quot;""#;
+        assert_eq!(svg.matches(expected).count(), 4, "{svg}");
     }
 
     #[test]

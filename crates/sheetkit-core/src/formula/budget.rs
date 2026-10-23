@@ -1,6 +1,6 @@
 //! Finite resource limits shared by formula parsing, mutation, and calculation.
 
-use std::cell::RefCell;
+use std::cell::{OnceCell, RefCell};
 use std::rc::Rc;
 
 use crate::error::{Error, Result};
@@ -55,7 +55,7 @@ impl Default for FormulaLimits {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, Copy)]
 struct FormulaCounters {
     input_bytes: u64,
     tokens: u64,
@@ -68,12 +68,48 @@ struct FormulaCounters {
     output_bytes: u64,
 }
 
+/// Operation counters kept inline until the owning budget is first cloned.
+/// The first clone moves the current values behind an `Rc` that the
+/// original and every clone then share, so a budget that is never cloned
+/// needs no heap allocation.
+#[derive(Debug, Default)]
+struct CounterCell {
+    inline: RefCell<FormulaCounters>,
+    shared: OnceCell<Rc<RefCell<FormulaCounters>>>,
+}
+
+impl CounterCell {
+    #[inline]
+    fn get(&self) -> &RefCell<FormulaCounters> {
+        match self.shared.get() {
+            Some(shared) => shared,
+            None => &self.inline,
+        }
+    }
+
+    fn share(&self) -> Rc<RefCell<FormulaCounters>> {
+        Rc::clone(
+            self.shared
+                .get_or_init(|| Rc::new(RefCell::new(*self.inline.borrow()))),
+        )
+    }
+}
+
+impl Clone for CounterCell {
+    fn clone(&self) -> Self {
+        Self {
+            inline: RefCell::default(),
+            shared: OnceCell::from(self.share()),
+        }
+    }
+}
+
 /// A calculation-owned budget. Clones share counters and cannot reset work.
 #[derive(Debug, Clone)]
 pub struct FormulaBudget {
     operation: ResourceOperation,
     limits: FormulaLimits,
-    counters: Rc<RefCell<FormulaCounters>>,
+    counters: CounterCell,
 }
 
 impl FormulaBudget {
@@ -107,7 +143,7 @@ impl FormulaBudget {
         Self {
             operation: ResourceOperation::FormulaMutate,
             limits: FormulaLimits::secure_default(),
-            counters: Rc::new(RefCell::new(FormulaCounters::default())),
+            counters: CounterCell::default(),
         }
     }
 
@@ -120,7 +156,7 @@ impl FormulaBudget {
         Self {
             operation: ResourceOperation::FormulaCalculate,
             limits: FormulaLimits::secure_default(),
-            counters: Rc::new(RefCell::new(FormulaCounters::default())),
+            counters: CounterCell::default(),
         }
     }
 
@@ -210,7 +246,7 @@ impl FormulaBudget {
         Ok(Self {
             operation,
             limits,
-            counters: Rc::new(RefCell::new(FormulaCounters::default())),
+            counters: CounterCell::default(),
         })
     }
 
@@ -426,7 +462,12 @@ impl FormulaBudget {
     }
 
     pub(crate) fn check_output_bytes(&self, amount: u64) -> Result<()> {
-        let observed = self.counters.borrow().output_bytes.saturating_add(amount);
+        let observed = self
+            .counters
+            .get()
+            .borrow()
+            .output_bytes
+            .saturating_add(amount);
         self.check_local(
             ResourceDimension::OutputBytes,
             self.limits.operation_output_bytes,
@@ -462,7 +503,7 @@ impl FormulaBudget {
         stage: ResourceStage,
         select: impl FnOnce(&mut FormulaCounters) -> &mut u64,
     ) -> Result<()> {
-        let mut counters = self.counters.borrow_mut();
+        let mut counters = self.counters.get().borrow_mut();
         let counter = select(&mut counters);
         let observed = counter.checked_add(amount).unwrap_or(u64::MAX);
         if observed > limit {
@@ -518,6 +559,25 @@ mod tests {
         assert_eq!((metadata.limit(), metadata.observed()), (2, 3));
         assert_eq!(metadata.operation_code(), "formula_calculate");
         assert_eq!(metadata.dimension_code(), "operation_count");
+    }
+
+    #[test]
+    fn clones_share_counters_charged_before_and_after_cloning() {
+        let limits = FormulaLimits {
+            operation_evaluation_steps: 3,
+            ..FormulaLimits::secure_default()
+        };
+        let budget = FormulaBudget::for_calculation(limits).unwrap();
+        budget.charge_evaluation_steps(1).unwrap();
+        let clone = budget.clone();
+        clone.charge_evaluation_steps(1).unwrap();
+        let second = clone.clone();
+        budget.charge_evaluation_steps(1).unwrap();
+        let error = second.charge_evaluation_steps(1).unwrap_err();
+        let metadata = error.resource_metadata().unwrap();
+        assert_eq!((metadata.limit(), metadata.observed()), (3, 4));
+        let error = budget.charge_evaluation_steps(0).unwrap_err();
+        assert_eq!(error.resource_metadata().unwrap().observed(), 4);
     }
 
     #[test]

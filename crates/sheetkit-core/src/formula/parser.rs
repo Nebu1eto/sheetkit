@@ -16,9 +16,9 @@ use nom::{
     bytes::complete::{tag, tag_no_case, take_while1},
     character::complete::{alpha1, char, multispace0, one_of},
     combinator::{map, opt, recognize, value},
-    multi::many0,
+    error::{ErrorKind, ParseError},
     sequence::{delimited, pair, preceded, terminated, tuple},
-    IResult,
+    IResult, InputLength, Parser,
 };
 
 use super::ast::{BinaryOperator, CellReference, Expr, UnaryOperator};
@@ -65,6 +65,16 @@ pub(crate) fn parse_formula_with_budget(input: &str, budget: &FormulaBudget) -> 
 }
 
 fn lexical_metrics(input: &str) -> (u64, u64, u64, u64) {
+    // ASCII bytes are exactly the chars they encode, so the byte iterator
+    // yields the same sequence without UTF-8 decoding.
+    if input.is_ascii() {
+        lexical_metrics_chars(input.bytes().map(char::from))
+    } else {
+        lexical_metrics_chars(input.chars())
+    }
+}
+
+fn lexical_metrics_chars(chars: impl Iterator<Item = char>) -> (u64, u64, u64, u64) {
     let mut tokens = 0_u64;
     let mut parenthesis_depth = 0_u64;
     let mut max_parenthesis_depth = 0_u64;
@@ -74,18 +84,18 @@ fn lexical_metrics(input: &str) -> (u64, u64, u64, u64) {
     let mut binary_chains = [0_u64; 129];
     let mut expects_operand = [true; 129];
     let mut frame = 0_usize;
-    let mut chars = input.char_indices().peekable();
+    let mut chars = chars.peekable();
 
-    while let Some((_, ch)) = chars.next() {
+    while let Some(ch) = chars.next() {
         if ch.is_whitespace() {
             continue;
         }
         tokens = tokens.saturating_add(1);
         match ch {
             '"' => {
-                while let Some((_, current)) = chars.next() {
+                while let Some(current) = chars.next() {
                     if current == '"' {
-                        if chars.peek().is_some_and(|(_, next)| *next == '"') {
+                        if chars.peek().is_some_and(|next| *next == '"') {
                             chars.next();
                         } else {
                             break;
@@ -96,16 +106,16 @@ fn lexical_metrics(input: &str) -> (u64, u64, u64, u64) {
                 expects_operand[frame] = false;
             }
             '\'' => {
-                while let Some((_, current)) = chars.next() {
+                while let Some(current) = chars.next() {
                     if current == '\'' {
-                        if chars.peek().is_some_and(|(_, next)| *next == '\'') {
+                        if chars.peek().is_some_and(|next| *next == '\'') {
                             chars.next();
                         } else {
                             break;
                         }
                     }
                 }
-                if chars.peek().is_some_and(|(_, next)| *next == '!') {
+                if chars.peek().is_some_and(|next| *next == '!') {
                     chars.next();
                 }
                 unary_run = 0;
@@ -140,7 +150,7 @@ fn lexical_metrics(input: &str) -> (u64, u64, u64, u64) {
                 }
             }
             '#' => {
-                while chars.peek().is_some_and(|(_, next)| {
+                while chars.peek().is_some_and(|next| {
                     next.is_alphanumeric() || matches!(*next, '#' | '/' | '!' | '?')
                 }) {
                     chars.next();
@@ -149,7 +159,7 @@ fn lexical_metrics(input: &str) -> (u64, u64, u64, u64) {
                 expects_operand[frame] = false;
             }
             c if c.is_alphanumeric() || matches!(c, '_' | '$' | '.') => {
-                while chars.peek().is_some_and(|(_, next)| {
+                while chars.peek().is_some_and(|next| {
                     next.is_alphanumeric()
                         || matches!(*next, '_' | '$' | '.' | '\'' | '!' | '?' | '#')
                 }) {
@@ -161,10 +171,7 @@ fn lexical_metrics(input: &str) -> (u64, u64, u64, u64) {
             '<' | '>' => {
                 binary_chains[frame] = binary_chains[frame].saturating_add(1);
                 max_binary_chain = max_binary_chain.max(binary_chains[frame]);
-                if chars
-                    .peek()
-                    .is_some_and(|(_, next)| matches!(*next, '=' | '>'))
-                {
+                if chars.peek().is_some_and(|next| matches!(*next, '=' | '>')) {
                     chars.next();
                 }
                 unary_run = 0;
@@ -202,6 +209,37 @@ fn lexical_metrics(input: &str) -> (u64, u64, u64, u64) {
         max_unary_run,
         max_binary_chain,
     )
+}
+
+/// `nom::multi::many0` without the eager `Vec::with_capacity(4)`.
+///
+/// Every precedence level runs this once per operand and nearly always
+/// matches nothing, so deferring the allocation to the first match removes
+/// most per-operand heap traffic. Matching, error, and infinite-loop
+/// behavior are identical to nom's `many0`.
+fn many0<I, O, E, F>(mut f: F) -> impl FnMut(I) -> IResult<I, Vec<O>, E>
+where
+    I: Clone + InputLength,
+    F: Parser<I, O, E>,
+    E: ParseError<I>,
+{
+    move |mut i: I| {
+        let mut acc = Vec::new();
+        loop {
+            let len = i.input_len();
+            match f.parse(i.clone()) {
+                Err(nom::Err::Error(_)) => return Ok((i, acc)),
+                Err(e) => return Err(e),
+                Ok((i1, o)) => {
+                    if i1.input_len() == len {
+                        return Err(nom::Err::Error(E::from_error_kind(i, ErrorKind::Many0)));
+                    }
+                    i = i1;
+                    acc.push(o);
+                }
+            }
+        }
+    }
 }
 
 /// Wraps a parser to consume optional surrounding whitespace.
@@ -600,6 +638,86 @@ fn fold_binary(first: Expr, rest: Vec<(BinaryOperator, Expr)>) -> Expr {
 mod tests {
     use super::*;
     use crate::formula::ast::{BinaryOperator, CellReference, Expr, UnaryOperator};
+
+    /// Recursive reference for `Expr::structural_metrics`.
+    fn reference_metrics(expr: &Expr, depth: u64, chain: u64) -> (u64, u64, u64) {
+        let combine = |acc: (u64, u64, u64), child: (u64, u64, u64)| {
+            (acc.0 + child.0, acc.1.max(child.1), acc.2.max(child.2))
+        };
+        let own = (1, depth, 0);
+        match expr {
+            Expr::Function { args, .. } => args.iter().fold(own, |acc, arg| {
+                combine(acc, reference_metrics(arg, depth + 1, 0))
+            }),
+            Expr::BinaryOp { left, right, .. } => {
+                let chain = chain + 1;
+                let acc = combine((1, depth, chain), reference_metrics(left, depth, chain));
+                combine(acc, reference_metrics(right, depth, 0))
+            }
+            Expr::UnaryOp { operand, .. } | Expr::Paren(operand) => {
+                combine(own, reference_metrics(operand, depth + 1, 0))
+            }
+            _ => own,
+        }
+    }
+
+    #[test]
+    fn structural_metrics_match_reference_beyond_inline_stack() {
+        let wide = format!(
+            "SUM({})",
+            (1..=40)
+                .map(|n| n.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        let chain = (1..=60)
+            .map(|n| format!("A{n}"))
+            .collect::<Vec<_>>()
+            .join("+");
+        let nested_wide = format!("IF(1>0,{wide},-({chain}))*ROUND(1.5,0)");
+        let deep = format!("{}1{}", "(".repeat(40), ")".repeat(40));
+        for formula in [
+            "1",
+            "SUM(1,2,3,4,5)",
+            "ABS(-42)+SQRT(81)",
+            wide.as_str(),
+            chain.as_str(),
+            nested_wide.as_str(),
+            deep.as_str(),
+        ] {
+            let expr = parse_formula(formula).unwrap();
+            assert_eq!(
+                expr.structural_metrics(),
+                reference_metrics(&expr, 1, 0),
+                "{formula}"
+            );
+        }
+    }
+
+    #[test]
+    fn lexical_metrics_ascii_fast_path_matches_char_path() {
+        for formula in [
+            "SUM(1,2,3)",
+            "IF(A1>=2,\"a\"\"b\",'My Sheet'!B2)&C3%",
+            "--+-1^2*3/4-5<>6",
+            "#N/A+#DIV/0!",
+            "((((1)))) , ((2))",
+            "\t1 +\r\n2\x0b+\x0c3",
+        ] {
+            assert!(formula.is_ascii());
+            assert_eq!(
+                lexical_metrics(formula),
+                lexical_metrics_chars(formula.chars()),
+                "{formula:?}"
+            );
+        }
+        // Non-ASCII input still uses the char path.
+        let unicode = "SUM(\u{3000}1,\"\u{d55c}\")";
+        assert_eq!(
+            lexical_metrics(unicode),
+            lexical_metrics_chars(unicode.chars())
+        );
+    }
 
     #[test]
     fn formula_limits_reject_deep_recursive_inputs_before_parsing() {

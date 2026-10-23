@@ -47,7 +47,8 @@ impl Expr {
         let mut nodes = 0_u64;
         let mut max_depth = 0_u64;
         let mut max_binary_chain = 0_u64;
-        let mut stack = vec![(self, 1_u64, 0_u64)];
+        let mut stack = MetricStack::new(self);
+        stack.push((self, 1_u64, 0_u64));
 
         while let Some((expr, depth, parent_binary_chain)) = stack.pop() {
             nodes = nodes.saturating_add(1);
@@ -72,6 +73,46 @@ impl Expr {
         }
 
         (nodes, max_depth, max_binary_chain)
+    }
+}
+
+/// LIFO work stack for [`Expr::structural_metrics`] that keeps typical
+/// formulas off the heap and spills deeper traversals to a `Vec`.
+struct MetricStack<'a> {
+    inline: [(&'a Expr, u64, u64); MetricStack::INLINE],
+    len: usize,
+    spill: Vec<(&'a Expr, u64, u64)>,
+}
+
+impl<'a> MetricStack<'a> {
+    const INLINE: usize = 16;
+
+    fn new(filler: &'a Expr) -> Self {
+        Self {
+            inline: [(filler, 0, 0); Self::INLINE],
+            len: 0,
+            spill: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, entry: (&'a Expr, u64, u64)) {
+        if self.spill.is_empty() && self.len < Self::INLINE {
+            self.inline[self.len] = entry;
+            self.len += 1;
+        } else {
+            self.spill.push(entry);
+        }
+    }
+
+    fn pop(&mut self) -> Option<(&'a Expr, u64, u64)> {
+        if let Some(entry) = self.spill.pop() {
+            return Some(entry);
+        }
+        if self.len == 0 {
+            return None;
+        }
+        self.len -= 1;
+        Some(self.inline[self.len])
     }
 }
 
