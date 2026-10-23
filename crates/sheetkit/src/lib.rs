@@ -73,11 +73,109 @@ pub mod utils {
         coordinates_to_cell_name,
     };
     pub use sheetkit_core::utils::constants;
+
+    /// Cell reference conversion functions, grouped by module.
+    pub mod cell_ref {
+        pub use sheetkit_core::utils::cell_ref::{
+            cell_name_to_coordinates, column_name_to_number, column_number_to_name,
+            coordinates_to_cell_name,
+        };
+    }
 }
 
 /// Table configuration types, also available at the crate root.
 pub mod table {
     pub use sheetkit_core::table::{TableColumn, TableConfig, TableInfo};
+}
+
+/// Cell value types and date serial helpers, also available at the crate root.
+pub mod cell {
+    pub use sheetkit_core::cell::{
+        date_to_serial, datetime_to_serial, is_date_format_code, is_date_num_fmt, serial_to_date,
+        serial_to_datetime, CellValue,
+    };
+}
+
+/// Chart configuration types, also available at the crate root.
+pub mod chart {
+    pub use sheetkit_core::chart::{ChartConfig, ChartSeries, ChartType, View3DConfig};
+}
+
+/// Comment configuration types, also available at the crate root.
+pub mod comment {
+    pub use sheetkit_core::comment::CommentConfig;
+}
+
+/// Conditional formatting types, also available at the crate root.
+pub mod conditional {
+    pub use sheetkit_core::conditional::{
+        CfOperator, CfValueType, ConditionalFormatRule, ConditionalFormatType, ConditionalStyle,
+    };
+}
+
+/// Document property types, also available at the crate root.
+pub mod doc_props {
+    pub use sheetkit_core::doc_props::{AppProperties, CustomPropertyValue, DocProperties};
+}
+
+/// Hyperlink types, also available at the crate root.
+pub mod hyperlink {
+    pub use sheetkit_core::hyperlink::{HyperlinkInfo, HyperlinkType};
+}
+
+/// Image types, also available at the crate root.
+pub mod image {
+    pub use sheetkit_core::image::{ImageConfig, ImageFormat, PictureInfo};
+}
+
+/// Page layout types, also available at the crate root.
+pub mod page_layout {
+    pub use sheetkit_core::page_layout::{Orientation, PageMarginsConfig, PaperSize};
+}
+
+/// Pivot table types, also available at the crate root.
+pub mod pivot {
+    pub use sheetkit_core::pivot::{
+        AggregateFunction, PivotDataField, PivotField, PivotTableConfig, PivotTableInfo,
+    };
+}
+
+/// Workbook protection types, also available at the crate root.
+pub mod protection {
+    pub use sheetkit_core::protection::WorkbookProtectionConfig;
+}
+
+/// Sheet protection, view, and visibility types.
+pub mod sheet {
+    pub use sheetkit_core::sheet::{
+        SheetProtectionConfig, SheetViewOptions, SheetVisibility, ViewMode,
+    };
+}
+
+/// Streaming writer types.
+pub mod stream {
+    pub use sheetkit_core::stream::{StreamRowOptions, StreamWriter};
+}
+
+/// Style types, also available at the crate root.
+pub mod style {
+    pub use sheetkit_core::style::{
+        AlignmentStyle, BorderLineStyle, BorderSideStyle, BorderStyle, FillStyle, FontStyle,
+        GradientFillStyle, GradientStop, GradientType, HorizontalAlign, NumFmtStyle, PatternType,
+        ProtectionStyle, Style, StyleColor, VerticalAlign,
+    };
+}
+
+/// Data validation types, also available at the crate root.
+pub mod validation {
+    pub use sheetkit_core::validation::{
+        DataValidationConfig, ErrorStyle, ValidationOperator, ValidationType,
+    };
+}
+
+/// VBA project types, also available at the crate root.
+pub mod vba {
+    pub use sheetkit_core::vba::{VbaLimits, VbaModule, VbaModuleType, VbaProject};
 }
 
 #[cfg(test)]

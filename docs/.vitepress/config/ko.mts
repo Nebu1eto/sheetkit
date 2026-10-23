@@ -68,6 +68,8 @@ function sidebarGuide(): DefaultTheme.SidebarItem[] {
         { text: '고급 기능', link: '/ko/guide/advanced' },
         { text: 'Async-First 마이그레이션 (v0.5+)', link: '/ko/guide/migration-async-first' },
         { text: '1.0 마이그레이션', link: '/ko/guide/migration-v1' },
+        { text: 'Excel 호환성', link: '/ko/guide/excel-compatibility' },
+        { text: '알려진 제한 사항', link: '/ko/guide/known-limitations' },
         { text: 'CLI', link: '/ko/guide/cli' },
       ],
     },

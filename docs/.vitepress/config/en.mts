@@ -68,6 +68,8 @@ function sidebarGuide(): DefaultTheme.SidebarItem[] {
         { text: 'Advanced', link: '/guide/advanced' },
         { text: 'Async-First Migration (v0.5+)', link: '/guide/migration-async-first' },
         { text: 'Migration (v0.5.1 to 1.0)', link: '/guide/migration-v1' },
+        { text: 'Excel Compatibility', link: '/guide/excel-compatibility' },
+        { text: 'Known Limitations', link: '/guide/known-limitations' },
         { text: 'CLI', link: '/guide/cli' },
       ],
     },

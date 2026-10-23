@@ -176,3 +176,52 @@ but read results with workload/value mismatches are excluded from winner selecti
 | Write (batch) | ~1.0x | - |
 | Streaming write | ~1.66x | - |
 | Round-trip | ~1.11x | - |
+
+## Comparing Revisions
+
+`benchmarks/node/compare-revisions.ts` measures the release-gate operations on two git revisions of SheetKit and reports the change in median latency. Use it to check a change for performance regressions before release.
+
+```bash
+cd benchmarks/node
+SHEETKIT_COMPARE_BASE=73819d8 pnpm bench:compare
+```
+
+For each revision the script creates a detached git worktree in a run-owned directory under the scratch root, copies `Cargo.lock` from the current checkout into it, runs `pnpm install --frozen-lockfile`, and builds `@sheetkit/node` in release mode with a separate `CARGO_TARGET_DIR`. `Cargo.lock` is gitignored, so both revisions build against the dependency versions resolved in your checkout rather than the versions each revision would resolve on its own. Both revisions run the `release-gate.ts` from the current checkout, so the measurement code is the same on both sides. The worktrees and build directories are removed when the run ends unless `SHEETKIT_COMPARE_KEEP=1` is set.
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `SHEETKIT_COMPARE_BASE` | required | Baseline revision (any git revision name). |
+| `SHEETKIT_COMPARE_HEAD` | `HEAD` | Revision under test. Uncommitted changes are not included. |
+| `SHEETKIT_COMPARE_SAMPLES` | `20` | Measured runs per operation and fixture. |
+| `SHEETKIT_COMPARE_WARMUPS` | `3` | Warmup runs, not measured. |
+| `SHEETKIT_COMPARE_THRESHOLD_PERCENT` | `10` | Median increase above which a row is marked `REGRESSION`. |
+| `SHEETKIT_COMPARE_SCRATCH` | `/tmp/sheetkit-compare` | Scratch root for worktrees and build output. |
+| `SHEETKIT_COMPARE_OPERATIONS` | all | Comma-separated subset of `ordinary-open`, `encrypted-open`, `scalar-calculation`, `dense-traversal`, `streaming`, `output-csv`, `output-json`, `output-html`, `output-svg`. |
+| `SHEETKIT_COMPARE_FIXTURES` | every `.xlsx` in `benchmarks/node/fixtures` | Comma-separated fixture file names. |
+| `SHEETKIT_COMPARE_PASSWORD` | unset | Enables `encrypted-open`; an encrypted copy of the first fixture is generated with this password. Without it, `encrypted-open` is skipped. |
+| `SHEETKIT_COMPARE_KEEP` | unset | Set to `1` to keep the worktrees and build output for inspection. |
+
+Generate the fixtures first with `pnpm generate` if `benchmarks/node/fixtures` is empty.
+
+### Runtime
+
+The script runs everything sequentially and is CPU heavy; run it on an otherwise idle machine. Two cold release builds of the native binding come first. The measurement phase then runs every selected operation on every fixture for both revisions, each with `SAMPLES + WARMUPS` iterations. With the defaults (12 fixtures, 8 operations without a password, 23 iterations, 2 revisions) that is 192 release-gate processes, so expect the full matrix to take far longer than the builds; a full-matrix wall-clock time has not been recorded. Start with a narrow run to check the setup, for example:
+
+```bash
+SHEETKIT_COMPARE_BASE=73819d8 SHEETKIT_COMPARE_SAMPLES=3 SHEETKIT_COMPARE_WARMUPS=1 \
+SHEETKIT_COMPARE_OPERATIONS=ordinary-open,output-csv SHEETKIT_COMPARE_FIXTURES=scale-1k.xlsx \
+pnpm bench:compare
+```
+
+### Reading the Output
+
+The report is printed and written to `benchmarks/node/output/compare-<base>-<head>.md`; the raw release-gate JSON for every measurement is under `benchmarks/node/output/compare-<base>-<head>/`. Each row covers one operation on one fixture:
+
+| Column | Meaning |
+|--------|---------|
+| Base median (ms), Head median (ms) | Median latency of the measured runs. |
+| Base MAD, Head MAD | Median absolute deviation, in milliseconds. A delta smaller than the MAD is within run-to-run noise. |
+| Delta | `(head - base) / base`. Positive means the head revision is slower. |
+| Verdict | `ok`, `REGRESSION` when Delta exceeds the threshold, or `missing` when either side failed to produce a result. |
+
+The process exits with status 1 when any row is `REGRESSION` or `missing`. Re-run regressed rows with more samples before treating them as real, since short operations on small fixtures are sensitive to machine load.
