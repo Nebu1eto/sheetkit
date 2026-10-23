@@ -3,17 +3,29 @@
 use crate::cell::CellValue;
 use crate::error::{Error, Result};
 use crate::formula::ast::Expr;
-use crate::formula::eval::{coerce_to_number, coerce_to_string, Evaluator};
+use crate::formula::eval::{coerce_to_number, Evaluator};
 use crate::formula::functions::conversion::checked_trunc_count;
-use crate::formula::functions::{check_arg_count, wildcard_search};
+use crate::formula::functions::{check_arg_count, eval_text_arg, wildcard_search};
+
+/// Evaluate a text argument, returning its error value from the caller.
+macro_rules! text_arg {
+    ($expr:expr, $ctx:expr) => {
+        match eval_text_arg($expr, $ctx)? {
+            Ok(text) => text,
+            Err(error) => return Ok(error),
+        }
+    };
+}
+
+/// Largest REPLACE start position or length Excel accepts.
+const REPLACE_MAX_ARGUMENT: usize = 32_767;
 
 /// CONCAT(text1, [text2], ...) - concatenates multiple values.
 pub fn fn_concat(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("CONCAT", args, 1, 255)?;
     let mut result = String::new();
     for arg in args {
-        let v = ctx.eval_expr(arg)?;
-        result.push_str(&coerce_to_string(&v));
+        result.push_str(&text_arg!(arg, ctx));
     }
     Ok(CellValue::String(result))
 }
@@ -21,8 +33,8 @@ pub fn fn_concat(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
 /// FIND(find_text, within_text, [start_num]) - case-sensitive search.
 pub fn fn_find(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("FIND", args, 2, 3)?;
-    let find_text = coerce_to_string(&ctx.eval_expr(&args[0])?);
-    let within_text = coerce_to_string(&ctx.eval_expr(&args[1])?);
+    let find_text = text_arg!(&args[0], ctx);
+    let within_text = text_arg!(&args[1], ctx);
     let start_value = if args.len() > 2 {
         coerce_to_number(&ctx.eval_expr(&args[2])?)?
     } else {
@@ -47,8 +59,8 @@ pub fn fn_find(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
 /// SEARCH(find_text, within_text, [start_num]) - case-insensitive search with wildcards.
 pub fn fn_search(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("SEARCH", args, 2, 3)?;
-    let find_text = coerce_to_string(&ctx.eval_expr(&args[0])?);
-    let within_text = coerce_to_string(&ctx.eval_expr(&args[1])?);
+    let find_text = text_arg!(&args[0], ctx);
+    let within_text = text_arg!(&args[1], ctx);
     let start_value = if args.len() > 2 {
         coerce_to_number(&ctx.eval_expr(&args[2])?)?
     } else {
@@ -77,9 +89,9 @@ fn character_position_to_byte_offset(text: &str, position: usize) -> usize {
 /// SUBSTITUTE(text, old_text, new_text, [instance_num]) - replaces occurrences.
 pub fn fn_substitute(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("SUBSTITUTE", args, 3, 4)?;
-    let text = coerce_to_string(&ctx.eval_expr(&args[0])?);
-    let old_text = coerce_to_string(&ctx.eval_expr(&args[1])?);
-    let new_text = coerce_to_string(&ctx.eval_expr(&args[2])?);
+    let text = text_arg!(&args[0], ctx);
+    let old_text = text_arg!(&args[1], ctx);
+    let new_text = text_arg!(&args[2], ctx);
     if old_text.is_empty() {
         return Ok(CellValue::String(text));
     }
@@ -154,19 +166,22 @@ fn checked_substitute_output_len(
 }
 
 /// REPLACE(old_text, start_num, num_chars, new_text) - replaces by position.
+///
+/// Both numbers are truncated toward zero. A start outside 1..=32767 or a
+/// length outside 0..=32767 returns `#VALUE!`, as in Excel.
 pub fn fn_replace(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("REPLACE", args, 4, 4)?;
-    let old_text = coerce_to_string(&ctx.eval_expr(&args[0])?);
+    let old_text = text_arg!(&args[0], ctx);
     let start_value = coerce_to_number(&ctx.eval_expr(&args[1])?)?;
     let count_value = coerce_to_number(&ctx.eval_expr(&args[2])?)?;
-    let new_text = coerce_to_string(&ctx.eval_expr(&args[3])?);
+    let new_text = text_arg!(&args[3], ctx);
     let (Some(start_num), Some(num_chars)) = (
         checked_trunc_count(start_value),
         checked_trunc_count(count_value),
     ) else {
         return Ok(CellValue::Error("#VALUE!".to_string()));
     };
-    if start_num < 1 {
+    if !(1..=REPLACE_MAX_ARGUMENT).contains(&start_num) || num_chars > REPLACE_MAX_ARGUMENT {
         return Ok(CellValue::Error("#VALUE!".to_string()));
     }
     let chars: Vec<char> = old_text.chars().collect();
@@ -186,7 +201,7 @@ pub fn fn_replace(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
 /// REPT(text, number_times) - repeats text.
 pub fn fn_rept(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("REPT", args, 2, 2)?;
-    let text = coerce_to_string(&ctx.eval_expr(&args[0])?);
+    let text = text_arg!(&args[0], ctx);
     let times_value = coerce_to_number(&ctx.eval_expr(&args[1])?)?;
     let Some(times) = checked_trunc_count(times_value) else {
         return Ok(CellValue::Error("#VALUE!".to_string()));
@@ -205,8 +220,8 @@ pub fn fn_rept(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
 /// EXACT(text1, text2) - case-sensitive comparison.
 pub fn fn_exact(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("EXACT", args, 2, 2)?;
-    let text1 = coerce_to_string(&ctx.eval_expr(&args[0])?);
-    let text2 = coerce_to_string(&ctx.eval_expr(&args[1])?);
+    let text1 = text_arg!(&args[0], ctx);
+    let text2 = text_arg!(&args[1], ctx);
     Ok(CellValue::Bool(text1 == text2))
 }
 
@@ -216,6 +231,7 @@ pub fn fn_t(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     let v = ctx.eval_expr(&args[0])?;
     match v {
         CellValue::String(s) => Ok(CellValue::String(s)),
+        CellValue::Error(_) => Ok(v),
         _ => Ok(CellValue::String(String::new())),
     }
 }
@@ -223,7 +239,7 @@ pub fn fn_t(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
 /// PROPER(text) - capitalizes first letter of each word.
 pub fn fn_proper(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("PROPER", args, 1, 1)?;
-    let text = coerce_to_string(&ctx.eval_expr(&args[0])?);
+    let text = text_arg!(&args[0], ctx);
     let mut result = String::with_capacity(text.len());
     let mut capitalize_next = true;
     for ch in text.chars() {

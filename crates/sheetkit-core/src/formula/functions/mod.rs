@@ -604,6 +604,34 @@ pub fn collect_criteria_range_values(arg: &Expr, ctx: &mut Evaluator) -> Result<
     }
 }
 
+/// Return the error value carried by `value`, looking through a cached
+/// formula result.
+pub(crate) fn error_value(value: &CellValue) -> Option<CellValue> {
+    match value {
+        CellValue::Error(_) => Some(value.clone()),
+        CellValue::Formula {
+            result: Some(inner),
+            ..
+        } => error_value(inner),
+        _ => None,
+    }
+}
+
+/// Evaluate a text argument.
+///
+/// Returns `Ok(Err(error))` when the argument is an error value so the caller
+/// can propagate it instead of measuring or slicing the error text.
+pub(crate) fn eval_text_arg(
+    expr: &Expr,
+    ctx: &mut Evaluator,
+) -> Result<std::result::Result<String, CellValue>> {
+    let value = ctx.eval_expr(expr)?;
+    Ok(match error_value(&value) {
+        Some(error) => Err(error),
+        None => Ok(coerce_to_string(&value)),
+    })
+}
+
 // -- Aggregate functions --
 
 fn fn_sum(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
@@ -622,13 +650,35 @@ fn fn_average(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     Ok(CellValue::Number(sum / nums.len() as f64))
 }
 
+/// COUNT(value1, ...) - counts numeric values.
+///
+/// Reference arguments contribute only numeric cells. Direct arguments also
+/// count booleans, omitted arguments, and text that converts to a finite
+/// number; direct error values are not counted.
 fn fn_count(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("COUNT", args, 1, 255)?;
-    let values = ctx.flatten_args_to_values(args)?;
-    let count = values
-        .iter()
-        .filter(|v| matches!(v, CellValue::Number(_) | CellValue::Date(_)))
-        .count();
+    let mut count = 0usize;
+    for arg in args {
+        match arg {
+            Expr::Range { start, end } => {
+                let values = ctx.expand_range(start, end)?;
+                count += values
+                    .iter()
+                    .filter(|v| crate::formula::eval::reference_number(v).is_some())
+                    .count();
+            }
+            Expr::CellRef(_) => {
+                let v = ctx.eval_expr(arg)?;
+                count += usize::from(crate::formula::eval::reference_number(&v).is_some());
+            }
+            _ => {
+                let v = ctx.eval_expr(arg)?;
+                let counted = !matches!(v, CellValue::Error(_))
+                    && crate::formula::eval::coerce_to_number(&v).is_ok_and(f64::is_finite);
+                count += usize::from(counted);
+            }
+        }
+    }
     Ok(CellValue::Number(count as f64))
 }
 
@@ -777,29 +827,37 @@ fn fn_sqrt(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
 
 fn fn_len(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("LEN", args, 1, 1)?;
-    let v = ctx.eval_expr(&args[0])?;
-    let s = crate::formula::eval::coerce_to_string(&v);
+    let s = match eval_text_arg(&args[0], ctx)? {
+        Ok(s) => s,
+        Err(error) => return Ok(error),
+    };
     Ok(CellValue::Number(s.chars().count() as f64))
 }
 
 fn fn_lower(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("LOWER", args, 1, 1)?;
-    let v = ctx.eval_expr(&args[0])?;
-    let s = crate::formula::eval::coerce_to_string(&v);
+    let s = match eval_text_arg(&args[0], ctx)? {
+        Ok(s) => s,
+        Err(error) => return Ok(error),
+    };
     Ok(CellValue::String(s.to_lowercase()))
 }
 
 fn fn_upper(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("UPPER", args, 1, 1)?;
-    let v = ctx.eval_expr(&args[0])?;
-    let s = crate::formula::eval::coerce_to_string(&v);
+    let s = match eval_text_arg(&args[0], ctx)? {
+        Ok(s) => s,
+        Err(error) => return Ok(error),
+    };
     Ok(CellValue::String(s.to_uppercase()))
 }
 
 fn fn_trim(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("TRIM", args, 1, 1)?;
-    let v = ctx.eval_expr(&args[0])?;
-    let s = crate::formula::eval::coerce_to_string(&v);
+    let s = match eval_text_arg(&args[0], ctx)? {
+        Ok(s) => s,
+        Err(error) => return Ok(error),
+    };
     // Excel TRIM removes leading/trailing spaces and collapses internal runs.
     let trimmed: String = s.split_whitespace().collect::<Vec<_>>().join(" ");
     Ok(CellValue::String(trimmed))
@@ -807,8 +865,10 @@ fn fn_trim(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
 
 fn fn_left(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("LEFT", args, 1, 2)?;
-    let v = ctx.eval_expr(&args[0])?;
-    let s = crate::formula::eval::coerce_to_string(&v);
+    let s = match eval_text_arg(&args[0], ctx)? {
+        Ok(s) => s,
+        Err(error) => return Ok(error),
+    };
     let n = if args.len() > 1 {
         let count = crate::formula::eval::coerce_to_number(&ctx.eval_expr(&args[1])?)?;
         let Some(count) = conversion::checked_trunc_count(count) else {
@@ -824,8 +884,10 @@ fn fn_left(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
 
 fn fn_right(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("RIGHT", args, 1, 2)?;
-    let v = ctx.eval_expr(&args[0])?;
-    let s = crate::formula::eval::coerce_to_string(&v);
+    let s = match eval_text_arg(&args[0], ctx)? {
+        Ok(s) => s,
+        Err(error) => return Ok(error),
+    };
     let n = if args.len() > 1 {
         let count = crate::formula::eval::coerce_to_number(&ctx.eval_expr(&args[1])?)?;
         let Some(count) = conversion::checked_trunc_count(count) else {
@@ -841,10 +903,21 @@ fn fn_right(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     Ok(CellValue::String(result))
 }
 
+/// Largest MID start position Excel accepts (2^31).
+const MID_MAX_START: usize = 2_147_483_648;
+/// Largest MID length Excel accepts (2^31 - 1).
+const MID_MAX_COUNT: usize = 2_147_483_647;
+
+/// MID(text, start_num, num_chars) - extracts characters by position.
+///
+/// Both numbers are truncated toward zero. A start outside 1..=2^31 or a
+/// length outside 0..=2^31-1 returns `#VALUE!`, as in Excel.
 fn fn_mid(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("MID", args, 3, 3)?;
-    let v = ctx.eval_expr(&args[0])?;
-    let s = crate::formula::eval::coerce_to_string(&v);
+    let s = match eval_text_arg(&args[0], ctx)? {
+        Ok(s) => s,
+        Err(error) => return Ok(error),
+    };
     let start = crate::formula::eval::coerce_to_number(&ctx.eval_expr(&args[1])?)?;
     let count = crate::formula::eval::coerce_to_number(&ctx.eval_expr(&args[2])?)?;
     let (Some(start), Some(count)) = (
@@ -853,7 +926,7 @@ fn fn_mid(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     ) else {
         return Ok(CellValue::Error("#VALUE!".to_string()));
     };
-    if start < 1 {
+    if !(1..=MID_MAX_START).contains(&start) || count > MID_MAX_COUNT {
         return Ok(CellValue::Error("#VALUE!".to_string()));
     }
     let result: String = s.chars().skip(start - 1).take(count).collect();
@@ -864,8 +937,10 @@ fn fn_concatenate(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("CONCATENATE", args, 1, 255)?;
     let mut result = String::new();
     for arg in args {
-        let v = ctx.eval_expr(arg)?;
-        result.push_str(&crate::formula::eval::coerce_to_string(&v));
+        match eval_text_arg(arg, ctx)? {
+            Ok(s) => result.push_str(&s),
+            Err(error) => return Ok(error),
+        }
     }
     Ok(CellValue::String(result))
 }
@@ -904,6 +979,9 @@ fn fn_iserror(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
 fn fn_value(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("VALUE", args, 1, 1)?;
     let v = ctx.eval_expr(&args[0])?;
+    if let Some(error) = error_value(&v) {
+        return Ok(error);
+    }
     match crate::formula::eval::coerce_to_number(&v) {
         Ok(n) => Ok(CellValue::Number(n)),
         Err(_) => Ok(CellValue::Error("#VALUE!".to_string())),

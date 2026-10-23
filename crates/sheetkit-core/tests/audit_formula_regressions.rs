@@ -176,17 +176,16 @@ fn integer_arguments_derived_from_formulas_never_panic() {
     }
 }
 
-// F-F6: REPLACE must not overflow when counts saturate.
+// F-F6: REPLACE must not overflow when counts saturate; Excel rejects counts
+// above 32767.
 
 #[test]
 fn replace_with_huge_count_does_not_overflow() {
+    assert_eq!(eval("REPLACE(\"abc\",2,1E30,\"x\")"), error("#VALUE!"));
+    assert_eq!(eval("REPLACE(\"abc\",1E30,1E30,\"x\")"), error("#VALUE!"));
     assert_eq!(
-        eval("REPLACE(\"abc\",2,1E30,\"x\")"),
+        eval("REPLACE(\"abc\",2,32767,\"x\")"),
         CellValue::String("ax".to_string())
-    );
-    assert_eq!(
-        eval("REPLACE(\"abc\",1E30,1E30,\"x\")"),
-        CellValue::String("abcx".to_string())
     );
     assert_eq!(eval("REPLACE(\"abc\",2,-1,\"x\")"), error("#VALUE!"));
     assert_eq!(
@@ -199,11 +198,8 @@ fn replace_with_huge_count_does_not_overflow() {
 fn text_slicing_with_huge_or_negative_counts() {
     assert_eq!(eval("LEFT(\"abc\",1E30)"), CellValue::String("abc".into()));
     assert_eq!(eval("RIGHT(\"abc\",1E30)"), CellValue::String("abc".into()));
-    assert_eq!(eval("MID(\"abc\",2,1E30)"), CellValue::String("bc".into()));
-    assert_eq!(
-        eval("MID(\"abc\",1E30,1)"),
-        CellValue::String(String::new())
-    );
+    assert_eq!(eval("MID(\"abc\",2,1E30)"), error("#VALUE!"));
+    assert_eq!(eval("MID(\"abc\",1E30,1)"), error("#VALUE!"));
     assert_eq!(eval("LEFT(\"abc\",-1)"), error("#VALUE!"));
     assert_eq!(eval("RIGHT(\"abc\",-1)"), error("#VALUE!"));
     assert_eq!(eval("MID(\"abc\",1,-1)"), error("#VALUE!"));
@@ -526,4 +522,225 @@ fn formula_regression_seeds_evaluate_without_panicking() {
         evaluated >= 8,
         "expected the regression seeds to evaluate, got {evaluated}"
     );
+}
+
+// Excel parity: COUNT counts direct booleans and numeric text, but only
+// numbers reached through references.
+
+fn count_snapshot() -> CellSnapshot {
+    let mut snapshot = CellSnapshot::new("Sheet1".to_string());
+    snapshot.set_cell("Sheet1", 1, 1, CellValue::Bool(true));
+    snapshot.set_cell("Sheet1", 1, 2, CellValue::String("3".to_string()));
+    snapshot.set_cell("Sheet1", 1, 3, CellValue::Number(5.0));
+    snapshot.set_cell("Sheet1", 1, 4, error("#DIV/0!"));
+    snapshot
+}
+
+#[test]
+fn count_counts_direct_booleans_and_numeric_text() {
+    let snapshot = count_snapshot();
+    let cases = [
+        ("COUNT(TRUE,\"3\",\"x\")", 2.0),
+        ("COUNT(\"3\")", 1.0),
+        ("COUNT(TRUE)", 1.0),
+        ("COUNT(FALSE)", 1.0),
+        ("COUNT(\"TRUE\")", 0.0),
+        ("COUNT(\"inf\")", 0.0),
+        ("COUNT(\"1e400\")", 0.0),
+        ("COUNT(1/0)", 0.0),
+        ("COUNT(NA(),1)", 1.0),
+        ("COUNT(\"3\"&\"\")", 1.0),
+        ("COUNT(A1:A4)", 1.0),
+        ("COUNT(A1)", 0.0),
+        ("COUNT(A2)", 0.0),
+        ("COUNT(A1:A4,TRUE)", 2.0),
+        ("COUNTA(A1:A4)", 4.0),
+        ("COUNTA(TRUE,\"3\",\"x\")", 3.0),
+    ];
+    for (formula, expected) in cases {
+        let actual = eval_in(&snapshot, formula).unwrap_or_else(|e| panic!("{formula}: {e}"));
+        assert_eq!(actual, CellValue::Number(expected), "{formula}");
+    }
+}
+
+// Excel parity: serial 0 is day zero (1900-01-00); negative serials and
+// results before January 1900 are #NUM!.
+
+#[test]
+fn edate_and_eomonth_accept_day_zero_and_reject_negative_serials() {
+    let numbers = [
+        ("EDATE(0,0)", 0.0),
+        ("EDATE(0,1)", 31.0),
+        ("EDATE(0,2)", 60.0),
+        ("EDATE(0,14)", 425.0),
+        ("EDATE(0.9,1)", 31.0),
+        ("EDATE(0,96000)", 2921941.0),
+        ("EDATE(60,0)", 59.0),
+        ("EDATE(60,1)", 89.0),
+        ("EDATE(60,-1)", 29.0),
+        ("EDATE(59,1)", 88.0),
+        ("EDATE(31,1)", 59.0),
+        ("EDATE(2958465.5,0)", 2958465.0),
+        ("EOMONTH(0,0)", 31.0),
+        ("EOMONTH(0,1)", 59.0),
+        ("EOMONTH(0.5,0)", 31.0),
+        ("EOMONTH(32,-1)", 31.0),
+        ("EOMONTH(60,0)", 59.0),
+        ("EOMONTH(60,1)", 91.0),
+    ];
+    for (formula, expected) in numbers {
+        assert_eq!(number(eval(formula)), expected, "{formula}");
+    }
+    for formula in [
+        "EDATE(-1,0)",
+        "EDATE(-0.5,0)",
+        "EDATE(0,-1)",
+        "EDATE(1,-1)",
+        "EDATE(31,-1)",
+        "EDATE(2958466,0)",
+        "EDATE(1E300,0)",
+        "EOMONTH(-1,0)",
+        "EOMONTH(-0.5,0)",
+        "EOMONTH(0,-1)",
+        "EOMONTH(0.9,-1)",
+        "EOMONTH(1,-1)",
+        "EOMONTH(31,-1)",
+        "EOMONTH(2958466,0)",
+    ] {
+        assert_eq!(eval(formula), error("#NUM!"), "{formula}");
+    }
+    assert_eq!(eval("EDATE(\"x\",1)"), error("#VALUE!"));
+}
+
+// Excel parity: WORKDAY counts weekdays on the serial calendar (serial 1 is a
+// Sunday, serial 60 is 1900-02-29) and accepts serial 0.
+
+#[test]
+fn workday_uses_excel_serial_calendar_and_day_zero() {
+    let numbers = [
+        ("WORKDAY(0,1)", 2.0),
+        ("WORKDAY(0,0)", 0.0),
+        ("WORKDAY(0,5)", 6.0),
+        ("WORKDAY(0.9,0)", 0.0),
+        ("WORKDAY(0.5,1)", 2.0),
+        ("WORKDAY(1,0)", 1.0),
+        ("WORKDAY(3,-1)", 2.0),
+        ("WORKDAY(6,1)", 9.0),
+        ("WORKDAY(10,-5)", 3.0),
+        ("WORKDAY(55,10)", 69.0),
+        ("WORKDAY(59,1)", 60.0),
+        ("WORKDAY(60,1)", 61.0),
+        ("WORKDAY(61,-1)", 60.0),
+        ("WORKDAY(62,-1)", 61.0),
+        ("WORKDAY(70,-15)", 51.0),
+        ("WORKDAY(0,1,2)", 3.0),
+        ("WORKDAY(1,1,0)", 2.0),
+        ("WORKDAY(1,1,0.5)", 2.0),
+    ];
+    for (formula, expected) in numbers {
+        assert_eq!(number(eval(formula)), expected, "{formula}");
+    }
+    for formula in [
+        "WORKDAY(0,-1)",
+        "WORKDAY(1,-1)",
+        "WORKDAY(2,-1)",
+        "WORKDAY(-1,1)",
+        "WORKDAY(-1,0)",
+        "WORKDAY(-0.5,1)",
+        "WORKDAY(-1E300,0)",
+        "WORKDAY(2958466,0)",
+        "WORKDAY(2958465,1)",
+        "WORKDAY(0,1,-1)",
+        "WORKDAY(1,1,-0.5)",
+        "WORKDAY(1,1,2958466)",
+    ] {
+        assert_eq!(eval(formula), error("#NUM!"), "{formula}");
+    }
+    assert_eq!(eval("WORKDAY(\"x\",1)"), error("#VALUE!"));
+    assert_eq!(eval("WORKDAY(1,1,\"x\")"), error("#VALUE!"));
+    assert_eq!(eval("WORKDAY(1,1,\"\")"), error("#VALUE!"));
+}
+
+// Excel parity: text functions propagate an error argument.
+
+#[test]
+fn text_functions_propagate_error_arguments() {
+    let mut snapshot = CellSnapshot::new("Sheet1".to_string());
+    snapshot.set_cell("Sheet1", 1, 1, error("#N/A"));
+    let cases = [
+        ("LEN(1/0)", "#DIV/0!"),
+        ("LEN(REPT(\"a\",32768))", "#VALUE!"),
+        ("LEN(A1)", "#N/A"),
+        ("LEFT(1/0)", "#DIV/0!"),
+        ("RIGHT(NA())", "#N/A"),
+        ("MID(1/0,1,1)", "#DIV/0!"),
+        ("UPPER(1/0)", "#DIV/0!"),
+        ("LOWER(1/0)", "#DIV/0!"),
+        ("TRIM(1/0)", "#DIV/0!"),
+        ("PROPER(1/0)", "#DIV/0!"),
+        ("T(1/0)", "#DIV/0!"),
+        ("CONCAT(\"a\",1/0)", "#DIV/0!"),
+        ("CONCAT(\"a\",NA(),1/0)", "#N/A"),
+        ("CONCATENATE(\"a\",1/0)", "#DIV/0!"),
+        ("SUBSTITUTE(1/0,\"a\",\"b\")", "#DIV/0!"),
+        ("SUBSTITUTE(\"a\",1/0,\"b\")", "#DIV/0!"),
+        ("SUBSTITUTE(\"a\",\"a\",1/0)", "#DIV/0!"),
+        ("REPLACE(1/0,1,1,\"x\")", "#DIV/0!"),
+        ("REPLACE(\"a\",1,1,1/0)", "#DIV/0!"),
+        ("REPT(1/0,2)", "#DIV/0!"),
+        ("FIND(\"a\",1/0)", "#DIV/0!"),
+        ("FIND(1/0,\"a\")", "#DIV/0!"),
+        ("SEARCH(1/0,\"a\")", "#DIV/0!"),
+        ("EXACT(1/0,\"a\")", "#DIV/0!"),
+        ("EXACT(\"a\",A1)", "#N/A"),
+        ("VALUE(1/0)", "#DIV/0!"),
+    ];
+    for (formula, code) in cases {
+        let actual = eval_in(&snapshot, formula).unwrap_or_else(|e| panic!("{formula}: {e}"));
+        assert_eq!(actual, error(code), "{formula}");
+    }
+    assert_eq!(number(eval("LEN(A99)")), 0.0);
+}
+
+// Excel parity: MID and REPLACE reject positions and lengths beyond their
+// limits instead of clamping.
+
+#[test]
+fn mid_and_replace_reject_out_of_range_positions_and_lengths() {
+    let text = |value: &str| CellValue::String(value.to_string());
+    let strings = [
+        ("MID(\"abc\",1,2147483647)", "abc"),
+        ("MID(\"abc\",1,2147483647.9)", "abc"),
+        ("MID(\"abc\",2,2147483647)", "bc"),
+        ("MID(\"abc\",2147483647,1)", ""),
+        ("MID(\"abc\",2147483648,1)", ""),
+        ("MID(\"abc\",2147483648.5,1)", ""),
+        ("MID(\"abc\",2147483648,2147483647)", ""),
+        ("REPLACE(\"abc\",32767,1,\"x\")", "abcx"),
+        ("REPLACE(\"abc\",32767.9,1,\"x\")", "abcx"),
+        ("REPLACE(\"abc\",1,32767,\"x\")", "x"),
+        ("REPLACE(\"abc\",1,32767.9,\"x\")", "x"),
+    ];
+    for (formula, expected) in strings {
+        assert_eq!(eval(formula), text(expected), "{formula}");
+    }
+    for formula in [
+        "MID(\"abc\",1,2147483648)",
+        "MID(\"abc\",1,1E10)",
+        "MID(\"abc\",1,4294967295)",
+        "MID(\"abc\",1E10,1)",
+        "MID(\"abc\",2147483649,1)",
+        "MID(\"abc\",4294967296,1)",
+        "MID(\"abc\",0.5,1)",
+        "REPLACE(\"abc\",32768,1,\"x\")",
+        "REPLACE(\"abc\",2147483647,1,\"x\")",
+        "REPLACE(\"abc\",1E10,1,\"x\")",
+        "REPLACE(\"abc\",1,32768,\"x\")",
+        "REPLACE(\"abc\",1,2147483647,\"x\")",
+        "REPLACE(\"abc\",1,2147483648,\"x\")",
+        "REPLACE(\"abc\",1,1E10,\"x\")",
+        "REPLACE(\"abc\",0.5,1,\"x\")",
+    ] {
+        assert_eq!(eval(formula), error("#VALUE!"), "{formula}");
+    }
 }
