@@ -246,3 +246,143 @@ fn accepted_project_matches_default_explicit_limits() {
     );
     assert_eq!(default_project.warnings, explicit_project.warnings);
 }
+
+struct NamedModule<'a> {
+    codepage: u16,
+    ansi_name: &'a [u8],
+    unicode_name: Option<&'a str>,
+    cfb_stream_name: &'a str,
+    source: &'a [u8],
+}
+
+fn utf16le(text: &str) -> Vec<u8> {
+    text.encode_utf16().flat_map(u16::to_le_bytes).collect()
+}
+
+fn named_module_project(module: &NamedModule<'_>) -> Vec<u8> {
+    let mut dir = Vec::new();
+    write_record(&mut dir, 0x0003, &module.codepage.to_le_bytes());
+    write_record(&mut dir, 0x0019, module.ansi_name);
+    if let Some(name) = module.unicode_name {
+        write_record(&mut dir, 0x0047, &utf16le(name));
+    }
+    write_record(&mut dir, 0x001A, module.ansi_name);
+    if let Some(name) = module.unicode_name {
+        write_record(&mut dir, 0x0032, &utf16le(name));
+    }
+    write_record(&mut dir, 0x0031, &0_u32.to_le_bytes());
+    write_record(&mut dir, 0x0021, &[]);
+    write_record(&mut dir, 0x002B, &[]);
+
+    let compressed_dir = uncompressed_vba(&dir);
+    let compressed_source = uncompressed_vba(module.source);
+    cfb_with_streams(&[
+        ("dir", compressed_dir.as_slice()),
+        (module.cfb_stream_name, compressed_source.as_slice()),
+    ])
+}
+
+#[test]
+fn ansi_stream_name_is_decoded_with_project_codepage() {
+    let project = named_module_project(&NamedModule {
+        codepage: 1252,
+        ansi_name: b"M\xe9",
+        unicode_name: None,
+        cfb_stream_name: "M\u{e9}",
+        source: b"Sub A()\r\nEnd Sub\r\n",
+    });
+    let extracted = extract_vba_modules(&project).expect("extract");
+    assert!(extracted.warnings.is_empty(), "{:?}", extracted.warnings);
+    assert_eq!(extracted.modules.len(), 1);
+    assert_eq!(extracted.modules[0].name, "M\u{e9}");
+    assert_eq!(extracted.modules[0].source_code, "Sub A()\r\nEnd Sub\r\n");
+}
+
+#[test]
+fn unicode_stream_name_record_is_preferred() {
+    for (codepage, ansi_name, unicode_name) in [
+        (1252_u16, &b"M\xe9"[..], "M\u{e9}"),
+        // Shift-JIS bytes for a Japanese module name; the Unicode record is
+        // the only lossless source because CP932 decoding is ASCII-only.
+        (
+            932,
+            &b"\x83\x82\x83\x57\x83\x85\x81\x5b\x83\x8b"[..],
+            "\u{30e2}\u{30b8}\u{30e5}\u{30fc}\u{30eb}",
+        ),
+    ] {
+        let project = named_module_project(&NamedModule {
+            codepage,
+            ansi_name,
+            unicode_name: Some(unicode_name),
+            cfb_stream_name: unicode_name,
+            source: b"Sub A()\r\nEnd Sub\r\n",
+        });
+        let extracted = extract_vba_modules(&project).expect("extract");
+        assert!(
+            extracted.warnings.is_empty(),
+            "codepage {codepage}: {:?}",
+            extracted.warnings
+        );
+        assert_eq!(extracted.modules.len(), 1, "codepage {codepage}");
+        assert_eq!(extracted.modules[0].name, unicode_name);
+    }
+}
+
+#[test]
+fn cp932_ansi_only_stream_names_resolve_when_ascii_and_warn_otherwise() {
+    let ascii = named_module_project(&NamedModule {
+        codepage: 932,
+        ansi_name: b"Module1",
+        unicode_name: None,
+        cfb_stream_name: "Module1",
+        source: b"Sub A()\r\nEnd Sub\r\n",
+    });
+    let extracted = extract_vba_modules(&ascii).expect("extract");
+    assert!(extracted.warnings.is_empty(), "{:?}", extracted.warnings);
+    assert_eq!(extracted.modules.len(), 1);
+
+    // Without the Unicode record a double-byte CP932 name cannot be mapped
+    // losslessly; the module is skipped with an explicit warning.
+    let double_byte = named_module_project(&NamedModule {
+        codepage: 932,
+        ansi_name: b"\x83\x82",
+        unicode_name: None,
+        cfb_stream_name: "\u{30e2}",
+        source: b"Sub A()\r\nEnd Sub\r\n",
+    });
+    let extracted = extract_vba_modules(&double_byte).expect("extract");
+    assert!(extracted.modules.is_empty());
+    assert_eq!(extracted.warnings.len(), 1, "{:?}", extracted.warnings);
+}
+
+#[test]
+fn lossy_double_byte_source_decoding_emits_warning() {
+    for codepage in [932_u16, 949, 936] {
+        let lossy = named_module_project(&NamedModule {
+            codepage,
+            ansi_name: b"Module1",
+            unicode_name: None,
+            cfb_stream_name: "Module1",
+            source: b"'\x82\xa0\r\n",
+        });
+        let extracted = extract_vba_modules(&lossy).expect("extract");
+        assert_eq!(extracted.modules.len(), 1);
+        assert_eq!(extracted.modules[0].source_code, "'\u{FFFD}\r\n");
+        assert_eq!(extracted.warnings.len(), 1, "{:?}", extracted.warnings);
+        let warning = &extracted.warnings[0];
+        assert!(warning.contains("lossy"), "{warning}");
+        assert!(warning.contains(&codepage.to_string()), "{warning}");
+        assert!(warning.contains(" 1 "), "{warning}");
+        assert!(!warning.contains("Module1"), "{warning}");
+
+        let ascii = named_module_project(&NamedModule {
+            codepage,
+            ansi_name: b"Module1",
+            unicode_name: None,
+            cfb_stream_name: "Module1",
+            source: b"Sub A()\r\nEnd Sub\r\n",
+        });
+        let extracted = extract_vba_modules(&ascii).expect("extract");
+        assert!(extracted.warnings.is_empty(), "{:?}", extracted.warnings);
+    }
+}

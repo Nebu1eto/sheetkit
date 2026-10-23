@@ -5,6 +5,7 @@
 //! configurable spin count (typically 100,000 iterations).
 
 use crate::error::{Error, Result};
+use zeroize::Zeroizing;
 
 #[cfg(test)]
 use super::EncryptionInfoLimits;
@@ -304,39 +305,44 @@ fn derive_key_agile(
     key_bits: u32,
     block_key: &[u8],
     hash_algorithm: HashAlgorithm,
-) -> Result<Vec<u8>> {
+) -> Result<Zeroizing<Vec<u8>>> {
     let key_length = usize::try_from(key_bits / 8)
         .map_err(|_| Error::UnsupportedEncryption(format!("key size {key_bits}")))?;
     if !matches!(key_bits, 128 | 192 | 256) {
         return Err(Error::UnsupportedEncryption(format!("key size {key_bits}")));
     }
 
-    let password_bytes: Vec<u8> = password
-        .encode_utf16()
-        .flat_map(|c| c.to_le_bytes())
-        .collect();
+    let password_bytes = utf16le_password(password);
 
     // H0 = SHA512(salt || password)
-    let mut h = hash_algorithm.digest(&[salt, &password_bytes]);
+    let mut h = Zeroizing::new(hash_algorithm.digest(&[salt, &password_bytes]));
 
-    // Hi = SHA512(i || H_{i-1})
+    // Hi = SHA512(i || H_{i-1}); each replaced intermediate is wiped on drop.
     for i in 0u32..spin_count {
-        h = hash_algorithm.digest(&[&i.to_le_bytes(), &h]);
+        h = Zeroizing::new(hash_algorithm.digest(&[&i.to_le_bytes(), &h]));
     }
 
     // H_final = SHA512(H || blockKey)
-    let derived = hash_algorithm.digest(&[&h, block_key]);
-    if derived.len() >= key_length {
-        Ok(derived[..key_length].to_vec())
-    } else {
-        let mut key = derived.to_vec();
-        key.resize(key_length, 0x36);
-        Ok(key)
+    let derived = Zeroizing::new(hash_algorithm.digest(&[&h, block_key]));
+    let mut key = Zeroizing::new(Vec::with_capacity(key_length));
+    key.extend_from_slice(&derived[..derived.len().min(key_length)]);
+    key.resize(key_length, 0x36);
+    Ok(key)
+}
+
+/// Encode a password as UTF-16LE into a buffer that is wiped on drop.
+pub(crate) fn utf16le_password(password: &str) -> Zeroizing<Vec<u8>> {
+    let mut bytes = Zeroizing::new(Vec::with_capacity(password.encode_utf16().count() * 2));
+    for unit in password.encode_utf16() {
+        bytes.extend_from_slice(&unit.to_le_bytes());
     }
+    bytes
 }
 
 /// Verify a password against Agile Encryption encryptor data.
-/// Returns the decrypted secret key on success.
+/// Returns the decrypted secret key, sized for the password encryptor's
+/// `keyBits`, on success. Packages whose `keyData` uses a different AES key
+/// size are handled by [`crate::crypt::decrypt_xlsx`].
 pub fn verify_password_agile(password: &str, encryptor: &KeyEncryptor) -> Result<Vec<u8>> {
     verify_password_agile_with_limits(password, encryptor, CryptLimits::default())
 }
@@ -348,15 +354,25 @@ pub fn verify_password_agile_with_limits(
     limits: CryptLimits,
 ) -> Result<Vec<u8>> {
     let mut budget = CryptBudget::new(ResourceOperation::Decrypt, limits)?;
-    verify_password_agile_with_budget(password, encryptor, &mut budget)
+    let (_, key_len) = password_encryptor_parameters(encryptor)?;
+    let secret_key = unwrap_secret_key_agile_with_budget(password, encryptor, &mut budget)?;
+    if secret_key.len() < key_len {
+        return Err(Error::UnsupportedEncryption(
+            "encrypted key value is shorter than the encryptor key size".into(),
+        ));
+    }
+    Ok(secret_key[..key_len].to_vec())
 }
 
-pub(crate) fn verify_password_agile_with_budget(
+/// Verify the password and return the complete unwrapped `encryptedKeyValue`
+/// plaintext. The package key size is governed by `keyData`, not by the
+/// password encryptor, so callers size it with [`package_key`].
+pub(crate) fn unwrap_secret_key_agile_with_budget(
     password: &str,
     encryptor: &KeyEncryptor,
     budget: &mut CryptBudget,
-) -> Result<Vec<u8>> {
-    let (hash, key_len) = password_encryptor_parameters(encryptor)?;
+) -> Result<Zeroizing<Vec<u8>>> {
+    let (hash, _) = password_encryptor_parameters(encryptor)?;
     budget.reserve_kdf(u64::from(encryptor.spin_count), 3)?;
     // Derive key for verifier hash input
     let key_verifier_input = derive_key_agile(
@@ -379,24 +395,25 @@ pub(crate) fn verify_password_agile_with_budget(
     )?;
 
     // Decrypt verifier hash input
-    let decrypted_input = aes_cbc_decrypt(
+    let decrypted_input = Zeroizing::new(aes_cbc_decrypt(
         &key_verifier_input,
         &encryptor.salt_value,
         &encryptor.encrypted_verifier_hash_input,
-    )?;
+    )?);
 
     // Compute hash of decrypted input
     if decrypted_input.len() < encryptor.salt_size as usize {
         return Err(Error::IncorrectPassword);
     }
-    let expected_hash = hash.digest(&[&decrypted_input[..encryptor.salt_size as usize]]);
+    let expected_hash =
+        Zeroizing::new(hash.digest(&[&decrypted_input[..encryptor.salt_size as usize]]));
 
     // Decrypt verifier hash value
-    let decrypted_hash = aes_cbc_decrypt(
+    let decrypted_hash = Zeroizing::new(aes_cbc_decrypt(
         &key_verifier_value,
         &encryptor.salt_value,
         &encryptor.encrypted_verifier_hash_value,
-    )?;
+    )?);
 
     // Compare hashes
     let hash_size = encryptor.hash_size as usize;
@@ -417,17 +434,28 @@ pub(crate) fn verify_password_agile_with_budget(
         hash,
     )?;
 
-    let secret_key = aes_cbc_decrypt(
+    let secret_key = Zeroizing::new(aes_cbc_decrypt(
         &key_for_key,
         &encryptor.salt_value,
         &encryptor.encrypted_key_value,
-    )?;
+    )?);
+    Ok(secret_key)
+}
 
-    // Trim secret key to key_bits/8 bytes
+/// Size an unwrapped secret key for the package cipher described by `keyData`.
+pub(crate) fn package_key(secret_key: &[u8], key_data: &KeyData) -> Result<Zeroizing<Vec<u8>>> {
+    let key_len = validate_cipher(
+        &key_data.cipher_algorithm,
+        &key_data.cipher_chaining,
+        key_data.key_bits,
+        key_data.block_size,
+    )?;
     if secret_key.len() < key_len {
-        return Err(Error::IncorrectPassword);
+        return Err(Error::UnsupportedEncryption(
+            "encrypted key value is shorter than the keyData key size".into(),
+        ));
     }
-    Ok(secret_key[..key_len].to_vec())
+    Ok(Zeroizing::new(secret_key[..key_len].to_vec()))
 }
 
 pub(crate) fn validate_password_encryptor(encryptor: &KeyEncryptor) -> Result<()> {
@@ -446,7 +474,7 @@ fn password_encryptor_parameters(encryptor: &KeyEncryptor) -> Result<(HashAlgori
         || encryptor.salt_value.len() != encryptor.salt_size as usize
         || encryptor.encrypted_verifier_hash_input.is_empty()
         || encryptor.encrypted_verifier_hash_value.is_empty()
-        || encryptor.encrypted_key_value.len() < key_len
+        || encryptor.encrypted_key_value.is_empty()
     {
         return Err(Error::UnsupportedEncryption(
             "invalid password encryptor fields".into(),
@@ -534,13 +562,13 @@ pub(crate) fn encrypt_package_agile_with_budget(
     // Generate random values
     let mut key_data_salt = [0u8; 16];
     let mut encryptor_salt = [0u8; 16];
-    let mut secret_key = [0u8; 32]; // AES-256
-    let mut verifier_hash_input = [0u8; 16];
+    let mut secret_key = Zeroizing::new([0u8; 32]); // AES-256
+    let mut verifier_hash_input = Zeroizing::new([0u8; 16]);
 
     rng.fill(&mut key_data_salt);
     rng.fill(&mut encryptor_salt);
-    rng.fill(&mut secret_key);
-    rng.fill(&mut verifier_hash_input);
+    rng.fill(&mut *secret_key);
+    rng.fill(&mut *verifier_hash_input);
 
     let spin_count = 100_000u32;
     budget.reserve_kdf(u64::from(spin_count), 3)?;
@@ -568,10 +596,10 @@ pub(crate) fn encrypt_package_agile_with_budget(
         hash,
     )?;
     let encrypted_verifier_hash_input =
-        aes_cbc_encrypt(&key_vi, &encryptor_salt, &verifier_hash_input)?;
+        aes_cbc_encrypt(&key_vi, &encryptor_salt, &*verifier_hash_input)?;
 
     // Compute and encrypt verifier hash value
-    let verifier_hash_value = hash.digest(&[&verifier_hash_input]);
+    let verifier_hash_value = Zeroizing::new(hash.digest(&[&*verifier_hash_input]));
 
     let key_vv = derive_key_agile(
         password,
@@ -593,7 +621,7 @@ pub(crate) fn encrypt_package_agile_with_budget(
         super::block_keys::KEY_VALUE,
         hash,
     )?;
-    let encrypted_key_value = aes_cbc_encrypt(&key_kv, &encryptor_salt, &secret_key)?;
+    let encrypted_key_value = aes_cbc_encrypt(&key_kv, &encryptor_salt, &*secret_key)?;
 
     let encryptor = KeyEncryptor {
         spin_count,
@@ -611,14 +639,14 @@ pub(crate) fn encrypt_package_agile_with_budget(
     };
 
     // Encrypt data in segments
-    let encrypted_content = encrypt_segments(data, &secret_key, &key_data)?;
+    let encrypted_content = encrypt_segments(data, &*secret_key, &key_data)?;
 
     // Build the EncryptedPackage: size prefix + encrypted content
     let mut encrypted_package = Vec::with_capacity(8 + encrypted_content.len());
     encrypted_package.extend_from_slice(&(data.len() as u64).to_le_bytes());
     encrypted_package.extend_from_slice(&encrypted_content);
 
-    let data_integrity = create_data_integrity(&encrypted_package, &secret_key, &key_data)?;
+    let data_integrity = create_data_integrity(&encrypted_package, &*secret_key, &key_data)?;
 
     let encryption_info = AgileEncryptionInfo {
         key_data,
@@ -802,7 +830,7 @@ fn create_data_integrity(
 ) -> Result<DataIntegrity> {
     validate_key_data(key_data, secret_key)?;
     let hash = HashAlgorithm::parse(&key_data.hash_algorithm, key_data.hash_size)?;
-    let hmac_key = generate_random_bytes(hash.output_size());
+    let hmac_key = Zeroizing::new(generate_random_bytes(hash.output_size()));
     let hmac_value = hash.hmac(&hmac_key, package)?;
     let key_iv = generate_iv(
         &key_data.salt_value,
@@ -842,7 +870,11 @@ pub fn verify_data_integrity(
         key_data.block_size,
         hash,
     )?;
-    let hmac_key = aes_cbc_decrypt(secret_key, &key_iv, &integrity.encrypted_hmac_key)?;
+    let hmac_key = Zeroizing::new(aes_cbc_decrypt(
+        secret_key,
+        &key_iv,
+        &integrity.encrypted_hmac_key,
+    )?);
     let hmac_value = aes_cbc_decrypt(secret_key, &value_iv, &integrity.encrypted_hmac_value)?;
     let value_len = hash.output_size();
     if !has_zero_padding(&hmac_value, value_len) {
@@ -873,13 +905,9 @@ fn has_zero_padding(value: &[u8], logical_len: usize) -> bool {
 }
 
 fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
-    if left.len() != right.len() {
-        return false;
-    }
-    left.iter()
-        .zip(right)
-        .fold(0u8, |acc, (a, b)| acc | (a ^ b))
-        == 0
+    use subtle::ConstantTimeEq;
+    // Slice lengths are public; contents are compared in constant time.
+    left.len() == right.len() && bool::from(left.ct_eq(right))
 }
 
 /// Generate random bytes.
@@ -899,11 +927,27 @@ fn attribute_eq(e: &quick_xml::events::BytesStart<'_>, name: &[u8], expected: &[
         .any(|attr| attr.key.as_ref() == name && attr.value.as_ref() == expected)
 }
 
-fn parse_u32_attribute(value: &[u8]) -> u32 {
+/// Parse an unsigned decimal EncryptionInfo attribute, rejecting malformed
+/// values instead of silently treating them as zero.
+fn parse_u32_attribute(name: &str, value: &[u8]) -> Result<u32> {
     std::str::from_utf8(value)
         .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(0)
+        .filter(|text| !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_digit()))
+        .and_then(|text| text.parse().ok())
+        .ok_or_else(|| Error::Internal(format!("invalid EncryptionInfo {name} attribute")))
+}
+
+/// ECMA-376 / MS-OFFCRYPTO bound the `saltSize` attribute to 1..=65536.
+const SALT_SIZE_RANGE: std::ops::RangeInclusive<u32> = 1..=65_536;
+
+fn validate_salt_size(element: &str, salt_size: u32) -> Result<()> {
+    if SALT_SIZE_RANGE.contains(&salt_size) {
+        Ok(())
+    } else {
+        Err(Error::UnsupportedEncryption(format!(
+            "{element} saltSize {salt_size} is outside 1..=65536"
+        )))
+    }
 }
 
 fn retain_string_attribute(value: &[u8], budget: &mut EncryptionInfoBudget) -> Result<String> {
@@ -948,10 +992,10 @@ fn parse_key_data_attrs(
     for attr in e.attributes().flatten() {
         let value = attr.value.as_ref();
         match attr.key.as_ref() {
-            b"saltSize" => kd.salt_size = parse_u32_attribute(value),
-            b"blockSize" => kd.block_size = parse_u32_attribute(value),
-            b"keyBits" => kd.key_bits = parse_u32_attribute(value),
-            b"hashSize" => kd.hash_size = parse_u32_attribute(value),
+            b"saltSize" => kd.salt_size = parse_u32_attribute("saltSize", value)?,
+            b"blockSize" => kd.block_size = parse_u32_attribute("blockSize", value)?,
+            b"keyBits" => kd.key_bits = parse_u32_attribute("keyBits", value)?,
+            b"hashSize" => kd.hash_size = parse_u32_attribute("hashSize", value)?,
             b"cipherAlgorithm" => kd.cipher_algorithm = retain_string_attribute(value, budget)?,
             b"cipherChaining" => kd.cipher_chaining = retain_string_attribute(value, budget)?,
             b"hashAlgorithm" => kd.hash_algorithm = retain_string_attribute(value, budget)?,
@@ -959,6 +1003,7 @@ fn parse_key_data_attrs(
             _ => {}
         }
     }
+    validate_salt_size("keyData", kd.salt_size)?;
     Ok(kd)
 }
 
@@ -1008,11 +1053,11 @@ fn parse_key_encryptor_attrs(
     for attr in e.attributes().flatten() {
         let value = attr.value.as_ref();
         match attr.key.as_ref() {
-            b"spinCount" => ke.spin_count = parse_u32_attribute(value),
-            b"saltSize" => ke.salt_size = parse_u32_attribute(value),
-            b"blockSize" => ke.block_size = parse_u32_attribute(value),
-            b"keyBits" => ke.key_bits = parse_u32_attribute(value),
-            b"hashSize" => ke.hash_size = parse_u32_attribute(value),
+            b"spinCount" => ke.spin_count = parse_u32_attribute("spinCount", value)?,
+            b"saltSize" => ke.salt_size = parse_u32_attribute("saltSize", value)?,
+            b"blockSize" => ke.block_size = parse_u32_attribute("blockSize", value)?,
+            b"keyBits" => ke.key_bits = parse_u32_attribute("keyBits", value)?,
+            b"hashSize" => ke.hash_size = parse_u32_attribute("hashSize", value)?,
             b"cipherAlgorithm" => ke.cipher_algorithm = retain_string_attribute(value, budget)?,
             b"cipherChaining" => ke.cipher_chaining = retain_string_attribute(value, budget)?,
             b"hashAlgorithm" => ke.hash_algorithm = retain_string_attribute(value, budget)?,
@@ -1029,6 +1074,7 @@ fn parse_key_encryptor_attrs(
             _ => {}
         }
     }
+    validate_salt_size("encryptedKey", ke.salt_size)?;
     Ok(ke)
 }
 
@@ -1615,6 +1661,156 @@ mod tests {
             tampered_integrity.encrypted_hmac_value[0] ^= 1;
             assert!(
                 verify_data_integrity(&package, &key, &info.key_data, &tampered_integrity).is_err()
+            );
+        }
+    }
+
+    /// Build a container whose password encryptor and package key use
+    /// independent AES key sizes, written through the crate's CFB writer.
+    fn mixed_key_size_container(
+        encryptor_key_bits: u32,
+        package_key_bits: u32,
+        plaintext: &[u8],
+    ) -> (AgileEncryptionInfo, Vec<u8>) {
+        let hash = HashAlgorithm::Sha512;
+        let password = "mixed sizes";
+        let spin_count = 3;
+        let encryptor_salt: Vec<u8> = (0x20..0x30).collect();
+        let secret_key: Vec<u8> = (0x30..).take(package_key_bits as usize / 8).collect();
+        let verifier_input: Vec<u8> = (0x40..0x50).collect();
+        let key_data = KeyData {
+            salt_size: 16,
+            block_size: 16,
+            key_bits: package_key_bits,
+            hash_size: 64,
+            cipher_algorithm: "AES".into(),
+            cipher_chaining: "ChainingModeCBC".into(),
+            hash_algorithm: "SHA512".into(),
+            salt_value: (0x10..0x20).collect(),
+        };
+        let wrap = |block_key: &[u8], data: &[u8]| {
+            let key = derive_key_agile(
+                password,
+                &encryptor_salt,
+                spin_count,
+                encryptor_key_bits,
+                block_key,
+                hash,
+            )
+            .unwrap();
+            aes_cbc_encrypt(&key, &encryptor_salt, data).unwrap()
+        };
+        let encryptor = KeyEncryptor {
+            spin_count,
+            salt_size: 16,
+            block_size: 16,
+            key_bits: encryptor_key_bits,
+            hash_size: 64,
+            cipher_algorithm: "AES".into(),
+            cipher_chaining: "ChainingModeCBC".into(),
+            hash_algorithm: "SHA512".into(),
+            salt_value: encryptor_salt.clone(),
+            encrypted_verifier_hash_input: wrap(
+                super::super::block_keys::VERIFIER_HASH_INPUT,
+                &verifier_input,
+            ),
+            encrypted_verifier_hash_value: wrap(
+                super::super::block_keys::VERIFIER_HASH_VALUE,
+                &hash.digest(&[&verifier_input]),
+            ),
+            encrypted_key_value: wrap(super::super::block_keys::KEY_VALUE, &secret_key),
+        };
+        let mut package = (plaintext.len() as u64).to_le_bytes().to_vec();
+        package.extend(encrypt_segments(plaintext, &secret_key, &key_data).unwrap());
+        let data_integrity = create_data_integrity(&package, &secret_key, &key_data).unwrap();
+        let info = AgileEncryptionInfo {
+            key_data,
+            data_integrity,
+            key_encryptors: vec![encryptor],
+        };
+        (info, package)
+    }
+
+    fn encryption_info_with(key_data_salt_size: &str, spin_count: &str) -> Vec<u8> {
+        format!(
+            r#"<encryption><keyData saltSize="{key_data_salt_size}" blockSize="16" keyBits="256" hashSize="64" cipherAlgorithm="AES" cipherChaining="ChainingModeCBC" hashAlgorithm="SHA512" saltValue="AAAAAAAAAAAAAAAAAAAAAA=="/><dataIntegrity encryptedHmacKey="AA==" encryptedHmacValue="AA=="/><keyEncryptors><keyEncryptor uri="http://schemas.microsoft.com/office/2006/keyEncryptor/password"><p:encryptedKey spinCount="{spin_count}" saltSize="16" blockSize="16" keyBits="256" hashSize="64" cipherAlgorithm="AES" cipherChaining="ChainingModeCBC" hashAlgorithm="SHA512" saltValue="AAAAAAAAAAAAAAAAAAAAAA==" encryptedVerifierHashInput="AA==" encryptedVerifierHashValue="AA==" encryptedKeyValue="AA=="/></keyEncryptor></keyEncryptors></encryption>"#
+        )
+        .into_bytes()
+    }
+
+    #[test]
+    fn malformed_numeric_attributes_are_rejected_not_zeroed() {
+        let parsed = parse_agile_encryption_info(&encryption_info_with("16", "100000")).unwrap();
+        assert_eq!(parsed.key_encryptors[0].spin_count, 100_000);
+
+        for spin_count in ["", "abc", "-1", "+5", "1e5", " 5", "4294967296"] {
+            let result = parse_agile_encryption_info(&encryption_info_with("16", spin_count));
+            assert!(result.is_err(), "spinCount {spin_count:?} must be rejected");
+        }
+        for salt_size in ["sixteen", "16.0", "0x10"] {
+            let result = parse_agile_encryption_info(&encryption_info_with(salt_size, "1"));
+            assert!(result.is_err(), "saltSize {salt_size:?} must be rejected");
+        }
+    }
+
+    #[test]
+    fn salt_size_must_be_within_specification_range() {
+        for salt_size in ["0", "65537", "4294967295"] {
+            let error = parse_agile_encryption_info(&encryption_info_with(salt_size, "1"))
+                .expect_err("out-of-range saltSize must be rejected");
+            assert!(matches!(error, Error::UnsupportedEncryption(_)), "{error}");
+        }
+        for salt_size in ["1", "65536"] {
+            let parsed = parse_agile_encryption_info(&encryption_info_with(salt_size, "1"))
+                .expect("in-range saltSize parses");
+            assert_eq!(parsed.key_data.salt_size, salt_size.parse::<u32>().unwrap());
+        }
+        let encryptor_out_of_range = String::from_utf8(encryption_info_with("16", "1"))
+            .unwrap()
+            .replace(
+                r#"spinCount="1" saltSize="16""#,
+                r#"spinCount="1" saltSize="0""#,
+            );
+        assert!(matches!(
+            parse_agile_encryption_info(encryptor_out_of_range.as_bytes()),
+            Err(Error::UnsupportedEncryption(_))
+        ));
+    }
+
+    #[test]
+    fn constant_time_eq_matches_slice_equality() {
+        assert!(constant_time_eq(b"abc", b"abc"));
+        assert!(constant_time_eq(b"", b""));
+        assert!(!constant_time_eq(b"abc", b"abd"));
+        assert!(!constant_time_eq(b"abc", b"ab"));
+    }
+
+    #[test]
+    fn decrypts_mixed_password_and_package_key_sizes() {
+        let mut plaintext = b"PK\x03\x04 mixed key sizes ".to_vec();
+        plaintext.extend(std::iter::repeat_n(b'y', SEGMENT_SIZE + 5));
+        for (encryptor_bits, package_bits) in [(128, 256), (256, 128), (192, 256), (256, 192)] {
+            let (info, package) =
+                mixed_key_size_container(encryptor_bits, package_bits, &plaintext);
+            let container = super::super::cfb_io::write_cfb_streams(&info, &package).unwrap();
+            let decrypted =
+                super::super::decrypt_xlsx(&container, "mixed sizes").unwrap_or_else(|error| {
+                    panic!("AES-{encryptor_bits} wrap / AES-{package_bits} package: {error}")
+                });
+            assert_eq!(decrypted, plaintext);
+            assert!(matches!(
+                super::super::decrypt_xlsx(&container, "wrong"),
+                Err(Error::IncorrectPassword)
+            ));
+
+            // Integrity must still be enforced with the package-sized key.
+            let mut tampered = package.clone();
+            tampered[8] ^= 1;
+            let tampered = super::super::cfb_io::write_cfb_streams(&info, &tampered).unwrap();
+            let error = super::super::decrypt_xlsx(&tampered, "mixed sizes").unwrap_err();
+            assert!(
+                error.to_string().contains("integrity"),
+                "unexpected error: {error}"
             );
         }
     }

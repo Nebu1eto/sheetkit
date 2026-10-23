@@ -4,6 +4,7 @@
 //! derivation. SheetKit supports decryption only for this format.
 
 use crate::error::{Error, Result};
+use zeroize::Zeroizing;
 
 /// Parsed header from a Standard Encryption EncryptionInfo stream.
 #[derive(Debug, Clone)]
@@ -158,53 +159,51 @@ pub fn parse_standard_encryption_info(
 pub fn derive_key_standard(password: &str, salt: &[u8; 16], key_size: u32) -> Vec<u8> {
     use sha1::Digest;
 
-    let password_bytes: Vec<u8> = password
-        .encode_utf16()
-        .flat_map(|c| c.to_le_bytes())
-        .collect();
+    let password_bytes = super::agile::utf16le_password(password);
 
     // H0 = SHA1(salt || password)
     let mut hasher = sha1::Sha1::new();
     hasher.update(salt);
-    hasher.update(&password_bytes);
-    let mut h = hasher.finalize().to_vec();
+    hasher.update(&*password_bytes);
+    let mut h = Zeroizing::new(hasher.finalize().to_vec());
 
-    // Hi = SHA1(i || H_{i-1}) for i = 0..49999
+    // Hi = SHA1(i || H_{i-1}) for i = 0..49999; replaced values are wiped.
     for i in 0u32..50_000 {
         let mut hasher = sha1::Sha1::new();
         hasher.update(i.to_le_bytes());
-        hasher.update(&h);
-        h = hasher.finalize().to_vec();
+        hasher.update(&*h);
+        h = Zeroizing::new(hasher.finalize().to_vec());
     }
 
     // H_final = SHA1(H || 0x00000000)
     let mut hasher = sha1::Sha1::new();
-    hasher.update(&h);
+    hasher.update(&*h);
     hasher.update([0u8; 4]);
-    let derived = hasher.finalize();
+    let derived = Zeroizing::new(hasher.finalize().to_vec());
 
     // Build cbRequiredKeyLength bytes
     // X1 = SHA1(derived ^ 0x36 repeated to 64 bytes)
     let key_len = (key_size / 8) as usize;
-    let mut x1_input = vec![0x36u8; 64];
+    let mut x1_input = Zeroizing::new(vec![0x36u8; 64]);
     for (i, byte) in derived.iter().enumerate() {
         x1_input[i] ^= byte;
     }
     let mut hasher = sha1::Sha1::new();
-    hasher.update(&x1_input);
-    let x1 = hasher.finalize();
+    hasher.update(&*x1_input);
+    let x1 = Zeroizing::new(hasher.finalize().to_vec());
 
     // X2 = SHA1(derived ^ 0x5C repeated to 64 bytes)
-    let mut x2_input = vec![0x5Cu8; 64];
+    let mut x2_input = Zeroizing::new(vec![0x5Cu8; 64]);
     for (i, byte) in derived.iter().enumerate() {
         x2_input[i] ^= byte;
     }
     let mut hasher = sha1::Sha1::new();
-    hasher.update(&x2_input);
-    let x2 = hasher.finalize();
+    hasher.update(&*x2_input);
+    let x2 = Zeroizing::new(hasher.finalize().to_vec());
 
     // X3 = X1 || X2
-    let mut x3 = x1.to_vec();
+    let mut x3 = Zeroizing::new(Vec::with_capacity(x1.len() + x2.len()));
+    x3.extend_from_slice(&x1);
     x3.extend_from_slice(&x2);
 
     x3[..key_len].to_vec()
@@ -218,30 +217,35 @@ pub fn verify_password_standard(
     verifier: &StandardEncryptionVerifier,
 ) -> Result<Vec<u8>> {
     validate_standard_algorithm(header.alg_id, header.alg_id_hash, header.key_size)?;
-    let key = derive_key_standard(password, &verifier.salt, header.key_size);
+    let key = Zeroizing::new(derive_key_standard(
+        password,
+        &verifier.salt,
+        header.key_size,
+    ));
 
     // AES-ECB decrypt the encrypted verifier
-    let decrypted_verifier = aes_ecb_decrypt(&key, &verifier.encrypted_verifier)?;
+    let decrypted_verifier = Zeroizing::new(aes_ecb_decrypt(&key, &verifier.encrypted_verifier)?);
 
     // Compute SHA-1 hash of decrypted verifier
     use sha1::Digest;
     let mut hasher = sha1::Sha1::new();
-    hasher.update(&decrypted_verifier);
-    let expected_hash = hasher.finalize();
+    hasher.update(&*decrypted_verifier);
+    let expected_hash = Zeroizing::new(hasher.finalize().to_vec());
 
     // AES-ECB decrypt the encrypted verifier hash
-    let decrypted_hash = aes_ecb_decrypt(&key, &verifier.encrypted_verifier_hash)?;
+    let decrypted_hash = Zeroizing::new(aes_ecb_decrypt(&key, &verifier.encrypted_verifier_hash)?);
 
     // Compare first `verifier_hash_size` bytes
     let hash_size = verifier.verifier_hash_size as usize;
     if expected_hash.len() < hash_size || decrypted_hash.len() < hash_size {
         return Err(Error::IncorrectPassword);
     }
-    if expected_hash[..hash_size] != decrypted_hash[..hash_size] {
+    use subtle::ConstantTimeEq;
+    if !bool::from(expected_hash[..hash_size].ct_eq(&decrypted_hash[..hash_size])) {
         return Err(Error::IncorrectPassword);
     }
 
-    Ok(key)
+    Ok(key.to_vec())
 }
 
 /// Decrypt the EncryptedPackage using Standard Encryption (AES-ECB).

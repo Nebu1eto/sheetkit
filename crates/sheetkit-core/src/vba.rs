@@ -473,7 +473,7 @@ pub fn extract_vba_modules_with_limits(vba_bin: &[u8], limits: VbaLimits) -> Res
         .try_reserve(MAX_WARNINGS + 1)
         .map_err(|_| Error::Internal("VBA allocation failed".to_string()))?;
 
-    for entry in dir_info.entries {
+    for (module_index, entry) in dir_info.entries.into_iter().enumerate() {
         let stream_path = format!("{vba_prefix}{}", entry.stream_name);
         let compressed_data = match read_cfb_stream(&mut cfb, &stream_path, &mut budget) {
             Ok(data) => data,
@@ -518,8 +518,13 @@ pub fn extract_vba_modules_with_limits(vba_bin: &[u8], limits: VbaLimits) -> Res
             }
         };
 
-        let source_code =
-            decode_source_bytes(&source_bytes, dir_info.codepage, &mut warnings, &mut budget)?;
+        let source_code = decode_source_bytes(
+            &source_bytes,
+            dir_info.codepage,
+            module_index,
+            &mut warnings,
+            &mut budget,
+        )?;
         budget.charge_retained(u64::try_from(entry.name.len()).unwrap_or(u64::MAX))?;
         budget.charge_output(u64::try_from(entry.name.len()).unwrap_or(u64::MAX))?;
 
@@ -533,11 +538,7 @@ pub fn extract_vba_modules_with_limits(vba_bin: &[u8], limits: VbaLimits) -> Res
     Ok(VbaProject { modules, warnings })
 }
 
-fn push_warning(
-    warnings: &mut Vec<String>,
-    warning: &'static str,
-    budget: &mut VbaBudget,
-) -> Result<()> {
+fn push_warning(warnings: &mut Vec<String>, warning: &str, budget: &mut VbaBudget) -> Result<()> {
     if warnings.len() < MAX_WARNINGS {
         let len = u64::try_from(warning.len()).unwrap_or(u64::MAX);
         budget.charge_output(len)?;
@@ -555,12 +556,16 @@ fn push_warning(
 
 /// Decode source bytes using the specified codepage.
 ///
-/// Supports common codepages: 1252 (Western European), 932 (Japanese Shift-JIS),
-/// 949 (Korean), 936 (Simplified Chinese GBK), 65001 (UTF-8).
-/// For unrecognized codepages, falls back to UTF-8 lossy and emits a warning.
+/// Codepages 1252 (Western European) and 65001 (UTF-8) are decoded fully.
+/// Codepages 932 (Shift-JIS), 949 (Korean), and 936 (GBK) are decoded lossily:
+/// ASCII and CP932 half-width katakana are preserved, while other
+/// double-byte sequences become U+FFFD and a per-module warning reports the
+/// replacement count. Unrecognized codepages fall back to UTF-8 lossy
+/// decoding with a warning.
 fn decode_source_bytes(
     bytes: &[u8],
     codepage: u16,
+    module_index: usize,
     warnings: &mut Vec<String>,
     budget: &mut VbaBudget,
 ) -> Result<String> {
@@ -569,21 +574,68 @@ fn decode_source_bytes(
     budget.charge_retained(decoded_len)?;
     let capacity = usize::try_from(decoded_len)
         .map_err(|_| Error::Internal("VBA allocation failed".to_string()))?;
-    match codepage {
-        65001 | 0 => decode_utf8_lossy(bytes, capacity),
-        1252 => decode_single_byte(bytes, &WINDOWS_1252_HIGH, capacity),
-        932 => decode_shift_jis(bytes, capacity),
-        949 => decode_double_byte_lossy(bytes, capacity),
-        936 => decode_double_byte_lossy(bytes, capacity),
-        _ => {
-            push_warning(
-                warnings,
-                "unsupported codepage; used UTF-8 lossy decoding",
-                budget,
-            )?;
-            decode_utf8_lossy(bytes, capacity)
+    if !matches!(codepage, 65001 | 0 | 1252 | 932 | 949 | 936) {
+        push_warning(
+            warnings,
+            "unsupported codepage; used UTF-8 lossy decoding",
+            budget,
+        )?;
+    }
+    let decoded = decode_with_codepage(bytes, codepage, capacity)?;
+    if matches!(codepage, 932 | 949 | 936) {
+        // ASCII-only input cannot produce U+FFFD on these paths, so every
+        // replacement character marks a sequence that was not decoded.
+        let replaced = decoded.chars().filter(|&c| c == '\u{FFFD}').count();
+        if replaced > 0 {
+            let warning = format!(
+                "module {}: codepage {codepage} decoding is lossy; {replaced} byte sequence(s) replaced with U+FFFD",
+                module_index + 1
+            );
+            push_warning(warnings, &warning, budget)?;
         }
     }
+    Ok(decoded)
+}
+
+/// Decode bytes with the project codepage without charging any budget.
+fn decode_with_codepage(bytes: &[u8], codepage: u16, capacity: usize) -> Result<String> {
+    match codepage {
+        1252 => decode_single_byte(bytes, &WINDOWS_1252_HIGH, capacity),
+        932 => decode_shift_jis(bytes, capacity),
+        949 | 936 => decode_double_byte_lossy(bytes, capacity),
+        _ => decode_utf8_lossy(bytes, capacity),
+    }
+}
+
+/// Decode an ANSI `dir` record name with the project codepage, charging the
+/// decoded length against the retained budget.
+fn decode_dir_name(bytes: &[u8], codepage: u16, budget: &mut VbaBudget) -> Result<String> {
+    let decoded_len = decoded_source_len(bytes, codepage);
+    budget.charge_retained(decoded_len)?;
+    let capacity = usize::try_from(decoded_len)
+        .map_err(|_| Error::Internal("VBA allocation failed".to_string()))?;
+    decode_with_codepage(bytes, codepage, capacity)
+}
+
+/// Decode a UTF-16LE `dir` record name, ignoring an odd trailing byte and
+/// trailing NULs. Returns `None` when the decoded name is empty.
+fn decode_dir_unicode_name(bytes: &[u8], budget: &mut VbaBudget) -> Result<Option<String>> {
+    let even_len = bytes.len() & !1;
+    budget.charge_retained(
+        u64::try_from(even_len)
+            .unwrap_or(u64::MAX)
+            .saturating_mul(2),
+    )?;
+    let mut units = Vec::new();
+    units
+        .try_reserve(even_len / 2)
+        .map_err(|_| Error::Internal("VBA allocation failed".to_string()))?;
+    for chunk in bytes[..even_len].chunks_exact(2) {
+        units.push(u16::from_le_bytes([chunk[0], chunk[1]]));
+    }
+    let name = String::from_utf16_lossy(&units);
+    let name = name.trim_end_matches('\0');
+    Ok((!name.is_empty()).then(|| name.to_string()))
 }
 
 fn decoded_source_len(bytes: &[u8], codepage: u16) -> u64 {
@@ -687,8 +739,8 @@ fn decode_single_byte(bytes: &[u8], high_table: &[char; 128], capacity: usize) -
 }
 
 /// Decode Shift-JIS (codepage 932) bytes to a String.
-/// Uses a best-effort approach: valid multi-byte sequences are decoded,
-/// invalid bytes are replaced with the Unicode replacement character.
+/// Lossy: ASCII and half-width katakana are decoded; double-byte characters
+/// and invalid bytes become U+FFFD because no full mapping table is bundled.
 fn decode_shift_jis(bytes: &[u8], capacity: usize) -> Result<String> {
     let mut out = String::new();
     out.try_reserve(capacity)
@@ -741,7 +793,8 @@ fn shift_jis_lossy_len(bytes: &[u8]) -> usize {
     length
 }
 
-/// Decode a best-effort two-byte codepage such as EUC-KR or GBK.
+/// Decode a two-byte codepage such as CP949 or GBK lossily: ASCII is
+/// preserved and every non-ASCII sequence becomes U+FFFD.
 fn decode_double_byte_lossy(bytes: &[u8], capacity: usize) -> Result<String> {
     let mut out = String::new();
     out.try_reserve(capacity)
@@ -1102,8 +1155,7 @@ fn parse_dir_stream_budgeted(data: &[u8], budget: &mut VbaBudget) -> Result<DirI
                     }
                 }
                 in_module = true;
-                budget.charge_retained(u64::try_from(record_data.len()).unwrap_or(u64::MAX))?;
-                current_name = Some(String::from_utf8_lossy(record_data).into_owned());
+                current_name = Some(decode_dir_name(record_data, codepage, budget)?);
                 current_stream_name = None;
                 current_offset = 0;
                 current_type = VbaModuleType::Standard;
@@ -1114,35 +1166,18 @@ fn parse_dir_stream_budgeted(data: &[u8], budget: &mut VbaBudget) -> Result<DirI
                 // Use only the even portion of the data; an odd trailing
                 // byte indicates a truncated record and is safely ignored.
                 if record_size >= 2 {
-                    let even_len = record_data.len() & !1;
-                    budget.charge_retained(
-                        u64::try_from(even_len)
-                            .unwrap_or(u64::MAX)
-                            .saturating_mul(2),
-                    )?;
-                    let mut u16_data = Vec::new();
-                    u16_data
-                        .try_reserve(even_len / 2)
-                        .map_err(|_| Error::Internal("VBA allocation failed".to_string()))?;
-                    for chunk in record_data[..even_len].chunks_exact(2) {
-                        u16_data.push(u16::from_le_bytes([chunk[0], chunk[1]]));
-                    }
-                    let name = String::from_utf16_lossy(&u16_data);
-                    // Remove trailing null if present
-                    let name = name.trim_end_matches('\0').to_string();
-                    if !name.is_empty() {
+                    if let Some(name) = decode_dir_unicode_name(record_data, budget)? {
                         current_name = Some(name);
                     }
                 }
             }
             // MODULESTREAMNAME
             0x001A => {
-                budget.charge_retained(u64::try_from(record_data.len()).unwrap_or(u64::MAX))?;
-                current_stream_name = Some(String::from_utf8_lossy(record_data).into_owned());
-                // The MODULENAMEUNICODE record for stream name follows with id 0x0032
-                // We handle it inline: skip the unicode record
+                current_stream_name = Some(decode_dir_name(record_data, codepage, budget)?);
+                // MS-OVBA follows StreamName with Reserved 0x0032 and the
+                // UTF-16LE StreamNameUnicode, which is lossless and preferred.
                 if let Some(next_header) = pos
-                    .checked_add(record_size)
+                    .checked_add(payload_size)
                     .filter(|&start| data.len().saturating_sub(start) >= 6)
                 {
                     let next_id = u16::from_le_bytes([data[next_header], data[next_header + 1]]);
@@ -1153,14 +1188,19 @@ fn parse_dir_stream_budgeted(data: &[u8], budget: &mut VbaBudget) -> Result<DirI
                             data[next_header + 4],
                             data[next_header + 5],
                         ]) as usize;
-                        // Skip the unicode stream name record
-                        pos = next_header
-                            .checked_add(6)
-                            .and_then(|start| start.checked_add(next_size))
+                        let unicode_start = next_header + 6;
+                        let unicode_end = unicode_start
+                            .checked_add(next_size)
                             .filter(|&end| end <= data.len())
                             .ok_or_else(|| {
                                 Error::Internal("truncated VBA dir record".to_string())
                             })?;
+                        if let Some(name) =
+                            decode_dir_unicode_name(&data[unicode_start..unicode_end], budget)?
+                        {
+                            current_stream_name = Some(name);
+                        }
+                        pos = unicode_end;
                         continue;
                     }
                 }

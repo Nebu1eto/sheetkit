@@ -525,7 +525,9 @@ pub fn decrypt_xlsx_with_limits(
     match info {
         EncryptionInfo::Standard(header, verifier) => {
             budget.reserve_kdf(50_000, 1)?;
-            let key = standard::verify_password_standard(password, &header, &verifier)?;
+            let key = zeroize::Zeroizing::new(standard::verify_password_standard(
+                password, &header, &verifier,
+            )?);
             let encrypted_package = container.read_encrypted_package(&mut budget)?;
             standard::decrypt_package_standard(&encrypted_package, &key)
         }
@@ -537,8 +539,9 @@ pub fn decrypt_xlsx_with_limits(
                 .ok_or_else(|| {
                     Error::UnsupportedEncryption("no usable password key encryptor".to_string())
                 })?;
-            let secret_key =
-                agile::verify_password_agile_with_budget(password, encryptor, &mut budget)?;
+            let unwrapped =
+                agile::unwrap_secret_key_agile_with_budget(password, encryptor, &mut budget)?;
+            let secret_key = agile::package_key(&unwrapped, &info.key_data)?;
             let encrypted_package = container.read_encrypted_package(&mut budget)?;
             agile::verify_data_integrity(
                 &encrypted_package,
