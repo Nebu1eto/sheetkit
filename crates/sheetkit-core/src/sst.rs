@@ -21,7 +21,12 @@ use crate::rich_text::{xml_to_run, RichTextRun};
 #[derive(Debug)]
 pub struct SharedStringTable {
     read_data: Arc<SharedStringReadData>,
+    /// Dedup index for plain-text entries (no rich-text runs).
     index_map: HashMap<Arc<str>, usize>,
+    /// Dedup index for rich-text entries, keyed on a serialization of the
+    /// full `Si` (text and run formatting) so that a rich entry never
+    /// collides with a plain entry or with differently formatted runs.
+    rich_index_map: HashMap<String, usize>,
 }
 
 #[derive(Debug, Clone)]
@@ -41,6 +46,7 @@ impl SharedStringTable {
                 si_items: Vec::new(),
             }),
             index_map: HashMap::new(),
+            rich_index_map: HashMap::new(),
         }
     }
 
@@ -53,6 +59,7 @@ impl SharedStringTable {
         let cap = sst.items.len();
         let mut strings = Vec::with_capacity(cap);
         let mut index_map = HashMap::with_capacity(cap);
+        let mut rich_index_map = HashMap::new();
         let mut si_items: Vec<Option<Si>> = Vec::with_capacity(cap);
 
         for mut si in sst.items {
@@ -73,7 +80,11 @@ impl SharedStringTable {
             };
 
             let idx = strings.len();
-            index_map.entry(Arc::clone(&text)).or_insert(idx);
+            if is_rich {
+                rich_index_map.entry(rich_key(&si)).or_insert(idx);
+            } else {
+                index_map.entry(Arc::clone(&text)).or_insert(idx);
+            }
             if preserve_si {
                 si_items.push(Some(si));
             } else {
@@ -85,6 +96,7 @@ impl SharedStringTable {
         Self {
             read_data: Arc::new(SharedStringReadData { strings, si_items }),
             index_map,
+            rich_index_map,
         }
     }
 
@@ -166,18 +178,23 @@ impl SharedStringTable {
 
     /// Add rich text runs, returning the SST index.
     ///
-    /// The plain-text concatenation of the runs is used for deduplication.
+    /// Deduplication considers both the text and the run formatting, so a
+    /// rich entry is never shared with a plain entry of the same text.
     pub fn add_rich_text(&mut self, runs: &[RichTextRun]) -> usize {
-        let plain: String = runs.iter().map(|r| r.text.as_str()).collect();
-        if let Some(&idx) = self.index_map.get(plain.as_str()) {
+        let si = crate::rich_text::runs_to_si(runs);
+        if si.r.is_empty() {
+            let plain: String = runs.iter().map(|r| r.text.as_str()).collect();
+            return self.add_owned(plain);
+        }
+        let key = rich_key(&si);
+        if let Some(&idx) = self.rich_index_map.get(&key) {
             return idx;
         }
         let idx = self.read_data.strings.len();
-        let rc: Arc<str> = plain.into();
-        self.index_map.insert(Arc::clone(&rc), idx);
+        let rc: Arc<str> = si_to_string(&si).into();
+        self.rich_index_map.insert(key, idx);
         let data = Arc::make_mut(&mut self.read_data);
         data.strings.push(rc);
-        let si = crate::rich_text::runs_to_si(runs);
         data.si_items.push(Some(si));
         idx
     }
@@ -213,6 +230,7 @@ impl SharedStringTable {
         Self {
             read_data: Arc::clone(&self.read_data),
             index_map: HashMap::new(),
+            rich_index_map: HashMap::new(),
         }
     }
 
@@ -226,6 +244,11 @@ impl Default for SharedStringTable {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Build the dedup key for a rich-text item from its full structure.
+fn rich_key(si: &Si) -> String {
+    format!("{si:?}")
 }
 
 /// Check whether a string needs `xml:space="preserve"`.
@@ -427,6 +450,83 @@ mod tests {
         assert_eq!(idx, 0);
         assert_eq!(table.get(0), Some("Hello World"));
         assert!(table.get_rich_text(0).is_some());
+    }
+
+    fn bold_run(text: &str) -> RichTextRun {
+        RichTextRun {
+            text: text.to_string(),
+            font: None,
+            size: None,
+            bold: true,
+            italic: false,
+            color: None,
+        }
+    }
+
+    #[test]
+    fn plain_then_rich_with_same_text_keep_separate_entries() {
+        let mut table = SharedStringTable::new();
+        let plain = table.add("Hello");
+        let rich = table.add_rich_text(&[bold_run("Hello")]);
+        assert_ne!(plain, rich);
+        assert!(table.get_rich_text(plain).is_none());
+        let runs = table.get_rich_text(rich).unwrap();
+        assert!(runs[0].bold);
+        assert_eq!(table.len(), 2);
+
+        let sst = table.to_sst();
+        assert_eq!(sst.unique_count, Some(2));
+        assert!(sst.items[plain].r.is_empty());
+        assert_eq!(sst.items[rich].r.len(), 1);
+    }
+
+    #[test]
+    fn rich_then_plain_with_same_text_keep_separate_entries() {
+        let mut table = SharedStringTable::new();
+        let rich = table.add_rich_text(&[bold_run("Hello")]);
+        let plain = table.add("Hello");
+        let plain_owned = table.add_owned("Hello".to_string());
+        assert_ne!(plain, rich);
+        assert_eq!(plain, plain_owned);
+        assert!(table.get_rich_text(plain).is_none());
+        assert!(table.get_rich_text(rich).is_some());
+        assert_eq!(table.len(), 2);
+    }
+
+    #[test]
+    fn rich_text_dedupes_on_formatting_not_just_text() {
+        let mut table = SharedStringTable::new();
+        let bold = table.add_rich_text(&[bold_run("Hi")]);
+        let mut italic_run = bold_run("Hi");
+        italic_run.bold = false;
+        italic_run.italic = true;
+        let italic = table.add_rich_text(&[italic_run]);
+        assert_ne!(bold, italic);
+        assert_eq!(table.add_rich_text(&[bold_run("Hi")]), bold);
+        assert_eq!(table.len(), 2);
+    }
+
+    #[test]
+    fn loaded_rich_item_does_not_capture_plain_add() {
+        let xml_sst = Sst {
+            xmlns: sheetkit_xml::namespaces::SPREADSHEET_ML.to_string(),
+            count: Some(1),
+            unique_count: Some(1),
+            items: vec![Si {
+                t: None,
+                r: vec![R {
+                    r_pr: None,
+                    t: T {
+                        xml_space: None,
+                        value: "Hello".to_string(),
+                    },
+                }],
+            }],
+        };
+        let mut table = SharedStringTable::from_sst(xml_sst);
+        let plain = table.add("Hello");
+        assert_eq!(plain, 1);
+        assert!(table.get_rich_text(plain).is_none());
     }
 
     #[test]

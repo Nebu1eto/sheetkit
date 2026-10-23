@@ -29,7 +29,7 @@ use crate::cell::CellValue;
 use crate::error::{Error, Result};
 use crate::resource::{ResourceCategory, ResourceDimension, ResourceOperation, ResourceStage};
 use crate::save::{resource_limit, StreamLimits};
-use crate::utils::cell_ref::cell_name_to_coordinates;
+use crate::utils::cell_ref::{cell_name_to_coordinates, coordinates_to_cell_name};
 use crate::utils::constants::{MAX_COLUMNS, MAX_ROWS, MAX_ROW_HEIGHT};
 
 use sheetkit_xml::worksheet::{Col, Cols, MergeCell, MergeCells, Pane, SheetView, SheetViews};
@@ -129,15 +129,18 @@ pub struct StreamWriter {
     write_failure_after_bytes: Option<u64>,
     col_widths: Vec<(u32, u32, f64)>,
     col_options: Vec<(u32, StreamColOptions)>,
-    merge_cells: Vec<String>,
+    /// Canonical merge references with their normalized
+    /// (min_col, min_row, max_col, max_row) rectangles.
+    merge_cells: Vec<(String, (u32, u32, u32, u32))>,
     /// Freeze pane: (x_split, y_split, top_left_cell).
     freeze_pane: Option<(u32, u32, String)>,
 }
 
-// StreamWriter contains a BufWriter<NamedTempFile> which is not Send by
-// default on all platforms. The temp file is exclusively owned by the writer
-// so this is safe.
-unsafe impl Send for StreamWriter {}
+// Compile-time guard: StreamWriter must stay Send without an unsafe impl.
+const _: () = {
+    fn assert_send<T: Send>() {}
+    let _ = assert_send::<StreamWriter>;
+};
 
 impl std::fmt::Debug for StreamWriter {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -395,30 +398,48 @@ impl StreamWriter {
     }
 
     /// Add a merge cell reference (e.g., "A1:B2").
+    ///
     /// Must be called before finish(). The reference must be a valid range
-    /// in the form "A1:B2".
+    /// in the form "A1:B2". It is stored in canonical form: absolute markers
+    /// are dropped, letters are uppercased, and inverted endpoints are
+    /// normalized to top-left:bottom-right. Re-adding an equivalent range is
+    /// a no-op; a range overlapping a different existing merge returns
+    /// [`Error::MergeCellOverlap`].
     pub fn add_merge_cell(&mut self, reference: &str) -> Result<()> {
         if self.finished {
             return Err(Error::StreamAlreadyFinished);
         }
-        // Validate the range format.
         let parts: Vec<&str> = reference.split(':').collect();
         if parts.len() != 2 {
             return Err(Error::InvalidMergeCellReference(reference.to_string()));
         }
-        cell_name_to_coordinates(parts[0])
+        let (c1, r1) = cell_name_to_coordinates(parts[0])
             .map_err(|_| Error::InvalidMergeCellReference(reference.to_string()))?;
-        cell_name_to_coordinates(parts[1])
+        let (c2, r2) = cell_name_to_coordinates(parts[1])
             .map_err(|_| Error::InvalidMergeCellReference(reference.to_string()))?;
-        if self
-            .merge_cells
-            .iter()
-            .any(|existing| existing == reference)
-        {
-            return Ok(());
+        let range = (c1.min(c2), r1.min(r2), c1.max(c2), r1.max(r2));
+        let canonical = format!(
+            "{}:{}",
+            coordinates_to_cell_name(range.0, range.1)?,
+            coordinates_to_cell_name(range.2, range.3)?
+        );
+        for (existing, coords) in &self.merge_cells {
+            if *coords == range {
+                return Ok(());
+            }
+            if range.0 <= coords.2
+                && range.2 >= coords.0
+                && range.1 <= coords.3
+                && range.3 >= coords.1
+            {
+                return Err(Error::MergeCellOverlap {
+                    new: canonical,
+                    existing: existing.clone(),
+                });
+            }
         }
-        self.charge_config(1, u64::try_from(reference.len()).unwrap_or(u64::MAX))?;
-        self.merge_cells.push(reference.to_string());
+        self.charge_config(1, u64::try_from(canonical.len()).unwrap_or(u64::MAX))?;
+        self.merge_cells.push((canonical, range));
         Ok(())
     }
 
@@ -648,7 +669,7 @@ impl StreamWriter {
             merge_cells: self
                 .merge_cells
                 .iter()
-                .map(|r| MergeCell {
+                .map(|(r, _)| MergeCell {
                     reference: r.clone(),
                 })
                 .collect(),
@@ -1714,6 +1735,49 @@ mod tests {
         let result = sw.add_merge_cell("A1:B1");
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), Error::StreamAlreadyFinished));
+    }
+
+    #[test]
+    fn add_merge_cell_canonicalizes_absolute_lowercase_and_inverted_ranges() {
+        let mut sw = StreamWriter::new("Sheet1");
+        sw.add_merge_cell("$a$1:b2").unwrap();
+        sw.add_merge_cell("D4:C3").unwrap();
+        let ws = finish_and_parse(sw);
+        let refs: Vec<String> = ws
+            .merge_cells
+            .unwrap()
+            .merge_cells
+            .into_iter()
+            .map(|m| m.reference)
+            .collect();
+        assert_eq!(refs, vec!["A1:B2".to_string(), "C3:D4".to_string()]);
+    }
+
+    #[test]
+    fn add_merge_cell_rejects_overlaps_and_dedupes_equivalent_ranges() {
+        let mut sw = StreamWriter::new("Sheet1");
+        sw.add_merge_cell("A1:B2").unwrap();
+        // Equivalent spelling of an existing range is an idempotent no-op.
+        sw.add_merge_cell("B2:A1").unwrap();
+        assert_eq!(sw.config_count, 1);
+        let err = sw.add_merge_cell("B2:C3").unwrap_err();
+        match err {
+            Error::MergeCellOverlap { new, existing } => {
+                assert_eq!(new, "B2:C3");
+                assert_eq!(existing, "A1:B2");
+            }
+            other => panic!("expected MergeCellOverlap, got {other:?}"),
+        }
+        assert_eq!(sw.config_count, 1);
+        sw.add_merge_cell("C3:D4").unwrap();
+        let ws = finish_and_parse(sw);
+        assert_eq!(ws.merge_cells.unwrap().merge_cells.len(), 2);
+    }
+
+    #[test]
+    fn stream_writer_is_send() {
+        fn assert_send<T: Send>() {}
+        assert_send::<StreamWriter>();
     }
 
     #[test]

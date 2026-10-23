@@ -200,7 +200,7 @@ impl<'a, R: BufRead> SheetStreamReader<'a, R> {
                 .read_event_into(&mut buf)
                 .map_err(|e| Error::XmlParse(e.to_string()))?
             {
-                Event::Start(ref e) if e.name() == QName(b"row") => {
+                Event::Start(ref e) if e.local_name().as_ref() == b"row" => {
                     let row_number =
                         resolve_row_number(extract_row_number(e)?, self.last_row_number)?;
                     let row = self.parse_row_body(row_number)?;
@@ -245,7 +245,7 @@ impl<'a, R: BufRead> SheetStreamReader<'a, R> {
                 .read_event_into(&mut buf)
                 .map_err(|e| Error::XmlParse(e.to_string()))?
             {
-                Event::Start(ref e) if e.name() == QName(b"c") => {
+                Event::Start(ref e) if e.local_name().as_ref() == b"c" => {
                     let (explicit_col, cell_type, style_idx) = extract_cell_attrs(e)?;
                     let col = resolve_cell_column(explicit_col, last_col)?;
                     let promote = self.should_promote_to_date(style_idx);
@@ -253,7 +253,7 @@ impl<'a, R: BufRead> SheetStreamReader<'a, R> {
                     last_col = col;
                     cells.push((col, cv));
                 }
-                Event::Empty(ref e) if e.name() == QName(b"c") => {
+                Event::Empty(ref e) if e.local_name().as_ref() == b"c" => {
                     let (explicit_col, cell_type, style_idx) = extract_cell_attrs(e)?;
                     let col = resolve_cell_column(explicit_col, last_col)?;
                     let promote = self.should_promote_to_date(style_idx);
@@ -268,10 +268,10 @@ impl<'a, R: BufRead> SheetStreamReader<'a, R> {
                     last_col = col;
                     cells.push((col, cv));
                 }
-                Event::End(ref e) if e.name() == QName(b"row") => break,
+                Event::End(ref e) if e.local_name().as_ref() == b"row" => break,
                 Event::Eof => {
                     self.done = true;
-                    break;
+                    return Err(unexpected_eof("row"));
                 }
                 _ => {}
             }
@@ -332,7 +332,7 @@ impl<'a, R: BufRead> SheetStreamReader<'a, R> {
                 }
                 Event::Eof => {
                     self.done = true;
-                    break;
+                    return Err(unexpected_eof("cell"));
                 }
                 _ => {}
             }
@@ -366,7 +366,7 @@ impl<'a, R: BufRead> SheetStreamReader<'a, R> {
                 Event::End(ref e) if e.local_name().as_ref() == end_tag => break,
                 Event::Eof => {
                     self.done = true;
-                    break;
+                    return Err(unexpected_eof("element"));
                 }
                 _ => {}
             }
@@ -472,7 +472,7 @@ impl OwnedSheetStreamReader {
                 .read_event_into(&mut buf)
                 .map_err(|e| Error::XmlParse(e.to_string()))?
             {
-                Event::Start(ref e) if e.name() == QName(b"row") => {
+                Event::Start(ref e) if e.local_name().as_ref() == b"row" => {
                     let row_number =
                         resolve_row_number(extract_row_number(e)?, self.last_row_number)?;
                     let row = self.parse_row_body(row_number)?;
@@ -515,7 +515,7 @@ impl OwnedSheetStreamReader {
                 .read_event_into(&mut buf)
                 .map_err(|e| Error::XmlParse(e.to_string()))?
             {
-                Event::Start(ref e) if e.name() == QName(b"c") => {
+                Event::Start(ref e) if e.local_name().as_ref() == b"c" => {
                     let (explicit_col, cell_type, style_idx) = extract_cell_attrs(e)?;
                     let col = resolve_cell_column(explicit_col, last_col)?;
                     let promote = self.should_promote_to_date(style_idx);
@@ -523,7 +523,7 @@ impl OwnedSheetStreamReader {
                     last_col = col;
                     cells.push((col, cv));
                 }
-                Event::Empty(ref e) if e.name() == QName(b"c") => {
+                Event::Empty(ref e) if e.local_name().as_ref() == b"c" => {
                     let (explicit_col, cell_type, style_idx) = extract_cell_attrs(e)?;
                     let col = resolve_cell_column(explicit_col, last_col)?;
                     let promote = self.should_promote_to_date(style_idx);
@@ -538,10 +538,10 @@ impl OwnedSheetStreamReader {
                     last_col = col;
                     cells.push((col, cv));
                 }
-                Event::End(ref e) if e.name() == QName(b"row") => break,
+                Event::End(ref e) if e.local_name().as_ref() == b"row" => break,
                 Event::Eof => {
                     self.done = true;
-                    break;
+                    return Err(unexpected_eof("row"));
                 }
                 _ => {}
             }
@@ -600,7 +600,7 @@ impl OwnedSheetStreamReader {
                 }
                 Event::Eof => {
                     self.done = true;
-                    break;
+                    return Err(unexpected_eof("cell"));
                 }
                 _ => {}
             }
@@ -633,7 +633,7 @@ impl OwnedSheetStreamReader {
                 Event::End(ref e) if e.local_name().as_ref() == end_tag => break,
                 Event::Eof => {
                     self.done = true;
-                    break;
+                    return Err(unexpected_eof("element"));
                 }
                 _ => {}
             }
@@ -679,6 +679,14 @@ pub fn validate_stream_batch_size(batch_size: usize) -> Result<usize> {
         return Err(Error::ResourceLimitExceeded(metadata));
     }
     Ok(batch_size)
+}
+
+/// Build the error returned when the worksheet XML ends inside an open
+/// `<row>`, `<c>`, or value element.
+fn unexpected_eof(context: &str) -> Error {
+    Error::XmlParse(format!(
+        "unexpected end of worksheet XML inside an open {context}"
+    ))
 }
 
 /// Extract the `r` (row number) attribute from a `<row>` element.
@@ -1456,5 +1464,74 @@ mod tests {
             rows[0].cells[0],
             (1, CellValue::String("Base Text".to_string()))
         );
+    }
+
+    const PREFIXED_SHEET: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<x:worksheet xmlns:x="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+<x:sheetData>
+<x:row r="1"><x:c r="A1" t="n"><x:v>1</x:v></x:c><x:c r="B1" t="inlineStr"><x:is><x:t>Hi</x:t></x:is></x:c><x:c r="C1"/></x:row>
+<x:row r="2"><x:c r="A2"><x:v>2</x:v></x:c></x:row>
+</x:sheetData>
+</x:worksheet>"#;
+
+    fn owned_reader_for(xml: &str) -> OwnedSheetStreamReader {
+        use std::io::{Seek, Write};
+        let mut file = tempfile::tempfile().unwrap();
+        file.write_all(xml.as_bytes()).unwrap();
+        file.seek(std::io::SeekFrom::Start(0)).unwrap();
+        OwnedSheetStreamReader::from_spool(file, make_sst(&[]))
+    }
+
+    fn assert_prefixed_rows(rows: &[StreamRow]) {
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].row_number, 1);
+        assert_eq!(
+            rows[0].cells,
+            vec![
+                (1, CellValue::Number(1.0)),
+                (2, CellValue::String("Hi".to_string())),
+                (3, CellValue::Empty),
+            ]
+        );
+        assert_eq!(rows[1].cells, vec![(1, CellValue::Number(2.0))]);
+    }
+
+    #[test]
+    fn reads_namespace_prefixed_worksheet() {
+        let rows = read_all(PREFIXED_SHEET, &make_sst(&[]), None);
+        assert_prefixed_rows(&rows);
+    }
+
+    #[test]
+    fn owned_reader_reads_namespace_prefixed_worksheet() {
+        let mut reader = owned_reader_for(PREFIXED_SHEET);
+        let rows = reader.next_batch(100).unwrap();
+        assert_prefixed_rows(&rows);
+    }
+
+    #[test]
+    fn truncated_xml_inside_elements_is_an_error() {
+        let truncations = [
+            r#"<worksheet><sheetData><row r="1"><c r="A1"><v>1</v></c>"#,
+            r#"<worksheet><sheetData><row r="1"><c r="A1"><v>1</v>"#,
+            r#"<worksheet><sheetData><row r="1"><c r="A1"><v>1"#,
+            r#"<worksheet><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>ab"#,
+        ];
+        for xml in truncations {
+            let sst = make_sst(&[]);
+            let mut reader = SheetStreamReader::new(Cursor::new(xml.as_bytes()), &sst);
+            let result = reader.next_batch(100);
+            assert!(
+                matches!(result, Err(Error::XmlParse(_))),
+                "borrowed reader accepted truncated XML {xml:?}: {result:?}"
+            );
+
+            let mut owned = owned_reader_for(xml);
+            let result = owned.next_batch(100);
+            assert!(
+                matches!(result, Err(Error::XmlParse(_))),
+                "owned reader accepted truncated XML {xml:?}: {result:?}"
+            );
+        }
     }
 }
