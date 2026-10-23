@@ -2580,6 +2580,31 @@ impl NativeSheetStreamReader {
         Ok(reader.has_more())
     }
 
+    /// Read the next batch of rows as a compact buffer that the TypeScript
+    /// wrapper decodes into the same objects `nextBatch` returns.
+    /// Returns null when there are no more rows.
+    #[napi]
+    pub fn next_batch_buffer(
+        &mut self,
+        env: Env,
+        batch_size: Option<f64>,
+    ) -> Result<Option<Buffer>> {
+        let size =
+            validate_stream_batch_size(batch_size).map_err(|error| map_core_error(&env, error))?;
+        let reader = self
+            .inner
+            .as_mut()
+            .ok_or_else(|| Error::from_reason("SheetStreamReader already closed"))?;
+        let rows = reader
+            .next_batch(size)
+            .map_err(|error| map_core_error(&env, error))?;
+        if rows.is_empty() {
+            return Ok(None);
+        }
+        let bytes = encode_stream_batch(&rows).map_err(Error::from_reason)?;
+        Ok(Some(Buffer::from(bytes)))
+    }
+
     /// Close the reader and release resources.
     #[napi]
     pub fn close(&mut self) -> Result<()> {

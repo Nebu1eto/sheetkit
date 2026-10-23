@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use napi::bindgen_prelude::*;
 
 use sheetkit_core::cell::CellValue;
@@ -145,27 +147,189 @@ pub(crate) fn cell_value_to_col_cell(row: u32, value: CellValue) -> JsColCell {
 pub(crate) fn cell_value_to_parts(
     value: &CellValue,
 ) -> (String, Option<String>, Option<f64>, Option<bool>) {
+    let (value_type, str_val, num_val, bool_val) = cell_value_parts_ref(value);
+    (
+        value_type.to_string(),
+        str_val.map(Cow::into_owned),
+        num_val,
+        bool_val,
+    )
+}
+
+/// Borrowed form of [`cell_value_to_parts`]: value type, string value,
+/// numeric value, and boolean value of one cell without cloning text.
+pub(crate) fn cell_value_parts_ref(
+    value: &CellValue,
+) -> (
+    &'static str,
+    Option<Cow<'_, str>>,
+    Option<f64>,
+    Option<bool>,
+) {
     match value {
-        CellValue::Empty => ("empty".to_string(), None, None, None),
-        CellValue::String(s) => ("string".to_string(), Some(s.clone()), None, None),
-        CellValue::Number(n) => ("number".to_string(), None, Some(*n), None),
-        CellValue::Bool(b) => ("boolean".to_string(), None, None, Some(*b)),
-        CellValue::Error(e) => ("error".to_string(), Some(e.clone()), None, None),
-        CellValue::Formula { expr, .. } => ("formula".to_string(), Some(expr.clone()), None, None),
-        CellValue::Date(serial) => {
-            let iso = sheetkit_core::cell::serial_to_datetime(*serial).map(|dt| {
-                if serial.fract() == 0.0 {
-                    dt.format("%Y-%m-%d").to_string()
-                } else {
-                    dt.format("%Y-%m-%dT%H:%M:%S").to_string()
-                }
-            });
-            ("date".to_string(), iso, Some(*serial), None)
-        }
+        CellValue::Empty => ("empty", None, None, None),
+        CellValue::String(s) => ("string", Some(Cow::Borrowed(s)), None, None),
+        CellValue::Number(n) => ("number", None, Some(*n), None),
+        CellValue::Bool(b) => ("boolean", None, None, Some(*b)),
+        CellValue::Error(e) => ("error", Some(Cow::Borrowed(e)), None, None),
+        CellValue::Formula { expr, .. } => ("formula", Some(Cow::Borrowed(expr)), None, None),
+        CellValue::Date(serial) => (
+            "date",
+            serial_to_iso(*serial).map(Cow::Owned),
+            Some(*serial),
+            None,
+        ),
         CellValue::RichString(runs) => {
             let plain = sheetkit_core::rich_text::rich_text_to_plain(runs);
-            ("string".to_string(), Some(plain), None, None)
+            ("string", Some(Cow::Owned(plain)), None, None)
         }
+    }
+}
+
+/// Tag strings shared with `decodeStreamBatch` in `index.ts`. Index order is
+/// the wire code; any other tag is written literally after
+/// [`STREAM_TAG_LITERAL`].
+const STREAM_TAGS: [&str; 7] = [
+    "empty", "string", "number", "boolean", "error", "formula", "date",
+];
+const STREAM_TAG_LITERAL: u8 = 0xFF;
+const STREAM_HAS_VALUE: u8 = 0x01;
+const STREAM_HAS_NUMBER: u8 = 0x02;
+const STREAM_HAS_BOOL: u8 = 0x04;
+const STREAM_HAS_NESTED: u8 = 0x08;
+
+/// Encode one streaming-reader batch for `decodeStreamBatch` in `index.ts`.
+///
+/// The decoded objects are field-for-field identical to the `JsRowData`
+/// values produced by [`cell_value_to_row_cell`]; only the transfer form
+/// differs. Layout (little-endian):
+///
+/// ```text
+/// u32 row_count
+/// row:  u32 row_number, u32 cell_count, cell*
+/// cell: u16 column (0 = no name), tag value_type, u8 flags,
+///       [str value] [f64 number] [u8 bool] [formula]
+/// formula: str expression, u8 has_result, [result]
+/// result:  tag value_type, u8 flags, [str value] [f64 number] [u8 bool] [date]
+/// date:    tag kind, f64 serial, u8 has_iso, [str iso]
+/// tag:     u8 index into STREAM_TAGS, or 0xFF followed by str
+/// str:     u32 byte length, UTF-8 bytes
+/// ```
+pub(crate) fn encode_stream_batch(
+    rows: &[sheetkit_core::stream_reader::StreamRow],
+) -> std::result::Result<Vec<u8>, String> {
+    let mut out = StreamBatchWriter {
+        bytes: Vec::with_capacity(4096),
+    };
+    out.u32_len(rows.len())?;
+    for row in rows {
+        out.bytes.extend_from_slice(&row.row_number.to_le_bytes());
+        out.u32_len(row.cells.len())?;
+        for (col, value) in &row.cells {
+            let col = if (1..=sheetkit_core::utils::constants::MAX_COLUMNS).contains(col) {
+                *col as u16
+            } else {
+                0
+            };
+            out.bytes.extend_from_slice(&col.to_le_bytes());
+            let (value_type, str_val, num_val, bool_val) = cell_value_parts_ref(value);
+            let formula = cell_value_to_formula_value(value);
+            out.tag(value_type)?;
+            out.scalar_parts(str_val.as_deref(), num_val, bool_val, formula.is_some())?;
+            if let Some(formula) = formula {
+                out.tag(&formula.kind)?;
+                out.str(&formula.formula)?;
+                match formula.result {
+                    None => out.bytes.push(0),
+                    Some(result) => {
+                        out.bytes.push(1);
+                        out.tag(&result.value_type)?;
+                        out.scalar_parts(
+                            result.value.as_deref(),
+                            result.number_value,
+                            result.bool_value,
+                            result.date.is_some(),
+                        )?;
+                        if let Some(date) = result.date {
+                            out.tag(&date.kind)?;
+                            out.bytes.extend_from_slice(&date.serial.to_le_bytes());
+                            match date.iso {
+                                None => out.bytes.push(0),
+                                Some(iso) => {
+                                    out.bytes.push(1);
+                                    out.str(&iso)?;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(out.bytes)
+}
+
+struct StreamBatchWriter {
+    bytes: Vec<u8>,
+}
+
+impl StreamBatchWriter {
+    fn u32_len(&mut self, len: usize) -> std::result::Result<(), String> {
+        let len = u32::try_from(len).map_err(|_| "stream batch field is too large".to_string())?;
+        self.bytes.extend_from_slice(&len.to_le_bytes());
+        Ok(())
+    }
+
+    fn str(&mut self, value: &str) -> std::result::Result<(), String> {
+        self.u32_len(value.len())?;
+        self.bytes.extend_from_slice(value.as_bytes());
+        Ok(())
+    }
+
+    fn tag(&mut self, value: &str) -> std::result::Result<(), String> {
+        match STREAM_TAGS.iter().position(|tag| *tag == value) {
+            Some(index) => {
+                self.bytes.push(index as u8);
+                Ok(())
+            }
+            None => {
+                self.bytes.push(STREAM_TAG_LITERAL);
+                self.str(value)
+            }
+        }
+    }
+
+    fn scalar_parts(
+        &mut self,
+        value: Option<&str>,
+        number: Option<f64>,
+        boolean: Option<bool>,
+        nested: bool,
+    ) -> std::result::Result<(), String> {
+        let mut flags = 0;
+        if value.is_some() {
+            flags |= STREAM_HAS_VALUE;
+        }
+        if number.is_some() {
+            flags |= STREAM_HAS_NUMBER;
+        }
+        if boolean.is_some() {
+            flags |= STREAM_HAS_BOOL;
+        }
+        if nested {
+            flags |= STREAM_HAS_NESTED;
+        }
+        self.bytes.push(flags);
+        if let Some(value) = value {
+            self.str(value)?;
+        }
+        if let Some(number) = number {
+            self.bytes.extend_from_slice(&number.to_le_bytes());
+        }
+        if let Some(boolean) = boolean {
+            self.bytes.push(u8::from(boolean));
+        }
+        Ok(())
     }
 }
 

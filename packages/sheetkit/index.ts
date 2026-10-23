@@ -1118,6 +1118,135 @@ function toNativeOpenOptions(
 /** Row data from streaming reader, matching JsRowData shape. */
 type RowData = JsRowData;
 
+/** Tag strings shared with `encode_stream_batch` in `src/conversions.rs`. */
+const STREAM_TAGS = ['empty', 'string', 'number', 'boolean', 'error', 'formula', 'date'];
+const STREAM_TAG_LITERAL = 0xff;
+const STREAM_HAS_VALUE = 0x01;
+const STREAM_HAS_NUMBER = 0x02;
+const STREAM_HAS_BOOL = 0x04;
+const STREAM_HAS_NESTED = 0x08;
+
+const streamColumnNames: string[] = [''];
+
+function streamColumnName(col: number): string {
+  for (let next = streamColumnNames.length; next <= col; next++) {
+    let num = next;
+    let name = '';
+    while (num > 0) {
+      num--;
+      name = String.fromCharCode(65 + (num % 26)) + name;
+      num = Math.floor(num / 26);
+    }
+    streamColumnNames.push(name);
+  }
+  return streamColumnNames[col];
+}
+
+/**
+ * Decode one buffer produced by `NativeSheetStreamReader.nextBatchBuffer`
+ * into the same row objects `nextBatch` returns.
+ */
+class StreamBatchDecoder {
+  #buf: Buffer;
+  #view: DataView;
+  #pos = 0;
+
+  constructor(buf: Buffer) {
+    this.#buf = buf;
+    this.#view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  }
+
+  decode(): RowData[] {
+    const rowCount = this.#u32();
+    const rows: RowData[] = new Array(rowCount);
+    for (let r = 0; r < rowCount; r++) {
+      const row = this.#u32();
+      const cellCount = this.#u32();
+      const cells: JsRowData['cells'] = new Array(cellCount);
+      for (let c = 0; c < cellCount; c++) {
+        cells[c] = this.#cell();
+      }
+      rows[r] = { row, cells };
+    }
+    if (this.#pos !== this.#buf.length) {
+      throw new Error('Invalid stream batch: trailing bytes');
+    }
+    return rows;
+  }
+
+  #cell(): JsRowData['cells'][number] {
+    const col = this.#view.getUint16(this.#pos, true);
+    this.#pos += 2;
+    const cell: JsRowData['cells'][number] = {
+      column: streamColumnName(col),
+      valueType: this.#tag(),
+    };
+    const flags = this.#u8();
+    if (flags & STREAM_HAS_VALUE) cell.value = this.#str();
+    if (flags & STREAM_HAS_NUMBER) cell.numberValue = this.#f64();
+    if (flags & STREAM_HAS_BOOL) cell.boolValue = this.#u8() !== 0;
+    if (flags & STREAM_HAS_NESTED) {
+      const formula: NonNullable<JsRowData['cells'][number]['formula']> = {
+        type: this.#tag(),
+        formula: this.#str(),
+      };
+      if (this.#u8() !== 0) {
+        const result: NonNullable<typeof formula.result> = { valueType: this.#tag() };
+        const resultFlags = this.#u8();
+        if (resultFlags & STREAM_HAS_VALUE) result.value = this.#str();
+        if (resultFlags & STREAM_HAS_NUMBER) result.numberValue = this.#f64();
+        if (resultFlags & STREAM_HAS_BOOL) result.boolValue = this.#u8() !== 0;
+        if (resultFlags & STREAM_HAS_NESTED) {
+          const date: NonNullable<typeof result.date> = {
+            type: this.#tag(),
+            serial: this.#f64(),
+          };
+          if (this.#u8() !== 0) date.iso = this.#str();
+          result.date = date;
+        }
+        formula.result = result;
+      }
+      cell.formula = formula;
+    }
+    return cell;
+  }
+
+  #u8(): number {
+    const value = this.#view.getUint8(this.#pos);
+    this.#pos += 1;
+    return value;
+  }
+
+  #u32(): number {
+    const value = this.#view.getUint32(this.#pos, true);
+    this.#pos += 4;
+    return value;
+  }
+
+  #f64(): number {
+    const value = this.#view.getFloat64(this.#pos, true);
+    this.#pos += 8;
+    return value;
+  }
+
+  #str(): string {
+    const length = this.#u32();
+    const start = this.#pos;
+    const end = start + length;
+    if (end > this.#buf.length) throw new Error('Invalid stream batch: truncated string');
+    this.#pos = end;
+    return this.#buf.toString('utf8', start, end);
+  }
+
+  #tag(): string {
+    const code = this.#u8();
+    if (code === STREAM_TAG_LITERAL) return this.#str();
+    const tag = STREAM_TAGS[code];
+    if (tag === undefined) throw new Error('Invalid stream batch: unknown tag');
+    return tag;
+  }
+}
+
 /** Forward-only streaming reader for worksheet data. Reads rows in batches. */
 class SheetStreamReader {
   #native: NativeSheetStreamReader;
@@ -1135,7 +1264,8 @@ class SheetStreamReader {
    */
   async next(batchSize?: number): Promise<RowData[] | null> {
     const size = batchSize ?? this.#defaultBatchSize;
-    return this.#native.nextBatch(size);
+    const buf = this.#native.nextBatchBuffer(size);
+    return buf === null ? null : new StreamBatchDecoder(buf).decode();
   }
 
   /** Close the reader and release resources. */

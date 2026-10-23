@@ -44,6 +44,12 @@ export declare class NativeSheetStreamReader {
   nextBatch(batchSize?: number | undefined | null): Array<JsRowData> | null
   /** Returns true if there are potentially more rows to read. */
   hasMore(): boolean
+  /**
+   * Read the next batch of rows as a compact buffer that the TypeScript
+   * wrapper decodes into the same objects `nextBatch` returns.
+   * Returns null when there are no more rows.
+   */
+  nextBatchBuffer(batchSize?: number | undefined | null): Buffer | null
   /** Close the reader and release resources. */
   close(): void
 }

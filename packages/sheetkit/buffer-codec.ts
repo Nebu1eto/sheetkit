@@ -31,6 +31,20 @@ function decodeUtf8(bytes: Uint8Array): string {
   }
 }
 
+/**
+ * Decode the UTF-8 bytes in `buf[start, end)`. All-ASCII input decodes to
+ * the same string under Latin-1, so it skips the validating decoder; any
+ * other byte goes through `decodeUtf8` with its malformed-input error.
+ */
+function decodeUtf8Range(buf: Buffer, start: number, end: number): string {
+  for (let i = start; i < end; i++) {
+    if (buf[i] > 0x7f) {
+      return decodeUtf8(new Uint8Array(buf.buffer, buf.byteOffset + start, end - start));
+    }
+  }
+  return buf.toString('latin1', start, end);
+}
+
 export interface ValidatedStringTable {
   readonly count: number;
   get(index: number): string;
@@ -173,6 +187,7 @@ function validateHeader(
   buf: Buffer,
   view: DataView,
   magic: number,
+  materializeRowIndex = true,
 ): { header: ValidatedBufferHeader; rowIndex: ValidatedRowIndexEntry[]; cellDataStart: number } {
   const length = buf.length;
   const version = view.getUint16(4, true);
@@ -208,7 +223,11 @@ function validateHeader(
   const rowIndexSize = rowCount * ROW_INDEX_ENTRY_SIZE;
   requireRange(length, HEADER_SIZE, rowIndexSize, 'row index');
   const cellDataStart = HEADER_SIZE + rowIndexSize;
-  const entries: ValidatedRowIndexEntry[] = new Array<ValidatedRowIndexEntry>(rowCount);
+  // Callers that read the validated index straight from the buffer skip
+  // building one object per row; validation is identical either way.
+  const entries: ValidatedRowIndexEntry[] = materializeRowIndex
+    ? new Array<ValidatedRowIndexEntry>(rowCount)
+    : [];
   let previousRow = 0;
   for (let i = 0; i < rowCount; i++) {
     const offset = HEADER_SIZE + i * ROW_INDEX_ENTRY_SIZE;
@@ -220,7 +239,9 @@ function validateHeader(
       throw new Error('Invalid buffer: row numbers must be strictly increasing');
     }
     previousRow = rowNum;
-    entries[i] = { rowNum, cellOffset: view.getUint32(offset + 4, true) };
+    if (materializeRowIndex) {
+      entries[i] = { rowNum, cellOffset: view.getUint32(offset + 4, true) };
+    }
   }
 
   return {
@@ -763,9 +784,9 @@ export function decodeRowsBuffer(buf: Buffer | null): JsRowData[] {
   const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
   const magic = detectMagic(view);
   if (magic === MAGIC_V2) {
-    const { header, rowIndex, cellDataStart } = validateHeader(buf, view, magic);
+    const { header, cellDataStart } = validateHeader(buf, view, magic, false);
     if (header.rowCount === 0) return [];
-    return decodeAndValidateRowsBufferV2(buf, view, header, rowIndex, cellDataStart);
+    return decodeAndValidateRowsBufferV2(buf, view, header, cellDataStart);
   }
   if (magic !== MAGIC_V1) {
     throw new Error(`Invalid buffer: bad magic 0x${magic.toString(16)}`);
@@ -838,18 +859,29 @@ function decodeAndValidateRowsBufferV2(
   buf: Buffer,
   view: DataView,
   header: ValidatedBufferHeader,
-  rowIndex: ValidatedRowIndexEntry[],
   cellDataStart: number,
 ): JsRowData[] {
   const rows: JsRowData[] = [];
+  const length = buf.length;
+  const colCount = header.colCount;
+  // Column names are bounded by the validated header range; warm the cache
+  // once so each cell indexes it directly.
+  const columnNameOffset = header.minCol - 1;
+  cachedColumnName(header.minCol + colCount - 1);
   let cursor = cellDataStart;
 
-  for (const entry of rowIndex) {
-    requireRange(buf.length, cursor, 2, 'sparse row');
-    if (entry.cellOffset === EMPTY_ROW_OFFSET) {
+  // Offsets below stay safe integers (cursor <= length, sizes < 2^33), so
+  // each inline bound check is equivalent to requireRange().
+  // The row index was validated by validateHeader(); read it in place.
+  for (let ri = 0; ri < header.rowCount; ri++) {
+    const indexOffset = HEADER_SIZE + ri * ROW_INDEX_ENTRY_SIZE;
+    const rowNum = view.getUint32(indexOffset, true);
+    const cellOffset = view.getUint32(indexOffset + 4, true);
+    if (cursor + 2 > length) throw new Error('Invalid buffer: truncated sparse row');
+    if (cellOffset === EMPTY_ROW_OFFSET) {
       throw new Error('Invalid buffer: v2 row cannot use an empty-row sentinel');
     }
-    if (entry.cellOffset !== cursor - cellDataStart) {
+    if (cellOffset !== cursor - cellDataStart) {
       throw new Error('Invalid buffer: sparse row offsets are inconsistent');
     }
     const cellCount = view.getUint16(cursor, true);
@@ -858,9 +890,9 @@ function decodeAndValidateRowsBufferV2(
     let previousColumn = -1;
 
     for (let i = 0; i < cellCount; i++) {
-      requireRange(buf.length, cursor, 3, 'sparse cell');
+      if (cursor + 3 > length) throw new Error('Invalid buffer: truncated sparse cell');
       const column = view.getUint16(cursor, true);
-      if (column >= header.colCount) {
+      if (column >= colCount) {
         throw new Error('Invalid buffer: cell column is out of range');
       }
       if (column <= previousColumn) {
@@ -876,20 +908,22 @@ function decodeAndValidateRowsBufferV2(
       if (type === TYPE_NUMBER || type === TYPE_DATE) payloadSize = 8;
       else if (type === TYPE_BOOL) payloadSize = 1;
       else if (isStringCellType(type)) {
-        requireRange(buf.length, payloadOffset, 4, 'v2 string length');
+        if (payloadOffset + 4 > length)
+          throw new Error('Invalid buffer: truncated v2 string length');
         payloadSize = 4 + view.getUint32(payloadOffset, true);
       }
-      requireRange(buf.length, payloadOffset, payloadSize, 'v2 cell payload');
+      if (payloadOffset + payloadSize > length) {
+        throw new Error('Invalid buffer: truncated v2 cell payload');
+      }
+      const colName = colNameCache[columnNameOffset + column];
 
       if (type === TYPE_NUMBER) {
-        const colName = cachedColumnName(header.minCol + column);
         cells.push({
           column: colName,
           valueType: 'number',
           numberValue: view.getFloat64(payloadOffset, true),
         });
       } else if (type === TYPE_DATE) {
-        const colName = cachedColumnName(header.minCol + column);
         cells.push({
           column: colName,
           valueType: 'date',
@@ -898,23 +932,20 @@ function decodeAndValidateRowsBufferV2(
       } else if (type === TYPE_BOOL) {
         const value = view.getUint8(payloadOffset);
         if (value > 1) throw new Error('Invalid buffer: boolean payload');
-        const colName = cachedColumnName(header.minCol + column);
         cells.push({ column: colName, valueType: 'boolean', boolValue: value !== 0 });
       } else if (isStringCellType(type)) {
         const stringLength = view.getUint32(payloadOffset, true);
-        const value = decodeUtf8(
-          new Uint8Array(view.buffer, view.byteOffset + payloadOffset + 4, stringLength),
-        );
+        const stringStart = payloadOffset + 4;
+        const value = decodeUtf8Range(buf, stringStart, stringStart + stringLength);
         const valueType =
           type === TYPE_ERROR ? 'error' : type === TYPE_FORMULA ? 'formula' : 'string';
-        const colName = cachedColumnName(header.minCol + column);
         cells.push({ column: colName, valueType, value });
       }
       cursor = payloadOffset + payloadSize;
     }
 
     if (cells.length > 0) {
-      rows.push({ row: entry.rowNum, cells });
+      rows.push({ row: rowNum, cells });
     }
   }
   if (cursor !== buf.length) throw new Error('Invalid buffer: trailing data');
