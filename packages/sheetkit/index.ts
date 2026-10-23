@@ -928,6 +928,17 @@ function csvOutputLimitError(limit: number, observed: number): ResourceLimitErro
   });
 }
 
+const HTML_TABLE_CLOSE = '</table>';
+
+/** Add `bytes` to `observed`; throw the HTML output limit error when the total exceeds `limit`. */
+function chargeHtmlOutput(observed: number, bytes: number, limit: number): number {
+  const next = observed + bytes;
+  if (next > limit || !Number.isSafeInteger(next)) {
+    throw htmlOutputLimitError(limit, Number.isSafeInteger(next) ? next : limit + 1);
+  }
+  return next;
+}
+
 function htmlOutputLimitError(limit: number, observed: number): ResourceLimitError {
   return createResourceLimitError('resource limit exceeded during HTML serialization', {
     code: 'resource_limit_exceeded' as const,
@@ -2091,27 +2102,22 @@ class Workbook {
         : [...sd.occupiedRows()].map(({ cells }) => cells.map(({ value }) => value));
 
     const limit = options?.limits?.maxOutputBytes ?? DEFAULT_TRAVERSAL_OUTPUT_BYTES;
-    let observed = 0;
-    const parts: string[] = [];
-    const push = (part: string): void => {
-      const next = observed + Buffer.byteLength(part);
-      if (!Number.isSafeInteger(next) || next > limit) {
-        throw htmlOutputLimitError(limit, Number.isSafeInteger(next) ? next : limit + 1);
-      }
-      observed = next;
-      parts.push(part);
-    };
-
     const classAttr = className ? ` class="${escapeHtml(className)}"` : '';
-    push(`<table${classAttr}>`);
+    const open = `<table${classAttr}>`;
+    let observed = chargeHtmlOutput(0, Buffer.byteLength(open), limit);
+    const parts: string[] = [open];
+    // Build and charge one string per row; per-cell byte counting dominated runtime.
     for (const row of rows) {
-      push('<tr>');
+      let line = '<tr>';
       for (const cell of row) {
-        push(`<td>${escapeHtml(cellValueToString(cell))}</td>`);
+        line += `<td>${escapeHtml(cellValueToString(cell))}</td>`;
       }
-      push('</tr>');
+      line += '</tr>';
+      observed = chargeHtmlOutput(observed, Buffer.byteLength(line), limit);
+      parts.push(line);
     }
-    push('</table>');
+    chargeHtmlOutput(observed, HTML_TABLE_CLOSE.length, limit);
+    parts.push(HTML_TABLE_CLOSE);
     return parts.join('');
   }
 
