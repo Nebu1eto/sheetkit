@@ -45,6 +45,20 @@ function decodeUtf8Range(buf: Buffer, start: number, end: number): string {
   return buf.toString('latin1', start, end);
 }
 
+/**
+ * Validate the UTF-8 bytes in `bytes[start, end)` without building a string.
+ * All-ASCII input is valid UTF-8; any other byte goes through `decodeUtf8`
+ * with its malformed-input error.
+ */
+function validateUtf8Range(bytes: Uint8Array, start: number, end: number): void {
+  for (let i = start; i < end; i++) {
+    if (bytes[i] > 0x7f) {
+      decodeUtf8(bytes.subarray(start, end));
+      return;
+    }
+  }
+}
+
 export interface ValidatedStringTable {
   readonly count: number;
   get(index: number): string;
@@ -228,6 +242,14 @@ function validateHeader(
   const entries: ValidatedRowIndexEntry[] = materializeRowIndex
     ? new Array<ValidatedRowIndexEntry>(rowCount)
     : [];
+  // Build the result before the row loop: a large index is usually entered
+  // through on-stack replacement, which records no feedback for code after
+  // the loop and would deoptimize the next optimized call there.
+  const result = {
+    header: { version, rowCount, colCount, flags, minCol, isSparse },
+    rowIndex: entries,
+    cellDataStart,
+  };
   let previousRow = 0;
   for (let i = 0; i < rowCount; i++) {
     const offset = HEADER_SIZE + i * ROW_INDEX_ENTRY_SIZE;
@@ -243,12 +265,7 @@ function validateHeader(
       entries[i] = { rowNum, cellOffset: view.getUint32(offset + 4, true) };
     }
   }
-
-  return {
-    header: { version, rowCount, colCount, flags, minCol, isSparse },
-    rowIndex: entries,
-    cellDataStart,
-  };
+  return result;
 }
 
 function validateBuffer(
@@ -471,6 +488,7 @@ function validateSparseRows(
   let cursor = dataStart;
   let totalRows = 0;
   let totalCells = 0;
+  const bytes = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
   for (const entry of entries) {
     if (cursor > length - 2) throw new Error('Invalid buffer: truncated sparse row');
     const cellCount = view.getUint16(cursor, true);
@@ -524,8 +542,8 @@ function validateSparseRows(
         throw new Error('Invalid buffer: boolean payload');
       }
       if (validateUtf8 && isStringCellType(type)) {
-        const stringLength = view.getUint32(cursor, true);
-        decodeUtf8(new Uint8Array(view.buffer, view.byteOffset + cursor + 4, stringLength));
+        const stringStart = cursor + 4;
+        validateUtf8Range(bytes, stringStart, stringStart + view.getUint32(cursor, true));
       }
       cursor += payloadSize;
     }
@@ -867,6 +885,82 @@ function decodeRowsBufferV1(parsed: ValidatedBufferV1): JsRowData[] {
   return rows;
 }
 
+/**
+ * Validate and decode the `cellCount` v2 cells starting at `cursor` into
+ * `cells`, returning the cursor after the row. Kept apart from the row loop so
+ * this hot body is optimized as an ordinary function: V8 discards optimized
+ * code whose allocation-site pretenuring decision flips (as it does between
+ * calls that retain and then release millions of cells), and a small function
+ * re-optimizes far sooner than the whole decoder can be re-entered via OSR.
+ */
+function decodeAndValidateRowCellsV2(
+  buf: Buffer,
+  view: DataView,
+  length: number,
+  colCount: number,
+  columnNameOffset: number,
+  start: number,
+  cellCount: number,
+  cells: JsRowCell[],
+): number {
+  let cursor = start;
+  let previousColumn = -1;
+  for (let i = 0; i < cellCount; i++) {
+    if (cursor + 3 > length) throw new Error('Invalid buffer: truncated sparse cell');
+    const column = view.getUint16(cursor, true);
+    if (column >= colCount) {
+      throw new Error('Invalid buffer: cell column is out of range');
+    }
+    if (column <= previousColumn) {
+      throw new Error('Invalid buffer: cell columns must be strictly increasing');
+    }
+    previousColumn = column;
+    const type = view.getUint8(cursor + 2);
+    if (type > TYPE_RICH_STRING) {
+      throw new Error(`Invalid buffer: unknown cell type ${type}`);
+    }
+    const payloadOffset = cursor + 3;
+    let payloadSize = 0;
+    if (type === TYPE_NUMBER || type === TYPE_DATE) payloadSize = 8;
+    else if (type === TYPE_BOOL) payloadSize = 1;
+    else if (isStringCellType(type)) {
+      if (payloadOffset + 4 > length) throw new Error('Invalid buffer: truncated v2 string length');
+      payloadSize = 4 + view.getUint32(payloadOffset, true);
+    }
+    if (payloadOffset + payloadSize > length) {
+      throw new Error('Invalid buffer: truncated v2 cell payload');
+    }
+    const colName = colNameCache[columnNameOffset + column];
+
+    if (type === TYPE_NUMBER) {
+      cells.push({
+        column: colName,
+        valueType: 'number',
+        numberValue: view.getFloat64(payloadOffset, true),
+      });
+    } else if (type === TYPE_DATE) {
+      cells.push({
+        column: colName,
+        valueType: 'date',
+        numberValue: view.getFloat64(payloadOffset, true),
+      });
+    } else if (type === TYPE_BOOL) {
+      const value = view.getUint8(payloadOffset);
+      if (value > 1) throw new Error('Invalid buffer: boolean payload');
+      cells.push({ column: colName, valueType: 'boolean', boolValue: value !== 0 });
+    } else if (isStringCellType(type)) {
+      const stringLength = view.getUint32(payloadOffset, true);
+      const stringStart = payloadOffset + 4;
+      const value = decodeUtf8Range(buf, stringStart, stringStart + stringLength);
+      const valueType =
+        type === TYPE_ERROR ? 'error' : type === TYPE_FORMULA ? 'formula' : 'string';
+      cells.push({ column: colName, valueType, value });
+    }
+    cursor = payloadOffset + payloadSize;
+  }
+  return cursor;
+}
+
 function decodeAndValidateRowsBufferV2(
   buf: Buffer,
   view: DataView,
@@ -897,70 +991,23 @@ function decodeAndValidateRowsBufferV2(
       throw new Error('Invalid buffer: sparse row offsets are inconsistent');
     }
     const cellCount = view.getUint16(cursor, true);
-    cursor += 2;
     const cells: JsRowCell[] = [];
-    let previousColumn = -1;
-
-    for (let i = 0; i < cellCount; i++) {
-      if (cursor + 3 > length) throw new Error('Invalid buffer: truncated sparse cell');
-      const column = view.getUint16(cursor, true);
-      if (column >= colCount) {
-        throw new Error('Invalid buffer: cell column is out of range');
-      }
-      if (column <= previousColumn) {
-        throw new Error('Invalid buffer: cell columns must be strictly increasing');
-      }
-      previousColumn = column;
-      const type = view.getUint8(cursor + 2);
-      if (type > TYPE_RICH_STRING) {
-        throw new Error(`Invalid buffer: unknown cell type ${type}`);
-      }
-      const payloadOffset = cursor + 3;
-      let payloadSize = 0;
-      if (type === TYPE_NUMBER || type === TYPE_DATE) payloadSize = 8;
-      else if (type === TYPE_BOOL) payloadSize = 1;
-      else if (isStringCellType(type)) {
-        if (payloadOffset + 4 > length)
-          throw new Error('Invalid buffer: truncated v2 string length');
-        payloadSize = 4 + view.getUint32(payloadOffset, true);
-      }
-      if (payloadOffset + payloadSize > length) {
-        throw new Error('Invalid buffer: truncated v2 cell payload');
-      }
-      const colName = colNameCache[columnNameOffset + column];
-
-      if (type === TYPE_NUMBER) {
-        cells.push({
-          column: colName,
-          valueType: 'number',
-          numberValue: view.getFloat64(payloadOffset, true),
-        });
-      } else if (type === TYPE_DATE) {
-        cells.push({
-          column: colName,
-          valueType: 'date',
-          numberValue: view.getFloat64(payloadOffset, true),
-        });
-      } else if (type === TYPE_BOOL) {
-        const value = view.getUint8(payloadOffset);
-        if (value > 1) throw new Error('Invalid buffer: boolean payload');
-        cells.push({ column: colName, valueType: 'boolean', boolValue: value !== 0 });
-      } else if (isStringCellType(type)) {
-        const stringLength = view.getUint32(payloadOffset, true);
-        const stringStart = payloadOffset + 4;
-        const value = decodeUtf8Range(buf, stringStart, stringStart + stringLength);
-        const valueType =
-          type === TYPE_ERROR ? 'error' : type === TYPE_FORMULA ? 'formula' : 'string';
-        cells.push({ column: colName, valueType, value });
-      }
-      cursor = payloadOffset + payloadSize;
-    }
-
+    cursor = decodeAndValidateRowCellsV2(
+      buf,
+      view,
+      length,
+      colCount,
+      columnNameOffset,
+      cursor + 2,
+      cellCount,
+      cells,
+    );
     if (cells.length > 0) {
       rows.push({ row: rowNum, cells });
     }
   }
-  if (cursor !== buf.length) throw new Error('Invalid buffer: trailing data');
+  // Use the hoisted length: code after an OSR-entered loop has no feedback.
+  if (cursor !== length) throw new Error('Invalid buffer: trailing data');
   return rows;
 }
 

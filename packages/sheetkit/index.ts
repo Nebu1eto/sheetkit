@@ -1047,6 +1047,27 @@ function finishJsonOutputObject(object: Record<string, CellValue>): Record<strin
   return object;
 }
 
+/** Column letters for `count` consecutive columns starting at `minCol`. */
+function columnLetterKeys(minCol: number, count: number): string[] {
+  const keys = new Array<string>(count);
+  for (let index = 0; index < count; index++) keys[index] = columnNumberToLetter(minCol + index);
+  return keys;
+}
+
+/**
+ * True when assigning each derived key to an ordinary object creates an own
+ * data property: every key is a string absent from `Object.prototype`, so no
+ * inherited setter, accessor, or read-only property can intercept the store.
+ */
+function jsonKeysAvoidPrototype(keys: ReadonlyArray<string | undefined>): boolean {
+  for (let index = 0; index < keys.length; index++) {
+    const key = keys[index];
+    if (key === undefined) continue;
+    if (typeof key !== 'string' || key in Object.prototype) return false;
+  }
+  return true;
+}
+
 function escapeHtml(s: string): string {
   return s
     .replace(/&/g, '&amp;')
@@ -2140,6 +2161,29 @@ class Workbook {
       }
 
       const result: Record<string, CellValue>[] = [];
+      // Workbook-derived keys that cannot reach Object.prototype use ordinary
+      // objects; caller-supplied headers keep the null-prototype construction.
+      const plainKeys =
+        keys === null
+          ? columnLetterKeys(sd.minCol, sd.colCount)
+          : Array.isArray(headerOpt)
+            ? null
+            : keys;
+      if (plainKeys !== null && jsonKeysAvoidPrototype(plainKeys)) {
+        const minCol = sd.minCol;
+        for (let rowIndex = dataStartIndex; rowIndex < rows.length; rowIndex++) {
+          const cells = rows[rowIndex].cells;
+          const obj: Record<string, CellValue> = {};
+          for (let cellIndex = 0; cellIndex < cells.length; cellIndex++) {
+            const { column, value } = cells[cellIndex];
+            const key = plainKeys[column - minCol];
+            if (key === undefined) continue;
+            obj[key] = value;
+          }
+          result.push(obj);
+        }
+        return result;
+      }
       for (let rowIndex = dataStartIndex; rowIndex < rows.length; rowIndex++) {
         const obj = createJsonOutputObject();
         for (const { column, value } of rows[rowIndex].cells) {
@@ -2172,6 +2216,17 @@ class Workbook {
     }
 
     const result: Record<string, CellValue>[] = [];
+    if (!Array.isArray(headerOpt) && jsonKeysAvoidPrototype(keys)) {
+      for (let r = dataStartIndex; r < rows.length; r++) {
+        const row = rows[r];
+        const obj: Record<string, CellValue> = {};
+        for (let c = 0; c < keys.length; c++) {
+          obj[keys[c]] = c < row.length ? row[c] : null;
+        }
+        result.push(obj);
+      }
+      return result;
+    }
     for (let r = dataStartIndex; r < rows.length; r++) {
       const row = rows[r];
       const obj = createJsonOutputObject();

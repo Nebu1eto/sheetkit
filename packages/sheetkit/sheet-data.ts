@@ -96,9 +96,12 @@ function columnNumberToName(n: number): string {
 }
 
 const EMPTY_VIEW = new DataView(new ArrayBuffer(0));
+const EMPTY_BYTES = new Uint8Array(0);
+const EMPTY_TEXT = Buffer.alloc(0);
 
 export class SheetData {
-  #buf: Buffer | null;
+  #text: Buffer;
+  #bytes: Uint8Array;
   #view: DataView;
   #strings: ValidatedStringTable | null;
   #rowCount: number;
@@ -112,7 +115,6 @@ export class SheetData {
   #cellDataStart: number;
 
   constructor(buffer: Buffer | null) {
-    this.#buf = buffer;
     const parsed = parseRowsBuffer(buffer);
     if (!parsed) {
       this.#rowCount = 0;
@@ -126,10 +128,18 @@ export class SheetData {
       this.#strings = null;
       this.#cellDataStart = 0;
       this.#view = EMPTY_VIEW;
+      this.#bytes = EMPTY_BYTES;
+      this.#text = EMPTY_TEXT;
       return;
     }
 
     this.#view = parsed.view;
+    this.#bytes = new Uint8Array(
+      parsed.view.buffer,
+      parsed.view.byteOffset,
+      parsed.view.byteLength,
+    );
+    this.#text = Buffer.from(parsed.view.buffer, parsed.view.byteOffset, parsed.view.byteLength);
     this.#rowCount = parsed.header.rowCount;
     this.#colCount = parsed.header.colCount;
     this.#minRow = parsed.rowIndex[0].rowNum;
@@ -219,11 +229,15 @@ export class SheetData {
     }
   }
 
-  #readInlineString(offset: number): { value: string; bytesConsumed: number } {
-    const len = this.#view.getUint32(offset, true);
-    assert(this.#buf != null, 'Buffer must not be null when reading inline strings');
-    const slice = new Uint8Array(this.#buf.buffer, this.#buf.byteOffset + offset + 4, len);
-    return { value: decodeUtf8(slice), bytesConsumed: 4 + len };
+  /** Decode a validated inline string; all-ASCII bytes skip the UTF-8 decoder. */
+  #readInlineString(offset: number): string {
+    const start = offset + 4;
+    const end = start + this.#view.getUint32(offset, true);
+    const bytes = this.#bytes;
+    for (let i = start; i < end; i++) {
+      if (bytes[i] > 0x7f) return decodeUtf8(bytes.subarray(start, end));
+    }
+    return this.#text.toString('latin1', start, end);
   }
 
   #decodeCellValueV2(type: number, payloadOffset: number): CellValue {
@@ -236,13 +250,13 @@ export class SheetData {
       }
       case TYPE_STRING:
       case TYPE_RICH_STRING:
-        return this.#readInlineString(payloadOffset).value;
+        return this.#readInlineString(payloadOffset);
       case TYPE_BOOL:
         return this.#view.getUint8(payloadOffset) !== 0;
       case TYPE_ERROR:
-        return this.#readInlineString(payloadOffset).value;
+        return this.#readInlineString(payloadOffset);
       case TYPE_FORMULA:
-        return this.#readInlineString(payloadOffset).value;
+        return this.#readInlineString(payloadOffset);
       default:
         return null;
     }
