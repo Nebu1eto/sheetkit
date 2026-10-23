@@ -2,6 +2,7 @@ use super::*;
 use crate::workbook::budget::OpenBudget;
 use crate::workbook::open_options::OpenOptions;
 use crate::workbook::package_reader::{ArchiveAccess, PackageReader};
+use crate::workbook::source::{open_package_archive, PackageInput};
 
 /// VBA project relationship type URI.
 const VBA_PROJECT_REL_TYPE: &str =
@@ -164,14 +165,15 @@ impl Workbook {
         }
 
         let file = std::fs::File::open(file_path)?;
-        let source_file = file.try_clone()?;
         let outer_size = file.metadata()?.len();
         let limits = options.resolved_limits()?;
         let mut budget = OpenBudget::new(limits)?;
         budget.check_outer_input(outer_size)?;
-        let mut archive = PackageReader::open(file, &mut budget)?;
+        // One central-directory parse serves both open and later lazy reads.
+        let package = open_package_archive(PackageInput::file(file), limits)?;
+        let mut archive = PackageReader::from_archive(package.clone(), &mut budget)?;
         let mut wb = Self::from_archive(&mut archive, options)?;
-        wb.package_source = Some(PackageSource::from_file(source_file, limits));
+        wb.package_source = Some(PackageSource::new(package, limits));
         wb.read_mode = options.read_mode;
         Ok(wb)
     }
@@ -210,44 +212,81 @@ impl Workbook {
         let workbook_rels: Relationships = read_xml_part(archive, "xl/_rels/workbook.xml.rels")?;
         known_paths.insert("xl/_rels/workbook.xml.rels".to_string());
 
-        // Parse each worksheet referenced in the workbook.
+        let package_paths: HashSet<String> = archive.entry_names().into_iter().collect();
+        validate_package_part_names(&package_paths)?;
+
+        // Every worksheet must own a distinct internal package part in every
+        // read mode, so lazy saves cannot alias or escape the package.
         let sheet_count = workbook_xml.sheets.sheets.len();
+        let worksheet_paths = resolve_worksheet_paths(
+            &workbook_xml,
+            &workbook_rels,
+            &content_types,
+            &package_paths,
+        )?;
+
+        // Parse per-sheet worksheet relationship files (optional).
+        // Always loaded: needed for hyperlinks, on-demand comment loading, etc.
+        let mut worksheet_rels: HashMap<usize, Relationships> = HashMap::with_capacity(sheet_count);
+        for (i, sheet_path) in worksheet_paths.iter().enumerate() {
+            let rels_path = relationship_part_path(sheet_path);
+            if let Some(rels) = read_optional_xml_part::<Relationships, _>(archive, &rels_path)? {
+                worksheet_rels.insert(i, rels);
+                known_paths.insert(rels_path);
+            }
+        }
+        validate_table_relationship_ownership(
+            &worksheet_paths,
+            &worksheet_rels,
+            &content_types,
+            &package_paths,
+        )?;
+
+        let skip_aux = options.skip_aux_parts();
         let mut worksheets: Vec<(String, OnceLock<WorksheetXml>)> = Vec::with_capacity(sheet_count);
-        let mut worksheet_paths = Vec::with_capacity(sheet_count);
         let mut raw_sheet_xml: Vec<Option<Vec<u8>>> = Vec::with_capacity(sheet_count);
         let mut sheet_included: Vec<bool> = Vec::with_capacity(sheet_count);
         let mut sheet_materialized: Vec<bool> = Vec::with_capacity(sheet_count);
+        let mut eager_sparklines: Vec<Vec<crate::sparkline::SparklineConfig>> =
+            vec![vec![]; sheet_count];
 
-        let defer_sheets = matches!(options.read_mode, ReadMode::Lazy | ReadMode::Stream);
+        let defer_sheets = !options.is_eager();
 
-        for sheet_entry in &workbook_xml.sheets.sheets {
-            // Find the relationship target for this sheet's rId.
-            let rel = workbook_rels
-                .relationships
-                .iter()
-                .find(|r| r.id == sheet_entry.r_id && r.rel_type == rel_types::WORKSHEET);
-
-            let rel = rel.ok_or_else(|| {
-                Error::Internal(format!(
-                    "missing worksheet relationship for sheet '{}'",
-                    sheet_entry.name
-                ))
-            })?;
-
-            let sheet_path = resolve_relationship_target("xl/workbook.xml", &rel.target);
-
+        for (sheet_idx, sheet_entry) in workbook_xml.sheets.sheets.iter().enumerate() {
+            let sheet_path = &worksheet_paths[sheet_idx];
             let should_parse = options.should_parse_sheet(&sheet_entry.name);
             sheet_included.push(should_parse);
 
             if should_parse && !defer_sheets {
                 // Eager mode + selected: parse immediately. Clean save
                 // passthrough uses the pinned package source, so no second
-                // sheet-sized raw allocation is retained.
-                let entry = archive.entry(&sheet_path, true)?;
-                let ws = deserialize_worksheet_xml_with_row_limit(
-                    std::io::BufReader::with_capacity(LARGE_BUF_CAPACITY, entry),
-                    options.sheet_rows,
-                )?;
+                // sheet-sized raw allocation is retained. Table and sparkline
+                // checks reuse a spool captured by the same decompression.
+                let table_ids = table_relationship_ids(worksheet_rels.get(&sheet_idx));
+                let capture = !skip_aux || !table_ids.is_empty();
+                let (ws, spool) =
+                    read_eager_worksheet(archive, sheet_path, options.sheet_rows, capture)?;
+                if let Some(mut spool) = spool {
+                    if !table_ids.is_empty() {
+                        validate_worksheet_table_part_stream(
+                            std::io::BufReader::with_capacity(LARGE_BUF_CAPACITY, &mut spool),
+                            &table_ids,
+                            sheet_path,
+                        )?;
+                    }
+                    if !skip_aux {
+                        use std::io::Seek as _;
+                        spool.seek(std::io::SeekFrom::Start(0))?;
+                        if let Some(fragment) =
+                            crate::workbook::source::extract_worksheet_extension_fragment(
+                                std::io::BufReader::new(spool),
+                            )?
+                        {
+                            eager_sparklines[sheet_idx] =
+                                parse_sparklines_from_xml(&String::from_utf8_lossy(&fragment));
+                        }
+                    }
+                }
                 worksheets.push((sheet_entry.name.clone(), initialized_lock(ws)));
                 sheet_materialized.push(true);
                 raw_sheet_xml.push(None);
@@ -269,8 +308,20 @@ impl Workbook {
                 raw_sheet_xml.push(None);
             }
             known_paths.insert(sheet_path.clone());
-            worksheet_paths.push(sheet_path);
         }
+
+        // Deferred sheets are validated directly from the archive; eagerly
+        // parsed sheets were validated from their capture spool above.
+        let archive_table_checks: Vec<bool> = sheet_included
+            .iter()
+            .map(|included| *included && defer_sheets)
+            .collect();
+        validate_worksheet_table_parts(
+            archive,
+            &worksheet_paths,
+            &worksheet_rels,
+            &archive_table_checks,
+        )?;
 
         // Parse xl/styles.xml
         let stylesheet: StyleSheet = read_xml_part(archive, "xl/styles.xml")?;
@@ -288,44 +339,15 @@ impl Workbook {
         let sst_runtime = SharedStringTable::from_sst(shared_strings);
 
         // Parse xl/theme/theme1.xml (optional -- preserved as raw bytes for round-trip).
-        let (theme_xml, theme_colors) = match read_bytes_part(archive, "xl/theme/theme1.xml") {
-            Ok(bytes) => {
-                let colors = sheetkit_xml::theme::parse_theme_colors(&bytes);
-                (Some(bytes), colors)
-            }
-            Err(_) => (None, crate::theme::default_theme_colors()),
-        };
+        let (theme_xml, theme_colors) =
+            match read_optional_bytes_part(archive, "xl/theme/theme1.xml")? {
+                Some(bytes) => {
+                    let colors = sheetkit_xml::theme::parse_theme_colors(&bytes);
+                    (Some(bytes), colors)
+                }
+                None => (None, crate::theme::default_theme_colors()),
+            };
         known_paths.insert("xl/theme/theme1.xml".to_string());
-
-        // Parse per-sheet worksheet relationship files (optional).
-        // Always loaded: needed for hyperlinks, on-demand comment loading, etc.
-        let mut worksheet_rels: HashMap<usize, Relationships> = HashMap::with_capacity(sheet_count);
-        for (i, sheet_path) in worksheet_paths.iter().enumerate() {
-            let rels_path = relationship_part_path(sheet_path);
-            if let Ok(rels) = read_xml_part::<Relationships, _>(archive, &rels_path) {
-                worksheet_rels.insert(i, rels);
-                known_paths.insert(rels_path);
-            }
-        }
-
-        let mut package_paths = HashSet::with_capacity(archive.len());
-        for index in 0..archive.len() {
-            package_paths.insert(archive.entry_name(index)?);
-        }
-        validate_table_relationship_ownership(
-            &worksheet_paths,
-            &worksheet_rels,
-            &content_types,
-            &package_paths,
-        )?;
-        validate_worksheet_table_parts(
-            archive,
-            &worksheet_paths,
-            &worksheet_rels,
-            &sheet_included,
-        )?;
-
-        let skip_aux = options.skip_aux_parts();
 
         // Auxiliary part parsing: skipped in Lazy/Stream mode.
         let mut sheet_comments: Vec<Option<Comments>> = vec![None; worksheets.len()];
@@ -350,8 +372,7 @@ impl Workbook {
             Option<sheetkit_xml::threaded_comment::ThreadedComments>,
         > = vec![None; worksheets.len()];
         let mut person_list = sheetkit_xml::threaded_comment::PersonList::default();
-        let mut sheet_sparklines: Vec<Vec<crate::sparkline::SparklineConfig>> =
-            vec![vec![]; worksheets.len()];
+        let sheet_sparklines = eager_sparklines;
         let sheet_sparklines_hydrated = vec![!skip_aux; worksheets.len()];
         let mut vba_blob: Option<Vec<u8>> = None;
         let mut tables: Vec<(String, sheetkit_xml::table::TableXml, usize)> = Vec::new();
@@ -371,7 +392,9 @@ impl Workbook {
                     .find(|r| r.rel_type == rel_types::COMMENTS)
                 {
                     let comment_path = resolve_relationship_target(sheet_path, &comment_rel.target);
-                    if let Ok(comments) = read_xml_part::<Comments, _>(archive, &comment_path) {
+                    if let Some(comments) =
+                        read_optional_xml_part::<Comments, _>(archive, &comment_path)?
+                    {
                         sheet_comments[sheet_idx] = Some(comments);
                         known_paths.insert(comment_path);
                     }
@@ -383,7 +406,7 @@ impl Workbook {
                     .find(|r| r.rel_type == rel_types::VML_DRAWING)
                 {
                     let vml_path = resolve_relationship_target(sheet_path, &vml_rel.target);
-                    if let Ok(bytes) = read_bytes_part(archive, &vml_path) {
+                    if let Some(bytes) = read_optional_bytes_part(archive, &vml_path)? {
                         sheet_vml[sheet_idx] = Some(bytes);
                         known_paths.insert(vml_path);
                     }
@@ -399,7 +422,7 @@ impl Workbook {
                     let drawing_idx = if let Some(idx) = drawing_path_to_idx.get(&drawing_path) {
                         *idx
                     } else {
-                        let Ok(bytes) = read_bytes_part(archive, &drawing_path) else {
+                        let Some(bytes) = read_optional_bytes_part(archive, &drawing_path)? else {
                             continue;
                         };
                         known_paths.insert(drawing_path.clone());
@@ -426,7 +449,7 @@ impl Workbook {
                 if !drawing_paths.insert(drawing_path.clone()) {
                     continue;
                 }
-                if let Ok(bytes) = read_bytes_part(archive, &drawing_path) {
+                if let Some(bytes) = read_optional_bytes_part(archive, &drawing_path)? {
                     known_paths.insert(drawing_path.clone());
                     raw_graph_parts.insert(drawing_path.clone(), bytes.clone());
                     let Ok(drawing) = deserialize_xml_bytes::<WsDr>(&bytes) else {
@@ -443,7 +466,8 @@ impl Workbook {
 
             for drawing_path in drawing_paths {
                 let drawing_rels_path = relationship_part_path(&drawing_path);
-                let Ok(rels_bytes) = read_bytes_part(archive, &drawing_rels_path) else {
+                let Some(rels_bytes) = read_optional_bytes_part(archive, &drawing_rels_path)?
+                else {
                     continue;
                 };
                 known_paths.insert(drawing_rels_path.clone());
@@ -459,7 +483,8 @@ impl Workbook {
                     if rel.rel_type == rel_types::CHART {
                         let chart_path = resolve_relationship_target(&drawing_path, &rel.target);
                         if seen_chart_paths.insert(chart_path.clone()) {
-                            let Ok(bytes) = read_bytes_part(archive, &chart_path) else {
+                            let Some(bytes) = read_optional_bytes_part(archive, &chart_path)?
+                            else {
                                 continue;
                             };
                             known_paths.insert(chart_path.clone());
@@ -476,7 +501,7 @@ impl Workbook {
                     } else if rel.rel_type == rel_types::IMAGE {
                         let image_path = resolve_relationship_target(&drawing_path, &rel.target);
                         if seen_image_paths.insert(image_path.clone()) {
-                            if let Ok(bytes) = read_bytes_part(archive, &image_path) {
+                            if let Some(bytes) = read_optional_bytes_part(archive, &image_path)? {
                                 known_paths.insert(image_path.clone());
                                 images.push((image_path, bytes));
                             }
@@ -495,7 +520,7 @@ impl Workbook {
                 }
                 let chart_path = ovr.part_name.trim_start_matches('/').to_string();
                 if seen_chart_paths.insert(chart_path.clone()) {
-                    let Ok(bytes) = read_bytes_part(archive, &chart_path) else {
+                    let Some(bytes) = read_optional_bytes_part(archive, &chart_path)? else {
                         continue;
                     };
                     known_paths.insert(chart_path.clone());
@@ -513,18 +538,18 @@ impl Workbook {
 
             // Parse each document-property part independently while retaining
             // its original bytes, including malformed or unsupported content.
-            if let Ok(bytes) = read_bytes_part(archive, "docProps/core.xml") {
+            if let Some(bytes) = read_optional_bytes_part(archive, "docProps/core.xml")? {
                 let xml = String::from_utf8_lossy(&bytes);
                 core_properties = sheetkit_xml::doc_props::deserialize_core_properties(&xml).ok();
                 raw_doc_props.insert("docProps/core.xml".to_string(), bytes);
                 known_paths.insert("docProps/core.xml".to_string());
             }
-            if let Ok(bytes) = read_bytes_part(archive, "docProps/app.xml") {
+            if let Some(bytes) = read_optional_bytes_part(archive, "docProps/app.xml")? {
                 app_properties = deserialize_xml_bytes(&bytes).ok();
                 raw_doc_props.insert("docProps/app.xml".to_string(), bytes);
                 known_paths.insert("docProps/app.xml".to_string());
             }
-            if let Ok(bytes) = read_bytes_part(archive, "docProps/custom.xml") {
+            if let Some(bytes) = read_optional_bytes_part(archive, "docProps/custom.xml")? {
                 let xml = String::from_utf8_lossy(&bytes);
                 custom_properties =
                     sheetkit_xml::doc_props::deserialize_custom_properties(&xml).ok();
@@ -536,27 +561,29 @@ impl Workbook {
             for ovr in &content_types.overrides {
                 let path = ovr.part_name.trim_start_matches('/');
                 if ovr.content_type == mime_types::PIVOT_CACHE_DEFINITION {
-                    if let Ok(pcd) = read_xml_part::<
+                    if let Some(pcd) = read_optional_xml_part::<
                         sheetkit_xml::pivot_cache::PivotCacheDefinition,
                         _,
-                    >(archive, path)
+                    >(archive, path)?
                     {
                         known_paths.insert(path.to_string());
                         pivot_cache_defs.push((path.to_string(), pcd));
                     }
                 } else if ovr.content_type == mime_types::PIVOT_TABLE {
-                    if let Ok(pt) = read_xml_part::<
+                    if let Some(pt) = read_optional_xml_part::<
                         sheetkit_xml::pivot_table::PivotTableDefinition,
                         _,
-                    >(archive, path)
+                    >(archive, path)?
                     {
                         known_paths.insert(path.to_string());
                         pivot_tables.push((path.to_string(), pt));
                     }
                 } else if ovr.content_type == mime_types::PIVOT_CACHE_RECORDS {
-                    if let Ok(pcr) = read_xml_part::<sheetkit_xml::pivot_cache::PivotCacheRecords, _>(
-                        archive, path,
-                    ) {
+                    if let Some(pcr) = read_optional_xml_part::<
+                        sheetkit_xml::pivot_cache::PivotCacheRecords,
+                        _,
+                    >(archive, path)?
+                    {
                         known_paths.insert(path.to_string());
                         pivot_cache_records.push((path.to_string(), pcr));
                     }
@@ -567,15 +594,20 @@ impl Workbook {
             for ovr in &content_types.overrides {
                 let path = ovr.part_name.trim_start_matches('/');
                 if ovr.content_type == mime_types::SLICER {
-                    if let Ok(sd) =
-                        read_xml_part::<sheetkit_xml::slicer::SlicerDefinitions, _>(archive, path)
+                    if let Some(sd) = read_optional_xml_part::<
+                        sheetkit_xml::slicer::SlicerDefinitions,
+                        _,
+                    >(archive, path)?
                     {
                         known_paths.insert(path.to_string());
                         slicer_defs.push((path.to_string(), sd));
                     }
                 } else if ovr.content_type == mime_types::SLICER_CACHE {
-                    if let Ok(raw) = read_string_part(archive, path) {
-                        if let Some(scd) = sheetkit_xml::slicer::parse_slicer_cache(&raw) {
+                    if let Some(raw) = read_optional_part(archive, path, true, false)? {
+                        if let Some(scd) = std::str::from_utf8(&raw)
+                            .ok()
+                            .and_then(sheetkit_xml::slicer::parse_slicer_cache)
+                        {
                             known_paths.insert(path.to_string());
                             slicer_caches.push((path.to_string(), scd));
                         }
@@ -592,10 +624,10 @@ impl Workbook {
                     r.rel_type == sheetkit_xml::threaded_comment::REL_TYPE_THREADED_COMMENT
                 }) {
                     let tc_path = resolve_relationship_target(sheet_path, &tc_rel.target);
-                    if let Ok(tc) = read_xml_part::<
+                    if let Some(tc) = read_optional_xml_part::<
                         sheetkit_xml::threaded_comment::ThreadedComments,
                         _,
-                    >(archive, &tc_path)
+                    >(archive, &tc_path)?
                     {
                         sheet_threaded_comments[sheet_idx] = Some(tc);
                         known_paths.insert(tc_path);
@@ -613,38 +645,27 @@ impl Workbook {
                 {
                     let person_path =
                         resolve_relationship_target("xl/workbook.xml", &person_rel.target);
-                    if let Ok(pl) = read_xml_part::<sheetkit_xml::threaded_comment::PersonList, _>(
-                        archive,
-                        &person_path,
-                    ) {
+                    if let Some(pl) = read_optional_xml_part::<
+                        sheetkit_xml::threaded_comment::PersonList,
+                        _,
+                    >(archive, &person_path)?
+                    {
                         known_paths.insert(person_path);
                         found = Some(pl);
                     }
                 }
                 if found.is_none() {
-                    if let Ok(pl) = read_xml_part::<sheetkit_xml::threaded_comment::PersonList, _>(
-                        archive,
-                        "xl/persons/person.xml",
-                    ) {
+                    if let Some(pl) = read_optional_xml_part::<
+                        sheetkit_xml::threaded_comment::PersonList,
+                        _,
+                    >(archive, "xl/persons/person.xml")?
+                    {
                         known_paths.insert("xl/persons/person.xml".to_string());
                         found = Some(pl);
                     }
                 }
                 found.unwrap_or_default()
             };
-
-            // Parse sparklines from worksheet extension lists.
-            for (i, ws_path) in worksheet_paths.iter().enumerate() {
-                if !sheet_included.get(i).copied().unwrap_or(true) {
-                    continue;
-                }
-                if let Ok(raw) = read_string_part(archive, ws_path) {
-                    let parsed = parse_sparklines_from_xml(&raw);
-                    if !parsed.is_empty() {
-                        sheet_sparklines[i] = parsed;
-                    }
-                }
-            }
 
             // Parse table parts referenced from worksheet relationships.
             for (sheet_idx, sheet_path) in worksheet_paths.iter().enumerate() {
@@ -656,9 +677,12 @@ impl Workbook {
                         continue;
                     }
                     let table_path = resolve_relationship_target(sheet_path, &rel.target);
-                    if let Ok(table_xml) =
-                        read_xml_part::<sheetkit_xml::table::TableXml, _>(archive, &table_path)
-                    {
+                    // parse_table_xml keeps extLst/sortState and the source
+                    // snapshot used for byte-identical passthrough.
+                    let parsed = read_optional_part(archive, &table_path, true, false)?
+                        .and_then(|bytes| String::from_utf8(bytes).ok())
+                        .and_then(|xml| sheetkit_xml::table::parse_table_xml(&xml).ok());
+                    if let Some(table_xml) = parsed {
                         known_paths.insert(table_path.clone());
                         tables.push((table_path, table_xml, sheet_idx));
                     }
@@ -683,7 +707,7 @@ impl Workbook {
             vba_candidates.push("xl/vbaProject.bin".to_string());
         }
         for path in vba_candidates {
-            if let Some(bytes) = read_all_optional_part(archive, &path, false, true)? {
+            if let Some(bytes) = read_optional_part(archive, &path, false, true)? {
                 crate::vba::validate_vba_input(&bytes, options.vba_limits)?;
                 known_paths.insert(path);
                 vba_blob = Some(bytes);
@@ -706,17 +730,15 @@ impl Workbook {
         // unknown_parts for round-trip preservation.
         let mut unknown_parts: Vec<(String, Vec<u8>)> = Vec::new();
         let mut deferred_parts = crate::workbook::aux::DeferredAuxParts::new();
-        for i in 0..archive.len() {
-            let Ok(name) = archive.entry_name(i) else {
-                continue;
-            };
+        for name in archive.entry_names() {
             if !known_paths.contains(&name) {
-                if let Ok(bytes) = read_bytes_part(archive, &name) {
-                    if skip_aux && crate::workbook::aux::classify_deferred_path(&name).is_some() {
-                        deferred_parts.insert(name, bytes);
-                    } else {
-                        unknown_parts.push((name, bytes));
-                    }
+                // Every remaining entry is preserved, so a corrupt one must
+                // fail the open instead of disappearing on the next save.
+                let bytes = read_bytes_part(archive, &name)?;
+                if skip_aux && crate::workbook::aux::classify_deferred_path(&name).is_some() {
+                    deferred_parts.insert(name, bytes);
+                } else {
+                    unknown_parts.push((name, bytes));
                 }
             }
         }
@@ -737,8 +759,8 @@ impl Workbook {
             }
         }
 
-        if let Some(metadata) = archive.resource_violation() {
-            return Err(Error::ResourceLimitExceeded(metadata));
+        if let Some(error) = archive.pending_error() {
+            return Err(error);
         }
 
         Ok(Self {
@@ -962,15 +984,15 @@ impl Workbook {
             }
         }
 
-        let cursor = std::io::Cursor::new(data);
         let outer_size = u64::try_from(data.len()).unwrap_or(u64::MAX);
         let limits = options.resolved_limits()?;
         let mut budget = OpenBudget::new(limits)?;
         budget.check_outer_input(outer_size)?;
         budget.charge_retained(outer_size)?;
-        let mut archive = PackageReader::open(cursor, &mut budget)?;
+        let package = open_package_archive(PackageInput::buffer(data.into()), limits)?;
+        let mut archive = PackageReader::from_archive(package.clone(), &mut budget)?;
         let mut wb = Self::from_archive(&mut archive, options)?;
-        wb.package_source = Some(PackageSource::from_buffer(data.into(), limits));
+        wb.package_source = Some(PackageSource::new(package, limits));
         wb.read_mode = options.read_mode;
         Ok(wb)
     }
@@ -1031,15 +1053,13 @@ impl Workbook {
         budget.check_outer_input(decrypted_size)?;
         budget.charge_retained(decrypted_size)?;
 
+        let limits = budget.limits();
+        let package = open_package_archive(PackageInput::buffer(decrypted_zip.into()), limits)?;
         let mut workbook = {
-            let cursor = std::io::Cursor::new(decrypted_zip.as_slice());
-            let mut archive = PackageReader::open(cursor, &mut budget)?;
+            let mut archive = PackageReader::from_archive(package.clone(), &mut budget)?;
             Self::from_archive(&mut archive, options)?
         };
-        workbook.package_source = Some(PackageSource::from_buffer(
-            decrypted_zip.into(),
-            options.resolved_limits()?,
-        ));
+        workbook.package_source = Some(PackageSource::new(package, limits));
         workbook.read_mode = options.read_mode;
         Ok(workbook)
     }
@@ -1133,7 +1153,9 @@ impl Workbook {
             WorkbookFormat::Xlsm | WorkbookFormat::Xltm | WorkbookFormat::Xlam
         );
         let emits_vba = preserves_vba && self.vba_blob.is_some();
-        let mut vba_part_paths = HashSet::from(["xl/vbaProject.bin".to_string()]);
+        // OPC part names compare case-insensitively, so every VBA path match
+        // uses the same ASCII case folding.
+        let mut vba_part_paths = HashSet::from(["xl/vbaproject.bin".to_string()]);
         vba_part_paths.extend(
             self.workbook_rels
                 .relationships
@@ -1141,11 +1163,11 @@ impl Workbook {
                 .filter(|relationship| relationship.rel_type == VBA_PROJECT_REL_TYPE)
                 .map(|relationship| {
                     resolve_relationship_target("xl/workbook.xml", &relationship.target)
+                        .to_ascii_lowercase()
                 }),
         );
         let is_vba_path = |path: &str| {
-            let normalized = path.trim_start_matches('/');
-            is_canonical_vba_package_path(normalized) || vba_part_paths.contains(normalized)
+            vba_part_paths.contains(&path.trim_start_matches('/').to_ascii_lowercase())
         };
         let mut content_types = self.content_types.clone();
 
@@ -2234,7 +2256,11 @@ impl Workbook {
 
         // xl/tables/table{N}.xml
         for (path, table_xml, _sheet_idx) in &self.tables {
-            write_xml_part(zip, path, table_xml, options, limits.xml_part_bytes)?;
+            if let Some(raw) = table_xml.unchanged_source() {
+                write_bytes_part(zip, path, raw.as_bytes(), options, limits.xml_part_bytes)?;
+            } else {
+                write_xml_part(zip, path, table_xml, options, limits.xml_part_bytes)?;
+            }
         }
 
         // xl/slicers/slicer{N}.xml
@@ -2514,23 +2540,70 @@ fn atomic_write_file_with_parent_sync(
     write: impl FnOnce(&mut std::fs::File) -> Result<()>,
     sync_parent: impl FnOnce(&Path) -> std::io::Result<()>,
 ) -> Result<()> {
-    let parent = path
+    // Replace the file a symlink points to rather than the link itself.
+    let (destination, existing_permissions) = resolve_save_destination(path)?;
+    let parent = destination
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
-    let mut temporary = tempfile::Builder::new()
-        .prefix(".sheetkit-")
-        .tempfile_in(parent)?;
+    let mut builder = tempfile::Builder::new();
+    builder.prefix(".sheetkit-");
+    #[cfg(unix)]
+    if existing_permissions.is_none() {
+        // New files get the conventional mode, still narrowed by the umask.
+        use std::os::unix::fs::PermissionsExt as _;
+        builder.permissions(std::fs::Permissions::from_mode(0o666));
+    }
+    let mut temporary = builder.tempfile_in(parent)?;
     write(temporary.as_file_mut())?;
     temporary.as_file_mut().flush()?;
+    #[cfg(unix)]
+    if let Some(permissions) = existing_permissions {
+        temporary.as_file().set_permissions(permissions)?;
+    }
+    #[cfg(not(unix))]
+    let _ = existing_permissions;
     temporary.as_file().sync_all()?;
     temporary
-        .persist(path)
+        .persist(&destination)
         .map_err(|error| Error::Io(error.error))?;
 
     // The rename is the commit point. A failed directory sync cannot undo it.
     let _ = sync_parent(parent);
     Ok(())
+}
+
+/// Follow symlinks from `path` to the file a save must replace. Returns the
+/// final path and the permissions of an existing destination file.
+fn resolve_save_destination(
+    path: &Path,
+) -> std::io::Result<(std::path::PathBuf, Option<std::fs::Permissions>)> {
+    const MAX_SYMLINK_HOPS: usize = 40;
+    let mut current = path.to_path_buf();
+    for _ in 0..MAX_SYMLINK_HOPS {
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                let target = std::fs::read_link(&current)?;
+                current = if target.is_absolute() {
+                    target
+                } else {
+                    current
+                        .parent()
+                        .map(|parent| parent.join(&target))
+                        .unwrap_or(target)
+                };
+            }
+            Ok(metadata) => return Ok((current, Some(metadata.permissions()))),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok((current, None));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::InvalidInput,
+        "too many levels of symbolic links in save destination",
+    ))
 }
 
 fn sync_parent_directory(parent: &Path) -> std::io::Result<()> {
@@ -3068,18 +3141,13 @@ fn validate_worksheet_table_parts<A: ArchiveAccess>(
     archive: &mut A,
     worksheet_paths: &[String],
     worksheet_rels: &HashMap<usize, Relationships>,
-    sheet_included: &[bool],
+    sheet_checked: &[bool],
 ) -> Result<()> {
     for (sheet_index, relationships) in worksheet_rels {
-        if !sheet_included.get(*sheet_index).copied().unwrap_or(false) {
+        if !sheet_checked.get(*sheet_index).copied().unwrap_or(false) {
             continue;
         }
-        let expected_ids: HashSet<&str> = relationships
-            .relationships
-            .iter()
-            .filter(|relationship| relationship.rel_type == rel_types::TABLE)
-            .map(|relationship| relationship.id.as_str())
-            .collect();
+        let expected_ids = table_relationship_ids(Some(relationships));
         if expected_ids.is_empty() {
             continue;
         }
@@ -3089,147 +3157,160 @@ fn validate_worksheet_table_parts<A: ArchiveAccess>(
                 "table relationship references unknown sheet index {sheet_index}"
             ))
         })?;
-        let result: Result<()> = {
+        let (result, read_error) = {
             let entry = archive.entry(sheet_path, true)?;
-            let mut reader = quick_xml::NsReader::from_reader(std::io::BufReader::with_capacity(
-                LARGE_BUF_CAPACITY,
-                entry,
-            ));
-            let mut buffer = Vec::with_capacity(4096);
-            let mut declared_count = None;
-            let mut seen_container = false;
-            let mut in_container = false;
-            let mut open_table_part = false;
-            let mut actual_ids = HashSet::with_capacity(expected_ids.len());
-
-            loop {
-                buffer.clear();
-                let (namespace, event) = reader
-                    .read_resolved_event_into(&mut buffer)
-                    .map_err(|error| Error::XmlParse(error.to_string()))?;
-                let is_spreadsheet_ml =
-                    resolved_namespace_is(&namespace, sheetkit_xml::namespaces::SPREADSHEET_ML);
-                if open_table_part {
-                    match event {
-                        quick_xml::events::Event::End(element)
-                            if is_spreadsheet_ml
-                                && element.local_name().as_ref() == b"tablePart" =>
-                        {
-                            open_table_part = false;
-                            continue;
-                        }
-                        quick_xml::events::Event::Text(text)
-                            if text.as_ref().iter().all(u8::is_ascii_whitespace) =>
-                        {
-                            continue;
-                        }
-                        quick_xml::events::Event::Comment(_) => continue,
-                        _ => {
-                            return Err(Error::InvalidArgument(format!(
-                                "worksheet tablePart must be empty: {sheet_path}"
-                            )));
-                        }
-                    }
-                }
-                match event {
-                    quick_xml::events::Event::Start(element)
-                        if is_spreadsheet_ml && element.local_name().as_ref() == b"tableParts" =>
-                    {
-                        if seen_container {
-                            return Err(Error::InvalidArgument(format!(
-                                "worksheet has duplicate tableParts containers: {sheet_path}"
-                            )));
-                        }
-                        seen_container = true;
-                        in_container = true;
-                        for attribute in element.attributes() {
-                            let attribute =
-                                attribute.map_err(|error| Error::XmlParse(error.to_string()))?;
-                            let (attribute_namespace, local_name) =
-                                reader.resolve_attribute(attribute.key);
-                            if matches!(
-                                attribute_namespace,
-                                quick_xml::name::ResolveResult::Unbound
-                            ) && local_name.as_ref() == b"count"
-                            {
-                                if declared_count.is_some() {
-                                    return Err(Error::InvalidArgument(format!(
-                                        "worksheet tableParts has duplicate count attributes: {sheet_path}"
-                                    )));
-                                }
-                                declared_count = Some(
-                                    attribute
-                                        .decode_and_unescape_value(reader.decoder())
-                                        .map_err(|error| Error::XmlParse(error.to_string()))?
-                                        .parse::<u32>()
-                                        .map_err(|error| Error::XmlParse(error.to_string()))?,
-                                );
-                            }
-                        }
-                    }
-                    quick_xml::events::Event::End(element)
-                        if is_spreadsheet_ml && element.local_name().as_ref() == b"tableParts" =>
-                    {
-                        in_container = false;
-                    }
-                    quick_xml::events::Event::Empty(element)
-                        if in_container
-                            && is_spreadsheet_ml
-                            && element.local_name().as_ref() == b"tablePart" =>
-                    {
-                        let relationship_id =
-                            table_part_relationship_id(&reader, &element, sheet_path)?;
-                        if !actual_ids.insert(relationship_id)
-                            || actual_ids.len() > expected_ids.len()
-                        {
-                            return Err(Error::InvalidArgument(format!(
-                                "worksheet tableParts do not match table relationships: {sheet_path}"
-                            )));
-                        }
-                    }
-                    quick_xml::events::Event::Start(element)
-                        if in_container
-                            && is_spreadsheet_ml
-                            && element.local_name().as_ref() == b"tablePart" =>
-                    {
-                        let relationship_id =
-                            table_part_relationship_id(&reader, &element, sheet_path)?;
-                        if !actual_ids.insert(relationship_id)
-                            || actual_ids.len() > expected_ids.len()
-                        {
-                            return Err(Error::InvalidArgument(format!(
-                                "worksheet tableParts do not match table relationships: {sheet_path}"
-                            )));
-                        }
-                        open_table_part = true;
-                    }
-                    quick_xml::events::Event::Eof => break,
-                    _ => {}
-                }
-            }
-
-            if open_table_part
-                || declared_count.is_some_and(|count| count as usize != actual_ids.len())
-            {
-                return Err(Error::InvalidArgument(format!(
-                    "worksheet tableParts count does not match entries: {sheet_path}"
-                )));
-            }
-            if actual_ids.len() != expected_ids.len()
-                || !actual_ids
-                    .iter()
-                    .all(|relationship_id| expected_ids.contains(relationship_id.as_str()))
-            {
-                return Err(Error::InvalidArgument(format!(
-                    "worksheet tableParts do not match table relationships: {sheet_path}"
-                )));
-            }
-            Ok(())
+            let mut source = PartReader::new(entry, None);
+            let result = validate_worksheet_table_part_stream(
+                std::io::BufReader::with_capacity(LARGE_BUF_CAPACITY, &mut source),
+                &expected_ids,
+                sheet_path,
+            );
+            (result, source.read_error)
         };
-        if let Some(metadata) = archive.resource_violation() {
-            return Err(Error::ResourceLimitExceeded(metadata));
+        if let Some(error) = archive.pending_error() {
+            return Err(error);
+        }
+        if let Some(message) = read_error {
+            return Err(Error::Zip(message));
         }
         result?;
+    }
+    Ok(())
+}
+
+/// Table relationship ids declared by one worksheet relationship part.
+fn table_relationship_ids(relationships: Option<&Relationships>) -> HashSet<String> {
+    relationships
+        .into_iter()
+        .flat_map(|relationships| &relationships.relationships)
+        .filter(|relationship| relationship.rel_type == rel_types::TABLE)
+        .map(|relationship| relationship.id.clone())
+        .collect()
+}
+
+/// Check that a worksheet's `tableParts` list matches its table relationships.
+fn validate_worksheet_table_part_stream<R: std::io::BufRead>(
+    source: R,
+    expected_ids: &HashSet<String>,
+    sheet_path: &str,
+) -> Result<()> {
+    let mut reader = quick_xml::NsReader::from_reader(source);
+    let mut buffer = Vec::with_capacity(4096);
+    let mut declared_count = None;
+    let mut seen_container = false;
+    let mut in_container = false;
+    let mut open_table_part = false;
+    let mut actual_ids = HashSet::with_capacity(expected_ids.len());
+
+    loop {
+        buffer.clear();
+        let (namespace, event) = reader
+            .read_resolved_event_into(&mut buffer)
+            .map_err(|error| Error::XmlParse(error.to_string()))?;
+        let is_spreadsheet_ml =
+            resolved_namespace_is(&namespace, sheetkit_xml::namespaces::SPREADSHEET_ML);
+        if open_table_part {
+            match event {
+                quick_xml::events::Event::End(element)
+                    if is_spreadsheet_ml && element.local_name().as_ref() == b"tablePart" =>
+                {
+                    open_table_part = false;
+                    continue;
+                }
+                quick_xml::events::Event::Text(text)
+                    if text.as_ref().iter().all(u8::is_ascii_whitespace) =>
+                {
+                    continue;
+                }
+                quick_xml::events::Event::Comment(_) => continue,
+                _ => {
+                    return Err(Error::InvalidArgument(format!(
+                        "worksheet tablePart must be empty: {sheet_path}"
+                    )));
+                }
+            }
+        }
+        match event {
+            quick_xml::events::Event::Start(element)
+                if is_spreadsheet_ml && element.local_name().as_ref() == b"tableParts" =>
+            {
+                if seen_container {
+                    return Err(Error::InvalidArgument(format!(
+                        "worksheet has duplicate tableParts containers: {sheet_path}"
+                    )));
+                }
+                seen_container = true;
+                in_container = true;
+                for attribute in element.attributes() {
+                    let attribute =
+                        attribute.map_err(|error| Error::XmlParse(error.to_string()))?;
+                    let (attribute_namespace, local_name) = reader.resolve_attribute(attribute.key);
+                    if matches!(attribute_namespace, quick_xml::name::ResolveResult::Unbound)
+                        && local_name.as_ref() == b"count"
+                    {
+                        if declared_count.is_some() {
+                            return Err(Error::InvalidArgument(format!(
+                                "worksheet tableParts has duplicate count attributes: {sheet_path}"
+                            )));
+                        }
+                        declared_count = Some(
+                            attribute
+                                .decode_and_unescape_value(reader.decoder())
+                                .map_err(|error| Error::XmlParse(error.to_string()))?
+                                .parse::<u32>()
+                                .map_err(|error| Error::XmlParse(error.to_string()))?,
+                        );
+                    }
+                }
+            }
+            quick_xml::events::Event::End(element)
+                if is_spreadsheet_ml && element.local_name().as_ref() == b"tableParts" =>
+            {
+                in_container = false;
+            }
+            quick_xml::events::Event::Empty(element)
+                if in_container
+                    && is_spreadsheet_ml
+                    && element.local_name().as_ref() == b"tablePart" =>
+            {
+                let relationship_id = table_part_relationship_id(&reader, &element, sheet_path)?;
+                if !actual_ids.insert(relationship_id) || actual_ids.len() > expected_ids.len() {
+                    return Err(Error::InvalidArgument(format!(
+                        "worksheet tableParts do not match table relationships: {sheet_path}"
+                    )));
+                }
+            }
+            quick_xml::events::Event::Start(element)
+                if in_container
+                    && is_spreadsheet_ml
+                    && element.local_name().as_ref() == b"tablePart" =>
+            {
+                let relationship_id = table_part_relationship_id(&reader, &element, sheet_path)?;
+                if !actual_ids.insert(relationship_id) || actual_ids.len() > expected_ids.len() {
+                    return Err(Error::InvalidArgument(format!(
+                        "worksheet tableParts do not match table relationships: {sheet_path}"
+                    )));
+                }
+                open_table_part = true;
+            }
+            quick_xml::events::Event::Eof => break,
+            _ => {}
+        }
+    }
+
+    if open_table_part || declared_count.is_some_and(|count| count as usize != actual_ids.len()) {
+        return Err(Error::InvalidArgument(format!(
+            "worksheet tableParts count does not match entries: {sheet_path}"
+        )));
+    }
+    if actual_ids.len() != expected_ids.len()
+        || !actual_ids
+            .iter()
+            .all(|relationship_id| expected_ids.contains(relationship_id.as_str()))
+    {
+        return Err(Error::InvalidArgument(format!(
+            "worksheet tableParts do not match table relationships: {sheet_path}"
+        )));
     }
     Ok(())
 }
@@ -3292,15 +3373,266 @@ pub(crate) fn read_xml_part<T: serde::de::DeserializeOwned, A: ArchiveAccess>(
     archive: &mut A,
     name: &str,
 ) -> Result<T> {
-    let result = {
-        let entry = archive.entry(name, true)?;
-        let reader = std::io::BufReader::with_capacity(LARGE_BUF_CAPACITY, entry);
-        quick_xml::de::from_reader(reader).map_err(|e| Error::XmlDeserialize(e.to_string()))
+    read_xml_entry(archive, name, PartPresence::Required)?
+        .ok_or_else(|| Error::Internal(format!("required part was not read: {name}")))?
+}
+
+/// Read an optional XML part. Returns `None` when the entry is absent or its
+/// intact bytes do not deserialize; such parts remain preserved as unknown
+/// parts. Archive read, checksum, and size failures are returned as errors.
+fn read_optional_xml_part<T: serde::de::DeserializeOwned, A: ArchiveAccess>(
+    archive: &mut A,
+    name: &str,
+) -> Result<Option<T>> {
+    Ok(read_xml_entry(archive, name, PartPresence::Optional)?.and_then(Result::ok))
+}
+
+/// Whether a missing archive entry is an error or an absent optional part.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PartPresence {
+    Required,
+    Optional,
+}
+
+/// Stream-deserialize one XML entry. The outer result carries archive
+/// failures; the inner result carries XML deserialization failures.
+fn read_xml_entry<T: serde::de::DeserializeOwned, A: ArchiveAccess>(
+    archive: &mut A,
+    name: &str,
+    presence: PartPresence,
+) -> Result<Option<Result<T>>> {
+    let (parsed, read_error) = {
+        let entry = match presence {
+            PartPresence::Required => archive.entry(name, true)?,
+            PartPresence::Optional => match archive.entry_optional(name, true)? {
+                Some(entry) => entry,
+                None => return Ok(None),
+            },
+        };
+        let mut source = PartReader::new(entry, None);
+        let parsed = {
+            let mut reader = std::io::BufReader::with_capacity(LARGE_BUF_CAPACITY, &mut source);
+            let parsed: Result<T> = quick_xml::de::from_reader(&mut reader)
+                .map_err(|error| Error::XmlDeserialize(error.to_string()));
+            if parsed.is_ok() {
+                // Read to EOF so the checksum and declared size are verified.
+                let _ = std::io::copy(&mut reader, &mut std::io::sink());
+            }
+            parsed
+        };
+        (parsed, source.read_error)
     };
-    if let Some(metadata) = archive.resource_violation() {
-        return Err(Error::ResourceLimitExceeded(metadata));
+    if let Some(error) = archive.pending_error() {
+        return Err(error);
     }
-    result
+    if let Some(message) = read_error {
+        return Err(Error::Zip(message));
+    }
+    Ok(Some(parsed))
+}
+
+/// Entry reader that records archive read failures separately from parser
+/// failures and can mirror consumed bytes into a spool.
+struct PartReader<R> {
+    inner: R,
+    copy: Option<std::io::BufWriter<std::fs::File>>,
+    read_error: Option<String>,
+    copy_error: Option<std::io::Error>,
+}
+
+impl<R> PartReader<R> {
+    fn new(inner: R, copy: Option<std::fs::File>) -> Self {
+        Self {
+            inner,
+            copy: copy.map(std::io::BufWriter::new),
+            read_error: None,
+            copy_error: None,
+        }
+    }
+}
+
+impl<R: std::io::Read> std::io::Read for PartReader<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let count = match self.inner.read(buffer) {
+            Ok(count) => count,
+            Err(error) => {
+                if self.read_error.is_none() {
+                    self.read_error = Some(error.to_string());
+                }
+                return Err(error);
+            }
+        };
+        if let Some(copy) = &mut self.copy {
+            if let Err(error) = copy.write_all(&buffer[..count]) {
+                let message = error.to_string();
+                self.copy_error.get_or_insert(error);
+                return Err(std::io::Error::other(message));
+            }
+        }
+        Ok(count)
+    }
+}
+
+/// Decompress and parse one eagerly opened worksheet exactly once. When
+/// `capture` is set, the decompressed bytes are also spooled to disk for
+/// table and extension checks that must not decompress the entry again.
+fn read_eager_worksheet<A: ArchiveAccess>(
+    archive: &mut A,
+    path: &str,
+    row_limit: Option<u32>,
+    capture: bool,
+) -> Result<(WorksheetXml, Option<std::fs::File>)> {
+    let spool = if capture {
+        Some(tempfile::tempfile()?)
+    } else {
+        None
+    };
+    let (parsed, source) = {
+        let entry = archive.entry(path, true)?;
+        let mut source = PartReader::new(entry, spool);
+        let parsed = {
+            let mut reader = std::io::BufReader::with_capacity(LARGE_BUF_CAPACITY, &mut source);
+            let parsed = deserialize_worksheet_xml_with_row_limit(&mut reader, row_limit);
+            if parsed.is_ok() {
+                let _ = std::io::copy(&mut reader, &mut std::io::sink());
+            }
+            parsed
+        };
+        (parsed, (source.read_error, source.copy_error, source.copy))
+    };
+    let (read_error, copy_error, copy) = source;
+    if let Some(error) = archive.pending_error() {
+        return Err(error);
+    }
+    if let Some(message) = read_error {
+        return Err(Error::Zip(message));
+    }
+    if let Some(error) = copy_error {
+        return Err(Error::Io(error));
+    }
+    let worksheet = parsed?;
+    let spool = match copy {
+        Some(writer) => {
+            use std::io::Seek as _;
+            let mut file = writer
+                .into_inner()
+                .map_err(|error| Error::Io(error.into_error()))?;
+            file.seek(std::io::SeekFrom::Start(0))?;
+            Some(file)
+        }
+        None => None,
+    };
+    Ok((worksheet, spool))
+}
+
+/// Reject package part names that differ only by ASCII case. OPC part names
+/// are case-insensitive, so such entries alias one logical part.
+fn validate_package_part_names(package_paths: &HashSet<String>) -> Result<()> {
+    let mut folded = HashSet::with_capacity(package_paths.len());
+    for path in package_paths {
+        if !folded.insert(path.to_ascii_lowercase()) {
+            return Err(Error::InvalidArgument(format!(
+                "package part names differ only by case: {path}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Resolve each sheet's worksheet part and require a distinct, internal,
+/// present worksheet part for every sheet.
+fn resolve_worksheet_paths(
+    workbook_xml: &WorkbookXml,
+    workbook_rels: &Relationships,
+    content_types: &ContentTypes,
+    package_paths: &HashSet<String>,
+) -> Result<Vec<String>> {
+    const RESERVED_PARTS: [&str; 6] = [
+        "[content_types].xml",
+        "xl/workbook.xml",
+        "xl/styles.xml",
+        "xl/sharedstrings.xml",
+        "xl/theme/theme1.xml",
+        "xl/vbaproject.bin",
+    ];
+    let mut seen = HashSet::with_capacity(workbook_xml.sheets.sheets.len());
+    let mut paths = Vec::with_capacity(workbook_xml.sheets.sheets.len());
+    for sheet in &workbook_xml.sheets.sheets {
+        let relationship = workbook_rels
+            .relationships
+            .iter()
+            .find(|r| r.id == sheet.r_id && r.rel_type == rel_types::WORKSHEET)
+            .ok_or_else(|| {
+                Error::Internal(format!(
+                    "missing worksheet relationship for sheet '{}'",
+                    sheet.name
+                ))
+            })?;
+        if relationship.target_mode.is_some() {
+            return Err(Error::InvalidArgument(format!(
+                "external worksheet relationship is not allowed: {}",
+                relationship.id
+            )));
+        }
+        if relationship_target_escapes("xl/workbook.xml", &relationship.target) {
+            return Err(Error::InvalidArgument(format!(
+                "worksheet relationship target escapes package root: {}",
+                relationship.id
+            )));
+        }
+        let path = resolve_relationship_target("xl/workbook.xml", &relationship.target);
+        let folded = path.to_ascii_lowercase();
+        if !package_paths.contains(&path) {
+            return Err(Error::InvalidArgument(format!(
+                "worksheet relationship target is missing from package: {path}"
+            )));
+        }
+        if RESERVED_PARTS.contains(&folded.as_str())
+            || folded.ends_with(".rels")
+            || content_types.overrides.iter().any(|entry| {
+                entry
+                    .part_name
+                    .trim_start_matches('/')
+                    .eq_ignore_ascii_case(&path)
+                    && entry.content_type != mime_types::WORKSHEET
+            })
+        {
+            return Err(Error::InvalidArgument(format!(
+                "worksheet relationship target is not a worksheet part: {path}"
+            )));
+        }
+        if !seen.insert(folded) {
+            return Err(Error::InvalidArgument(format!(
+                "worksheet part is shared by multiple sheets: {path}"
+            )));
+        }
+        paths.push(path);
+    }
+    Ok(paths)
+}
+
+/// Whether a relative or absolute target leaves the package root or uses a
+/// URI scheme instead of a package part name.
+fn relationship_target_escapes(source_part: &str, target: &str) -> bool {
+    if target.is_empty() || target.contains('\\') || target.contains(':') {
+        return true;
+    }
+    let mut depth = if target.starts_with('/') {
+        0usize
+    } else {
+        source_part.matches('/').count()
+    };
+    for segment in target.trim_start_matches('/').split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => match depth.checked_sub(1) {
+                Some(next) => depth = next,
+                None => return true,
+            },
+            _ => depth += 1,
+        }
+    }
+    false
 }
 
 pub(crate) fn deserialize_xml_bytes<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T> {
@@ -3321,7 +3653,7 @@ enum SharedStringTextTarget {
 /// Deserialize an SST while retaining whitespace that quick-xml's serde
 /// deserializer trims from text nodes.
 fn read_shared_strings_part<A: ArchiveAccess>(archive: &mut A, name: &str) -> Result<Option<Sst>> {
-    let Some(bytes) = read_all_optional_part(archive, name, true, false)? else {
+    let Some(bytes) = read_optional_part(archive, name, true, false)? else {
         return Ok(None);
     };
     deserialize_shared_strings_from_bytes(&bytes).map(Some)
@@ -3482,63 +3814,58 @@ fn scan_shared_string_text<R: std::io::BufRead>(reader: R) -> Result<Vec<RawShar
     Ok(items)
 }
 
-/// Read a ZIP entry as a raw string (no serde deserialization).
-pub(crate) fn read_string_part<A: ArchiveAccess>(archive: &mut A, name: &str) -> Result<String> {
-    let content = read_all_part(archive, name, is_xml_part(name), false)?;
-    String::from_utf8(content)
-        .map_err(|_| Error::XmlParse("XML part is not valid UTF-8".to_string()))
-}
-
-/// Read a ZIP entry as raw bytes.
+/// Read a required ZIP entry as raw bytes, charging them as retained.
 pub(crate) fn read_bytes_part<A: ArchiveAccess>(archive: &mut A, name: &str) -> Result<Vec<u8>> {
-    read_all_part(archive, name, is_xml_part(name), true)
+    read_part(
+        archive,
+        name,
+        PartPresence::Required,
+        is_xml_part(name),
+        true,
+    )?
+    .ok_or_else(|| Error::Internal(format!("required part was not read: {name}")))
 }
 
-fn read_all_part<A: ArchiveAccess>(
+/// Read an optional ZIP entry as retained raw bytes. Only a missing entry
+/// yields `None`; read, checksum, and size failures are returned as errors.
+fn read_optional_bytes_part<A: ArchiveAccess>(
     archive: &mut A,
     name: &str,
-    xml: bool,
-    retained: bool,
-) -> Result<Vec<u8>> {
-    let mut content = Vec::new();
-    let read_result = {
-        let mut entry = archive.entry(name, xml)?;
-        let mut chunk = [0_u8; LARGE_BUF_CAPACITY];
-        loop {
-            let count = match entry.read(&mut chunk) {
-                Ok(0) => break Ok(()),
-                Ok(count) => count,
-                Err(error) => break Err(error),
-            };
-            content.try_reserve(count).map_err(|_| {
-                Error::Io(std::io::Error::new(
-                    std::io::ErrorKind::OutOfMemory,
-                    "unable to reserve bounded workbook part buffer",
-                ))
-            })?;
-            content.extend_from_slice(&chunk[..count]);
-        }
-    };
-    if let Some(metadata) = archive.resource_violation() {
-        return Err(Error::ResourceLimitExceeded(metadata));
-    }
-    read_result.map_err(|error| Error::Zip(error.to_string()))?;
-    if retained {
-        archive.charge_retained(content.len() as u64)?;
-    }
-    Ok(content)
+) -> Result<Option<Vec<u8>>> {
+    read_part(
+        archive,
+        name,
+        PartPresence::Optional,
+        is_xml_part(name),
+        true,
+    )
 }
 
-fn read_all_optional_part<A: ArchiveAccess>(
+/// Read an optional ZIP entry with explicit XML and retention accounting.
+fn read_optional_part<A: ArchiveAccess>(
     archive: &mut A,
     name: &str,
     xml: bool,
     retained: bool,
 ) -> Result<Option<Vec<u8>>> {
+    read_part(archive, name, PartPresence::Optional, xml, retained)
+}
+
+fn read_part<A: ArchiveAccess>(
+    archive: &mut A,
+    name: &str,
+    presence: PartPresence,
+    xml: bool,
+    retained: bool,
+) -> Result<Option<Vec<u8>>> {
     let mut content = Vec::new();
     let read_result = {
-        let Some(mut entry) = archive.entry_optional(name, xml)? else {
-            return Ok(None);
+        let mut entry = match presence {
+            PartPresence::Required => archive.entry(name, xml)?,
+            PartPresence::Optional => match archive.entry_optional(name, xml)? {
+                Some(entry) => entry,
+                None => return Ok(None),
+            },
         };
         let mut chunk = [0_u8; LARGE_BUF_CAPACITY];
         loop {
@@ -3556,8 +3883,8 @@ fn read_all_optional_part<A: ArchiveAccess>(
             content.extend_from_slice(&chunk[..count]);
         }
     };
-    if let Some(metadata) = archive.resource_violation() {
-        return Err(Error::ResourceLimitExceeded(metadata));
+    if let Some(error) = archive.pending_error() {
+        return Err(error);
     }
     read_result.map_err(|error| Error::Zip(error.to_string()))?;
     if retained {
@@ -4958,12 +5285,8 @@ mod tests {
             where
                 Self: 'entry;
 
-            fn len(&self) -> usize {
-                1
-            }
-
-            fn entry_name(&mut self, _index: usize) -> Result<String> {
-                Ok("xl/sharedStrings.xml".to_string())
+            fn entry_names(&self) -> Vec<String> {
+                vec!["xl/sharedStrings.xml".to_string()]
             }
 
             fn entry<'entry>(
@@ -4987,7 +5310,7 @@ mod tests {
                 self.entry(name, xml).map(Some)
             }
 
-            fn resource_violation(&mut self) -> Option<crate::resource::ResourceLimitError> {
+            fn pending_error(&mut self) -> Option<Error> {
                 None
             }
 

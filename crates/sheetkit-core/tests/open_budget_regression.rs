@@ -282,19 +282,15 @@ fn single_pass_shared_string_read_has_an_exact_aggregate_actual_boundary() {
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(&data)).unwrap();
     let mut aggregate = 0_u64;
     let mut has_shared_strings = false;
-    let mut worksheet_xml = 0_u64;
     for index in 0..archive.len() {
         let entry = archive.by_index(index).unwrap();
         aggregate += entry.size();
         if entry.name() == "xl/sharedStrings.xml" {
             has_shared_strings = true;
         }
-        if entry.name().starts_with("xl/worksheets/") && entry.name().ends_with(".xml") {
-            worksheet_xml += entry.size();
-        }
     }
     assert!(has_shared_strings);
-    let exact = aggregate + worksheet_xml;
+    let exact = aggregate;
     let eager = |limit| {
         OpenOptions::new()
             .read_mode(ReadMode::Eager)

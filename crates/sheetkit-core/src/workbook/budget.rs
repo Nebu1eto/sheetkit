@@ -128,6 +128,7 @@ pub(crate) struct OpenBudget {
     aggregate_actual: u64,
     retained: u64,
     violation: Option<ResourceLimitError>,
+    integrity_violation: Option<String>,
 }
 
 impl OpenBudget {
@@ -138,6 +139,7 @@ impl OpenBudget {
             aggregate_actual: 0,
             retained: 0,
             violation: None,
+            integrity_violation: None,
         })
     }
 
@@ -237,8 +239,21 @@ impl OpenBudget {
         }
     }
 
-    pub(crate) const fn violation(&self) -> Option<ResourceLimitError> {
-        self.violation
+    /// Record the first archive integrity failure observed while reading.
+    pub(crate) fn record_integrity_violation(&mut self, message: String) {
+        if self.integrity_violation.is_none() {
+            self.integrity_violation = Some(message);
+        }
+    }
+
+    /// Return the first recorded resource or integrity failure, if any.
+    pub(crate) fn pending_error(&self) -> Option<Error> {
+        if let Some(metadata) = self.violation {
+            return Some(Error::ResourceLimitExceeded(metadata));
+        }
+        self.integrity_violation
+            .as_ref()
+            .map(|message| Error::Zip(message.clone()))
     }
 }
 

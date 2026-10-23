@@ -68,19 +68,28 @@ pub(crate) mod zip_archive {
     }
 
     impl SharedBuilder {
-        pub fn build(self, comment: Box<[u8]>, zip64_comment: Option<Box<[u8]>>) -> Shared {
+        /// Index the central directory by name. Duplicate names are rejected
+        /// because a name lookup could otherwise resolve to either entry.
+        pub fn build(
+            self,
+            comment: Box<[u8]>,
+            zip64_comment: Option<Box<[u8]>>,
+        ) -> crate::result::ZipResult<Shared> {
             let mut index_map = IndexMap::with_capacity(self.files.len());
-            self.files.into_iter().for_each(|file| {
+            for file in self.files {
+                if index_map.contains_key(&file.file_name) {
+                    return Err(crate::result::ZipError::DuplicateEntryName);
+                }
                 index_map.insert(file.file_name.clone(), file);
-            });
-            Shared {
+            }
+            Ok(Shared {
                 files: index_map,
                 offset: self.offset,
                 dir_start: self.dir_start,
                 config: self.config,
                 comment,
                 zip64_comment,
-            }
+            })
         }
     }
 
@@ -754,10 +763,10 @@ impl<R: Read + Seek> ZipArchive<R> {
                 }
             };
 
-            return Ok(shared.build(
+            return shared.build(
                 cde.eocd.data.zip_file_comment,
                 cde.eocd64.map(|v| v.data.extensible_data_sector),
-            ));
+            );
         }
     }
 

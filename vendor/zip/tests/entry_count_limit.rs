@@ -7,6 +7,10 @@ use zip::result::ZipError;
 use zip::write::SimpleFileOptions;
 use zip::{ZipArchive, ZipWriter};
 
+// The manifest disables test autodiscovery; compile these tests here.
+#[path = "duplicate_entry_names.rs"]
+mod duplicate_entry_names;
+
 fn archive_with_entries(count: usize, zip64: bool, comment: Option<Box<[u8]>>) -> Vec<u8> {
     let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
     if zip64 {

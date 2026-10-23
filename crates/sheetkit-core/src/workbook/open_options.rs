@@ -237,22 +237,9 @@ impl OpenOptions {
         }
     }
 
-    /// Returns true when mode is `Eager`.
-    #[allow(dead_code)]
+    /// Returns true when worksheets are parsed during open (`Eager` mode).
     pub(crate) fn is_eager(&self) -> bool {
         self.read_mode == ReadMode::Eager
-    }
-
-    /// Returns true when mode is `Lazy`.
-    #[allow(dead_code)]
-    pub(crate) fn is_lazy(&self) -> bool {
-        self.read_mode == ReadMode::Lazy
-    }
-
-    /// Returns true when mode is `Stream`.
-    #[allow(dead_code)]
-    pub(crate) fn is_stream(&self) -> bool {
-        self.read_mode == ReadMode::Stream
     }
 
     /// Check whether a given sheet name should be parsed based on the `sheets` filter.
@@ -332,9 +319,7 @@ mod tests {
     fn test_stream_mode_skips_aux_parts() {
         let opts = OpenOptions::new().read_mode(ReadMode::Stream);
         assert!(opts.skip_aux_parts());
-        assert!(opts.is_stream());
         assert!(!opts.is_eager());
-        assert!(!opts.is_lazy());
     }
 
     #[test]
@@ -385,17 +370,11 @@ mod tests {
     fn test_helper_methods() {
         let eager = OpenOptions::new().read_mode(ReadMode::Eager);
         assert!(eager.is_eager());
-        assert!(!eager.is_lazy());
-        assert!(!eager.is_stream());
 
         let lazy = OpenOptions::new().read_mode(ReadMode::Lazy);
         assert!(!lazy.is_eager());
-        assert!(lazy.is_lazy());
-        assert!(!lazy.is_stream());
 
         let stream = OpenOptions::new().read_mode(ReadMode::Stream);
         assert!(!stream.is_eager());
-        assert!(!stream.is_lazy());
-        assert!(stream.is_stream());
     }
 }

@@ -40,6 +40,9 @@ pub enum ZipError {
         /// Configured maximum number of entries.
         limit: u64,
     },
+
+    /// ZIP archive contains more than one entry with the same name
+    DuplicateEntryName,
 }
 
 impl ZipError {
@@ -66,6 +69,7 @@ impl From<ZipError> for io::Error {
             ZipError::FileNotFound => io::ErrorKind::NotFound,
             ZipError::InvalidPassword => io::ErrorKind::InvalidInput,
             ZipError::EntryCountLimitExceeded { .. } => io::ErrorKind::InvalidData,
+            ZipError::DuplicateEntryName => io::ErrorKind::InvalidData,
         };
 
         io::Error::new(kind, err)
