@@ -43,8 +43,8 @@ sha1 = "0.10"
 sha2 = "0.10"
 hmac = "0.12"
 rand = "0.8"
-cfb = "0.10"
-base64 = "0.22"
+cfb = "0.15"
+base64 = { version = "0.23", default-features = false, features = ["std"] }
 subtle = "2.6"
 zeroize = "1.8"
 uuid = { version = "1", features = ["v4"] }
