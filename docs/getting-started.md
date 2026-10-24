@@ -50,6 +50,8 @@ yarn add @sheetkit/node
 pnpm add @sheetkit/node
 ```
 
+Requires Node.js 24 or later.
+
 Note: Prebuilt binaries are provided for common platforms. A Rust toolchain is needed only when building from source or when a prebuilt binary is unavailable.
 
 [View on npm](https://www.npmjs.com/package/@sheetkit/node)

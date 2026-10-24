@@ -50,6 +50,8 @@ yarn add @sheetkit/node
 pnpm add @sheetkit/node
 ```
 
+Node.js 24 이상이 필요합니다.
+
 참고: 주요 플랫폼에는 사전 빌드 바이너리가 제공됩니다. 사전 빌드 바이너리가 없는 환경이거나 소스에서 직접 빌드하는 경우에만 Rust 툴체인이 필요합니다.
 
 [npm에서 보기](https://www.npmjs.com/package/@sheetkit/node)

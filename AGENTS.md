@@ -22,6 +22,7 @@ SheetKit is a Rust library for reading and writing Excel (.xlsx) files, with Nod
 - **chrono**: Date/time handling
 - **tempfile**: Temporary file handling for StreamWriter (runtime dependency in sheetkit-core)
 - **pretty_assertions**: Testing utility
+- **Node.js runtime**: Develop and test on Node.js 26 (`.node-version`). The supported runtime is Node.js 24 or later (`engines` in `packages/sheetkit/package.json`; CI also tests 24), so keep `@types/node` on the 24.x line and do not use APIs that Node.js 24 lacks.
 - **aes**, **cbc**, **ecb**, **sha1**, **sha2**, **hmac**, **rand**, **cfb**, **base64** (optional, behind `encryption` feature): File-level encryption/decryption
 
 ## Development Workflow

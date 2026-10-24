@@ -99,6 +99,8 @@ yarn add @sheetkit/node
 pnpm add @sheetkit/node
 ```
 
+Requires Node.js 24 or later.
+
 [View on npm](https://www.npmjs.com/package/@sheetkit/node)
 
 ### Deno / Bun
