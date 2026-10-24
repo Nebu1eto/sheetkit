@@ -10,10 +10,10 @@ In the existing Node.js benchmark suite (`benchmarks/node/RESULTS.md`), SheetKit
 
 | Scenario | SheetKit | ExcelJS | SheetJS |
 |----------|----------|---------|---------|
-| Read Large Data (50k rows x 20 cols) | 541ms | 1.24s | 1.56s |
-| Write 50k rows x 20 cols | 469ms | 2.62s | 1.09s |
-| Buffer round-trip (10k rows) | 123ms | 319ms | 163ms |
-| Random-access read (1k cells from 50k-row file) | 453ms | 1.27s | 1.34s |
+| Read Large Data (50k rows x 20 cols) | 455ms | 2.80s | 1.82s |
+| Write 50k rows x 20 cols | 474ms | 2.68s | 1.15s |
+| Buffer round-trip (10k rows) | 122ms | 511ms | 196ms |
+| Random-access read (1k cells from 50k-row file) | 415ms | 2.87s | 1.62s |
 
 ### Compared with Rust Excel Libraries
 
@@ -21,10 +21,10 @@ Among pure Rust libraries, SheetKit is the fastest writer. For reads, calamine (
 
 | Scenario | SheetKit | calamine | rust_xlsxwriter | edit-xlsx |
 |----------|----------|----------|-----------------|-----------|
-| Read Large Data (50k rows) | 494ms | 324ms | N/A | 372ms* |
-| Write 50k rows x 20 cols | 475ms | N/A | 886ms | 939ms |
-| Streaming write (50k rows) | 191ms | N/A | 885ms | N/A |
-| Modify 1k cells in 50k file | 668ms | N/A | N/A | 537ms |
+| Read Large Data (50k rows) | 416ms | 236ms | N/A | 333ms* |
+| Write 50k rows x 20 cols | 472ms | N/A | 491ms | 577ms |
+| Streaming write (50k rows) | 161ms | N/A | 495ms | N/A |
+| Modify 1k cells in 50k file | 637ms | N/A | N/A | 439ms |
 
 \* `edit-xlsx` results marked with `*` are excluded from winner selection when workload counts or value probes do not match.
 
@@ -45,11 +45,12 @@ SheetKit's Node.js bindings stay close to native Rust performance:
 
 | Operation | Overhead |
 |-----------|----------|
-| **Read operations (sync)** | ~1.04x (~4% slower, typical) |
-| **Read operations (async)** | ~1.04x (~4% slower, typical) |
-| **Write operations (batch)** | ~0.86x (faster via V8 string handling) |
-| **Streaming write** | 1.51x (51% slower) |
-| **Buffer round-trip** | ~1.0x (near parity) |
+| **Read operations (sync)** | ~1.03x (~3% slower, typical) |
+| **Read operations (async)** | ~1.01x (~1% slower, typical) |
+| **Bulk value writes** | ~1.0x (0.95x to 1.05x) |
+| **Styled and formula writes** | ~1.6x (5k styled rows, 10k formula rows) |
+| **Streaming write** | 1.93x (93% slower) |
+| **Buffer round-trip** | ~1.13x (13% slower) |
 
 For most real-world workloads, Node.js performance remains close to native Rust.
 
@@ -57,22 +58,22 @@ For most real-world workloads, Node.js performance remains close to native Rust.
 
 | Scenario | Rust | Node.js | Overhead |
 |----------|------|---------|----------|
-| Large Data (50k rows x 20 cols) | 518ms | 541ms | +4% |
-| Heavy Styles (5k rows, formatted) | 27ms | 27ms | 0% |
-| Multi-Sheet (10 sheets x 5k rows) | 301ms | 290ms | -4% (faster) |
-| Formulas (10k rows) | 33ms | 34ms | +3% |
-| Strings (20k rows text-heavy) | 109ms | 117ms | +7% |
+| Large Data (50k rows x 20 cols) | 450ms | 455ms | +1% |
+| Heavy Styles (5k rows, formatted) | 24ms | 24ms | 0% |
+| Multi-Sheet (10 sheets x 5k rows) | 262ms | 263ms | 0% |
+| Formulas (10k rows) | 27ms | 29ms | +7% |
+| Strings (20k rows text-heavy) | 97ms | 102ms | +5% |
 
 ### Write Performance Comparison
 
 | Scenario | Rust | Node.js | Overhead |
 |----------|------|---------|----------|
-| 50k rows x 20 cols | 544ms | 469ms | -14% (faster) |
-| 5k styled rows | 28ms | 32ms | +14% |
-| 10k rows with formulas | 24ms | 27ms | +13% |
-| 20k text-heavy rows | 108ms | 86ms | -20% (faster) |
+| 50k rows x 20 cols | 461ms | 474ms | +3% |
+| 5k styled rows | 24ms | 38ms | +58% |
+| 10k rows with formulas | 21ms | 34ms | +62% |
+| 20k text-heavy rows | 92ms | 87ms | -5% (faster) |
 
-Note: In some write scenarios, Node.js performs slightly better than Rust due to V8's efficient string handling during data construction and the batch `setSheetData()` API.
+Note: Node.js is slightly faster than Rust in the text-heavy write scenario. Ratios for the 1k-row scenarios look large because times are rounded to 1 ms.
 
 ### Scaling Performance
 
@@ -80,18 +81,18 @@ Read performance remains consistent across different file sizes:
 
 | Rows | Rust | Node.js | Overhead |
 |------|------|---------|----------|
-| 1k | 5ms | 5ms | 0% |
-| 10k | 51ms | 50ms | -2% (faster) |
-| 100k | 539ms | 535ms | -1% (faster) |
+| 1k | 4ms | 5ms | +25% |
+| 10k | 45ms | 45ms | 0% |
+| 100k | 457ms | 470ms | +3% |
 
 Write performance scales linearly:
 
 | Rows | Rust | Node.js | Overhead |
 |------|------|---------|----------|
-| 1k | 5ms | 4ms | -20% (faster) |
-| 10k | 48ms | 46ms | -4% (faster) |
-| 50k | 258ms | 231ms | -10% (faster) |
-| 100k | 531ms | 485ms | -9% (faster) |
+| 1k | 4ms | 5ms | +25% |
+| 10k | 43ms | 45ms | +5% |
+| 50k | 224ms | 225ms | 0% |
+| 100k | 461ms | 502ms | +9% |
 
 ## Raw Buffer Transfer and Memory Behavior
 
@@ -138,10 +139,10 @@ All benchmarks were performed on:
 | **CPU** | Apple M4 Pro |
 | **RAM** | 24 GB |
 | **OS** | macOS arm64 (Apple Silicon) |
-| **Node.js** | v25.3.0 |
-| **Rust** | rustc 1.93.0 |
+| **Node.js** | v26.12.0 |
+| **Rust** | rustc 1.99.1 |
 
-Results are median values from 5 runs with 1 warmup run per scenario.
+Results are median values from 5 runs with 1 warmup run per scenario. The latest results were recorded at a load average of 4 to 6 from other processes, so absolute times can be slightly slower than on an idle machine. All libraries in a suite run in the same session, so comparisons between libraries stay fair.
 
 ## Benchmark Scope and Data
 
@@ -226,6 +227,10 @@ const bufV2 = wb.getRowsBufferV2("Sheet1");
 ### Copy-on-Write Save
 
 When saving a workbook opened in `lazy` mode, unchanged sheets are written directly from the original ZIP entry without parse-serialize round-trips. This significantly reduces save latency for workloads that modify only a few sheets in a large workbook.
+
+### Save Durability
+
+`save()` replaces the destination atomically through a temporary file in the same directory and does not flush it to storage, which keeps small saves fast (about 1.6 ms for a 1k x 10 workbook on the benchmark machine). The temporary file and rename cost about 0.2 to 0.4 ms per save compared with an in-place overwrite. Pass `durable: true` in Node.js or `SaveOptions { durable: true }` in Rust when the file must survive a power loss; on the macOS benchmark machine this adds about 7 ms per save. See [Workbook API](./api-reference/workbook.md) for what each mode guarantees.
 
 ### For Write-Heavy Workloads
 
@@ -367,7 +372,7 @@ The Node.js baseline is a JSON file with this structure:
 {
   "timestamp": "ISO-8601",
   "platform": "darwin arm64",
-  "nodeVersion": "v25.x.x",
+  "nodeVersion": "v26.x.x",
   "cpu": "Apple M4 Pro",
   "ramGb": 24,
   "config": { "warmupRuns": 1, "benchRuns": 5 },
