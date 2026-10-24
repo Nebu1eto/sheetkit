@@ -179,7 +179,7 @@ jobs:
         run: >-
           pnpm exec napi prepublish -t npm --cwd ../..
           --package-json-path packages/sheetkit/package.json
-          --npm-dir packages --skip-optional-publish --dry-run
+          --npm-dir packages --skip-optional-publish --no-gh-release --dry-run
 
       - name: Publish packages to npm
         working-directory: packages/sheetkit
