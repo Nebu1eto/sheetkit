@@ -1,22 +1,33 @@
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { isResourceLimitError, type OpenOptions, Workbook } from '../index.js';
 
 const MIB = 1024 * 1024;
 const CEILING = 1024 * MIB;
 
-const csvFixture = readFileSync(
-  join(
-    dirname(fileURLToPath(import.meta.url)),
-    '../../../crates/sheetkit/tests/fixtures/csv-output-limit.xlsx',
-  ),
-);
+/**
+ * Workbook whose 2,049 formula-like strings compress far beyond 100:1; the
+ * same shape the CLI CSV output-limit test uses.
+ */
+function csvFixture(): Buffer {
+  const workbook = new Workbook();
+  const dangerous = `=${'x'.repeat(32_766)}`;
+  for (let column = 1; column <= 2_049; column++) {
+    workbook.setCellValue('Sheet1', `${columnName(column)}1`, dangerous);
+  }
+  return workbook.writeBufferSync();
+}
+
+function columnName(column: number): string {
+  let name = '';
+  for (let n = column; n > 0; n = Math.floor((n - 1) / 26)) {
+    name = String.fromCharCode(65 + ((n - 1) % 26)) + name;
+  }
+  return name;
+}
 
 /** SheetKit output whose repetitive parts exceed the default 100:1 ratio. */
 function repetitiveOutput(): Buffer {
-  return Workbook.openBufferSync(csvFixture).writeBufferSync();
+  return Workbook.openBufferSync(csvFixture()).writeBufferSync();
 }
 
 function dimensionOf(action: () => unknown): string {

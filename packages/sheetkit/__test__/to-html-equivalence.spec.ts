@@ -1,4 +1,3 @@
-import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { isResourceLimitError, type ToHtmlOptions, Workbook } from '../index.js';
@@ -59,7 +58,7 @@ function referenceToHtml(workbook: Workbook, sheet: string, options?: ToHtmlOpti
 describe('toHTML byte-for-byte equivalence with the reference loop', () => {
   for (const fixture of FIXTURES) {
     const path = join(FIXTURE_DIR, fixture);
-    it.skipIf(!existsSync(path))(`renders ${fixture} identically`, () => {
+    it(`renders ${fixture} identically`, () => {
       const workbook = Workbook.openSync(path);
       for (const sheet of workbook.sheetNames) {
         for (const [label, options] of OPTION_CASES) {

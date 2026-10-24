@@ -13,12 +13,18 @@ const ALL_MODES: [ReadMode; 3] = [ReadMode::Eager, ReadMode::Lazy, ReadMode::Str
 const MIB: usize = 1024 * 1024;
 const PAYLOAD_NAME: &str = "customXml/payload.bin";
 
+/// Workbook whose 2,049 formula-like strings compress far beyond 100:1; the
+/// same shape the CLI CSV output-limit test uses.
 fn csv_fixture() -> Vec<u8> {
-    std::fs::read(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../sheetkit/tests/fixtures/csv-output-limit.xlsx"
-    ))
-    .unwrap()
+    let mut workbook = Workbook::new();
+    let dangerous = format!("={}", "x".repeat(32_766));
+    for column in 1..=2_049 {
+        let cell = sheetkit_core::utils::cell_ref::coordinates_to_cell_name(column, 1).unwrap();
+        workbook
+            .set_cell_value("Sheet1", &cell, dangerous.as_str())
+            .unwrap();
+    }
+    workbook.save_to_buffer().unwrap()
 }
 
 fn open(buffer: &[u8], options: &OpenOptions) -> Result<Workbook, Error> {
