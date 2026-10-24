@@ -1,3 +1,11 @@
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]
 
+# Xcode 27's linker rejects -ld_classic, which some user-level cargo configs
+# still pass via build.rustflags. A non-empty target rustflags entry replaces
+# build.rustflags; linker=cc is the macOS default, so it changes nothing else.
+[target.aarch64-apple-darwin]
+rustflags = ["-C", "linker=cc"]
+
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "linker=cc"]
