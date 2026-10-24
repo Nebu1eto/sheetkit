@@ -1,0 +1,5 @@
+[tools]
+"npm:pnpm" = "10.34.8"
+
+[settings]
+idiomatic_version_file_enable_tools = ["node"]
