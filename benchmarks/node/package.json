@@ -4,6 +4,8 @@
   "type": "module",
   "private": true,
   "scripts": {
+    "build": "tsc --noEmit -p .",
+    "typecheck": "tsc --noEmit -p .",
     "generate": "tsx generate-fixtures.ts",
     "bench": "node --expose-gc --import tsx benchmark.ts",
     "bench:all": "node --expose-gc --import tsx benchmark.ts && node --expose-gc --import tsx benchmark.ts --format=markdown",
@@ -17,6 +19,7 @@
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   },
   "devDependencies": {
+    "@types/node": "^24.19.2",
     "tsx": "^4.23.15",
     "typescript": "^6.0.3"
   }

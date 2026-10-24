@@ -76,6 +76,9 @@ importers:
         specifier: https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz
         version: https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz
     devDependencies:
+      '@types/node':
+        specifier: ^24.19.2
+        version: 24.19.2
       tsx:
         specifier: ^4.23.15
         version: 4.23.15

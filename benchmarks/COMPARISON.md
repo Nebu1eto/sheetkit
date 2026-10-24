@@ -4,13 +4,13 @@ Benchmark run: 2026-02-11
 
 ## Environment
 
-| Item | Value |
-|------|-------|
-| CPU | Apple M4 Pro |
-| RAM | 24 GB |
-| OS | macOS arm64 (Apple Silicon) |
-| Node.js | v25.3.0 |
-| Rust | rustc 1.93.0 (254b59607 2026-01-19) |
+| Item        | Value                                                    |
+| ----------- | -------------------------------------------------------- |
+| CPU         | Apple M4 Pro                                             |
+| RAM         | 24 GB                                                    |
+| OS          | macOS arm64 (Apple Silicon)                              |
+| Node.js     | v25.3.0                                                  |
+| Rust        | rustc 1.93.0 (254b59607 2026-01-19)                      |
 | Methodology | 1 warmup + 5 measured runs per scenario, median reported |
 
 ## napi-rs Overhead Analysis
@@ -22,87 +22,87 @@ Node.js benchmark run.
 
 ### Read Benchmarks (sync)
 
-| Scenario | Rust (median) | Node.js sync (median) | Overhead | Ratio |
-|----------|--------------|----------------------|----------|-------|
-| Large Data (50k rows x 20 cols) | 387ms | 454ms | +67ms | 1.17x |
-| Heavy Styles (5k rows, formatted) | 20ms | 24ms | +4ms | 1.20x |
-| Multi-Sheet (10 sheets x 5k rows) | 223ms | 530ms | +307ms | 2.38x |
-| Formulas (10k rows) | 24ms | 33ms | +9ms | 1.38x |
-| Strings (20k rows text-heavy) | 83ms | 95ms | +12ms | 1.14x |
-| Data Validation (5k rows, 8 rules) | 16ms | 19ms | +3ms | 1.19x |
-| Comments (2k rows with comments) | 6ms | 8ms | +2ms | 1.33x |
-| Merged Cells (500 regions) | 1ms | 2ms | +1ms | 2.00x |
-| Mixed Workload (ERP document) | 21ms | 27ms | +6ms | 1.29x |
+| Scenario                           | Rust (median) | Node.js sync (median) | Overhead | Ratio |
+| ---------------------------------- | ------------- | --------------------- | -------- | ----- |
+| Large Data (50k rows x 20 cols)    | 387ms         | 454ms                 | +67ms    | 1.17x |
+| Heavy Styles (5k rows, formatted)  | 20ms          | 24ms                  | +4ms     | 1.20x |
+| Multi-Sheet (10 sheets x 5k rows)  | 223ms         | 530ms                 | +307ms   | 2.38x |
+| Formulas (10k rows)                | 24ms          | 33ms                  | +9ms     | 1.38x |
+| Strings (20k rows text-heavy)      | 83ms          | 95ms                  | +12ms    | 1.14x |
+| Data Validation (5k rows, 8 rules) | 16ms          | 19ms                  | +3ms     | 1.19x |
+| Comments (2k rows with comments)   | 6ms           | 8ms                   | +2ms     | 1.33x |
+| Merged Cells (500 regions)         | 1ms           | 2ms                   | +1ms     | 2.00x |
+| Mixed Workload (ERP document)      | 21ms          | 27ms                  | +6ms     | 1.29x |
 
 ### Read Benchmarks (async)
 
-| Scenario | Rust (median) | Node.js async (median) | Overhead | Ratio |
-|----------|--------------|------------------------|----------|-------|
-| Large Data (50k rows x 20 cols) | 387ms | 435ms | +48ms | 1.12x |
-| Heavy Styles (5k rows, formatted) | 20ms | 23ms | +3ms | 1.15x |
-| Multi-Sheet (10 sheets x 5k rows) | 223ms | 525ms | +302ms | 2.35x |
-| Formulas (10k rows) | 24ms | 32ms | +8ms | 1.33x |
-| Strings (20k rows text-heavy) | 83ms | 95ms | +12ms | 1.14x |
-| Data Validation (5k rows, 8 rules) | 16ms | 19ms | +3ms | 1.19x |
-| Comments (2k rows with comments) | 6ms | 8ms | +2ms | 1.33x |
-| Merged Cells (500 regions) | 1ms | 1ms | +0ms | 1.00x |
-| Mixed Workload (ERP document) | 21ms | 27ms | +6ms | 1.29x |
+| Scenario                           | Rust (median) | Node.js async (median) | Overhead | Ratio |
+| ---------------------------------- | ------------- | ---------------------- | -------- | ----- |
+| Large Data (50k rows x 20 cols)    | 387ms         | 435ms                  | +48ms    | 1.12x |
+| Heavy Styles (5k rows, formatted)  | 20ms          | 23ms                   | +3ms     | 1.15x |
+| Multi-Sheet (10 sheets x 5k rows)  | 223ms         | 525ms                  | +302ms   | 2.35x |
+| Formulas (10k rows)                | 24ms          | 32ms                   | +8ms     | 1.33x |
+| Strings (20k rows text-heavy)      | 83ms          | 95ms                   | +12ms    | 1.14x |
+| Data Validation (5k rows, 8 rules) | 16ms          | 19ms                   | +3ms     | 1.19x |
+| Comments (2k rows with comments)   | 6ms           | 8ms                    | +2ms     | 1.33x |
+| Merged Cells (500 regions)         | 1ms           | 1ms                    | +0ms     | 1.00x |
+| Mixed Workload (ERP document)      | 21ms          | 27ms                   | +6ms     | 1.29x |
 
 ### Read Scaling
 
-| Scenario | Rust (median) | Node.js sync (median) | Node.js async (median) | Sync Ratio | Async Ratio |
-|----------|--------------|----------------------|------------------------|------------|-------------|
-| Scale 1k rows | 4ms | 5ms | 5ms | 1.25x | 1.25x |
-| Scale 10k rows | 39ms | 45ms | 44ms | 1.15x | 1.13x |
-| Scale 100k rows | 410ms | 474ms | 474ms | 1.16x | 1.16x |
+| Scenario        | Rust (median) | Node.js sync (median) | Node.js async (median) | Sync Ratio | Async Ratio |
+| --------------- | ------------- | --------------------- | ---------------------- | ---------- | ----------- |
+| Scale 1k rows   | 4ms           | 5ms                   | 5ms                    | 1.25x      | 1.25x       |
+| Scale 10k rows  | 39ms          | 45ms                  | 44ms                   | 1.15x      | 1.13x       |
+| Scale 100k rows | 410ms         | 474ms                 | 474ms                  | 1.16x      | 1.16x       |
 
 ### Write Benchmarks
 
-| Scenario | Rust (median) | Node.js (median) | Overhead | Ratio |
-|----------|--------------|-----------------|----------|-------|
-| 50k rows x 20 cols | 478ms | 461ms | -17ms | 0.96x |
-| 5k styled rows | 25ms | 35ms | +10ms | 1.40x |
-| 10 sheets x 5k rows | 246ms | 251ms | +5ms | 1.02x |
-| 10k rows with formulas | 21ms | 28ms | +7ms | 1.33x |
-| 20k text-heavy rows | 92ms | 87ms | -5ms | 0.95x |
-| 5k rows + 8 DV rules | 8ms | 9ms | +1ms | 1.13x |
-| 2k rows with comments | 6ms | 8ms | +2ms | 1.33x |
-| 500 merged regions | 9ms | 10ms | +1ms | 1.11x |
+| Scenario               | Rust (median) | Node.js (median) | Overhead | Ratio |
+| ---------------------- | ------------- | ---------------- | -------- | ----- |
+| 50k rows x 20 cols     | 478ms         | 461ms            | -17ms    | 0.96x |
+| 5k styled rows         | 25ms          | 35ms             | +10ms    | 1.40x |
+| 10 sheets x 5k rows    | 246ms         | 251ms            | +5ms     | 1.02x |
+| 10k rows with formulas | 21ms          | 28ms             | +7ms     | 1.33x |
+| 20k text-heavy rows    | 92ms          | 87ms             | -5ms     | 0.95x |
+| 5k rows + 8 DV rules   | 8ms           | 9ms              | +1ms     | 1.13x |
+| 2k rows with comments  | 6ms           | 8ms              | +2ms     | 1.33x |
+| 500 merged regions     | 9ms           | 10ms             | +1ms     | 1.11x |
 
 ### Write Scaling
 
-| Scenario | Rust (median) | Node.js (median) | Overhead | Ratio |
-|----------|--------------|-----------------|----------|-------|
-| 1k rows x 10 cols | 4ms | 5ms | +1ms | 1.25x |
-| 10k rows x 10 cols | 48ms | 47ms | -1ms | 0.98x |
-| 50k rows x 10 cols | 226ms | 235ms | +9ms | 1.04x |
-| 100k rows x 10 cols | 454ms | 476ms | +22ms | 1.05x |
+| Scenario            | Rust (median) | Node.js (median) | Overhead | Ratio |
+| ------------------- | ------------- | ---------------- | -------- | ----- |
+| 1k rows x 10 cols   | 4ms           | 5ms              | +1ms     | 1.25x |
+| 10k rows x 10 cols  | 48ms          | 47ms             | -1ms     | 0.98x |
+| 50k rows x 10 cols  | 226ms         | 235ms            | +9ms     | 1.04x |
+| 100k rows x 10 cols | 454ms         | 476ms            | +22ms    | 1.05x |
 
 ### Other
 
-| Scenario | Rust (median) | Node.js sync (median) | Node.js async (median) | Sync Ratio | Async Ratio |
-|----------|--------------|----------------------|------------------------|------------|-------------|
-| Buffer round-trip (10k rows) | 106ms | 118ms | - | 1.11x | - |
-| Streaming write (50k rows) | 186ms | 309ms | - | 1.66x | - |
-| Random-access read (1k cells/50k file) | 412ms | 387ms | 382ms | 0.94x | 0.93x |
-| Mixed workload write (ERP-style) | 14ms | 19ms | - | 1.36x | - |
+| Scenario                               | Rust (median) | Node.js sync (median) | Node.js async (median) | Sync Ratio | Async Ratio |
+| -------------------------------------- | ------------- | --------------------- | ---------------------- | ---------- | ----------- |
+| Buffer round-trip (10k rows)           | 106ms         | 118ms                 | -                      | 1.11x      | -           |
+| Streaming write (50k rows)             | 186ms         | 309ms                 | -                      | 1.66x      | -           |
+| Random-access read (1k cells/50k file) | 412ms         | 387ms                 | 382ms                  | 0.94x      | 0.93x       |
+| Mixed workload write (ERP-style)       | 14ms          | 19ms                  | -                      | 1.36x      | -           |
 
 ## Node.js Memory Usage
 
 RSS (Resident Set Size) measured for SheetKit in the Node.js benchmark.
 
-| Scenario | Sync Memory | Async Memory |
-|----------|-------------|--------------|
-| Read Large Data (50k x 20) | 195.3MB | 17.2MB |
-| Read Multi-Sheet (10 x 5k) | 112.7MB | 0.4MB |
-| Read Scale 100k rows | 175.2MB | 15.9MB |
-| Read Heavy Styles (5k) | 6.0MB | 0.0MB |
-| Read Formulas (10k) | 9.3MB | 0.0MB |
-| Read Strings (20k) | 2.5MB | 0.0MB |
-| Write 50k x 20 | 67.3MB | - |
-| Write 100k x 10 | 65.1MB | - |
-| Streaming 50k rows | 0.0MB | - |
-| Random-access read (1k cells) | 61.6MB | 0.0MB |
+| Scenario                      | Sync Memory | Async Memory |
+| ----------------------------- | ----------- | ------------ |
+| Read Large Data (50k x 20)    | 195.3MB     | 17.2MB       |
+| Read Multi-Sheet (10 x 5k)    | 112.7MB     | 0.4MB        |
+| Read Scale 100k rows          | 175.2MB     | 15.9MB       |
+| Read Heavy Styles (5k)        | 6.0MB       | 0.0MB        |
+| Read Formulas (10k)           | 9.3MB       | 0.0MB        |
+| Read Strings (20k)            | 2.5MB       | 0.0MB        |
+| Write 50k x 20                | 67.3MB      | -            |
+| Write 100k x 10               | 65.1MB      | -            |
+| Streaming 50k rows            | 0.0MB       | -            |
+| Random-access read (1k cells) | 61.6MB      | 0.0MB        |
 
 ## Rust Ecosystem Comparison
 
@@ -110,33 +110,33 @@ SheetKit was benchmarked against other popular Rust Excel libraries. Each librar
 
 ### Read (Rust libraries)
 
-| Scenario | SheetKit | calamine | edit-xlsx | Winner |
-|----------|----------|----------|-----------|--------|
-| Large Data (50k rows x 20 cols) | 494ms | 324ms | 372ms* | calamine |
-| Heavy Styles (5k rows, formatted) | 26ms | 17ms | 21ms* | calamine |
-| Multi-Sheet (10 sheets x 5k rows) | 289ms | 179ms | 199ms* | calamine |
-| Formulas (10k rows) | 32ms* | 15ms* | 23ms* | N/A |
-| Strings (20k rows text-heavy) | 105ms | 70ms | 81ms* | calamine |
+| Scenario                          | SheetKit | calamine | edit-xlsx | Winner   |
+| --------------------------------- | -------- | -------- | --------- | -------- |
+| Large Data (50k rows x 20 cols)   | 494ms    | 324ms    | 372ms*    | calamine |
+| Heavy Styles (5k rows, formatted) | 26ms     | 17ms     | 21ms*     | calamine |
+| Multi-Sheet (10 sheets x 5k rows) | 289ms    | 179ms    | 199ms*    | calamine |
+| Formulas (10k rows)               | 32ms*    | 15ms*    | 23ms*     | N/A      |
+| Strings (20k rows text-heavy)     | 105ms    | 70ms     | 81ms*     | calamine |
 
 ### Write (Rust libraries)
 
-| Scenario | SheetKit | rust_xlsxwriter | edit-xlsx | Winner |
-|----------|----------|-----------------|-----------|--------|
-| 50k rows x 20 cols | 475ms | 886ms | 939ms | SheetKit |
-| 5k styled rows | 27ms | 38ms | 52ms | SheetKit |
-| 10 sheets x 5k rows | 249ms | 338ms | 414ms | SheetKit |
-| 10k rows with formulas | 23ms | 36ms | 59ms | SheetKit |
-| 20k text-heavy rows | 57ms | 66ms | 71ms | SheetKit |
-| 500 merged regions | 1ms | 2ms | 5ms | SheetKit |
+| Scenario               | SheetKit | rust_xlsxwriter | edit-xlsx | Winner   |
+| ---------------------- | -------- | --------------- | --------- | -------- |
+| 50k rows x 20 cols     | 475ms    | 886ms           | 939ms     | SheetKit |
+| 5k styled rows         | 27ms     | 38ms            | 52ms      | SheetKit |
+| 10 sheets x 5k rows    | 249ms    | 338ms           | 414ms     | SheetKit |
+| 10k rows with formulas | 23ms     | 36ms            | 59ms      | SheetKit |
+| 20k text-heavy rows    | 57ms     | 66ms            | 71ms      | SheetKit |
+| 500 merged regions     | 1ms      | 2ms             | 5ms       | SheetKit |
 
 ### Other (Rust libraries)
 
-| Scenario | SheetKit | Best alternative | Winner |
-|----------|----------|-----------------|--------|
-| Buffer round-trip (10k rows) | 118ms | 82ms (xlsxwriter+calamine) | xlsxwriter+calamine |
-| Streaming write (50k rows) | 191ms | 885ms (rust_xlsxwriter) | SheetKit |
-| Random-access read (1k cells) | 465ms | 321ms (calamine) | calamine |
-| Modify 1k cells in 50k file | 668ms | 537ms (edit-xlsx) | edit-xlsx |
+| Scenario                      | SheetKit | Best alternative           | Winner              |
+| ----------------------------- | -------- | -------------------------- | ------------------- |
+| Buffer round-trip (10k rows)  | 118ms    | 82ms (xlsxwriter+calamine) | xlsxwriter+calamine |
+| Streaming write (50k rows)    | 191ms    | 885ms (rust_xlsxwriter)    | SheetKit            |
+| Random-access read (1k cells) | 465ms    | 321ms (calamine)           | calamine            |
+| Modify 1k cells in 50k file   | 668ms    | 537ms (edit-xlsx)          | edit-xlsx           |
 
 Win summary: SheetKit 11/21, calamine 8/21, edit-xlsx 1/21, xlsxwriter+calamine 1/21.
 
@@ -170,12 +170,12 @@ but read results with workload/value mismatches are excluded from winner selecti
 
 ## Summary
 
-| Category | Sync Overhead | Async Overhead |
-|----------|--------------|----------------|
-| Read (typical) | ~1.2x | ~1.15x |
-| Write (batch) | ~1.0x | - |
-| Streaming write | ~1.66x | - |
-| Round-trip | ~1.11x | - |
+| Category        | Sync Overhead | Async Overhead |
+| --------------- | ------------- | -------------- |
+| Read (typical)  | ~1.2x         | ~1.15x         |
+| Write (batch)   | ~1.0x         | -              |
+| Streaming write | ~1.66x        | -              |
+| Round-trip      | ~1.11x        | -              |
 
 ## Comparing Revisions
 
@@ -188,18 +188,18 @@ SHEETKIT_COMPARE_BASE=73819d8 pnpm bench:compare
 
 For each revision the script creates a detached git worktree in a run-owned directory under the scratch root, copies `Cargo.lock` from the current checkout into it, runs `pnpm install --frozen-lockfile`, and builds `@sheetkit/node` in release mode with a separate `CARGO_TARGET_DIR`. `Cargo.lock` is gitignored, so both revisions build against the dependency versions resolved in your checkout rather than the versions each revision would resolve on its own. Each revision runs its own `benchmarks/node/release-gate.ts`; a revision that predates the gate script runs the current one instead, and the report says so. The worktrees and build directories are removed when the run ends unless `SHEETKIT_COMPARE_KEEP=1` is set.
 
-| Variable | Default | Meaning |
-|----------|---------|---------|
-| `SHEETKIT_COMPARE_BASE` | required | Baseline revision (any git revision name). |
-| `SHEETKIT_COMPARE_HEAD` | `HEAD` | Revision under test. Uncommitted changes are not included. |
-| `SHEETKIT_COMPARE_SAMPLES` | `20` | Measured runs per operation and fixture. |
-| `SHEETKIT_COMPARE_WARMUPS` | `3` | Warmup runs, not measured. |
-| `SHEETKIT_COMPARE_THRESHOLD_PERCENT` | `10` | Median increase above which a row is marked `REGRESSION`. |
-| `SHEETKIT_COMPARE_SCRATCH` | `/tmp/sheetkit-compare` | Scratch root for worktrees and build output. |
-| `SHEETKIT_COMPARE_OPERATIONS` | all | Comma-separated subset of `ordinary-open`, `encrypted-open`, `scalar-calculation`, `dense-traversal`, `streaming`, `output-csv`, `output-json`, `output-html`, `output-svg`. |
-| `SHEETKIT_COMPARE_FIXTURES` | every `.xlsx` in `benchmarks/node/fixtures` | Comma-separated fixture file names. |
-| `SHEETKIT_COMPARE_PASSWORD` | unset | Enables `encrypted-open`; an encrypted copy of the first fixture is generated with this password. Without it, `encrypted-open` is skipped. |
-| `SHEETKIT_COMPARE_KEEP` | unset | Set to `1` to keep the worktrees and build output for inspection. |
+| Variable                             | Default                                     | Meaning                                                                                                                                                                     |
+| ------------------------------------ | ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SHEETKIT_COMPARE_BASE`              | required                                    | Baseline revision (any git revision name).                                                                                                                                  |
+| `SHEETKIT_COMPARE_HEAD`              | `HEAD`                                      | Revision under test. Uncommitted changes are not included.                                                                                                                  |
+| `SHEETKIT_COMPARE_SAMPLES`           | `20`                                        | Measured runs per operation and fixture.                                                                                                                                    |
+| `SHEETKIT_COMPARE_WARMUPS`           | `3`                                         | Warmup runs, not measured.                                                                                                                                                  |
+| `SHEETKIT_COMPARE_THRESHOLD_PERCENT` | `10`                                        | Median increase above which a row is marked `REGRESSION`.                                                                                                                   |
+| `SHEETKIT_COMPARE_SCRATCH`           | `/tmp/sheetkit-compare`                     | Scratch root for worktrees and build output.                                                                                                                                |
+| `SHEETKIT_COMPARE_OPERATIONS`        | all                                         | Comma-separated subset of `ordinary-open`, `encrypted-open`, `scalar-calculation`, `dense-traversal`, `streaming`, `output-csv`, `output-json`, `output-html`, `output-svg` |
+| `SHEETKIT_COMPARE_FIXTURES`          | every `.xlsx` in `benchmarks/node/fixtures` | Comma-separated fixture file names.                                                                                                                                         |
+| `SHEETKIT_COMPARE_PASSWORD`          | unset                                       | Enables `encrypted-open`; an encrypted copy of the first fixture is generated with this password. Without it, `encrypted-open` is skipped.                                  |
+| `SHEETKIT_COMPARE_KEEP`              | unset                                       | Set to `1` to keep the worktrees and build output for inspection.                                                                                                           |
 
 Generate the fixtures first with `pnpm generate` if `benchmarks/node/fixtures` is empty.
 
@@ -221,11 +221,28 @@ Each row gives the median and the median absolute deviation (MAD) of both revisi
 
 The report is printed and written to `benchmarks/node/output/compare-<base>-<head>.md`; the raw release-gate JSON for every measurement is under `benchmarks/node/output/compare-<base>-<head>/`. Each row covers one operation on one fixture:
 
-| Column | Meaning |
-|--------|---------|
-| Base median (ms), Head median (ms) | Median latency of the measured runs. |
-| Base MAD, Head MAD | Median absolute deviation, in milliseconds. A delta smaller than the MAD is within run-to-run noise. |
-| Delta | `(head - base) / base`. Positive means the head revision is slower. |
-| Verdict | `ok`, `REGRESSION` when Delta exceeds the threshold, `skipped (<error>)` when both revisions failed with the same error (for example a fixture that exceeds a default output limit), or `missing` when only one side failed. |
+| Column                             | Meaning                                                                                                                                                                                                                      |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Base median (ms), Head median (ms) | Median latency of the measured runs.                                                                                                                                                                                         |
+| Base MAD, Head MAD                 | Median absolute deviation, in milliseconds. A delta smaller than the MAD is within run-to-run noise.                                                                                                                         |
+| Delta                              | `(head - base) / base`. Positive means the head revision is slower.                                                                                                                                                          |
+| Verdict                            | `ok`, `REGRESSION` when Delta exceeds the threshold, `skipped (<error>)` when both revisions failed with the same error (for example a fixture that exceeds a default output limit), or `missing` when only one side failed. |
 
 The process exits with status 1 when any row is `REGRESSION` or `missing`; `skipped` rows do not fail the run. The two revisions alternate which one runs first on each row, so background load does not bias one side consistently. Re-run regressed rows with more samples, on an otherwise idle machine, before treating them as real: a row is only trustworthy when its Delta exceeds several times the larger MAD divided by the median, and short operations on small fixtures (medians of a few milliseconds) rarely meet that bar.
+
+## Benchmark Dependencies
+
+The `xlsx` dependency in `benchmarks/node/package.json` is the SheetJS tarball from `https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz`, not the `xlsx` package on the npm registry. SheetJS no longer publishes to npm, and the registry package is an old release with open security advisories.
+
+pnpm handles this tarball dependency poorly. Whenever an install re-resolves the `benchmarks/node` importer (for example `pnpm add` in that package), pnpm rewrites the `xlsx` entry in `pnpm-lock.yaml` without its `integrity` field and then refuses to install with `ERR_PNPM_MISSING_TARBALL_INTEGRITY`. `pnpm install --fix-lockfile` does not repair it. Restore the field by hand so the entry reads:
+
+```text
+  xlsx@https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz:
+    resolution: {integrity: sha512-oLDq3jw7AcLqKWH2AhCpVTZl8mf6X2YReP+Neh0SJUzV/BdZYjth94tG5toiMB1PPrYtxOCfaoUCkvtuH+3AJA==, tarball: https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz}
+```
+
+Then confirm that `pnpm install --frozen-lockfile` succeeds. If the tarball URL changes, recompute the hash and prefix it with `sha512-`:
+
+```bash
+curl -sSL https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz | openssl dgst -sha512 -binary | base64
+```

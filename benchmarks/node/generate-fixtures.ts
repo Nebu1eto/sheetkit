@@ -14,9 +14,9 @@
  * 10. scale-1k / scale-10k / scale-100k: scaling benchmarks
  */
 
-import { Workbook } from '@sheetkit/node';
-import { mkdirSync, existsSync } from 'node:fs';
+import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { Workbook } from '@sheetkit/node';
 
 const FIXTURES_DIR = join(import.meta.dirname, 'fixtures');
 
@@ -106,8 +106,16 @@ function generateHeavyStyles() {
   const styles = [boldStyle, numberStyle, percentStyle, dateStyle, wrapStyle];
 
   const headers = [
-    'ID', 'Name', 'Amount', 'Rate', 'Date',
-    'Category', 'Score', 'Percent', 'Notes', 'Status',
+    'ID',
+    'Name',
+    'Amount',
+    'Rate',
+    'Date',
+    'Category',
+    'Score',
+    'Percent',
+    'Notes',
+    'Status',
   ];
   for (let c = 0; c < headers.length; c++) {
     wb.setCellValue(sheet, cellRef(1, c), headers[c]);
@@ -193,14 +201,40 @@ function generateStrings() {
   const sheet = 'Sheet1';
 
   const words = [
-    'alpha', 'bravo', 'charlie', 'delta', 'echo',
-    'foxtrot', 'golf', 'hotel', 'india', 'juliet',
-    'kilo', 'lima', 'mike', 'november', 'oscar',
-    'papa', 'quebec', 'romeo', 'sierra', 'tango',
+    'alpha',
+    'bravo',
+    'charlie',
+    'delta',
+    'echo',
+    'foxtrot',
+    'golf',
+    'hotel',
+    'india',
+    'juliet',
+    'kilo',
+    'lima',
+    'mike',
+    'november',
+    'oscar',
+    'papa',
+    'quebec',
+    'romeo',
+    'sierra',
+    'tango',
   ];
 
-  const headers = ['Full_Name', 'Email', 'Department', 'Address', 'Description',
-    'City', 'Country', 'Phone', 'Title', 'Bio'];
+  const headers = [
+    'Full_Name',
+    'Email',
+    'Department',
+    'Address',
+    'Description',
+    'City',
+    'Country',
+    'Phone',
+    'Title',
+    'Bio',
+  ];
   for (let c = 0; c < headers.length; c++) {
     wb.setCellValue(sheet, cellRef(1, c), headers[c]);
   }
@@ -214,12 +248,20 @@ function generateStrings() {
     wb.setCellValue(sheet, cellRef(r, 1), `${w1}.${w2}@example.com`);
     wb.setCellValue(sheet, cellRef(r, 2), `Department_${(r % 20) + 1}`);
     wb.setCellValue(sheet, cellRef(r, 3), `${r} ${w3} Street, Suite ${r % 500}`);
-    wb.setCellValue(sheet, cellRef(r, 4), `Description for entry ${r}: ${w1} ${w2} ${w3} related work`);
+    wb.setCellValue(
+      sheet,
+      cellRef(r, 4),
+      `Description for entry ${r}: ${w1} ${w2} ${w3} related work`,
+    );
     wb.setCellValue(sheet, cellRef(r, 5), `City_${w1}`);
     wb.setCellValue(sheet, cellRef(r, 6), `Country_${w2}`);
     wb.setCellValue(sheet, cellRef(r, 7), `+1-555-${String(r % 10000).padStart(4, '0')}`);
     wb.setCellValue(sheet, cellRef(r, 8), `${w1} ${w2} Specialist`);
-    wb.setCellValue(sheet, cellRef(r, 9), `Experienced ${w3} professional with expertise in ${w1} and ${w2} domains.`);
+    wb.setCellValue(
+      sheet,
+      cellRef(r, 9),
+      `Experienced ${w3} professional with expertise in ${w1} and ${w2} domains.`,
+    );
   }
 
   wb.saveSync(join(FIXTURES_DIR, 'strings.xlsx'));
@@ -232,8 +274,14 @@ function generateDataValidation() {
   const sheet = 'Sheet1';
 
   const headers = [
-    'Status', 'Priority', 'Score', 'Rate', 'Quantity',
-    'Department', 'Code', 'Notes',
+    'Status',
+    'Priority',
+    'Score',
+    'Rate',
+    'Quantity',
+    'Department',
+    'Code',
+    'Notes',
   ];
   for (let c = 0; c < headers.length; c++) {
     wb.setCellValue(sheet, cellRef(1, c), headers[c]);
@@ -318,7 +366,16 @@ function generateDataValidation() {
   // Fill data
   const statuses = ['Active', 'Inactive', 'Pending', 'Closed', 'Archived'];
   const priorities = ['Critical', 'High', 'Medium', 'Low'];
-  const depts = ['Engineering', 'Sales', 'Marketing', 'Finance', 'Support', 'HR', 'Legal', 'Operations'];
+  const depts = [
+    'Engineering',
+    'Sales',
+    'Marketing',
+    'Finance',
+    'Support',
+    'HR',
+    'Legal',
+    'Operations',
+  ];
 
   for (let r = 2; r <= 5001; r++) {
     wb.setCellValue(sheet, cellRef(r, 0), statuses[r % statuses.length]);
@@ -433,7 +490,16 @@ function generateMixedWorkload() {
   wb.mergeCells(invoiceSheet, 'A1', 'H1');
   wb.setCellStyle(invoiceSheet, 'A1', boldId);
 
-  const invHeaders = ['Invoice_ID', 'Customer', 'Amount', 'Tax', 'Total', 'Status', 'Due_Date', 'Notes'];
+  const invHeaders = [
+    'Invoice_ID',
+    'Customer',
+    'Amount',
+    'Tax',
+    'Total',
+    'Status',
+    'Due_Date',
+    'Notes',
+  ];
   for (let c = 0; c < invHeaders.length; c++) {
     wb.setCellValue(invoiceSheet, cellRef(2, c), invHeaders[c]);
     wb.setCellStyle(invoiceSheet, cellRef(2, c), boldId);
@@ -445,15 +511,25 @@ function generateMixedWorkload() {
     formula1: '"Paid,Unpaid,Overdue,Cancelled"',
   });
 
-  const customers = ['Acme Corp', 'GlobalTech', 'Initech', 'Umbrella Inc', 'Stark Industries',
-    'Wayne Enterprises', 'Oscorp', 'LexCorp', 'Massive Dynamic', 'Soylent Corp'];
+  const customers = [
+    'Acme Corp',
+    'GlobalTech',
+    'Initech',
+    'Umbrella Inc',
+    'Stark Industries',
+    'Wayne Enterprises',
+    'Oscorp',
+    'LexCorp',
+    'Massive Dynamic',
+    'Soylent Corp',
+  ];
   const statuses = ['Paid', 'Unpaid', 'Overdue', 'Cancelled'];
 
   for (let r = 3; r <= 3002; r++) {
     const i = r - 2;
     wb.setCellValue(invoiceSheet, cellRef(r, 0), `INV-${String(i).padStart(5, '0')}`);
     wb.setCellValue(invoiceSheet, cellRef(r, 1), customers[i % customers.length]);
-    wb.setCellValue(invoiceSheet, cellRef(r, 2), Math.round((i * 123.45) % 9999 * 100) / 100);
+    wb.setCellValue(invoiceSheet, cellRef(r, 2), Math.round(((i * 123.45) % 9999) * 100) / 100);
     wb.setCellStyle(invoiceSheet, cellRef(r, 2), currencyId);
     wb.setCellFormula(invoiceSheet, cellRef(r, 3), `C${r}*0.1`);
     wb.setCellStyle(invoiceSheet, cellRef(r, 3), currencyId);
@@ -461,7 +537,11 @@ function generateMixedWorkload() {
     wb.setCellStyle(invoiceSheet, cellRef(r, 4), currencyId);
     wb.setCellValue(invoiceSheet, cellRef(r, 5), statuses[i % statuses.length]);
     wb.setCellValue(invoiceSheet, cellRef(r, 6), 45000 + (i % 365));
-    wb.setCellValue(invoiceSheet, cellRef(r, 7), i % 5 === 0 ? `Special terms for invoice ${i}` : '');
+    wb.setCellValue(
+      invoiceSheet,
+      cellRef(r, 7),
+      i % 5 === 0 ? `Special terms for invoice ${i}` : '',
+    );
   }
 
   // Comments on overdue invoices
@@ -479,9 +559,23 @@ function generateMixedWorkload() {
   const empSheet = 'Employees';
   wb.newSheet(empSheet);
 
-  const empHeaders = ['EmpID', 'First_Name', 'Last_Name', 'Email', 'Department',
-    'Title', 'Salary', 'Bonus_Rate', 'Total_Comp', 'Start_Date',
-    'Manager', 'Location', 'Phone', 'Status', 'Notes'];
+  const empHeaders = [
+    'EmpID',
+    'First_Name',
+    'Last_Name',
+    'Email',
+    'Department',
+    'Title',
+    'Salary',
+    'Bonus_Rate',
+    'Total_Comp',
+    'Start_Date',
+    'Manager',
+    'Location',
+    'Phone',
+    'Status',
+    'Notes',
+  ];
   for (let c = 0; c < empHeaders.length; c++) {
     wb.setCellValue(empSheet, cellRef(1, c), empHeaders[c]);
     wb.setCellStyle(empSheet, cellRef(1, c), boldId);
@@ -509,11 +603,47 @@ function generateMixedWorkload() {
     formula2: '0.5',
   });
 
-  const firstNames = ['James', 'Mary', 'Robert', 'Patricia', 'John', 'Jennifer', 'Michael', 'Linda'];
+  const firstNames = [
+    'James',
+    'Mary',
+    'Robert',
+    'Patricia',
+    'John',
+    'Jennifer',
+    'Michael',
+    'Linda',
+  ];
   const lastNames = ['Smith', 'Johnson', 'Williams', 'Brown', 'Jones', 'Garcia', 'Miller', 'Davis'];
-  const depts = ['Engineering', 'Sales', 'Marketing', 'Finance', 'HR', 'Legal', 'Operations', 'Support'];
-  const titles = ['Analyst', 'Engineer', 'Manager', 'Director', 'VP', 'Lead', 'Specialist', 'Coordinator'];
-  const locations = ['New York', 'San Francisco', 'London', 'Tokyo', 'Berlin', 'Sydney', 'Toronto', 'Singapore'];
+  const depts = [
+    'Engineering',
+    'Sales',
+    'Marketing',
+    'Finance',
+    'HR',
+    'Legal',
+    'Operations',
+    'Support',
+  ];
+  const titles = [
+    'Analyst',
+    'Engineer',
+    'Manager',
+    'Director',
+    'VP',
+    'Lead',
+    'Specialist',
+    'Coordinator',
+  ];
+  const locations = [
+    'New York',
+    'San Francisco',
+    'London',
+    'Tokyo',
+    'Berlin',
+    'Sydney',
+    'Toronto',
+    'Singapore',
+  ];
 
   for (let r = 2; r <= 2001; r++) {
     const i = r - 1;
@@ -525,7 +655,7 @@ function generateMixedWorkload() {
     wb.setCellValue(empSheet, cellRef(r, 3), `${fn.toLowerCase()}.${ln.toLowerCase()}@company.com`);
     wb.setCellValue(empSheet, cellRef(r, 4), depts[i % depts.length]);
     wb.setCellValue(empSheet, cellRef(r, 5), `${titles[i % titles.length]}`);
-    wb.setCellValue(empSheet, cellRef(r, 6), 50000 + (i * 137) % 150000);
+    wb.setCellValue(empSheet, cellRef(r, 6), 50000 + ((i * 137) % 150000));
     wb.setCellStyle(empSheet, cellRef(r, 6), currencyId);
     wb.setCellValue(empSheet, cellRef(r, 7), ((i % 20) + 5) / 100);
     wb.setCellStyle(empSheet, cellRef(r, 7), pctId);
