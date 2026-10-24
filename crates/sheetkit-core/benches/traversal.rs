@@ -1,4 +1,4 @@
-use criterion::{black_box, criterion_group, criterion_main, BatchSize, Criterion};
+use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
 use sheetkit_core::pivot::{AggregateFunction, PivotDataField, PivotField, PivotTableConfig};
 use sheetkit_core::raw_transfer::sheet_to_raw_buffer_with_options;
 use sheetkit_core::raw_transfer_v2::sheet_to_raw_buffer_v2;
@@ -8,6 +8,7 @@ use sheetkit_core::traversal::{TraversalMode, TraversalOptions};
 use sheetkit_core::workbook::Workbook;
 use sheetkit_xml::styles::StyleSheet;
 use sheetkit_xml::worksheet::{Cell, CellTypeTag, CompactCellRef, Row, SheetData, WorksheetXml};
+use std::hint::black_box;
 
 fn cell(reference: &str, row: u32) -> Cell {
     Cell {

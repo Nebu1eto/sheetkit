@@ -630,9 +630,8 @@ fn decode_dir_unicode_name(bytes: &[u8], budget: &mut VbaBudget) -> Result<Optio
     units
         .try_reserve(even_len / 2)
         .map_err(|_| Error::Internal("VBA allocation failed".to_string()))?;
-    for chunk in bytes[..even_len].chunks_exact(2) {
-        units.push(u16::from_le_bytes([chunk[0], chunk[1]]));
-    }
+    let (pairs, _) = bytes[..even_len].as_chunks::<2>();
+    units.extend(pairs.iter().map(|pair| u16::from_le_bytes(*pair)));
     let name = String::from_utf16_lossy(&units);
     let name = name.trim_end_matches('\0');
     Ok((!name.is_empty()).then(|| name.to_string()))

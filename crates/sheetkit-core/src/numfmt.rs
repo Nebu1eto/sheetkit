@@ -209,10 +209,8 @@ fn parse_condition(content: &str) -> Option<Condition> {
         (ConditionOp::Gt, r)
     } else if let Some(r) = s.strip_prefix('<') {
         (ConditionOp::Lt, r)
-    } else if let Some(r) = s.strip_prefix('=') {
-        (ConditionOp::Eq, r)
     } else {
-        return None;
+        (ConditionOp::Eq, s.strip_prefix('=')?)
     };
 
     let threshold: f64 = rest.trim().parse().ok()?;

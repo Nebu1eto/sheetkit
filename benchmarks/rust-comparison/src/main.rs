@@ -2214,7 +2214,7 @@ fn generate_markdown_report(results: &[BenchResult]) -> String {
     lines.push("| Library | Wins |".to_string());
     lines.push("|---------|------|".to_string());
     let mut sorted_wins: Vec<_> = wins.into_iter().collect();
-    sorted_wins.sort_by(|a, b| b.1.cmp(&a.1));
+    sorted_wins.sort_by_key(|entry| std::cmp::Reverse(entry.1));
     for (lib, count) in &sorted_wins {
         lines.push(format!("| {lib} | {count}/{comparable_scenarios} |"));
     }

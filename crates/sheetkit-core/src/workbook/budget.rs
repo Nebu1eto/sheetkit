@@ -300,7 +300,7 @@ fn check_ratio(
     } else if compressed == 0 {
         u64::MAX
     } else {
-        actual / compressed + u64::from(!actual.is_multiple_of(compressed))
+        actual.div_ceil(compressed)
     };
     check(
         ResourceDimension::CompressionRatio,

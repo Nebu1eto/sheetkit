@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{criterion_group, criterion_main, Criterion};
 use sheetkit_core::formula::{parse_formula, topological_sort, CellCoord};
 use sheetkit_core::workbook::Workbook;
+use std::hint::black_box;
 
 fn bench_bounded_formula_parse(c: &mut Criterion) {
     let formula = std::iter::repeat_n("1", 129).collect::<Vec<_>>().join("+");

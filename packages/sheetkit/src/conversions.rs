@@ -1431,11 +1431,11 @@ pub(crate) fn core_cf_rule_to_js(rule: &ConditionalFormatRule) -> JsConditionalF
                 }),
             };
             JsBorderStyle {
-                left: b.left.as_ref().map(&side_to_js),
-                right: b.right.as_ref().map(&side_to_js),
-                top: b.top.as_ref().map(&side_to_js),
-                bottom: b.bottom.as_ref().map(&side_to_js),
-                diagonal: b.diagonal.as_ref().map(&side_to_js),
+                left: b.left.as_ref().map(side_to_js),
+                right: b.right.as_ref().map(side_to_js),
+                top: b.top.as_ref().map(side_to_js),
+                bottom: b.bottom.as_ref().map(side_to_js),
+                diagonal: b.diagonal.as_ref().map(side_to_js),
             }
         }),
         custom_num_fmt: s.num_fmt.as_ref().and_then(|nf| match nf {

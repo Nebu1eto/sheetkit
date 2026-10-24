@@ -293,7 +293,7 @@ fn aes_ecb_decrypt(key: &[u8], data: &[u8]) -> Result<Vec<u8>> {
     fn decrypt<C: BlockDecrypt + KeyInit>(key: &[u8], data: &[u8]) -> Vec<u8> {
         let cipher = C::new(GenericArray::from_slice(key));
         let mut result = Vec::with_capacity(data.len());
-        for chunk in data.chunks_exact(AES_BLOCK_SIZE) {
+        for chunk in data.as_chunks::<AES_BLOCK_SIZE>().0 {
             let mut block = GenericArray::clone_from_slice(chunk);
             cipher.decrypt_block(&mut block);
             result.extend_from_slice(&block);
@@ -372,7 +372,7 @@ mod tests {
 
         let cipher = aes::Aes128::new(GenericArray::from_slice(key));
         let mut encrypted = Vec::with_capacity(data.len());
-        for chunk in data.chunks_exact(AES_BLOCK_SIZE) {
+        for chunk in data.as_chunks::<AES_BLOCK_SIZE>().0 {
             let mut block = GenericArray::clone_from_slice(chunk);
             cipher.encrypt_block(&mut block);
             encrypted.extend_from_slice(&block);

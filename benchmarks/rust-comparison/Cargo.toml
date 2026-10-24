@@ -5,8 +5,8 @@ publish = false
 
 [dependencies]
 sheetkit = { path = "../../crates/sheetkit" }
-calamine = "0.26"
-rust_xlsxwriter = "0.79"
+calamine = "0.37"
+rust_xlsxwriter = "0.101"
 edit-xlsx = "0.4"
 
 [target.'cfg(target_os = "macos")'.dependencies]

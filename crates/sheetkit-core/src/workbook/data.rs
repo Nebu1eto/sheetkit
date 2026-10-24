@@ -487,7 +487,7 @@ impl Workbook {
         });
 
         // Remove worksheet relationship for this pivot table.
-        for (_idx, rels) in self.worksheet_rels.iter_mut() {
+        for rels in self.worksheet_rels.values_mut() {
             rels.relationships.retain(|r| {
                 if r.rel_type != rel_types::PIVOT_TABLE {
                     return true;
