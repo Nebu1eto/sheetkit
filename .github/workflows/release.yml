@@ -166,13 +166,20 @@ jobs:
           pattern: bindings-*
           path: packages/sheetkit/artifacts
 
-      - name: Create npm dirs
-        working-directory: packages/sheetkit
-        run: pnpm exec napi create-npm-dirs
-
       - name: Move artifacts
         working-directory: packages/sheetkit
-        run: pnpm artifacts --npm-dir ../
+        run: >-
+          pnpm exec napi artifacts --cwd ../..
+          --package-json-path packages/sheetkit/package.json
+          --output-dir packages/sheetkit/artifacts
+          --npm-dir packages
+
+      - name: Validate npm packages
+        working-directory: packages/sheetkit
+        run: >-
+          pnpm exec napi prepublish -t npm --cwd ../..
+          --package-json-path packages/sheetkit/package.json
+          --npm-dir packages --skip-optional-publish --dry-run
 
       - name: Publish packages to npm
         working-directory: packages/sheetkit

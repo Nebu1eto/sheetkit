@@ -53,7 +53,7 @@
     "build:debug": "napi build --platform --js binding.js --dts binding.d.ts",
     "typecheck": "tsc --noEmit",
     "typecheck:declarations": "tsc -p __test__/declarations/tsconfig.json",
-    "prepublishOnly": "napi prepublish -t npm",
+    "prepublishOnly": "napi prepublish -t npm --cwd ../.. --package-json-path packages/sheetkit/package.json --npm-dir packages --skip-optional-publish",
     "test": "vitest run",
     "test:watch": "vitest",
     "version": "napi version"

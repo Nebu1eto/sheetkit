@@ -46,8 +46,11 @@ jobs:
         run: pnpm install
 
       - name: Build Rust API docs
+        env:
+          RUSTDOCFLAGS: -D warnings
         run: |
-          cargo doc --no-deps -p sheetkit-xml -p sheetkit-core -p sheetkit
+          cargo doc --no-deps -p sheetkit-xml -p sheetkit-core -p sheetkit \
+            --features sheetkit-core/encryption
           mkdir -p docs/public/rustdoc
           cp -r target/doc/* docs/public/rustdoc/
 
