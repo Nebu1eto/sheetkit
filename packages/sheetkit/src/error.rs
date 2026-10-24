@@ -7,6 +7,48 @@ use sheetkit_core::resource::ResourceLimitError;
 
 use crate::Workbook;
 
+/// Stack reserved for open threads: the 8 MiB default of the Node main
+/// thread and of libuv pool threads on macOS and Linux.
+const OPEN_THREAD_STACK_BYTES: usize = 8 * 1024 * 1024;
+
+/// Run an async-task open on a scoped Rust thread and wait for it.
+///
+/// The same allocation-heavy parse measured about 10% slower when run
+/// directly on a libuv pool thread than on the Node main thread or a Rust
+/// thread. A panic resumes on the calling thread as before, and if no
+/// thread can be spawned the open runs inline.
+fn open_on_thread(
+    open: impl FnOnce() -> sheetkit_core::error::Result<sheetkit_core::workbook::Workbook> + Send,
+) -> sheetkit_core::error::Result<sheetkit_core::workbook::Workbook> {
+    let pending = std::sync::Mutex::new(Some(open));
+    let take = || {
+        pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+    };
+    let spawned = std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .name("sheetkit-open".to_string())
+            .stack_size(OPEN_THREAD_STACK_BYTES)
+            .spawn_scoped(scope, || take().map(|open| open()))
+            .map(|handle| {
+                handle
+                    .join()
+                    .unwrap_or_else(|payload| std::panic::resume_unwind(payload))
+            })
+    });
+    match spawned {
+        Ok(Some(opened)) => opened,
+        _ => match take() {
+            Some(open) => open(),
+            None => Err(sheetkit_core::error::Error::Internal(
+                "open thread finished without running the open".to_string(),
+            )),
+        },
+    }
+}
+
 fn create_resource_limit_error(
     env: &Env,
     metadata: ResourceLimitError,
@@ -242,12 +284,12 @@ impl Task for OpenPathTask {
     type JsValue = Workbook;
 
     fn compute(&mut self) -> Result<Self::Output> {
-        sheetkit_core::workbook::Workbook::open_with_options(&self.path, &self.options).map_err(
-            |error| {
+        let (path, options) = (&self.path, &self.options);
+        open_on_thread(|| sheetkit_core::workbook::Workbook::open_with_options(path, options))
+            .map_err(|error| {
                 self.resource_error = error.resource_metadata().copied();
                 Error::from_reason(error.to_string())
-            },
-        )
+            })
     }
 
     fn resolve(&mut self, _env: Env, inner: Self::Output) -> Result<Self::JsValue> {
@@ -285,11 +327,14 @@ impl Task for OpenBufferTask {
     type JsValue = Workbook;
 
     fn compute(&mut self) -> Result<Self::Output> {
-        sheetkit_core::workbook::Workbook::open_from_buffer_with_options(&self.data, &self.options)
-            .map_err(|error| {
-                self.resource_error = error.resource_metadata().copied();
-                Error::from_reason(error.to_string())
-            })
+        let (data, options) = (&self.data, &self.options);
+        open_on_thread(|| {
+            sheetkit_core::workbook::Workbook::open_from_buffer_with_options(data, options)
+        })
+        .map_err(|error| {
+            self.resource_error = error.resource_metadata().copied();
+            Error::from_reason(error.to_string())
+        })
     }
 
     fn resolve(&mut self, _env: Env, inner: Self::Output) -> Result<Self::JsValue> {
@@ -333,11 +378,12 @@ impl Task for OpenPasswordTask {
     type JsValue = Workbook;
 
     fn compute(&mut self) -> Result<Self::Output> {
-        sheetkit_core::workbook::Workbook::open_with_password_with_options(
-            &self.path,
-            &self.password,
-            &self.options,
-        )
+        let (path, password, options) = (&self.path, &self.password, &self.options);
+        open_on_thread(|| {
+            sheetkit_core::workbook::Workbook::open_with_password_with_options(
+                path, password, options,
+            )
+        })
         .map_err(|error| {
             self.resource_error = error.resource_metadata().copied();
             Error::from_reason(error.to_string())
@@ -385,11 +431,12 @@ impl Task for OpenBufferPasswordTask {
     type JsValue = Workbook;
 
     fn compute(&mut self) -> Result<Self::Output> {
-        sheetkit_core::workbook::Workbook::open_from_buffer_with_password_with_options(
-            &self.data,
-            &self.password,
-            &self.options,
-        )
+        let (data, password, options) = (&self.data, &self.password, &self.options);
+        open_on_thread(|| {
+            sheetkit_core::workbook::Workbook::open_from_buffer_with_password_with_options(
+                data, password, options,
+            )
+        })
         .map_err(|error| {
             self.resource_error = error.resource_metadata().copied();
             Error::from_reason(error.to_string())
@@ -402,5 +449,40 @@ impl Task for OpenBufferPasswordTask {
 
     fn reject(&mut self, env: Env, error: Error) -> Result<Self::JsValue> {
         reject_task_error(env, self.resource_error, error)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::open_on_thread;
+
+    #[test]
+    fn open_runs_on_a_named_thread_and_returns_its_result() {
+        let caller = std::thread::current().id();
+        let seen = std::sync::Mutex::new(None);
+        let opened = open_on_thread(|| {
+            let current = std::thread::current();
+            *seen.lock().unwrap() = Some((current.id(), current.name().map(str::to_string)));
+            Err(sheetkit_core::error::Error::SheetNotFound {
+                name: "Missing".to_string(),
+            })
+        });
+        assert!(matches!(
+            opened,
+            Err(sheetkit_core::error::Error::SheetNotFound { ref name }) if name == "Missing"
+        ));
+        let (thread, name) = seen.into_inner().unwrap().unwrap();
+        assert_ne!(thread, caller);
+        assert_eq!(name.as_deref(), Some("sheetkit-open"));
+        assert!(open_on_thread(|| Ok(sheetkit_core::workbook::Workbook::new())).is_ok());
+    }
+
+    #[test]
+    fn open_panic_resumes_on_the_calling_thread() {
+        let payload = std::panic::catch_unwind(|| {
+            let _ = open_on_thread(|| panic!("open panicked"));
+        })
+        .unwrap_err();
+        assert_eq!(payload.downcast_ref::<&str>(), Some(&"open panicked"));
     }
 }

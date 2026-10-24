@@ -15,14 +15,45 @@ pub(crate) fn compact_cell_ref(col: u32, row: u32) -> Result<CompactCellRef> {
         .map_err(|error| Error::InvalidCellReference(error.to_string()))
 }
 
-/// Validate worksheet cell structure before populating binary-search indexes.
+/// Decode a [`CompactCellRef`] into `(column, row)`.
+///
+/// Every constructor, including deserialization, admits only canonical,
+/// in-range A1 references, so syntax and range checks are not repeated.
+fn compact_coordinates(reference: &CompactCellRef) -> (u32, u32) {
+    let mut column = 0u32;
+    let mut row = 0u32;
+    for &byte in reference.as_str().as_bytes() {
+        if byte.is_ascii_uppercase() {
+            column = column * 26 + u32::from(byte - b'A') + 1;
+        } else {
+            row = row * 10 + u32::from(byte - b'0');
+        }
+    }
+    debug_assert!(parse_a1_reference(reference.as_str()).is_ok_and(|parsed| {
+        parsed.is_canonical() && parsed.column() == column && parsed.row() == row
+    }));
+    (column, row)
+}
+
+/// Validate worksheet cell structure, then sort rows and cells, cache cell
+/// columns for binary search, and release excess cell capacity.
 pub(crate) fn validate_and_index_worksheet(
     worksheet: &mut sheetkit_xml::worksheet::WorksheetXml,
 ) -> Result<()> {
     const COLUMN_WORDS: usize = (MAX_COLUMNS as usize).div_ceil(u64::BITS as usize);
     let mut seen_rows = vec![0u64; (MAX_ROWS as usize).div_ceil(u64::BITS as usize)];
+    // Shared across rows; only rows whose columns are not strictly
+    // increasing use it, and they clear the words they set.
+    let mut seen_columns = [0u64; COLUMN_WORDS];
+    let column_bit = |column: u32| {
+        let index = (column - 1) as usize;
+        (
+            index / u64::BITS as usize,
+            1u64 << (index % u64::BITS as usize),
+        )
+    };
 
-    for row in &worksheet.sheet_data.rows {
+    for row in &mut worksheet.sheet_data.rows {
         if !(1..=MAX_ROWS).contains(&row.r) {
             return Err(Error::InvalidRowNumber(row.r));
         }
@@ -38,44 +69,53 @@ pub(crate) fn validate_and_index_worksheet(
         }
         seen_rows[row_word] |= row_mask;
 
-        let mut seen_columns = [0u64; COLUMN_WORDS];
-        for cell in &row.cells {
-            let parsed = parse_a1_reference(cell.r.as_str())
-                .map_err(|error| Error::InvalidCellReference(error.to_string()))?;
-            if !parsed.is_canonical() {
-                return Err(Error::InvalidCellReference(format!(
-                    "noncanonical worksheet cell reference '{}'",
-                    cell.r
-                )));
-            }
-            if parsed.row() != row.r {
+        let mut last_column = 0u32;
+        let mut uses_bitset = false;
+        for index in 0..row.cells.len() {
+            let cell = &row.cells[index];
+            let (column, cell_row) = compact_coordinates(&cell.r);
+            if cell_row != row.r {
                 return Err(Error::InvalidCellReference(format!(
                     "cell '{}' does not belong to worksheet row {}",
                     cell.r, row.r
                 )));
             }
 
-            let column_index = (parsed.column() - 1) as usize;
-            let column_word = column_index / u64::BITS as usize;
-            let column_mask = 1u64 << (column_index % u64::BITS as usize);
-            if seen_columns[column_word] & column_mask != 0 {
-                return Err(Error::InvalidCellReference(format!(
-                    "duplicate worksheet cell reference '{}'",
-                    cell.r
-                )));
+            if !uses_bitset && column <= last_column {
+                // Strictly increasing columns cannot repeat. On the first
+                // out-of-order cell, record every earlier column of the row.
+                uses_bitset = true;
+                for earlier in &row.cells[..index] {
+                    let (word, mask) = column_bit(earlier.col);
+                    seen_columns[word] |= mask;
+                }
             }
-            seen_columns[column_word] |= column_mask;
+            if uses_bitset {
+                let (word, mask) = column_bit(column);
+                if seen_columns[word] & mask != 0 {
+                    return Err(Error::InvalidCellReference(format!(
+                        "duplicate worksheet cell reference '{}'",
+                        row.cells[index].r
+                    )));
+                }
+                seen_columns[word] |= mask;
+            }
+            last_column = column;
+            // Callers discard the worksheet on error, so caching the column
+            // before the whole sheet is validated cannot leak partial state.
+            row.cells[index].col = column;
+        }
+        if uses_bitset {
+            for cell in &row.cells {
+                seen_columns[column_bit(cell.col).0] = 0;
+            }
         }
     }
 
     worksheet.sheet_data.rows.sort_unstable_by_key(|row| row.r);
     for row in &mut worksheet.sheet_data.rows {
-        for cell in &mut row.cells {
-            cell.col = parse_a1_reference(cell.r.as_str())
-                .map_err(|error| Error::InvalidCellReference(error.to_string()))?
-                .column();
-        }
         row.cells.sort_unstable_by_key(|cell| cell.col);
+        row.cells.shrink_to_fit();
     }
     Ok(())
 }
@@ -492,6 +532,38 @@ mod tests {
             .rows
             .extend([worksheet_row(1, &["A1"]), worksheet_row(1, &["B1"])]);
         assert!(validate_and_index_worksheet(&mut duplicate_rows).is_err());
+    }
+
+    #[test]
+    fn worksheet_indexing_detects_out_of_order_duplicates_without_leaking_rows() {
+        let duplicate_message = |references: &[&str]| {
+            let mut worksheet = sheetkit_xml::worksheet::WorksheetXml::default();
+            worksheet.sheet_data.rows.push(worksheet_row(1, references));
+            validate_and_index_worksheet(&mut worksheet)
+                .unwrap_err()
+                .to_string()
+        };
+        assert!(duplicate_message(&["A1", "C1", "B1", "A1"]).contains("duplicate"));
+        assert!(duplicate_message(&["C1", "A1", "C1"]).contains("duplicate"));
+        // The first error in document order wins over later invalid cells.
+        assert!(duplicate_message(&["B1", "B1", "C2"]).contains("duplicate"));
+        assert!(duplicate_message(&["B1", "C2", "B1"]).contains("does not belong"));
+
+        // Columns recorded for one unordered row must not leak into the next.
+        let mut worksheet = sheetkit_xml::worksheet::WorksheetXml::default();
+        worksheet.sheet_data.rows.extend([
+            worksheet_row(1, &["B1", "A1"]),
+            worksheet_row(2, &["B2", "A2"]),
+            worksheet_row(3, &["A3", "B3"]),
+        ]);
+        validate_and_index_worksheet(&mut worksheet).unwrap();
+        let columns: Vec<Vec<u32>> = worksheet
+            .sheet_data
+            .rows
+            .iter()
+            .map(|row| row.cells.iter().map(|cell| cell.col).collect())
+            .collect();
+        assert_eq!(columns, [[1, 2], [1, 2], [1, 2]]);
     }
 
     #[test]

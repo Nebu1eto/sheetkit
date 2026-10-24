@@ -563,11 +563,10 @@ impl Workbook {
         let source = self.package_source.as_ref().ok_or_else(|| {
             Error::Internal(format!("sheet at index {idx} has no package source"))
         })?;
-        let spool = source.spool_xml_part(&self.sheet_part_path(idx))?;
-        let worksheet = io::deserialize_worksheet_xml_with_row_limit(
-            std::io::BufReader::new(spool),
-            self.sheet_rows_limit,
-        )?;
+        let row_limit = self.sheet_rows_limit;
+        let worksheet = source.parse_xml_part(&self.sheet_part_path(idx), |reader| {
+            io::deserialize_worksheet_xml_with_row_limit(reader, row_limit)
+        })?;
         io::validate_materialized_worksheet_table_parts(
             &worksheet,
             self.worksheet_rels.get(&idx),
@@ -580,9 +579,9 @@ impl Workbook {
         let source = self.package_source.as_ref().ok_or_else(|| {
             Error::Internal(format!("sheet at index {idx} has no package source"))
         })?;
-        let spool = source.spool_xml_part(&self.sheet_part_path(idx))?;
-        let worksheet =
-            io::deserialize_worksheet_xml_with_row_limit(std::io::BufReader::new(spool), None)?;
+        let worksheet = source.parse_xml_part(&self.sheet_part_path(idx), |reader| {
+            io::deserialize_worksheet_xml_with_row_limit(reader, None)
+        })?;
         io::validate_materialized_worksheet_table_parts(
             &worksheet,
             self.worksheet_rels.get(&idx),

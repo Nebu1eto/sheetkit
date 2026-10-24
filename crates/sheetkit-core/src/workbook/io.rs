@@ -743,15 +743,14 @@ impl Workbook {
             }
         }
 
-        // Validate and index all eagerly-parsed cells before applying row
-        // limits or using the cached coordinates for binary search.
-        // Deferred sheets (empty OnceLock) are skipped here; they are
-        // post-processed on demand in `deserialize_worksheet_xml`.
+        // Eagerly parsed sheets were validated and indexed by
+        // `deserialize_worksheet_xml_with_row_limit`; filtered sheets hold
+        // empty placeholders. Deferred sheets (empty OnceLock) are skipped
+        // here; they are post-processed on demand when hydrated.
         for (_name, ws_lock) in &mut worksheets {
             let Some(ws) = ws_lock.get_mut() else {
                 continue;
             };
-            crate::utils::cell_ref::validate_and_index_worksheet(ws)?;
 
             // Apply sheet_rows limit: keep only the first N rows.
             if let Some(max_rows) = options.sheet_rows {
@@ -3041,10 +3040,8 @@ pub(super) fn deserialize_worksheet_xml_with_row_limit<R: std::io::BufRead>(
         quick_xml::de::from_reader(source)
             .map_err(|error| Error::XmlDeserialize(error.to_string()))?
     };
+    // Also shrinks each row's cells while it walks them.
     crate::utils::cell_ref::validate_and_index_worksheet(&mut ws)?;
-    for row in &mut ws.sheet_data.rows {
-        row.cells.shrink_to_fit();
-    }
     ws.sheet_data.rows.shrink_to_fit();
     Ok(ws)
 }
@@ -3792,18 +3789,25 @@ fn restore_shared_string_text(mut sst: Sst, raw_items: Vec<RawSharedStringText>)
 }
 
 fn deserialize_shared_strings_from_bytes(bytes: &[u8]) -> Result<Sst> {
-    let sst = deserialize_shared_strings(std::io::BufReader::new(bytes))?;
+    // A byte slice is already buffered; wrapping it would only add copies.
+    let sst = deserialize_shared_strings(bytes)?;
     if !shared_strings_need_raw_scan(bytes) {
         return Ok(sst);
     }
-    let raw_items = scan_shared_string_text(std::io::BufReader::new(bytes))?;
+    let raw_items = scan_shared_string_text(bytes)?;
     restore_shared_string_text(sst, raw_items)
 }
 
+/// Whether the bytes contain `:space` or `<![CDATA[`, found in one pass.
 fn shared_strings_need_raw_scan(bytes: &[u8]) -> bool {
-    [b":space".as_slice(), b"<![CDATA[".as_slice()]
-        .iter()
-        .any(|marker| bytes.windows(marker.len()).any(|window| window == *marker))
+    const SPACE: &[u8] = b":space";
+    const CDATA: &[u8] = b"<![CDATA[";
+    bytes.iter().enumerate().any(|(index, &byte)| match byte {
+        b':' => bytes[index..].starts_with(SPACE),
+        // Key on the rare `!` rather than the ubiquitous `<`.
+        b'!' => index > 0 && bytes[index - 1..].starts_with(CDATA),
+        _ => false,
+    })
 }
 
 fn scan_shared_string_text<R: std::io::BufRead>(reader: R) -> Result<Vec<RawSharedStringText>> {
@@ -5477,6 +5481,39 @@ mod tests {
         assert!(shared_strings_need_raw_scan(cdata));
         let cdata_sst = deserialize_shared_strings_from_bytes(cdata).unwrap();
         assert_eq!(cdata_sst.items[0].t.as_ref().unwrap().value, "  cdata  ");
+    }
+
+    #[test]
+    fn shared_string_raw_scan_matches_substring_search_at_boundaries() {
+        let reference = |bytes: &[u8]| {
+            [b":space".as_slice(), b"<![CDATA[".as_slice()]
+                .iter()
+                .any(|marker| bytes.windows(marker.len()).any(|window| window == *marker))
+        };
+        let cases: [&[u8]; 14] = [
+            b"",
+            b":space",
+            b"<![CDATA[",
+            b"x:spac",
+            b"<![CDATA",
+            b"!",
+            b"!<![CDATA[",
+            b"<<![CDATA[x",
+            b"<!-- c --><!DOCTYPE>",
+            b"::space",
+            b"a:b:space",
+            b"<t>12:30</t>",
+            b"<![cdata[",
+            b":SPACE",
+        ];
+        for case in cases {
+            assert_eq!(
+                shared_strings_need_raw_scan(case),
+                reference(case),
+                "{:?}",
+                String::from_utf8_lossy(case)
+            );
+        }
     }
 
     #[test]
