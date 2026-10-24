@@ -54,6 +54,14 @@ Excel이 쓴 파일에서는 아래나 옆으로 채운 수식이 master cell �
 - **우회 방법**: 편집 전에 `set_cell_formula`로 dependant cell의 수식을 명시적으로 설정하세요. SheetKit은 이를 일반 수식으로 씁니다.
 - **상태**: 예정된 작업이 없습니다.
 
+### Streaming reader는 shared formula를 해석하지 않습니다
+
+`open_sheet_reader`(Node.js에서는 `openSheetReader`)는 다른 cell의 수식을 공유하는 cell을 캐시된 값으로만 읽습니다. `get_cell_value`, `get_rows`, `get_cols` 같은 다른 읽기 API는 위치에 맞게 이동된 수식을 반환합니다.
+
+- **영향**: Excel에서 아래나 옆으로 채운 shared formula cell은 stream으로 읽은 행에서 수식 없이 나타납니다.
+- **우회 방법**: 해당 cell은 `get_cell_value`, `get_rows`, `get_cols`로 읽으세요.
+- **상태**: 예정된 작업이 없습니다.
+
 ### 삭제된 구간 안의 위치는 `#REF!`가 되지 않고 이동합니다
 
 삭제된 행이나 열을 가리키는 고정 pane, selection, drawing anchor(chart, image, shape), sparkline 위치, 내부 hyperlink 대상은 삭제 구간 바로 다음 행이나 열로 이동합니다. 반면 수식은 `#REF!`가 됩니다.

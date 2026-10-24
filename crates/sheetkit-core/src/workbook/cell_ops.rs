@@ -43,7 +43,11 @@ impl Workbook {
             limits.max_output_bytes(),
             retained_bytes,
         )?;
-        self.xml_cell_to_value(xml_cell)
+        let mut value = self.xml_cell_to_value(xml_cell)?;
+        let shared_index = xml_cell.f.as_deref().and_then(|f| f.si);
+        crate::raw_transfer::SharedFollowers::new(ws, limits, retained_bytes, shared_index)?
+            .resolve(&mut value, xml_cell)?;
+        Ok(value)
     }
 
     /// Set the value of a cell.
@@ -2612,5 +2616,75 @@ mod tests {
         );
         assert_eq!(metadata.limit(), exact - 1);
         assert_eq!(metadata.observed(), exact);
+    }
+
+    #[test]
+    fn shared_formula_followers_resolve_in_cell_row_and_column_reads() {
+        use sheetkit_xml::worksheet::{Cell, CellFormula, CellTypeTag, Row, SheetData};
+
+        let shared = |cell: &str, col: u32, master: Option<&str>, si: u32, cached: &str| Cell {
+            r: cell.try_into().unwrap(),
+            col,
+            s: None,
+            t: CellTypeTag::None,
+            v: Some(cached.to_string()),
+            f: Some(Box::new(CellFormula {
+                t: Some("shared".to_string()),
+                reference: master.map(|_| "B1:B2".to_string()),
+                si: Some(si),
+                value: master.map(str::to_string),
+            })),
+            is: None,
+        };
+        let row = |r: u32, cells: Vec<Cell>| Row {
+            r,
+            spans: None,
+            s: None,
+            custom_format: None,
+            ht: None,
+            hidden: None,
+            custom_height: None,
+            outline_level: None,
+            cells,
+        };
+        let mut wb = Workbook::new();
+        wb.worksheet_mut("Sheet1").unwrap().sheet_data = SheetData {
+            rows: vec![
+                row(1, vec![shared("B1", 2, Some("A1*2"), 0, "2")]),
+                row(
+                    2,
+                    vec![shared("B2", 2, None, 0, "4"), shared("C2", 3, None, 9, "5")],
+                ),
+            ],
+        };
+        let formula = |expr: &str, cached: f64| CellValue::Formula {
+            expr: expr.to_string(),
+            result: Some(Box::new(CellValue::Number(cached))),
+        };
+
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "B1").unwrap(),
+            formula("A1*2", 2.0)
+        );
+        assert_eq!(
+            wb.get_cell_value("Sheet1", "B2").unwrap(),
+            formula("A2*2", 4.0)
+        );
+        // A follower without a master keeps its empty expression.
+        assert_eq!(wb.get_cell_value("Sheet1", "C2").unwrap(), formula("", 5.0));
+
+        let rows = wb.get_rows("Sheet1").unwrap();
+        assert_eq!(
+            rows[1].1,
+            vec![(2, formula("A2*2", 4.0)), (3, formula("", 5.0))]
+        );
+        let cols = wb.get_cols("Sheet1").unwrap();
+        assert_eq!(
+            cols[0],
+            (
+                "B".to_string(),
+                vec![(1, formula("A1*2", 2.0)), (2, formula("A2*2", 4.0))]
+            )
+        );
     }
 }

@@ -1,6 +1,7 @@
 import { isProxy } from 'node:util/types';
 import type {
   FormulaResultValue as NativeFormulaResultValue,
+  FormulaValue as NativeFormulaValue,
   DateValue as NativeDateValue,
   JsAppProperties,
   JsCellEntry as NativeJsCellEntry,
@@ -65,7 +66,12 @@ import {
 } from './binding.js';
 import { toNativeOpenOptions } from './open-options.js';
 import type { RawRowsResult } from './buffer-codec.js';
-import { decodeRowsBuffer, decodeRowsIterator, decodeRowsRawBuffer } from './buffer-codec.js';
+import {
+  decodeParsedRowsIterator,
+  decodeRowsBuffer,
+  decodeRowsRawBuffer,
+  parseRowsBuffer,
+} from './buffer-codec.js';
 import type { CellTypeName, CellValue as SheetDataCellValue } from './sheet-data.js';
 import { SheetData } from './sheet-data.js';
 
@@ -189,6 +195,25 @@ export interface TraversalOptions {
   mode?: TraversalMode;
   /** Per-operation finite limits. Omitted fields use secure finite defaults. */
   limits?: TraversalLimits;
+}
+
+/** Copy only the traversal fields the native row readers accept, or undefined when none are set. */
+function toNativeTraversalOptions(
+  options: TraversalOptions | undefined,
+): TraversalOptions | undefined {
+  return options?.mode === undefined && options?.limits === undefined
+    ? undefined
+    : { mode: options.mode, limits: options.limits };
+}
+
+/** Set `formula` on the formula cells of a decoded row from a `row:column` lookup. */
+function attachFormulas(row: JsRowData, lookup: Map<string, NativeFormulaValue>): void {
+  for (const cell of row.cells) {
+    if (cell.valueType !== 'formula') continue;
+    const formula = lookup.get(`${row.row}:${cell.column}`);
+
+    if (formula !== undefined) cell.formula = formula;
+  }
 }
 
 /** Finite limits for encrypted Office containers and password derivation. */
@@ -1756,12 +1781,14 @@ class Workbook {
     await this.#native.saveWithPassword(path, password, limits, options);
   }
 
-  /** Get the value of a cell. */
+  /** Get the value of a cell. A formula cell returns a FormulaValue with its cached result. */
   getCellValue(sheet: string, cell: string): CellValue {
-    // SAFETY: cell_value_to_either (src/conversions.rs) returns null, a boolean,
-    // number, or string, or a DateValue whose `type` is always "date", which is
-    // the literal CellValue requires. Known gap: an unrepresentable serial omits
-    // `iso` instead of setting it to null.
+    // SAFETY: cell_value_to_read_value (src/conversions.rs) returns null, a
+    // boolean, number, or string, a DateValue whose `type` is always "date", or
+    // a FormulaValue whose `type` is always "formula" and whose result
+    // `valueType` comes from cell_value_to_formula_result, which emits only the
+    // literals FormulaResultValue lists. Known gap: an unrepresentable serial
+    // omits `iso` instead of setting it to null.
     return this.#native.getCellValue(sheet, cell) as CellValue;
   }
 
@@ -2273,21 +2300,51 @@ class Workbook {
   }
 
   #rowsBuffer(sheet: string, options?: TraversalOptions): Buffer {
-    const nativeOptions =
-      options?.mode === undefined && options?.limits === undefined
-        ? undefined
-        : { mode: options.mode, limits: options.limits };
+    const nativeOptions = toNativeTraversalOptions(options);
 
     return options?.mode === 'dense'
       ? this.#native.getRowsBuffer(sheet, nativeOptions)
       : this.#native.getRowsBufferV2(sheet, nativeOptions);
   }
 
-  /** Get all rows with their data from a sheet using buffer-based transfer. */
+  /**
+   * Map `row:column` to the formula of every formula cell in a row traversal
+   * with one native call. `buf` is the row buffer produced with the same
+   * options; its size counts against `limits.maxOutputBytes`.
+   */
+  #formulaLookup(
+    sheet: string,
+    options: TraversalOptions | undefined,
+    buf: Buffer,
+  ): Map<string, NativeFormulaValue> {
+    const lookup = new Map<string, NativeFormulaValue>();
+
+    const entries = this.#native.getFormulaCells(
+      sheet,
+      toNativeTraversalOptions(options),
+      buf.length,
+    );
+
+    for (const entry of entries) lookup.set(`${entry.row}:${entry.column}`, entry.formula);
+
+    return lookup;
+  }
+
+  /**
+   * Get all rows with their data from a sheet using buffer-based transfer.
+   * Formula cells carry `formula` with the expression and cached result.
+   */
   getRows(sheet: string, options?: TraversalOptions): JsRowData[] {
     const buf = this.#rowsBuffer(sheet, options);
+    const rows = decodeRowsBuffer(buf);
 
-    return decodeRowsBuffer(buf);
+    if (rows.some((row) => row.cells.some((cell) => cell.valueType === 'formula'))) {
+      const lookup = this.#formulaLookup(sheet, options, buf);
+
+      for (const row of rows) attachFormulas(row, lookup);
+    }
+
+    return rows;
   }
 
   /** Serialize a sheet's cell data into a compact binary buffer (v1 format). */
@@ -2319,10 +2376,19 @@ class Workbook {
   /**
    * Get a generator that yields one row at a time from the sheet, avoiding
    * materializing the entire result array in memory at once.
+   * Formula cells carry `formula` with the expression and cached result.
    */
   *getRowsIterator(sheet: string, options?: TraversalOptions): Generator<JsRowData> {
     const buf = this.#rowsBuffer(sheet, options);
-    yield* decodeRowsIterator(buf);
+    const parsed = parseRowsBuffer(buf);
+
+    if (parsed === null) return;
+    const lookup = parsed.formulaCells > 0 ? this.#formulaLookup(sheet, options, buf) : null;
+
+    for (const row of decodeParsedRowsIterator(parsed)) {
+      if (lookup !== null) attachFormulas(row, lookup);
+      yield row;
+    }
   }
 
   /** Apply cell data from a binary buffer to a sheet. */

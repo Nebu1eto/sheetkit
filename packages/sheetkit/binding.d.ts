@@ -97,8 +97,11 @@ export declare class Workbook {
   saveWithPassword(path: string, password: string, limits?: JsCryptLimits | undefined | null, options?: JsSaveOptions | undefined | null): Promise<void>
   /** Get the names of all sheets in workbook order. */
   get sheetNames(): Array<string>
-  /** Get the value of a cell. Returns string, number, boolean, DateValue, or null. */
-  getCellValue(sheet: string, cell: string): null | boolean | number | string | DateValue
+  /**
+   * Get the value of a cell. Returns string, number, boolean, DateValue,
+   * FormulaValue (expression and cached result), or null.
+   */
+  getCellValue(sheet: string, cell: string): null | boolean | number | string | DateValue | FormulaValue
   /**
    * Get the formatted display text for a cell, applying its number format.
    * Returns the value formatted according to the cell's style.
@@ -338,6 +341,15 @@ export declare class Workbook {
    */
   getRowsBufferV2(sheet: string, options?: JsTraversalOptions | undefined | null): Buffer
   /**
+   * List the formula cells of a sheet with their cached results.
+   *
+   * Expressions match the formula records in `getRowsBuffer` and
+   * `getRowsBufferV2` under the same options. `consumedOutputBytes` is the
+   * size of a row buffer already produced with those options; it counts
+   * against `limits.maxOutputBytes` before this list (default 0).
+   */
+  getFormulaCells(sheet: string, options?: JsTraversalOptions | undefined | null, consumedOutputBytes?: number | undefined | null): Array<JsFormulaCell>
+  /**
    * Apply cell data from a binary buffer to a sheet.
    * The buffer must follow the raw transfer binary format.
    * Optionally specify a start cell (default "A1").
@@ -526,11 +538,15 @@ export interface JsColCell {
   row: number
   /** Cell value type: "string", "number", "boolean", "date", "empty", "error", "formula". */
   valueType: string
-  /** String representation of the cell value. */
+  /**
+   * Text for string, error, and formula (expression) cells. Date cells
+   * carry the ISO date here only in `getCols` and stream reads; `getRows`
+   * leaves it unset for number, boolean, and date cells.
+   */
   value?: string
-  /** Numeric value (only set when value_type is "number"). */
+  /** Numeric value for number cells, or the Excel serial for date cells. */
   numberValue?: number
-  /** Boolean value (only set when value_type is "boolean"). */
+  /** Boolean value for boolean cells. */
   boolValue?: boolean
   /** Formula expression and cached result when value_type is "formula". */
   formula?: FormulaValue
@@ -762,6 +778,16 @@ export interface JsFormControlInfo {
   increment?: number
   /** Page increment. */
   pageIncrement?: number
+}
+
+/** A formula cell reported alongside a row transfer buffer. */
+export interface JsFormulaCell {
+  /** 1-based row number. */
+  row: number
+  /** Column name (e.g., "A", "B", "AA"). */
+  column: string
+  /** Formula expression and cached result. */
+  formula: FormulaValue
 }
 
 /** Finite limits for one formula parse, mutation, or calculation operation. */
@@ -1009,11 +1035,15 @@ export interface JsRowCell {
   column: string
   /** Cell value type: "string", "number", "boolean", "date", "empty", "error", "formula". */
   valueType: string
-  /** String representation of the cell value. */
+  /**
+   * Text for string, error, and formula (expression) cells. Date cells
+   * carry the ISO date here only in `getCols` and stream reads; `getRows`
+   * leaves it unset for number, boolean, and date cells.
+   */
   value?: string
-  /** Numeric value (only set when value_type is "number"). */
+  /** Numeric value for number cells, or the Excel serial for date cells. */
   numberValue?: number
-  /** Boolean value (only set when value_type is "boolean"). */
+  /** Boolean value for boolean cells. */
   boolValue?: boolean
   /** Formula expression and cached result when value_type is "formula". */
   formula?: FormulaValue

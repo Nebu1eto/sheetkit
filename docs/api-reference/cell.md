@@ -28,7 +28,8 @@ match value {
 
 ```typescript
 const value = wb.getCellValue("Sheet1", "B3");
-// value is: string | number | boolean | DateValue | null
+// value is: string | number | boolean | DateValue | FormulaValue | null
+// A formula cell returns { type: "formula", formula, result? } with its cached result.
 ```
 
 ### `set_cell_value` / `setCellValue`
@@ -64,7 +65,7 @@ wb.setCellValue("Sheet1", "A5", { type: "date", serial: 45672 });
 ### CellValue Type Mapping
 
 | Rust Variant | TypeScript Type | Description |
-|---|---|---|
+| --- | --- | --- |
 | `CellValue::String(String)` | `string` | Text value |
 | `CellValue::Number(f64)` | `number` | Numeric value (integers stored as f64) |
 | `CellValue::Bool(bool)` | `boolean` | Boolean value |
@@ -144,7 +145,7 @@ formatNumber(0.5, "h:mm AM/PM");    // "12:00 PM"
 Supported format features:
 
 | Feature | Examples | Description |
-|---|---|---|
+| --- | --- | --- |
 | General | `General` | Default display format |
 | Integer / Decimal | `0`, `0.00`, `#,##0.00` | Digit placeholders with optional thousands separator |
 | Percentage | `0%`, `0.00%` | Multiplies by 100 and appends % |

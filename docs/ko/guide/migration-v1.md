@@ -146,7 +146,7 @@ if (typeof value === 'object' && value?.type === 'formula') {
 }
 ```
 
-날짜와 수식은 직접 읽기, 행 순회, raw 버퍼, 스트림 읽기, JSON 가져오기에서 모두 같은 형태를 유지합니다. `number`나 평탄화된 수식 결과를 기대하던 타입 가드와 직렬화 코드를 수정하세요.
+날짜는 직접 읽기, 행 순회, raw 버퍼, 스트림 읽기, JSON 가져오기에서 모두 같은 형태를 유지합니다. 수식은 `getCellValue`에서 `FormulaValue`로 반환되고, `getRows`, `getRowsIterator`, `getCols`, `openSheetReader`의 셀에서는 `formula` 필드로 제공되며, 쓰기와 JSON 가져오기도 같은 형태를 받습니다. raw 버퍼(`getRowsBuffer`, `getRowsBufferV2`, `getRowsRaw`), `toJSON`, `toCSV`에는 수식 식만 담깁니다. `number`나 평탄화된 수식 결과를 기대하던 타입 가드와 직렬화 코드를 수정하세요.
 
 Rust의 `CompactCellRef::new`와 `CompactCellRef::from_coordinates`는 이제 `Result`를 반환하며 Excel의 행과 열 범위를 검사합니다.
 

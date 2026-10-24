@@ -8,6 +8,7 @@ use sheetkit_xml::worksheet::{Col, Cols, WorksheetXml};
 
 use crate::cell::CellValue;
 use crate::error::{Error, Result};
+use crate::raw_transfer::SharedFollowers;
 use crate::row::{cell_cloned_payload_bytes, resolve_cell_value};
 use crate::sst::SharedStringTable;
 use crate::traversal::{check_limit, TraversalLimits};
@@ -134,6 +135,7 @@ pub fn get_cols_with_limits(
         result.push((column_number_to_name(col_num)?, cells));
     }
 
+    let mut followers = SharedFollowers::new(ws, limits, retained_bytes, None)?;
     for row in &ws.sheet_data.rows {
         for cell in &row.cells {
             let col_num = if cell.col > 0 {
@@ -146,7 +148,8 @@ pub fn get_cols_with_limits(
             let result_index = usize::try_from(column_counts[column_slot]).map_err(|_| {
                 Error::Internal("column result index is not addressable".to_string())
             })?;
-            let value = resolve_cell_value(cell, sst, style_is_date);
+            let mut value = resolve_cell_value(cell, sst, style_is_date);
+            followers.resolve(&mut value, cell)?;
             result[result_index].1.push((row.r, value));
         }
     }

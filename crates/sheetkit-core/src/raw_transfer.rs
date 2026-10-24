@@ -35,6 +35,7 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 
+use crate::cell::CellValue;
 use crate::cell_ref_shift::{
     shift_cell_references_with_abs_preallocated, shifted_cell_references_len_with_abs,
 };
@@ -223,6 +224,84 @@ fn write_empty_buffer(limits: TraversalLimits) -> Result<Vec<u8>> {
     Ok(buf)
 }
 
+/// A formula cell as the row transfer buffers encode it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FormulaCell {
+    /// 1-based row number.
+    pub row: u32,
+    /// 1-based column number.
+    pub col: u32,
+    /// [`CellValue::Formula`] with the encoded expression and cached result.
+    pub value: CellValue,
+}
+
+/// Lists the formula cells of a worksheet together with their cached results.
+///
+/// Applies the traversal checks of the row transfer encoders and returns one
+/// entry for every cell those encoders write as a formula record, with the
+/// same expression (shared-formula followers are resolved). Cached results
+/// follow [`crate::row::resolve_cell_value`] with `style_is_date`.
+/// `consumed_output_bytes` is the size of a buffer already produced for the
+/// same traversal; it counts against `max_output_bytes` before this list.
+pub fn sheet_formula_cells(
+    ws: &WorksheetXml,
+    sst: &SharedStringTable,
+    style_is_date: &[bool],
+    options: TraversalOptions,
+    consumed_output_bytes: u64,
+) -> Result<Vec<FormulaCell>> {
+    let limits = options.limits();
+    let (min_row, max_row, min_col, max_col, total_cells) = scan_dimensions(ws, limits)?;
+    if total_cells == 0 {
+        return Ok(Vec::new());
+    }
+    if options.mode() == TraversalMode::Sparse {
+        CheckedRect::new_sparse(min_row, max_row, min_col, max_col, limits)?;
+    } else {
+        CheckedRect::new(min_row, max_row, min_col, max_col, limits)?;
+    }
+    let rows = &ws.sheet_data.rows;
+    let occupied_rows = rows.iter().filter(|row| !row.cells.is_empty()).count() as u64;
+    check_limit(
+        ResourceDimension::RowCount,
+        limits.max_rows(),
+        occupied_rows,
+    )?;
+
+    let mut budget = RawValueBudget::new(limits);
+    budget.charge_u64(consumed_output_bytes)?;
+    let shared_formulas = SharedFormulaResolver::new(ws, &mut budget)?;
+    let mut cells = Vec::new();
+    for row in rows {
+        check_limit(
+            ResourceDimension::ColumnCount,
+            limits.max_columns(),
+            row.cells.len() as u64,
+        )?;
+        for cell in row.cells.iter().filter(|cell| cell.f.is_some()) {
+            let Some(expr) = shared_formulas.formula_for(cell, &mut budget)? else {
+                continue;
+            };
+            budget.charge_u64(crate::row::cell_cloned_payload_bytes(cell, sst))?;
+            let mut value = crate::row::resolve_cell_value(cell, sst, style_is_date);
+            if let (CellValue::Formula { expr: target, .. }, Cow::Owned(resolved)) =
+                (&mut value, expr)
+            {
+                *target = resolved;
+            }
+            cells
+                .try_reserve(1)
+                .map_err(|_| Error::Internal("formula cell allocation failed".to_string()))?;
+            cells.push(FormulaCell {
+                row: row.r,
+                col: resolve_col(cell)?,
+                value,
+            });
+        }
+    }
+    Ok(cells)
+}
+
 struct CellEntry {
     col: u32,
     type_tag: u8,
@@ -265,7 +344,11 @@ impl RawValueBudget {
     }
 
     fn charge(&mut self, bytes: usize) -> Result<()> {
-        self.allocated_bytes = checked_output_add(self.allocated_bytes, bytes as u64, self.limits)?;
+        self.charge_u64(bytes as u64)
+    }
+
+    pub(crate) fn charge_u64(&mut self, bytes: u64) -> Result<()> {
+        self.allocated_bytes = checked_output_add(self.allocated_bytes, bytes, self.limits)?;
         Ok(())
     }
 }
@@ -296,6 +379,15 @@ pub(crate) fn inline_string_visible_text<'a>(
 
 impl SharedFormulaResolver {
     pub(crate) fn new(ws: &WorksheetXml, budget: &mut RawValueBudget) -> Result<Self> {
+        Self::with_index(ws, None, budget)
+    }
+
+    /// Collects shared-formula masters, limited to index `only` when set.
+    pub(crate) fn with_index(
+        ws: &WorksheetXml,
+        only: Option<u32>,
+        budget: &mut RawValueBudget,
+    ) -> Result<Self> {
         let mut masters = HashMap::new();
         for row in &ws.sheet_data.rows {
             for cell in &row.cells {
@@ -308,7 +400,7 @@ impl SharedFormulaResolver {
                 let (Some(si), Some(value)) = (formula.si, formula.value.as_deref()) else {
                     continue;
                 };
-                if value.is_empty() {
+                if value.is_empty() || only.is_some_and(|wanted| wanted != si) {
                     continue;
                 }
                 if let std::collections::hash_map::Entry::Vacant(entry) = masters.entry(si) {
@@ -371,6 +463,65 @@ impl SharedFormulaResolver {
             shift_cell_references_with_abs_preallocated(&master.formula, shifted_len, shift)?;
         debug_assert_eq!(shifted.len(), shifted_len);
         Ok(Some(Cow::Owned(shifted)))
+    }
+}
+
+/// Gives shared-formula followers their master's shifted expression during
+/// one read. Masters are collected on the first follower, so reads without
+/// followers pay nothing.
+pub(crate) struct SharedFollowers<'a> {
+    ws: &'a WorksheetXml,
+    only: Option<u32>,
+    budget: RawValueBudget,
+    resolver: Option<SharedFormulaResolver>,
+}
+
+impl<'a> SharedFollowers<'a> {
+    /// `admitted_bytes` is output already charged against `limits` by the
+    /// read; `only` restricts master collection to one shared index.
+    pub(crate) fn new(
+        ws: &'a WorksheetXml,
+        limits: TraversalLimits,
+        admitted_bytes: u64,
+        only: Option<u32>,
+    ) -> Result<Self> {
+        let mut budget = RawValueBudget::new(limits);
+        budget.charge_u64(admitted_bytes)?;
+        Ok(Self {
+            ws,
+            only,
+            budget,
+            resolver: None,
+        })
+    }
+
+    /// Replaces the empty expression of a follower. Other values and orphan
+    /// followers are kept.
+    pub(crate) fn resolve(
+        &mut self,
+        value: &mut CellValue,
+        cell: &sheetkit_xml::worksheet::Cell,
+    ) -> Result<()> {
+        let CellValue::Formula { expr, .. } = value else {
+            return Ok(());
+        };
+        let is_shared = cell
+            .f
+            .as_deref()
+            .is_some_and(|f| f.t.as_deref() == Some("shared"));
+        if !expr.is_empty() || !is_shared {
+            return Ok(());
+        }
+        let resolver = match self.resolver.take() {
+            Some(resolver) => resolver,
+            None => SharedFormulaResolver::with_index(self.ws, self.only, &mut self.budget)?,
+        };
+        let resolved = resolver.formula_for(cell, &mut self.budget);
+        if let Some(resolved) = resolved? {
+            *expr = resolved.into_owned();
+        }
+        self.resolver = Some(resolver);
+        Ok(())
     }
 }
 
@@ -1998,5 +2149,182 @@ mod tests {
         assert_eq!(type_tag, TYPE_RICH_STRING);
         let text = read_string(&buf, st_start, str_idx);
         assert_eq!(text, "Bold Normal");
+    }
+
+    fn with_formula(mut cell: Cell, t: Option<&str>, si: Option<u32>, value: Option<&str>) -> Cell {
+        cell.f = Some(Box::new(CellFormula {
+            t: t.map(str::to_string),
+            reference: None,
+            si,
+            value: value.map(str::to_string),
+        }));
+        cell
+    }
+
+    fn formula_cells_sheet() -> WorksheetXml {
+        make_worksheet(vec![
+            make_row(
+                1,
+                vec![
+                    with_formula(
+                        make_cell("A1", 1, CellTypeTag::FormulaString, Some("xy")),
+                        None,
+                        None,
+                        Some("C3&\"y\""),
+                    ),
+                    with_formula(
+                        make_cell("B1", 2, CellTypeTag::Boolean, Some("1")),
+                        None,
+                        None,
+                        Some("TRUE()"),
+                    ),
+                    with_formula(
+                        make_cell("C1", 3, CellTypeTag::Error, Some("#DIV/0!")),
+                        None,
+                        None,
+                        Some("1/0"),
+                    ),
+                    with_formula(
+                        make_cell("D1", 4, CellTypeTag::None, Some("3")),
+                        None,
+                        None,
+                        Some("1+2"),
+                    ),
+                    with_formula(
+                        make_cell("E1", 5, CellTypeTag::None, None),
+                        None,
+                        None,
+                        Some("1+1"),
+                    ),
+                ],
+            ),
+            make_row(
+                2,
+                vec![with_formula(
+                    make_cell("A2", 1, CellTypeTag::None, Some("2")),
+                    Some("shared"),
+                    Some(4),
+                    Some("D1-1"),
+                )],
+            ),
+            make_row(
+                3,
+                vec![
+                    with_formula(
+                        make_cell("A3", 1, CellTypeTag::None, Some("2")),
+                        Some("shared"),
+                        Some(4),
+                        None,
+                    ),
+                    with_formula(
+                        make_cell("B3", 2, CellTypeTag::None, Some("9")),
+                        Some("shared"),
+                        Some(8),
+                        None,
+                    ),
+                    make_cell("C3", 3, CellTypeTag::None, Some("5")),
+                ],
+            ),
+        ])
+    }
+
+    #[test]
+    fn sheet_formula_cells_report_encoded_expressions_with_cached_results() {
+        let ws = formula_cells_sheet();
+        let sst = SharedStringTable::new();
+        let cells = sheet_formula_cells(&ws, &sst, &[], TraversalOptions::default(), 0).unwrap();
+        let formula = |row: u32, col: u32, expr: &str, result: Option<CellValue>| FormulaCell {
+            row,
+            col,
+            value: CellValue::Formula {
+                expr: expr.to_string(),
+                result: result.map(Box::new),
+            },
+        };
+        assert_eq!(
+            cells,
+            vec![
+                formula(1, 1, "C3&\"y\"", Some(CellValue::String("xy".to_string()))),
+                formula(1, 2, "TRUE()", Some(CellValue::Bool(true))),
+                formula(1, 3, "1/0", Some(CellValue::Error("#DIV/0!".to_string()))),
+                formula(1, 4, "1+2", Some(CellValue::Number(3.0))),
+                formula(1, 5, "1+1", None),
+                formula(2, 1, "D1-1", Some(CellValue::Number(2.0))),
+                formula(3, 1, "D2-1", Some(CellValue::Number(2.0))),
+            ]
+        );
+
+        // Every formula record in the encoded buffer appears with the same expression.
+        let buf = sheet_to_raw_buffer(&ws, &sst).unwrap();
+        let (st_start, _, cd_start, flags) = parse_sections(&buf);
+        let min_col = flags >> 16;
+        let mut encoded = Vec::new();
+        for index in 0..read_u32_le(&buf, 6) as usize {
+            let row = read_u32_le(&buf, HEADER_SIZE + index * 8);
+            let offset = read_u32_le(&buf, HEADER_SIZE + index * 8 + 4) as usize;
+            for (col, tag, payload) in read_sparse_row(&buf, cd_start + offset) {
+                if tag == TYPE_FORMULA {
+                    let idx = u32::from_le_bytes(payload[..4].try_into().unwrap()) as usize;
+                    encoded.push((
+                        row,
+                        u32::from(col) + min_col,
+                        read_string(&buf, st_start, idx),
+                    ));
+                }
+            }
+        }
+        let reported: Vec<(u32, u32, String)> = cells
+            .iter()
+            .map(|cell| match &cell.value {
+                CellValue::Formula { expr, .. } => (cell.row, cell.col, expr.clone()),
+                other => panic!("expected formula, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(reported, encoded);
+    }
+
+    #[test]
+    fn sheet_formula_cells_share_the_traversal_limits_of_the_buffer() {
+        let ws = formula_cells_sheet();
+        let sst = SharedStringTable::new();
+        let limits = TraversalLimits::new(3, 5, 9, 4096).unwrap();
+        let options = TraversalOptions::new(TraversalMode::Sparse).with_limits(limits);
+        assert_eq!(
+            sheet_formula_cells(&ws, &sst, &[], options, 0)
+                .unwrap()
+                .len(),
+            7
+        );
+
+        let output_error = sheet_formula_cells(&ws, &sst, &[], options, 4096).unwrap_err();
+        let Error::ResourceLimitExceeded(output_metadata) = output_error else {
+            panic!("expected resource limit error");
+        };
+        assert_eq!(output_metadata.dimension(), ResourceDimension::OutputBytes);
+
+        // Dense mode admits the spanned rectangle (3 x 5) exactly like the dense buffer.
+        let dense = TraversalOptions::new(TraversalMode::Dense).with_limits(limits);
+        assert!(sheet_to_raw_buffer_with_options(&ws, &sst, dense).is_err());
+        assert!(sheet_formula_cells(&ws, &sst, &[], dense, 0).is_err());
+        let dense = TraversalOptions::new(TraversalMode::Dense)
+            .with_limits(TraversalLimits::new(3, 5, 15, 4096).unwrap());
+        assert_eq!(
+            sheet_formula_cells(&ws, &sst, &[], dense, 0).unwrap().len(),
+            7
+        );
+
+        let cell_limits = TraversalLimits::new(3, 5, 8, 4096).unwrap();
+        let cell_error = sheet_formula_cells(
+            &ws,
+            &sst,
+            &[],
+            TraversalOptions::new(TraversalMode::Sparse).with_limits(cell_limits),
+            0,
+        )
+        .unwrap_err();
+        let Error::ResourceLimitExceeded(cell_metadata) = cell_error else {
+            panic!("expected resource limit error");
+        };
+        assert_eq!(cell_metadata.dimension(), ResourceDimension::CellCount);
     }
 }

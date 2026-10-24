@@ -1,6 +1,8 @@
 import { inflateRawSync } from 'node:zlib';
-import { describe, expect, it } from 'vitest';
-import { Workbook } from '../index.js';
+import { describe, expect, it, vi } from 'vitest';
+import type { JsRowData } from '../binding.js';
+import { Workbook as NativeWorkbook } from '../binding.js';
+import { type FormulaValue, isResourceLimitError, Workbook } from '../index.js';
 
 function crc32(data: Buffer): number {
   let crc = 0xffffffff;
@@ -195,5 +197,130 @@ describe('stream reader truncated XML', () => {
     };
 
     await expect(readAll()).rejects.toThrow('unexpected end of worksheet XML inside an open cell');
+  });
+});
+
+const FORMULA_SHEET_XML =
+  `<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="${MAIN_NS}"><sheetData>` +
+  '<row r="1"><c r="A1" t="inlineStr"><is><t>x</t></is></c>' +
+  '<c r="B1" t="str"><f>A1&amp;"y"</f><v>xy</v></c>' +
+  '<c r="C1"><f>SUM(A2,1)</f></c>' +
+  '<c r="D1"><f t="shared" ref="D1:D2" si="0">A2*2</f><v>6</v></c>' +
+  '<c r="E1" t="e"><f>1/0</f><v>#DIV/0!</v></c></row>' +
+  '<row r="2"><c r="A2"><v>3</v></c>' +
+  '<c r="B2" t="b"><f>A2&gt;1</f><v>1</v></c>' +
+  '<c r="D2"><f t="shared" si="0"/><v>8</v></c></row>' +
+  '</sheetData></worksheet>';
+
+/** Formula cells of FORMULA_SHEET_XML; D2 is a shared-formula follower and C1 has no cached value. */
+const EXPECTED_FORMULAS = {
+  B1: { type: 'formula', formula: 'A1&"y"', result: { valueType: 'string', value: 'xy' } },
+  C1: { type: 'formula', formula: 'SUM(A2,1)' },
+  D1: { type: 'formula', formula: 'A2*2', result: { valueType: 'number', numberValue: 6 } },
+  E1: { type: 'formula', formula: '1/0', result: { valueType: 'error', value: '#DIV/0!' } },
+  B2: { type: 'formula', formula: 'A2>1', result: { valueType: 'boolean', boolValue: true } },
+  D2: { type: 'formula', formula: 'A3*2', result: { valueType: 'number', numberValue: 8 } },
+} satisfies Record<string, FormulaValue>;
+
+/** EXPECTED_FORMULAS keyed by cell reference. */
+const EXPECTED_FORMULA_MAP = new Map<string, FormulaValue>(Object.entries(EXPECTED_FORMULAS));
+
+type CellFormula = JsRowData['cells'][number]['formula'];
+
+/** Collect `formula` by cell reference, checking that each matches the decoded `value`. */
+function formulasByCell(rows: Iterable<JsRowData>): Map<string, CellFormula> {
+  const found = new Map<string, CellFormula>();
+
+  for (const row of rows) {
+    for (const cell of row.cells) {
+      if (cell.valueType !== 'formula') continue;
+      expect(cell.formula?.formula).toBe(cell.value);
+      found.set(`${cell.column}${row.row}`, cell.formula);
+    }
+  }
+
+  return found;
+}
+
+describe('formula cell reads', () => {
+  for (const readMode of ['lazy', 'eager'] as const) {
+    it(`returns the expression and cached result on every read path (${readMode})`, async () => {
+      const wb = Workbook.openBufferSync(workbookWithSheetXml(FORMULA_SHEET_XML), { readMode });
+
+      for (const [cell, expected] of Object.entries(EXPECTED_FORMULAS)) {
+        expect(wb.getCellValue('Sheet1', cell)).toEqual(expected);
+      }
+
+      expect(formulasByCell(wb.getRows('Sheet1'))).toEqual(EXPECTED_FORMULA_MAP);
+      expect(formulasByCell(wb.getRows('Sheet1', { mode: 'dense' }))).toEqual(EXPECTED_FORMULA_MAP);
+      expect(formulasByCell(wb.getRowsIterator('Sheet1'))).toEqual(EXPECTED_FORMULA_MAP);
+      expect(formulasByCell(wb.getRowsIterator('Sheet1', { mode: 'dense' }))).toEqual(
+        EXPECTED_FORMULA_MAP,
+      );
+
+      const columns = new Map<string, CellFormula>();
+
+      for (const column of wb.getCols('Sheet1')) {
+        for (const cell of column.cells) {
+          if (cell.valueType === 'formula')
+            columns.set(`${column.column}${cell.row}`, cell.formula);
+        }
+      }
+
+      expect(columns).toEqual(EXPECTED_FORMULA_MAP);
+
+      // The stream reader does not resolve shared-formula followers yet.
+      const reader = await wb.openSheetReader('Sheet1');
+      const streamed: JsRowData[] = [];
+
+      for (let batch = await reader.next(); batch !== null; batch = await reader.next()) {
+        streamed.push(...batch);
+      }
+
+      await reader.close();
+      const streamedExpected = new Map(EXPECTED_FORMULA_MAP);
+      streamedExpected.delete('D2');
+      expect(formulasByCell(streamed)).toEqual(streamedExpected);
+    });
+  }
+
+  it('skips the native formula lookup when no formula cells were decoded', () => {
+    const wb = new Workbook();
+    wb.setCellValue('Sheet1', 'A1', 'plain');
+    wb.setCellValue('Sheet1', 'B2', 2);
+    const lookup = vi.spyOn(NativeWorkbook.prototype, 'getFormulaCells');
+
+    try {
+      wb.getRows('Sheet1');
+      wb.getRows('Sheet1', { mode: 'dense' });
+      expect([...wb.getRowsIterator('Sheet1')]).toHaveLength(2);
+      expect(lookup).not.toHaveBeenCalled();
+
+      wb.setCellValue('Sheet1', 'C3', { type: 'formula', formula: 'B2*2' });
+      wb.getRows('Sheet1');
+      expect([...wb.getRowsIterator('Sheet1')]).toHaveLength(3);
+      expect(lookup).toHaveBeenCalledTimes(2);
+    } finally {
+      lookup.mockRestore();
+    }
+  });
+
+  it('counts the formula lookup against the traversal output limit', () => {
+    const wb = Workbook.openBufferSync(workbookWithSheetXml(FORMULA_SHEET_XML));
+    const bufferBytes = wb.getRowsBufferV2('Sheet1').length;
+
+    const failure = (() => {
+      try {
+        wb.getRows('Sheet1', { limits: { maxOutputBytes: bufferBytes } });
+      } catch (error) {
+        return error;
+      }
+
+      return null;
+    })();
+
+    expect(isResourceLimitError(failure)).toBe(true);
+    expect(isResourceLimitError(failure) && failure.dimension).toBe('output_bytes');
+    expect(wb.getRows('Sheet1', { limits: { maxOutputBytes: 65_536 } })).toHaveLength(2);
   });
 });

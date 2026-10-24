@@ -8,6 +8,7 @@ use sheetkit_xml::worksheet::{CellTypeTag, Row, WorksheetXml};
 
 use crate::cell::CellValue;
 use crate::error::{Error, Result};
+use crate::raw_transfer::SharedFollowers;
 use crate::sst::SharedStringTable;
 use crate::traversal::{check_limit, TraversalLimits};
 use crate::utils::cell_ref::{cell_name_to_coordinates, compact_cell_ref};
@@ -108,6 +109,7 @@ pub fn get_rows_with_limits(
         )
         .map_err(|_| Error::Internal("row result allocation failed".to_string()))?;
 
+    let mut followers = SharedFollowers::new(ws, limits, retained_bytes, None)?;
     for row in &ws.sheet_data.rows {
         if row.cells.is_empty() {
             continue;
@@ -123,7 +125,8 @@ pub fn get_rows_with_limits(
             } else {
                 cell_name_to_coordinates(cell.r.as_str())?.0
             };
-            let value = resolve_cell_value(cell, sst, style_is_date);
+            let mut value = resolve_cell_value(cell, sst, style_is_date);
+            followers.resolve(&mut value, cell)?;
             cells.push((col_num, value));
         }
 

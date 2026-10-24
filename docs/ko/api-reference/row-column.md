@@ -280,11 +280,15 @@ interface JsRowData {
 interface JsRowCell {
   column: string;        // "A", "B", "AA" ...
   valueType: string;     // "string" | "number" | "boolean" | "date" | "empty" | "error" | "formula"
-  value?: string;        // string representation
-  numberValue?: number;  // set when valueType is "number"
-  boolValue?: boolean;   // set when valueType is "boolean"
+  value?: string;        // 문자열, 오류, 수식(식) 셀의 텍스트
+  numberValue?: number;  // 숫자 셀, 또는 날짜 셀의 Excel serial
+  boolValue?: boolean;   // 불리언 셀
+  formula?: FormulaValue; // 수식 셀의 식과 캐시된 결과
 }
 ```
+
+`getRows`는 숫자, 불리언, 날짜 셀에 `value`를 설정하지 않습니다. `getCols`와 `openSheetReader`는 날짜 셀의 `value`에 ISO 날짜 텍스트도 설정합니다.
+시트에 수식 셀이 있으면 `getRows`와 `getRowsIterator`는 `formula` 객체를 행 버퍼와 함께 `limits.maxOutputBytes`에 포함해 계산합니다.
 
 ### `get_cols(sheet)` / `getCols(sheet)`
 
@@ -324,6 +328,7 @@ interface JsColCell {
   value?: string;
   numberValue?: number;
   boolValue?: boolean;
+  formula?: FormulaValue;
 }
 ```
 

@@ -458,19 +458,20 @@ impl Workbook {
             .collect()
     }
 
-    /// Get the value of a cell. Returns string, number, boolean, DateValue, or null.
+    /// Get the value of a cell. Returns string, number, boolean, DateValue,
+    /// FormulaValue (expression and cached result), or null.
     #[napi]
     pub fn get_cell_value(
         &self,
         env: Env,
         sheet: String,
         cell: String,
-    ) -> Result<Either5<Null, bool, f64, String, DateValue>> {
+    ) -> Result<Either6<Null, bool, f64, String, DateValue, FormulaValue>> {
         let value = self
             .inner
             .get_cell_value(&sheet, &cell)
             .map_err(|error| map_core_error(&env, error))?;
-        cell_value_to_either(value)
+        cell_value_to_read_value(value)
     }
 
     /// Get the formatted display text for a cell, applying its number format.
@@ -1834,6 +1835,55 @@ impl Workbook {
             )
             .map_err(|error| map_core_error(&env, error))?;
         Ok(Buffer::from(buf))
+    }
+
+    /// List the formula cells of a sheet with their cached results.
+    ///
+    /// Expressions match the formula records in `getRowsBuffer` and
+    /// `getRowsBufferV2` under the same options. `consumedOutputBytes` is the
+    /// size of a row buffer already produced with those options; it counts
+    /// against `limits.maxOutputBytes` before this list (default 0).
+    #[napi]
+    pub fn get_formula_cells(
+        &self,
+        env: Env,
+        sheet: String,
+        options: Option<JsTraversalOptions>,
+        consumed_output_bytes: Option<f64>,
+    ) -> Result<Vec<JsFormulaCell>> {
+        let options = js_traversal_options_to_core(options.as_ref())
+            .map_err(|error| map_core_error(&env, error))?;
+        let consumed_output_bytes = consumed_output_bytes
+            .map(|value| finite_limit(value, "consumedOutputBytes"))
+            .transpose()
+            .map_err(invalid_arg)?
+            .unwrap_or(0);
+        let ws = self
+            .inner
+            .worksheet_xml_ref(&sheet)
+            .map_err(|error| map_core_error(&env, error))?;
+        let style_is_date = self.inner.transfer_date_style_lookup();
+        let cells = sheetkit_core::raw_transfer::sheet_formula_cells(
+            ws,
+            self.inner.sst_ref(),
+            &style_is_date,
+            options,
+            consumed_output_bytes,
+        )
+        .map_err(|error| map_core_error(&env, error))?;
+        let mut result = Vec::with_capacity(cells.len());
+        for cell in cells {
+            let column = sheetkit_core::utils::cell_ref::column_number_to_name(cell.col)
+                .map_err(|error| map_core_error(&env, error))?;
+            if let Some(formula) = cell_value_to_formula_value(&cell.value) {
+                result.push(JsFormulaCell {
+                    row: cell.row,
+                    column,
+                    formula,
+                });
+            }
+        }
+        Ok(result)
     }
 
     /// Apply cell data from a binary buffer to a sheet.

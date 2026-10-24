@@ -298,11 +298,17 @@ interface JsRowData {
 interface JsRowCell {
     column: string;         // column name (e.g., "A", "B")
     valueType: string;      // "string" | "number" | "boolean" | "date" | "empty" | "error" | "formula"
-    value?: string;         // string representation
-    numberValue?: number;   // set when valueType is "number"
-    boolValue?: boolean;    // set when valueType is "boolean"
+    value?: string;         // text of string, error, and formula (expression) cells
+    numberValue?: number;   // number cells, or the Excel serial of date cells
+    boolValue?: boolean;    // boolean cells
+    formula?: FormulaValue; // formula cells: expression and cached result
 }
 ```
+
+`getRows` leaves `value` unset for number, boolean, and date cells. `getCols`
+and `openSheetReader` also set `value` to the ISO date text for date cells.
+When a sheet has formula cells, `getRows` and `getRowsIterator` count the
+`formula` objects against `limits.maxOutputBytes` together with the row buffer.
 
 **JsColData:**
 
@@ -318,6 +324,7 @@ interface JsColCell {
     value?: string;
     numberValue?: number;
     boolValue?: boolean;
+    formula?: FormulaValue;
 }
 ```
 

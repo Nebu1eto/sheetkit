@@ -24,6 +24,7 @@ use crate::types::*;
 
 pub(crate) type JsCellInputValue = Either6<String, f64, bool, DateValue, FormulaValue, Null>;
 pub(crate) type JsCellOutputValue = Either5<Null, bool, f64, String, DateValue>;
+pub(crate) type JsCellReadValue = Either6<Null, bool, f64, String, DateValue, FormulaValue>;
 
 pub(crate) fn js_value_to_cell_value(v: JsCellInputValue) -> Result<CellValue> {
     Ok(match v {
@@ -392,6 +393,21 @@ pub(crate) fn cell_value_to_formula_value(value: &CellValue) -> Option<FormulaVa
         kind: "formula".to_string(),
         formula: expr.clone(),
         result: result.as_deref().map(cell_value_to_formula_result),
+    })
+}
+
+/// Converts a stored cell value, keeping a formula cell as a [`FormulaValue`]
+/// with its cached result; other values convert as in [`cell_value_to_either`].
+pub(crate) fn cell_value_to_read_value(value: CellValue) -> Result<JsCellReadValue> {
+    if let Some(formula) = cell_value_to_formula_value(&value) {
+        return Ok(Either6::F(formula));
+    }
+    Ok(match cell_value_to_either(value)? {
+        Either5::A(value) => Either6::A(value),
+        Either5::B(value) => Either6::B(value),
+        Either5::C(value) => Either6::C(value),
+        Either5::D(value) => Either6::D(value),
+        Either5::E(value) => Either6::E(value),
     })
 }
 
@@ -1923,7 +1939,10 @@ pub(crate) fn invalid_arg(error: sheetkit_core::error::Error) -> napi::Error {
     napi::Error::from_reason(error.to_string())
 }
 
-fn finite_limit(value: f64, name: &str) -> std::result::Result<u64, sheetkit_core::error::Error> {
+pub(crate) fn finite_limit(
+    value: f64,
+    name: &str,
+) -> std::result::Result<u64, sheetkit_core::error::Error> {
     const MAX_SAFE_INTEGER: f64 = 9_007_199_254_740_991.0;
     if !value.is_finite() || value < 0.0 || value.fract() != 0.0 || value > MAX_SAFE_INTEGER {
         return Err(sheetkit_core::error::Error::InvalidArgument(format!(
@@ -2212,17 +2231,47 @@ mod tests {
     }
 
     #[test]
-    fn napi_formula_output_returns_expression_string() {
-        let value = cell_value_to_either(CellValue::Formula {
+    fn napi_cell_read_returns_formula_value_with_cached_result() {
+        let value = cell_value_to_read_value(CellValue::Formula {
             expr: "TODAY()".to_string(),
             result: Some(Box::new(CellValue::Date(45292.5))),
         })
         .expect("formula output");
 
-        let Either5::D(formula) = value else {
-            panic!("expected formula expression");
+        let Either6::F(formula) = value else {
+            panic!("expected FormulaValue");
         };
-        assert_eq!(formula, "TODAY()");
+        assert_eq!(formula.kind, "formula");
+        assert_eq!(formula.formula, "TODAY()");
+        let result = formula.result.expect("cached result");
+        assert_eq!(result.value_type, "date");
+        let date = result.date.expect("cached date");
+        assert_eq!(date.serial, 45292.5);
+        assert_eq!(date.iso.as_deref(), Some("2024-01-01T12:00:00"));
+    }
+
+    #[test]
+    fn napi_cell_read_returns_formula_value_without_cached_result() {
+        let value = cell_value_to_read_value(CellValue::Formula {
+            expr: "A1*2".to_string(),
+            result: None,
+        })
+        .expect("formula output");
+
+        let Either6::F(formula) = value else {
+            panic!("expected FormulaValue");
+        };
+        assert_eq!(formula.formula, "A1*2");
+        assert!(formula.result.is_none());
+    }
+
+    #[test]
+    fn napi_cell_read_keeps_scalar_outputs() {
+        let value =
+            cell_value_to_read_value(CellValue::String("text".to_string())).expect("string output");
+        assert!(matches!(value, Either6::D(ref text) if text == "text"));
+        let value = cell_value_to_read_value(CellValue::Empty).expect("empty output");
+        assert!(matches!(value, Either6::A(Null)));
     }
 
     #[test]

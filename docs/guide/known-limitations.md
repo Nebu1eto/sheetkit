@@ -54,6 +54,14 @@ In files written by Excel, a formula filled down or across is often stored once 
 - **Workaround**: before the edit, set the dependent cells' formulas explicitly with `set_cell_formula`; SheetKit writes them as ordinary formulas.
 - **Status**: Not scheduled.
 
+### The streaming reader does not resolve shared formulas
+
+`open_sheet_reader` (`openSheetReader` in Node.js) reads a cell that shares another cell's formula as its cached value only. Other reads, such as `get_cell_value`, `get_rows`, and `get_cols`, return the shifted formula.
+
+- **Impact**: streamed rows show no formula for cells that share a formula filled down or across in Excel.
+- **Workaround**: read those cells with `get_cell_value`, `get_rows`, or `get_cols`.
+- **Status**: Not scheduled.
+
 ### Positions inside a deleted band move instead of becoming `#REF!`
 
 Frozen panes, selections, drawing anchors (charts, images, shapes), sparkline locations, and internal hyperlink targets that point into deleted rows or columns move to the first row or column after the deleted band. Formulas, by contrast, become `#REF!`.

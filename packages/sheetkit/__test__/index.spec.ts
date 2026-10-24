@@ -1150,7 +1150,11 @@ describe('Phase 9 - StreamWriter', () => {
     assert(isDateValue(date));
     expect(date.serial).toBe(45292);
 
-    expect(reopened.getCellValue('Typed', 'B1')).toBe('1+1');
+    expect(reopened.getCellValue('Typed', 'B1')).toEqual({
+      type: 'formula',
+      formula: '1+1',
+      result: { valueType: 'number', numberValue: 2 },
+    });
   });
 
   it('should roundtrip freeze panes', async () => {
@@ -1669,7 +1673,7 @@ describe('Date CellValue', () => {
     expect(val.serial).toBe(45292);
   });
 
-  it('should return formula text through getCellValue after reopen', async () => {
+  it('should return the formula and cached result through getCellValue after reopen', async () => {
     const wb = new Workbook();
     wb.setCellValue('Sheet1', 'A1', {
       type: 'formula',
@@ -1679,7 +1683,11 @@ describe('Date CellValue', () => {
     await wb.save(out);
 
     const wb2 = await Workbook.open(out);
-    expect(wb2.getCellValue('Sheet1', 'A1')).toBe('1+1');
+    expect(wb2.getCellValue('Sheet1', 'A1')).toEqual({
+      type: 'formula',
+      formula: '1+1',
+      result: { valueType: 'number', numberValue: 2 },
+    });
   });
 
   it('should reject a formula result without its required payload', () => {

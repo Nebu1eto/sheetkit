@@ -47,13 +47,13 @@ describe('formula mutation limits', () => {
 
     workbook.setCellFormula('Sheet1', 'A1', value, limits);
 
-    expect(workbook.getCellValue('Sheet1', 'A1')).toBe(value);
+    expect(workbook.getCellValue('Sheet1', 'A1')).toEqual({ type: 'formula', formula: value });
   });
 
   it('enforces fill range exact and one-over limits atomically', () => {
     const accepted = new Workbook();
     accepted.fillFormula('Sheet1', 'D1:D2', 'A1', { operationRangeCells: 2 });
-    expect(accepted.getCellValue('Sheet1', 'D2')).toBe('A2');
+    expect(accepted.getCellValue('Sheet1', 'D2')).toEqual({ type: 'formula', formula: 'A2' });
 
     const rejected = new Workbook();
     rejected.setCellValue('Sheet1', 'D1', 'first');
@@ -71,7 +71,7 @@ describe('formula mutation limits', () => {
   it('preflights cumulative shifted output before mutation', () => {
     const accepted = new Workbook();
     accepted.fillFormula('Sheet1', 'D1:D2', 'A9', { operationOutputBytes: 5 });
-    expect(accepted.getCellValue('Sheet1', 'D2')).toBe('A10');
+    expect(accepted.getCellValue('Sheet1', 'D2')).toEqual({ type: 'formula', formula: 'A10' });
 
     const rejected = new Workbook();
     rejected.setCellValue('Sheet1', 'D1', 'first');
@@ -150,7 +150,11 @@ describe('formula mutation limits', () => {
         },
       },
     ]);
-    expect(accepted.getCellValue('Sheet1', 'A1')).toBe('1+1');
+    expect(accepted.getCellValue('Sheet1', 'A1')).toEqual({
+      type: 'formula',
+      formula: '1+1',
+      result: { valueType: 'string', value: 'x'.repeat(32_767) },
+    });
 
     const rejected = new Workbook();
     rejected.setCellValue('Sheet1', 'A1', 'first');
@@ -190,7 +194,11 @@ describe('formula mutation limits', () => {
 
     const accepted = new Workbook();
     accepted.setRowValues('Sheet1', 1, 'A', exactValues);
-    expect(accepted.getCellValue('Sheet1', 'A1')).toBe('x');
+    expect(accepted.getCellValue('Sheet1', 'A1')).toEqual({
+      type: 'formula',
+      formula: 'x',
+      result: { valueType: 'string', value: cachedText },
+    });
 
     const rejected = new Workbook();
     rejected.setCellValue('Sheet1', 'A1', 'first');

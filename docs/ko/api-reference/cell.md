@@ -5,7 +5,7 @@
 ### CellValue 타입
 
 | 타입 | Rust | TypeScript | 설명 |
-|------|------|-----------|------|
+| ------ | ------ | ----------- | ------ |
 | 빈 셀 | `CellValue::Empty` | `null` | 값이 없는 셀 |
 | 문자열 | `CellValue::String(String)` | `string` | 텍스트 값 |
 | 숫자 | `CellValue::Number(f64)` | `number` | 정수와 실수 모두 f64로 저장 |
@@ -52,7 +52,8 @@ match value {
 
 ```typescript
 const value = wb.getCellValue("Sheet1", "A1");
-// value: null | boolean | number | string | DateValue
+// value: null | boolean | number | string | DateValue | FormulaValue
+// 수식 셀은 캐시된 결과와 함께 { type: "formula", formula, result? }를 반환합니다.
 ```
 
 ### `set_cell_value(sheet, cell, value)` / `setCellValue(sheet, cell, value)`
@@ -143,7 +144,7 @@ formatNumber(0.5, "h:mm AM/PM");    // "12:00 PM"
 지원하는 서식 기능은 다음과 같습니다.
 
 | 기능 | 예시 | 설명 |
-|---|---|---|
+| --- | --- | --- |
 | General | `General` | 기본 표시 서식입니다 |
 | 정수 / 소수 | `0`, `0.00`, `#,##0.00` | 천 단위 구분 기호를 포함한 숫자 서식입니다 |
 | 백분율 | `0%`, `0.00%` | 100을 곱하고 % 기호를 추가합니다 |

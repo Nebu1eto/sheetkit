@@ -224,6 +224,7 @@ interface ValidatedHeader {
 interface SparseRowCounts {
   totalRows: number;
   totalCells: number;
+  formulaCells: number;
 }
 
 /** A decoded inline string and the bytes its length prefix and payload occupy. */
@@ -341,6 +342,7 @@ function validateBuffer(
           minCol: 1,
           totalRows: 0,
           totalCells: 0,
+          formulaCells: 0,
         }
       : {
           format: 'v1',
@@ -352,6 +354,7 @@ function validateBuffer(
           minCol: 1,
           totalRows: 0,
           totalCells: 0,
+          formulaCells: 0,
         };
   }
 
@@ -400,6 +403,7 @@ function validateBuffer(
       requireRange(length, dataStart, header.rowCount * rowSize, 'dense cell data');
       let totalRows = 0;
       let totalCells = 0;
+      let formulaCells = 0;
 
       for (let i = 0; i < header.rowCount; i++) {
         if (rowIndex[i].cellOffset !== EMPTY_ROW_OFFSET && rowIndex[i].cellOffset !== i * rowSize) {
@@ -415,6 +419,8 @@ function validateBuffer(
           validateV1Cell(view, offset, strings, validateUtf8);
 
           if (includeRow && view.getUint8(offset) !== TYPE_EMPTY) rowCells++;
+
+          if (includeRow && view.getUint8(offset) === TYPE_FORMULA) formulaCells++;
         }
 
         if (rowCells > 0) {
@@ -436,6 +442,7 @@ function validateBuffer(
         minCol: header.minCol,
         totalRows,
         totalCells,
+        formulaCells,
       };
     }
 
@@ -488,6 +495,7 @@ function validateSparseRowsV2ForRaw(
   let cursor = dataStart;
   let totalRows = 0;
   let totalCells = 0;
+  let formulaCells = 0;
 
   for (let rowIndex = 0; rowIndex < entries.length; rowIndex++) {
     if (cursor > length - 2) throw new Error('Invalid buffer: truncated sparse row');
@@ -524,6 +532,8 @@ function validateSparseRowsV2ForRaw(
       }
 
       if (type !== TYPE_EMPTY) rowCells++;
+
+      if (type === TYPE_FORMULA) formulaCells++;
       cursor += 3;
 
       let payloadSize = 0;
@@ -559,7 +569,7 @@ function validateSparseRowsV2ForRaw(
 
   if (cursor !== length) throw new Error('Invalid buffer: trailing data');
 
-  return { totalRows, totalCells };
+  return { totalRows, totalCells, formulaCells };
 }
 
 function validateSparseRows(
@@ -575,6 +585,7 @@ function validateSparseRows(
   let cursor = dataStart;
   let totalRows = 0;
   let totalCells = 0;
+  let formulaCells = 0;
   const bytes = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
 
   for (const entry of entries) {
@@ -618,6 +629,8 @@ function validateSparseRows(
       if (type > TYPE_RICH_STRING) throw new Error(`Invalid buffer: unknown cell type ${type}`);
 
       if (type !== TYPE_EMPTY) rowCells++;
+
+      if (type === TYPE_FORMULA) formulaCells++;
 
       if (!isV2) {
         if (!strings) throw new Error('Invalid buffer: missing string table');
@@ -664,7 +677,7 @@ function validateSparseRows(
 
   if (cursor !== length) throw new Error('Invalid buffer: trailing data');
 
-  return { totalRows, totalCells };
+  return { totalRows, totalCells, formulaCells };
 }
 
 function readValidatedStringTable(
@@ -895,6 +908,8 @@ export interface ValidatedBufferV1 {
   minCol: number;
   totalRows: number;
   totalCells: number;
+  /** Number of formula cells in occupied rows. */
+  formulaCells: number;
 }
 
 export interface ValidatedBufferV2 {
@@ -907,6 +922,8 @@ export interface ValidatedBufferV2 {
   minCol: number;
   totalRows: number;
   totalCells: number;
+  /** Number of formula cells in occupied rows. */
+  formulaCells: number;
 }
 
 export type ValidatedBuffer = ValidatedBufferV1 | ValidatedBufferV2;
@@ -1480,6 +1497,11 @@ export function* decodeRowsIterator(buf: Buffer | null): Generator<JsRowData> {
 
   if (!parsed) return;
 
+  yield* decodeParsedRowsIterator(parsed);
+}
+
+/** Generator that yields one JsRowData at a time from a buffer already parsed by parseRowsBuffer. */
+export function* decodeParsedRowsIterator(parsed: ValidatedBuffer): Generator<JsRowData> {
   if (parsed.format === 'v2') {
     yield* decodeRowsIteratorV2(parsed);
 

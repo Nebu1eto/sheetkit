@@ -349,7 +349,10 @@ describe('Node resource error parity', () => {
     ]) {
       const accepted = new Workbook();
       accepted.setSheetDataBuffer('Sheet1', exactBuffer);
-      expect(accepted.getCellValue('Sheet1', 'A1')).toBe(exactFormula);
+      expect(accepted.getCellValue('Sheet1', 'A1')).toEqual({
+        type: 'formula',
+        formula: exactFormula,
+      });
 
       const rejected = new Workbook();
       rejected.setCellValue('Sheet1', 'A1', 'first-sentinel');
@@ -370,7 +373,10 @@ describe('Node resource error parity', () => {
       expect(rejected.getCellValue('Sheet1', 'B1')).toBe('second-sentinel');
 
       rejected.setSheetDataBuffer('Sheet1', exactBuffer);
-      expect(rejected.getCellValue('Sheet1', 'A1')).toBe(exactFormula);
+      expect(rejected.getCellValue('Sheet1', 'A1')).toEqual({
+        type: 'formula',
+        formula: exactFormula,
+      });
       expect(rejected.getCellValue('Sheet1', 'B1')).toBe('second-sentinel');
     }
   });
@@ -408,7 +414,7 @@ describe('Node resource error parity', () => {
     ]) {
       const accepted = new Workbook();
       accepted.setSheetDataBuffer('Sheet1', exactBuffer);
-      expect(accepted.getCellValue('Sheet1', 'A128')).toBe(formula);
+      expect(accepted.getCellValue('Sheet1', 'A128')).toEqual({ type: 'formula', formula });
 
       const rejected = new Workbook();
       rejected.setCellValue('Sheet1', 'A1', 'first-sentinel');

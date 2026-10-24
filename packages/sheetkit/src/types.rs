@@ -376,11 +376,13 @@ pub struct JsRowCell {
     pub column: String,
     /// Cell value type: "string", "number", "boolean", "date", "empty", "error", "formula".
     pub value_type: String,
-    /// String representation of the cell value.
+    /// Text for string, error, and formula (expression) cells. Date cells
+    /// carry the ISO date here only in `getCols` and stream reads; `getRows`
+    /// leaves it unset for number, boolean, and date cells.
     pub value: Option<String>,
-    /// Numeric value (only set when value_type is "number").
+    /// Numeric value for number cells, or the Excel serial for date cells.
     pub number_value: Option<f64>,
-    /// Boolean value (only set when value_type is "boolean").
+    /// Boolean value for boolean cells.
     pub bool_value: Option<bool>,
     /// Formula expression and cached result when value_type is "formula".
     pub formula: Option<FormulaValue>,
@@ -393,6 +395,17 @@ pub struct JsRowData {
     pub row: u32,
     /// Cells with data in this row.
     pub cells: Vec<JsRowCell>,
+}
+
+/// A formula cell reported alongside a row transfer buffer.
+#[napi(object)]
+pub struct JsFormulaCell {
+    /// 1-based row number.
+    pub row: u32,
+    /// Column name (e.g., "A", "B", "AA").
+    pub column: String,
+    /// Formula expression and cached result.
+    pub formula: FormulaValue,
 }
 
 /// Finite limits for one worksheet traversal.
@@ -424,11 +437,13 @@ pub struct JsColCell {
     pub row: u32,
     /// Cell value type: "string", "number", "boolean", "date", "empty", "error", "formula".
     pub value_type: String,
-    /// String representation of the cell value.
+    /// Text for string, error, and formula (expression) cells. Date cells
+    /// carry the ISO date here only in `getCols` and stream reads; `getRows`
+    /// leaves it unset for number, boolean, and date cells.
     pub value: Option<String>,
-    /// Numeric value (only set when value_type is "number").
+    /// Numeric value for number cells, or the Excel serial for date cells.
     pub number_value: Option<f64>,
-    /// Boolean value (only set when value_type is "boolean").
+    /// Boolean value for boolean cells.
     pub bool_value: Option<bool>,
     /// Formula expression and cached result when value_type is "formula".
     pub formula: Option<FormulaValue>,

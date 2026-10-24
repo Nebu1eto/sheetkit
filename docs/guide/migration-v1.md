@@ -184,9 +184,14 @@ if (typeof value === 'object' && value?.type === 'formula') {
 }
 ```
 
-Dates and formulas keep this shape in direct reads, row traversal, raw
-buffers, stream reads, and JSON import. Update type guards and serializers that
-expected a `number` or a flattened formula result.
+Dates keep this shape in direct reads, row traversal, raw buffers, stream
+reads, and JSON import. Formulas come back as a `FormulaValue` from
+`getCellValue`, in the `formula` field of `getRows`, `getRowsIterator`,
+`getCols`, and `openSheetReader` cells, and are accepted in that shape by
+writes and JSON import. Raw buffers (`getRowsBuffer`, `getRowsBufferV2`,
+`getRowsRaw`), `toJSON`, and `toCSV` carry only the formula expression.
+Update type guards and serializers that expected a `number` or a flattened
+formula result.
 
 In Rust, `CompactCellRef::new` and `CompactCellRef::from_coordinates` now
 return `Result` and enforce Excel's row and column bounds.
