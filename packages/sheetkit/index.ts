@@ -2490,5 +2490,5 @@ function builtinFormatCode(id: number): string | null {
   return NativeWorkbook.builtinFormatCode(id);
 }
 
-export { builtinFormatCode, formatNumber, JsStreamWriter, SheetData, SheetStreamReader, Workbook };
 export type { CellTypeName, RawRowsResult, RowData };
+export { builtinFormatCode, formatNumber, JsStreamWriter, SheetData, SheetStreamReader, Workbook };

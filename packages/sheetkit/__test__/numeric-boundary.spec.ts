@@ -119,21 +119,22 @@ describe.each(factories)('numeric argument validation via %s', (_label, create) 
     expect(workbook.getCellValue('Sheet1', 'A1')).toBe('r2');
   });
 
-  it.each(
-    INVALID_INTEGERS,
-  )('open options reject %s sheetRows and maxZipEntries', (_name, value) => {
-    const data = seededBuffer(3);
-    const open = (options: { sheetRows?: number; maxZipEntries?: number }): unknown =>
-      create === factories[0][1]
-        ? Workbook.openBufferSync(data, options)
-        : NativeWorkbook.openBufferSync(data, options);
-    expect(() => open({ sheetRows: value })).toThrow(/sheetRows must be an integer/);
-    // 2^32 + 1 is a safe integer, so it reaches the hard ceiling check
-    // instead of wrapping to 1 as the previous u32 coercion did.
-    expect(() => open({ maxZipEntries: value })).toThrow(
-      /maxZipEntries must be|resource limit exceeded/,
-    );
-  });
+  it.each(INVALID_INTEGERS)(
+    'open options reject %s sheetRows and maxZipEntries',
+    (_name, value) => {
+      const data = seededBuffer(3);
+      const open = (options: { sheetRows?: number; maxZipEntries?: number }): unknown =>
+        create === factories[0][1]
+          ? Workbook.openBufferSync(data, options)
+          : NativeWorkbook.openBufferSync(data, options);
+      expect(() => open({ sheetRows: value })).toThrow(/sheetRows must be an integer/);
+      // 2^32 + 1 is a safe integer, so it reaches the hard ceiling check
+      // instead of wrapping to 1 as the previous u32 coercion did.
+      expect(() => open({ maxZipEntries: value })).toThrow(
+        /maxZipEntries must be|resource limit exceeded/,
+      );
+    },
+  );
 });
 
 describe('numeric option boundaries', () => {

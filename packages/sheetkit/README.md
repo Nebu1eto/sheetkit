@@ -12,11 +12,11 @@ npm install @sheetkit/node
 ## Quick start
 
 ```typescript
-import { Workbook } from "@sheetkit/node";
+import { Workbook } from '@sheetkit/node';
 
 const workbook = new Workbook();
-workbook.setCellValue("Sheet1", "A1", "Hello");
-await workbook.save("output.xlsx");
+workbook.setCellValue('Sheet1', 'A1', 'Hello');
+await workbook.save('output.xlsx');
 ```
 
 ## Documentation

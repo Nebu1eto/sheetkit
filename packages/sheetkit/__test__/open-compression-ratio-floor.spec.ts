@@ -53,16 +53,15 @@ function messageOf(action: () => unknown): string {
 describe('compressionRatioFloorBytes open option', () => {
   const data = repetitiveOutput();
 
-  it.each([
-    'eager',
-    'lazy',
-    'stream',
-  ] as const)('reopens repetitive library output at defaults in %s mode', async (readMode) => {
-    const sync = Workbook.openBufferSync(data, { readMode });
-    expect(sync.getRows('Sheet1').length).toBeGreaterThan(0);
-    const async = await Workbook.openBuffer(data, { readMode });
-    expect(async.sheetNames).toEqual(['Sheet1']);
-  });
+  it.each(['eager', 'lazy', 'stream'] as const)(
+    'reopens repetitive library output at defaults in %s mode',
+    async (readMode) => {
+      const sync = Workbook.openBufferSync(data, { readMode });
+      expect(sync.getRows('Sheet1').length).toBeGreaterThan(0);
+      const async = await Workbook.openBuffer(data, { readMode });
+      expect(async.sheetNames).toEqual(['Sheet1']);
+    },
+  );
 
   it('enforces the ratio for every entry when set to zero', async () => {
     const strict: OpenOptions = { compressionRatioFloorBytes: 0 };
