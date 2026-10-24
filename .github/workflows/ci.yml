@@ -97,7 +97,7 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Biome check
+      - name: Lint and format check (oxlint, oxfmt)
         if: matrix.primary
         run: pnpm check
 

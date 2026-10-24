@@ -250,7 +250,9 @@ describe('toJSON workbook-derived keys', () => {
         setterCalls++;
       },
     };
+    // oxlint-disable-next-line eslint/no-extend-native -- the test injects an inherited setter on purpose
     Object.defineProperty(Object.prototype, headerKey, descriptor);
+    // oxlint-disable-next-line eslint/no-extend-native -- the test injects an inherited setter on purpose
     Object.defineProperty(Object.prototype, 'B', descriptor);
     try {
       const workbook = new Workbook();

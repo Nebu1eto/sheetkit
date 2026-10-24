@@ -49,7 +49,7 @@ import { cpus, totalmem } from 'node:os';
 import { join } from 'node:path';
 import { Workbook as SheetKitWorkbook } from '@sheetkit/node';
 import ExcelJS from 'exceljs';
-import XLSX from 'xlsx';
+import * as XLSX from 'xlsx';
 
 // SheetJS ESM builds need an explicit fs handle for writeFile/readFile.
 XLSX.set_fs(fs);
@@ -1331,7 +1331,7 @@ async function benchRandomAccessRead() {
     const ws = wb.getWorksheet('Sheet1');
     assert(ws != null);
     for (const cell of cells) {
-      ws.getCell(cell).value;
+      void ws.getCell(cell).value;
     }
   });
 
@@ -1341,7 +1341,7 @@ async function benchRandomAccessRead() {
     const ws = wb.Sheets.Sheet1;
     for (const cell of cells) {
       const val = ws[cell];
-      if (val) val.v; // access value
+      if (val) void val.v;
     }
   });
 
@@ -1373,7 +1373,7 @@ async function benchRandomAccessRead() {
     const ws = wb.getWorksheet('Sheet1');
     assert(ws != null);
     for (const cell of cells) {
-      ws.getCell(cell).value;
+      void ws.getCell(cell).value;
     }
   });
 
@@ -1383,7 +1383,7 @@ async function benchRandomAccessRead() {
     const ws = wb.Sheets.Sheet1;
     for (const cell of cells) {
       const val = ws[cell];
-      if (val) val.v; // access value
+      if (val) void val.v;
     }
   });
 }

@@ -45,7 +45,9 @@ vi.mock('../binding.js', () => {
     close(): void {}
   }
 
-  class MockJsStreamWriter {}
+  class MockJsStreamWriter {
+    close(): void {}
+  }
 
   return {
     JsStreamWriter: MockJsStreamWriter,

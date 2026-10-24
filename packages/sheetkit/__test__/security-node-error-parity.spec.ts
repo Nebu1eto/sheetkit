@@ -52,12 +52,10 @@ function expectResourceError(
 ): void {
   expect(isResourceLimitError(error)).toBe(true);
   if (!isResourceLimitError(error)) throw new Error('Expected a resource limit error');
-  expect(error.operation).toBe(expected.operation);
-  expect(error.category).toBe(expected.category);
-  expect(error.dimension).toBe(expected.dimension);
-  expect(error.stage).toBe(expected.stage);
-  if (expected.limit !== undefined) expect(error.limit).toBe(expected.limit);
-  if (expected.observed !== undefined) expect(error.observed).toBe(expected.observed);
+  const { limit, observed, ...shape } = expected;
+  expect(error).toMatchObject(shape);
+  expect(error.limit).toBe(limit ?? error.limit);
+  expect(error.observed).toBe(observed ?? error.observed);
   expect(error.observed).toBeGreaterThan(error.limit);
 }
 

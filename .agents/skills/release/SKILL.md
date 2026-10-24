@@ -48,7 +48,7 @@ Before starting a release:
     pnpm -r test
     ~~~~
 
-    `pnpm check` runs Biome (linter + formatter).
+    `pnpm check` runs oxlint and oxfmt (linter + formatter).
     `pnpm -r test` runs Vitest for the Node.js binding tests.
 
 

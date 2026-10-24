@@ -48,6 +48,7 @@ describe('toJSON property safety', () => {
   it('does not invoke inherited setters for workbook-controlled headers', () => {
     const key = '__sheetkit_inherited_setter__';
     let setterCalls = 0;
+    // oxlint-disable-next-line eslint/no-extend-native -- the test injects an inherited setter on purpose
     Object.defineProperty(Object.prototype, key, {
       configurable: true,
       set: () => {

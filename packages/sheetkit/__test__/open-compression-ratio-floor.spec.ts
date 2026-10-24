@@ -44,7 +44,9 @@ function messageOf(action: () => unknown): string {
   try {
     action();
   } catch (error) {
-    expect(isResourceLimitError(error)).toBe(false);
+    if (isResourceLimitError(error)) {
+      throw new Error('Expected an argument error, got a resource limit error', { cause: error });
+    }
     return String(error);
   }
   throw new Error('Expected an argument error');

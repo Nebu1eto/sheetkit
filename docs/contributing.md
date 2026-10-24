@@ -91,7 +91,7 @@ Every change must pass all of the following before submission:
 
 ### TypeScript / JavaScript
 
-- Use Biome for formatting and linting.
+- Use oxlint for linting and oxfmt for formatting (`pnpm check`).
 - ESM only for all JavaScript and TypeScript code.
 
 ### General Rules

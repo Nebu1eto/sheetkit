@@ -1,0 +1,26 @@
+{
+  "$schema": "./node_modules/oxfmt/configuration_schema.json",
+  "printWidth": 100,
+  "singleQuote": true,
+  "sortPackageJson": false,
+  "ignorePatterns": [
+    "/*",
+    "!/packages",
+    "!/examples",
+    "!/benchmarks",
+    "!/package.json",
+    "!/tsconfig.json",
+    "!/typedoc.json",
+    "!/.oxlintrc.json",
+    "!/.oxfmtrc.jsonc",
+    "**/*.md",
+    "benchmarks/**/output",
+    "benchmarks/node/fixtures",
+    "benchmarks/node/results",
+    "benchmarks/node/benchmarks",
+    "benchmarks/node/baseline-results.json",
+    "packages/sheetkit/binding.js",
+    "packages/sheetkit/binding.d.ts",
+    "packages/sheetkit/npm"
+  ]
+}

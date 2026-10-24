@@ -385,8 +385,7 @@ describe('Chart & Picture CRUD', () => {
       chartType: 'col',
       series: [{ name: 'S1', categories: 'Sheet1!$A$1:$A$3', values: 'Sheet1!$B$1:$B$3' }],
     });
-    wb.deleteChart('Sheet1', 'D1');
-    // No error means success; saving should work without the chart
+    expect(() => wb.deleteChart('Sheet1', 'D1')).not.toThrow();
   });
 
   it('should throw when deleting a chart at empty cell', () => {
@@ -404,7 +403,7 @@ describe('Chart & Picture CRUD', () => {
       widthPx: 200,
       heightPx: 150,
     });
-    wb.deletePicture('Sheet1', 'B2');
+    expect(() => wb.deletePicture('Sheet1', 'B2')).not.toThrow();
   });
 
   it('should throw when deleting a picture at empty cell', () => {
@@ -1069,7 +1068,7 @@ describe('Phase 8 - Auto-filter', () => {
   it('should set and remove auto filter', () => {
     const wb = new Workbook();
     wb.setAutoFilter('Sheet1', 'A1:C10');
-    wb.removeAutoFilter('Sheet1');
+    expect(() => wb.removeAutoFilter('Sheet1')).not.toThrow();
   });
 
   it('should set auto filter and save', async () => {
@@ -5733,21 +5732,28 @@ describe('decodeRowsRawBuffer', () => {
     const raw = decodeRowsRawBuffer(buf);
 
     expect(raw.totalRows).toBe(decoded.length);
+    const actualValues: Array<number | string | undefined> = [];
+    const expectedValues: Array<number | string | undefined> = [];
     let ci = 0;
     for (let ri = 0; ri < decoded.length; ri++) {
       expect(raw.rowNumbers[ri]).toBe(decoded[ri].row);
       expect(raw.rowCellCounts[ri]).toBe(decoded[ri].cells.length);
       for (const cell of decoded[ri].cells) {
         if (cell.valueType === 'number') {
-          expect(raw.cellNumericValues[ci]).toBe(cell.numberValue);
+          actualValues.push(raw.cellNumericValues[ci]);
+          expectedValues.push(cell.numberValue);
         } else if (cell.valueType === 'string') {
-          expect(raw.cellStringValues[ci]).toBe(cell.value);
+          actualValues.push(raw.cellStringValues[ci]);
+          expectedValues.push(cell.value);
         } else if (cell.valueType === 'boolean') {
-          expect(raw.cellBoolValues[ci]).toBe(cell.boolValue ? 1 : 0);
+          actualValues.push(raw.cellBoolValues[ci]);
+          expectedValues.push(cell.boolValue ? 1 : 0);
         }
         ci++;
       }
     }
+    expect(actualValues).toHaveLength(ci);
+    expect(actualValues).toEqual(expectedValues);
   });
 });
 
@@ -6160,21 +6166,28 @@ describe('v2 decodeRowsRawBuffer', () => {
     const raw = decodeRowsRawBuffer(v2buf);
 
     expect(raw.totalRows).toBe(decoded.length);
+    const actualValues: Array<number | string | undefined> = [];
+    const expectedValues: Array<number | string | undefined> = [];
     let ci = 0;
     for (let ri = 0; ri < decoded.length; ri++) {
       expect(raw.rowNumbers[ri]).toBe(decoded[ri].row);
       expect(raw.rowCellCounts[ri]).toBe(decoded[ri].cells.length);
       for (const cell of decoded[ri].cells) {
         if (cell.valueType === 'number') {
-          expect(raw.cellNumericValues[ci]).toBe(cell.numberValue);
+          actualValues.push(raw.cellNumericValues[ci]);
+          expectedValues.push(cell.numberValue);
         } else if (cell.valueType === 'string') {
-          expect(raw.cellStringValues[ci]).toBe(cell.value);
+          actualValues.push(raw.cellStringValues[ci]);
+          expectedValues.push(cell.value);
         } else if (cell.valueType === 'boolean') {
-          expect(raw.cellBoolValues[ci]).toBe(cell.boolValue ? 1 : 0);
+          actualValues.push(raw.cellBoolValues[ci]);
+          expectedValues.push(cell.boolValue ? 1 : 0);
         }
         ci++;
       }
     }
+    expect(actualValues).toHaveLength(ci);
+    expect(actualValues).toEqual(expectedValues);
   });
 
   it('rejects malformed UTF-8 before returning raw output', () => {

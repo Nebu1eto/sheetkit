@@ -91,7 +91,7 @@ SheetKit은 TDD (테스트 주도 개발) 접근 방식을 따릅니다:
 
 ### TypeScript / JavaScript
 
-- 포매팅과 린팅에 Biome을 사용합니다.
+- 린팅에는 oxlint, 포매팅에는 oxfmt를 사용합니다 (`pnpm check`).
 - 모든 JavaScript 및 TypeScript 코드에 ESM만 사용합니다.
 
 ### 일반 규칙
