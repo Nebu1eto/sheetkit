@@ -178,9 +178,9 @@ describe('Sheet Protection', () => {
 
   it('should throw for non-existent sheet', () => {
     const wb = new Workbook();
-    expect(() => wb.protectSheet('NonExistent')).toThrow();
-    expect(() => wb.unprotectSheet('NonExistent')).toThrow();
-    expect(() => wb.isSheetProtected('NonExistent')).toThrow();
+    expect(() => wb.protectSheet('NonExistent')).toThrow("sheet 'NonExistent' does not exist");
+    expect(() => wb.unprotectSheet('NonExistent')).toThrow("sheet 'NonExistent' does not exist");
+    expect(() => wb.isSheetProtected('NonExistent')).toThrow("sheet 'NonExistent' does not exist");
   });
 
   it('should preserve sheet protection across save/open roundtrip', async () => {

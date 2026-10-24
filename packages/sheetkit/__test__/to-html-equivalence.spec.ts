@@ -1,10 +1,11 @@
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { isResourceLimitError, type ToHtmlOptions, Workbook } from '../index.js';
-import { type CellValue, SheetData } from '../sheet-data.js';
+import { type CellValue, type DateValue, SheetData } from '../sheet-data.js';
 
 const FIXTURE_DIR = join(import.meta.dirname, '..', '..', '..', 'benchmarks', 'node', 'fixtures');
 const FIXTURES = ['mixed-workload.xlsx', 'strings.xlsx', 'merged-cells.xlsx', 'comments.xlsx'];
+
 const OPTION_CASES: readonly [string, ToHtmlOptions | undefined][] = [
   ['default', undefined],
   ['default with className', { className: 'grid "x" <y>' }],
@@ -21,20 +22,29 @@ function escapeHtml(s: string): string {
     .replace(/'/g, '&#39;');
 }
 
+function isDateCell(value: CellValue): value is DateValue {
+  return typeof value === 'object' && value !== null && value.type === 'date';
+}
+
 function cellValueToString(v: CellValue): string {
   if (v === null || v === undefined) return '';
-  if (typeof v === 'object' && v.type === 'date') return v.iso ?? String(v.serial);
+
+  if (isDateCell(v)) return v.iso ?? String(v.serial);
+
   return String(v);
 }
 
 /** Reference toHTML: the pre-limit loop from 73819d8, without output-byte accounting. */
 function referenceToHtml(workbook: Workbook, sheet: string, options?: ToHtmlOptions): string {
   const className = options?.className;
+
   const buf =
     options?.mode === 'dense'
       ? workbook.getRowsBuffer(sheet, { mode: options.mode })
       : workbook.getRowsBufferV2(sheet, options?.mode === undefined ? undefined : options);
+
   const sd = new SheetData(buf);
+
   const rows =
     options?.mode === 'dense'
       ? sd.toArray()
@@ -45,13 +55,17 @@ function referenceToHtml(workbook: Workbook, sheet: string, options?: ToHtmlOpti
 
   for (const row of rows) {
     parts.push('<tr>');
+
     for (const cell of row) {
       const text = escapeHtml(cellValueToString(cell));
       parts.push(`<td>${text}</td>`);
     }
+
     parts.push('</tr>');
   }
+
   parts.push('</table>');
+
   return parts.join('');
 }
 
@@ -60,6 +74,7 @@ describe('toHTML byte-for-byte equivalence with the reference loop', () => {
     const path = join(FIXTURE_DIR, fixture);
     it(`renders ${fixture} identically`, () => {
       const workbook = Workbook.openSync(path);
+
       for (const sheet of workbook.sheetNames) {
         for (const [label, options] of OPTION_CASES) {
           const expected = referenceToHtml(workbook, sheet, options);
@@ -77,6 +92,7 @@ describe('toHTML byte-for-byte equivalence with the reference loop', () => {
       [true],
     ]);
     workbook.setCellValue('Sheet1', 'E7', 'tail');
+
     for (const [label, options] of OPTION_CASES) {
       expect(workbook.toHTML('Sheet1', options), label).toBe(
         referenceToHtml(workbook, 'Sheet1', options),
@@ -96,12 +112,15 @@ describe('toHTML output limit boundaries', () => {
     expect(exact).toBeGreaterThan(200);
 
     let error: unknown;
+
     try {
       workbook.toHTML(sheet, { limits: { maxOutputBytes: 200 } });
     } catch (caught) {
       error = caught;
     }
+
     expect(isResourceLimitError(error)).toBe(true);
+
     if (!isResourceLimitError(error)) throw new Error('Expected a resource limit error');
     expect(error).toMatchObject({
       operation: 'export',

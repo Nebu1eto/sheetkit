@@ -4,27 +4,11 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { Workbook as NativeWorkbook } from '../binding.js';
 import { isResourceLimitError, Workbook } from '../index.js';
+import { captureError, captureRejection } from './helpers/errors.js';
 
-async function captureRejection(promise: Promise<unknown>): Promise<unknown> {
-  try {
-    await promise;
-  } catch (error) {
-    return error;
-  }
-  throw new Error('Expected promise to reject');
-}
-
-function captureThrow(callback: () => unknown): unknown {
-  try {
-    callback();
-  } catch (error) {
-    return error;
-  }
-  throw new Error('Expected callback to throw');
-}
-
-function expectBatchLimitError(error: unknown, observed = 100_001n): void {
+function expectBatchLimitError(error: Error, observed = 100_001n): void {
   expect(isResourceLimitError(error)).toBe(true);
+
   if (!isResourceLimitError(error)) throw new Error('Expected a resource limit error');
   expect(error.operation).toBe('stream_read');
   expect(error.category).toBe('streaming');
@@ -45,16 +29,19 @@ describe('Node streaming resource boundaries', () => {
 
     try {
       const workbooks = [Workbook.openSync(path), Workbook.openBufferSync(buffer)];
+
       for (const workbook of workbooks) {
         const zero = await captureRejection(
           workbook.openSheetReader('MissingSheet', { batchSize: 0 }),
         );
+
         expect(isResourceLimitError(zero)).toBe(false);
         expect(String(zero)).toContain('greater than zero');
 
         const plusOne = await captureRejection(
           workbook.openSheetReader('MissingSheet', { batchSize: 100_001 }),
         );
+
         expectBatchLimitError(plusOne);
         expectBatchLimitError(
           await captureRejection(
@@ -67,6 +54,7 @@ describe('Node streaming resource boundaries', () => {
           const error = await captureRejection(
             workbook.openSheetReader('MissingSheet', { batchSize: invalid }),
           );
+
           expect(isResourceLimitError(error)).toBe(false);
           expect(String(error)).toContain('positive safe integer');
         }
@@ -113,15 +101,15 @@ describe('Node streaming resource boundaries', () => {
     const native = NativeWorkbook.openBufferSync(created.writeBufferSync());
 
     expectBatchLimitError(
-      captureThrow(() => native.openSheetReader('MissingSheet', 4_294_967_297)),
+      captureError(() => native.openSheetReader('MissingSheet', 4_294_967_297)),
       4_294_967_297n,
     );
-    expect(String(captureThrow(() => native.openSheetReader('MissingSheet', 1.5)))).toContain(
+    expect(String(captureError(() => native.openSheetReader('MissingSheet', 1.5)))).toContain(
       'positive safe integer',
     );
 
     const reader = native.openSheetReader('Sheet1', 1);
-    expect(String(captureThrow(() => reader.nextBatch(Number.NaN)))).toContain(
+    expect(String(captureError(() => reader.nextBatch(Number.NaN)))).toContain(
       'positive safe integer',
     );
     expect(reader.nextBatch(1)?.[0]?.row).toBe(1);

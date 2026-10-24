@@ -6,6 +6,7 @@ import { Workbook } from '../index.js';
 function offsetOf(buf: Buffer, needle: string): number {
   const offset = buf.indexOf(Buffer.from(needle, 'utf8'));
   expect(offset).toBeGreaterThan(0);
+
   return offset;
 }
 
@@ -23,6 +24,7 @@ describe('decodeRowsBuffer v2 string decoding', () => {
     values.forEach((value, index) => {
       wb.setCellValue('Sheet1', `A${index + 1}`, value);
     });
+
     return Buffer.from(wb.getRowsBufferV2('Sheet1'));
   }
 

@@ -2,22 +2,16 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'n
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { type SaveOptions, Workbook } from '../index.js';
+import { type SaveLimits, type SaveOptions, Workbook } from '../index.js';
+import { withForeignField } from './helpers/contract-violation.js';
+import { captureError } from './helpers/errors.js';
 
 function sampleWorkbook(): Workbook {
   const workbook = new Workbook();
   workbook.setCellValue('Sheet1', 'A1', 'durable');
   workbook.setCellValue('Sheet1', 'B2', 42);
-  return workbook;
-}
 
-function captureError(action: () => unknown): unknown {
-  try {
-    action();
-  } catch (error) {
-    return error;
-  }
-  throw new Error('Expected action to throw');
+  return workbook;
 }
 
 describe('save durability options', () => {
@@ -76,12 +70,14 @@ describe('save durability options', () => {
   it('rejects a non-boolean durable like other invalid option fields', async () => {
     const workbook = sampleWorkbook();
     const path = join(directory, 'invalid.xlsx');
-    const invalid = { durable: 'yes' } as unknown as SaveOptions;
+    const invalid = withForeignField<SaveOptions>({}, 'durable', 'yes');
 
     const durableError = captureError(() => workbook.saveSync(path, undefined, invalid));
+
     const limitError = captureError(() =>
-      workbook.saveSync(path, { outputBytes: 'many' } as unknown as { outputBytes: number }),
+      workbook.saveSync(path, withForeignField<SaveLimits>({}, 'outputBytes', 'many')),
     );
+
     expect(durableError).toBeInstanceOf(Error);
     expect(limitError).toBeInstanceOf(Error);
     expect(Object.getPrototypeOf(durableError)).toBe(Object.getPrototypeOf(limitError));

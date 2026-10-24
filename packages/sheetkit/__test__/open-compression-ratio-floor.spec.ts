@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { isResourceLimitError, type OpenOptions, Workbook } from '../index.js';
+import { captureRejection } from './helpers/errors.js';
 
 const MIB = 1024 * 1024;
 const CEILING = 1024 * MIB;
@@ -11,17 +12,21 @@ const CEILING = 1024 * MIB;
 function csvFixture(): Buffer {
   const workbook = new Workbook();
   const dangerous = `=${'x'.repeat(32_766)}`;
+
   for (let column = 1; column <= 2_049; column++) {
     workbook.setCellValue('Sheet1', `${columnName(column)}1`, dangerous);
   }
+
   return workbook.writeBufferSync();
 }
 
 function columnName(column: number): string {
   let name = '';
+
   for (let n = column; n > 0; n = Math.floor((n - 1) / 26)) {
     name = String.fromCharCode(65 + ((n - 1) % 26)) + name;
   }
+
   return name;
 }
 
@@ -30,25 +35,29 @@ function repetitiveOutput(): Buffer {
   return Workbook.openBufferSync(csvFixture()).writeBufferSync();
 }
 
-function dimensionOf(action: () => unknown): string {
+function dimensionOf(action: () => void): string {
   try {
     action();
   } catch (error) {
     if (!isResourceLimitError(error)) throw error;
+
     return error.dimension;
   }
+
   throw new Error('Expected a resource limit error');
 }
 
-function messageOf(action: () => unknown): string {
+function messageOf(action: () => void): string {
   try {
     action();
   } catch (error) {
     if (isResourceLimitError(error)) {
       throw new Error('Expected an argument error, got a resource limit error', { cause: error });
     }
+
     return String(error);
   }
+
   throw new Error('Expected an argument error');
 }
 
@@ -68,8 +77,9 @@ describe('compressionRatioFloorBytes open option', () => {
   it('enforces the ratio for every entry when set to zero', async () => {
     const strict: OpenOptions = { compressionRatioFloorBytes: 0 };
     expect(dimensionOf(() => Workbook.openBufferSync(data, strict))).toBe('compression_ratio');
-    await expect(Workbook.openBuffer(data, strict)).rejects.toSatisfy(
-      (error: unknown) => isResourceLimitError(error) && error.dimension === 'compression_ratio',
+    const asyncError = await captureRejection(Workbook.openBuffer(data, strict));
+    expect(isResourceLimitError(asyncError) && asyncError.dimension === 'compression_ratio').toBe(
+      true,
     );
   });
 
@@ -78,6 +88,7 @@ describe('compressionRatioFloorBytes open option', () => {
       const workbook = Workbook.openBufferSync(data, { compressionRatioFloorBytes: value });
       expect(workbook.sheetNames).toEqual(['Sheet1']);
     }
+
     expect(
       dimensionOf(() => Workbook.openBufferSync(data, { compressionRatioFloorBytes: CEILING + 1 })),
     ).toBe('compression_ratio_floor_bytes');

@@ -29,7 +29,9 @@
     "buffer-codec.js",
     "buffer-codec.d.ts",
     "sheet-data.js",
-    "sheet-data.d.ts"
+    "sheet-data.d.ts",
+    "open-options.js",
+    "open-options.d.ts"
   ],
   "author": {
     "name": "Haze Lee",
@@ -46,7 +48,7 @@
   "scripts": {
     "artifacts": "napi artifacts",
     "build:napi": "napi build --platform --release --esm --js binding.js --dts binding.d.ts",
-    "build:ts": "rm -f index.js buffer-codec.js sheet-data.js index.d.ts buffer-codec.d.ts sheet-data.d.ts && tsdown",
+    "build:ts": "rm -f index.js buffer-codec.js sheet-data.js open-options.js index.d.ts buffer-codec.d.ts sheet-data.d.ts open-options.d.ts && tsdown",
     "build": "pnpm build:napi && pnpm typecheck && pnpm build:ts",
     "build:debug": "napi build --platform --js binding.js --dts binding.d.ts",
     "typecheck": "tsc --noEmit",

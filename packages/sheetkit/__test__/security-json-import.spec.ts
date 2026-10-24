@@ -1,22 +1,23 @@
 import { describe, expect, it } from 'vitest';
-import { isResourceLimitError, Workbook } from '../index.js';
-
-function captureError(action: () => unknown): unknown {
-  try {
-    action();
-  } catch (error) {
-    return error;
-  }
-  throw new Error('Expected action to throw');
-}
+import {
+  type CellValue,
+  type FormulaResultValue,
+  type FormulaValue,
+  isResourceLimitError,
+  Workbook,
+} from '../index.js';
+import { type JsonImportRecord, withForeignField } from './helpers/contract-violation.js';
+import { captureError } from './helpers/errors.js';
+import { parseJsonStringRecord } from './helpers/json.js';
 
 function expectResourceError(
-  error: unknown,
+  error: Error,
   dimension: 'row_count' | 'column_count' | 'cell_count' | 'retained_bytes',
   limit: bigint,
   observed: bigint,
 ): void {
   expect(isResourceLimitError(error)).toBe(true);
+
   if (!isResourceLimitError(error)) throw new Error('Expected a resource limit error');
   expect(error.operation).toBe('data_traverse');
   expect(error.category).toBe('structure');
@@ -73,12 +74,14 @@ describe('fromJSON finite import boundary', () => {
     for (const testCase of cases) {
       const workbook = new Workbook();
       workbook.setCellValue('Sheet1', 'A1', 'sentinel');
+
       const error = captureError(() =>
         workbook.fromJSON('Sheet1', testCase.data, {
           header: false,
           limits: { ...testCase.limits, maxRetainedBytes: 1_024 },
         }),
       );
+
       expectResourceError(error, testCase.dimension, testCase.limit, testCase.observed);
       expect(workbook.getCellValue('Sheet1', 'A1')).toBe('sentinel');
       expect(workbook.getCellValue('Sheet1', 'B1')).toBeNull();
@@ -86,16 +89,20 @@ describe('fromJSON finite import boundary', () => {
   });
 
   it('rejects hard Excel dimensions before iterating sparse arrays', () => {
-    const rows = new Array(1_048_577) as Record<string, never>[];
+    const rows: JsonImportRecord[] = [];
+    rows.length = 1_048_577;
     const rowError = captureError(() => new Workbook().fromJSON('Sheet1', rows, { header: false }));
     expectResourceError(rowError, 'row_count', 1_048_576n, 1_048_577n);
 
-    const columns = new Array(16_385) as string[];
+    const columns: string[] = [];
+    columns.length = 16_385;
+
     const columnError = captureError(() =>
       new Workbook().fromJSON('Sheet1', [{}], {
         header: columns,
       }),
     );
+
     expectResourceError(columnError, 'column_count', 16_384n, 16_385n);
   });
 
@@ -110,6 +117,7 @@ describe('fromJSON finite import boundary', () => {
     Object.defineProperty(headers, Symbol.iterator, {
       value: function* infiniteHeaders() {
         let index = 0;
+
         while (true) yield `H${index++}`;
       },
     });
@@ -123,11 +131,13 @@ describe('fromJSON finite import boundary', () => {
 
   it('counts header cells and keeps finite overrides local to one call', () => {
     const workbook = new Workbook();
+
     const error = captureError(() =>
       workbook.fromJSON('Sheet1', [{ A: 1 }], {
         limits: { maxCells: 1 },
       }),
     );
+
     expectResourceError(error, 'cell_count', 1n, 2n);
     expect(workbook.getCellValue('Sheet1', 'A1')).toBeNull();
 
@@ -151,6 +161,7 @@ describe('fromJSON finite import boundary', () => {
 
     const rejected = new Workbook();
     rejected.setCellValue('Sheet1', 'A1', 'sentinel');
+
     const error = captureError(() =>
       rejected.fromJSON('Sheet1', [{ A: 'x' }], {
         header: false,
@@ -162,6 +173,7 @@ describe('fromJSON finite import boundary', () => {
         },
       }),
     );
+
     expectResourceError(error, 'retained_bytes', 83n, 84n);
     expect(rejected.getCellValue('Sheet1', 'A1')).toBe('sentinel');
 
@@ -176,7 +188,9 @@ describe('fromJSON finite import boundary', () => {
         },
       }),
     );
+
     expect(isResourceLimitError(cumulative)).toBe(true);
+
     if (!isResourceLimitError(cumulative)) throw new Error('Expected a resource limit error');
     expect(cumulative.dimension).toBe('retained_bytes');
     expect(cumulative.limit).toBe(150n);
@@ -208,6 +222,7 @@ describe('fromJSON finite import boundary', () => {
         startCell: 'XFD1048576',
       }),
     );
+
     expectResourceError(columnError, 'column_count', 16_384n, 16_385n);
 
     const rowError = captureError(() =>
@@ -216,6 +231,7 @@ describe('fromJSON finite import boundary', () => {
         startCell: 'XFD1048576',
       }),
     );
+
     expectResourceError(rowError, 'row_count', 1_048_576n, 1_048_577n);
     expect(workbook.getCellValue('Sheet1', 'XFD1048576')).toBe('sentinel');
   });
@@ -224,12 +240,14 @@ describe('fromJSON finite import boundary', () => {
     for (const startCell of ['A0', 'XFE1', 'A1048577', 'A1:Z9', 'AAAA999999999999999999']) {
       const workbook = new Workbook();
       workbook.setCellValue('Sheet1', 'A1', 'sentinel');
+
       const error = captureError(() =>
         workbook.fromJSON('Sheet1', [{ A: 1 }], {
           header: false,
           startCell,
         }),
       );
+
       expect(String(error)).not.toContain(startCell);
       expect(workbook.getCellValue('Sheet1', 'A1')).toBe('sentinel');
     }
@@ -250,17 +268,18 @@ describe('fromJSON finite import boundary', () => {
     const workbook = new Workbook();
     workbook.setCellValue('Sheet1', 'A1', 'sentinel');
     let matchedGetterCalled = false;
-    const record: Record<string, unknown> = { Unexpected: 1 };
+    const record: JsonImportRecord = { Unexpected: 1 };
     Object.defineProperty(record, 'A', {
       enumerable: true,
       get() {
         matchedGetterCalled = true;
+
         return 2;
       },
     });
 
     expect(() =>
-      workbook.fromJSON('Sheet1', [record as never], {
+      workbook.fromJSON('Sheet1', [record], {
         header: ['A'],
       }),
     ).toThrow('must match custom headers');
@@ -270,23 +289,28 @@ describe('fromJSON finite import boundary', () => {
 
   it('rejects custom prototypes without traversing inherited enumerable properties', () => {
     let prototypeReads = 0;
+
     const prototype = new Proxy(
       { inherited: 1 },
       {
         ownKeys(target) {
           prototypeReads++;
+
           return Reflect.ownKeys(target);
         },
         getOwnPropertyDescriptor(target, key) {
           prototypeReads++;
+
           return Reflect.getOwnPropertyDescriptor(target, key);
         },
       },
     );
-    const record = Object.assign(Object.create(prototype) as Record<string, unknown>, { A: 1 });
+
+    const record: JsonImportRecord = { A: 1 };
+    Object.setPrototypeOf(record, prototype);
 
     expect(() =>
-      new Workbook().fromJSON('Sheet1', [record as never], {
+      new Workbook().fromJSON('Sheet1', [record], {
         header: false,
         limits: {
           maxRows: 1,
@@ -301,15 +325,18 @@ describe('fromJSON finite import boundary', () => {
 
   it('rejects shifted columns before inspecting later records', () => {
     let laterRecordReads = 0;
+
     const laterRecord = new Proxy(
       { A: 3 },
       {
         ownKeys(target) {
           laterRecordReads++;
+
           return Reflect.ownKeys(target);
         },
         getOwnPropertyDescriptor(target, key) {
           laterRecordReads++;
+
           return Reflect.getOwnPropertyDescriptor(target, key);
         },
       },
@@ -321,15 +348,18 @@ describe('fromJSON finite import boundary', () => {
         startCell: 'XFD1',
       }),
     );
+
     expectResourceError(error, 'column_count', 16_384n, 16_385n);
     expect(laterRecordReads).toBe(0);
   });
 
   it('imports special JSON property names as ordinary headers', () => {
     const workbook = new Workbook();
-    const record = JSON.parse(
+
+    const record = parseJsonStringRecord(
       '{"__proto__":"prototype","constructor":"constructor","prototype":"value"}',
-    ) as Record<string, string>;
+    );
+
     workbook.fromJSON('Sheet1', [record]);
 
     expect(workbook.getCellValue('Sheet1', 'A1')).toBe('__proto__');
@@ -342,23 +372,28 @@ describe('fromJSON finite import boundary', () => {
   });
 
   it('rejects non-finite values atomically', () => {
-    for (const value of [
-      Number.NaN,
-      Number.POSITIVE_INFINITY,
-      { type: 'date', serial: Number.NEGATIVE_INFINITY, iso: null },
-      {
-        type: 'formula',
-        formula: '1',
-        result: { valueType: 'number', numberValue: Number.NaN },
-      },
-    ]) {
+    const cases: readonly [CellValue, string][] = [
+      [Number.NaN, 'Invalid JSON cell value'],
+      [Number.POSITIVE_INFINITY, 'Invalid JSON cell value'],
+      [{ type: 'date', serial: Number.NEGATIVE_INFINITY, iso: null }, 'Invalid JSON cell value'],
+      [
+        {
+          type: 'formula',
+          formula: '1',
+          result: { valueType: 'number', numberValue: Number.NaN },
+        },
+        'Invalid JSON formula result',
+      ],
+    ];
+
+    for (const [value, message] of cases) {
       const workbook = new Workbook();
       workbook.setCellValue('Sheet1', 'A1', 'sentinel');
       expect(() =>
-        workbook.fromJSON('Sheet1', [{ A: 'accepted-first' }, { A: value as never }], {
+        workbook.fromJSON('Sheet1', [{ A: 'accepted-first' }, { A: value }], {
           header: false,
         }),
-      ).toThrow();
+      ).toThrow(message);
       expect(workbook.getCellValue('Sheet1', 'A1')).toBe('sentinel');
       expect(workbook.getCellValue('Sheet1', 'A2')).toBeNull();
     }
@@ -368,37 +403,33 @@ describe('fromJSON finite import boundary', () => {
     const workbook = new Workbook();
     workbook.setCellValue('Sheet1', 'A1', 'sentinel');
     let getterCalled = false;
-    const accessorRecord: Record<string, unknown> = {};
+    const accessorRecord: JsonImportRecord = {};
     Object.defineProperty(accessorRecord, 'A', {
       enumerable: true,
       get() {
         getterCalled = true;
         workbook.setCellValue('Sheet1', 'A1', 'side effect');
+
         return 1;
       },
     });
 
-    expect(() => workbook.fromJSON('Sheet1', [accessorRecord as never], { header: false })).toThrow(
+    expect(() => workbook.fromJSON('Sheet1', [accessorRecord], { header: false })).toThrow(
       'enumerable data properties',
     );
     expect(getterCalled).toBe(false);
     expect(workbook.getCellValue('Sheet1', 'A1')).toBe('sentinel');
 
-    expect(() =>
-      workbook.fromJSON(
-        'Sheet1',
-        [
-          {
-            A: {
-              type: 'formula',
-              formula: '1',
-              result: { valueType: 'empty', value: 'unused' },
-            } as never,
-          },
-        ],
-        { header: false },
-      ),
-    ).toThrow('Invalid JSON formula result');
+    // An empty cached result must not also carry a string payload.
+    const ambiguous: FormulaValue = {
+      type: 'formula',
+      formula: '1',
+      result: withForeignField<FormulaResultValue>({ valueType: 'empty' }, 'value', 'unused'),
+    };
+
+    expect(() => workbook.fromJSON('Sheet1', [{ A: ambiguous }], { header: false })).toThrow(
+      'Invalid JSON formula result',
+    );
     expect(workbook.getCellValue('Sheet1', 'A1')).toBe('sentinel');
   });
 
@@ -406,17 +437,19 @@ describe('fromJSON finite import boundary', () => {
     const workbook = new Workbook();
     workbook.setCellValue('Sheet1', 'A1', 'sentinel');
     let formulaGetterCalled = false;
-    const formula = { type: 'formula' } as Record<string, unknown>;
+    const formula: FormulaValue = { type: 'formula', formula: '' };
     Object.defineProperty(formula, 'formula', {
       enumerable: true,
+      configurable: false,
       get() {
         formulaGetterCalled = true;
+
         return formulaGetterCalled ? '1'.repeat(1_024) : '1';
       },
     });
 
     expect(() =>
-      workbook.fromJSON('Sheet1', [{ A: formula as never }], {
+      workbook.fromJSON('Sheet1', [{ A: formula }], {
         header: false,
         limits: { maxRetainedBytes: 100 },
       }),
@@ -427,12 +460,12 @@ describe('fromJSON finite import boundary', () => {
 
   it('rejects malformed runtime header and limit options', () => {
     const workbook = new Workbook();
-    expect(() => workbook.fromJSON('Sheet1', [{ A: 1 }], { header: 0 as never })).toThrow(
-      'header must be',
-    );
-    expect(() => workbook.fromJSON('Sheet1', [{ A: 1 }], { limits: 'unbounded' as never })).toThrow(
-      'limits must be an object',
-    );
+    expect(() =>
+      workbook.fromJSON('Sheet1', [{ A: 1 }], withForeignField({}, 'header', 0)),
+    ).toThrow('header must be');
+    expect(() =>
+      workbook.fromJSON('Sheet1', [{ A: 1 }], withForeignField({}, 'limits', 'unbounded')),
+    ).toThrow('limits must be an object');
     expect(() =>
       workbook.fromJSON('Sheet1', [{ A: 1 }], {
         limits: { maxCells: Number.POSITIVE_INFINITY },
@@ -476,6 +509,7 @@ describe('fromJSON finite import boundary', () => {
   it('rejects an oversized formula through the native typed budget atomically', () => {
     const workbook = new Workbook();
     workbook.setCellValue('Sheet1', 'A1', 'sentinel');
+
     const error = captureError(() =>
       workbook.fromJSON(
         'Sheet1',
@@ -488,6 +522,7 @@ describe('fromJSON finite import boundary', () => {
     );
 
     expect(isResourceLimitError(error)).toBe(true);
+
     if (!isResourceLimitError(error)) throw new Error('Expected a resource limit error');
     expect(error.category).toBe('formula');
     expect(error.dimension).toBe('input_bytes');
@@ -499,10 +534,12 @@ describe('fromJSON finite import boundary', () => {
 
   it('preserves ordinary fromJSON and toJSON roundtrips', () => {
     const workbook = new Workbook();
+
     const data = [
       { Name: 'Alice', Score: 95, Pass: true },
       { Name: 'Bob', Score: 80, Pass: false },
     ];
+
     workbook.fromJSON('Sheet1', data);
     expect(workbook.toJSON('Sheet1')).toEqual(data);
   });

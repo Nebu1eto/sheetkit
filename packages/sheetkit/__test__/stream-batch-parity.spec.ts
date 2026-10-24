@@ -3,19 +3,21 @@ import { existsSync } from 'node:fs';
 import { unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { type JsOpenOptions, Workbook as NativeWorkbook } from '../binding.js';
+import { type JsOpenOptions, type JsRowData, Workbook as NativeWorkbook } from '../binding.js';
 import { Workbook } from '../index.js';
 
 const TEST_DIR = import.meta.dirname;
 const FIXTURE_DIR = join(TEST_DIR, '..', '..', '..', 'benchmarks', 'node', 'fixtures');
 
-type Batch = unknown[] | null;
+type Batch = JsRowData[] | null;
+
+function isNegativeZero(entry: unknown): entry is number {
+  return typeof entry === 'number' && Object.is(entry, -0);
+}
 
 /** Serialize with key order preserved so property order differences fail. */
-function ordered(value: unknown): string {
-  return JSON.stringify(value, (_key, entry) =>
-    typeof entry === 'number' && Object.is(entry, -0) ? '-0' : entry,
-  );
+function ordered(value: Batch | Batch[]): string {
+  return JSON.stringify(value, (_key, entry) => (isNegativeZero(entry) ? '-0' : entry));
 }
 
 async function readPublic(
@@ -26,12 +28,16 @@ async function readPublic(
   const workbook = await Workbook.open(path, options);
   const reader = await workbook.openSheetReader('Sheet1', { batchSize });
   const batches: Batch[] = [];
+
   for (;;) {
     const batch = await reader.next();
     batches.push(batch);
+
     if (batch === null) break;
   }
+
   await reader.close();
+
   return batches;
 }
 
@@ -39,12 +45,16 @@ function readNative(path: string, batchSize: number, options: JsOpenOptions): Ba
   const workbook = NativeWorkbook.openSync(path, options);
   const reader = workbook.openSheetReader('Sheet1', batchSize);
   const batches: Batch[] = [];
+
   for (;;) {
     const batch = reader.nextBatch(batchSize);
     batches.push(batch);
+
     if (batch === null) break;
   }
+
   reader.close();
+
   return batches;
 }
 
@@ -57,6 +67,7 @@ async function expectParity(
   const native = readNative(path, batchSize, options);
   expect(decoded).toStrictEqual(native);
   expect(ordered(decoded)).toBe(ordered(native));
+
   return decoded.reduce((total, batch) => total + (batch?.length ?? 0), 0);
 }
 
@@ -107,10 +118,12 @@ describe('stream batch transfer parity', () => {
     });
     wb.setCellValue('Sheet1', 'H2', { type: 'formula', formula: 'SUM(A1:A9)' });
     wb.setCellRichText('Sheet1', 'I2', [{ text: 'rich ' }, { text: 'text', bold: true }]);
+
     for (let row = 3; row <= 40; row += 1) {
       wb.setCellValue('Sheet1', `A${row}`, `row ${row}`);
       wb.setCellValue('Sheet1', `C${row}`, row * 1.25);
     }
+
     wb.setCellValue('Sheet1', 'B1000', 'sparse row');
     await wb.save(out);
 
@@ -120,9 +133,11 @@ describe('stream batch transfer parity', () => {
           readMode: 'stream',
           dateInterpretation,
         });
+
         expect(rows).toBe(41);
       }
     }
+
     const first = (await readPublic(out, 1000, { readMode: 'stream' }))[0];
     assert(first != null);
     expect(ordered(first).length).toBeGreaterThan(0);
@@ -146,8 +161,10 @@ describe('stream batch transfer parity', () => {
     await wb.save(out);
     const workbook = await Workbook.open(out, { readMode: 'stream' });
     const reader = await workbook.openSheetReader('Sheet1');
-    await expect(reader.next(0)).rejects.toThrow();
-    await expect(reader.next(100_001)).rejects.toThrow();
+    await expect(reader.next(0)).rejects.toThrow('stream batch size must be greater than zero');
+    await expect(reader.next(100_001)).rejects.toThrow(
+      'dimension=row_count limit=100000 observed=100001',
+    );
     const batch = await reader.next(1);
     expect(batch).toHaveLength(1);
     expect(await reader.next(1)).toBeNull();

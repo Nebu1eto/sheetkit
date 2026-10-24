@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { Workbook as NativeWorkbook } from '../binding.js';
-import { isResourceLimitError, Workbook } from '../index.js';
+import { type CellValue, isResourceLimitError, Workbook } from '../index.js';
 
 const INVALID_INTEGERS: readonly [string, number][] = [
   ['fractional', 1.9],
@@ -17,8 +17,10 @@ const INTEGER_ERROR = /must be an integer/;
 
 interface RowTarget {
   setCellValue(sheet: string, cell: string, value: string): void;
-  getCellValue(sheet: string, cell: string): unknown;
+  getCellValue(sheet: string, cell: string): CellValue | NativeCellValue;
 }
+
+type NativeCellValue = ReturnType<NativeWorkbook['getCellValue']>;
 
 function seed(workbook: RowTarget): void {
   workbook.setCellValue('Sheet1', 'A1', 'r1');
@@ -26,7 +28,7 @@ function seed(workbook: RowTarget): void {
   workbook.setCellValue('Sheet1', 'B1', 'b1');
 }
 
-function snapshot(workbook: RowTarget): unknown[] {
+function snapshot(workbook: RowTarget): (CellValue | NativeCellValue)[] {
   return ['A1', 'A2', 'A3', 'B1', 'C1'].map((cell) => workbook.getCellValue('Sheet1', cell));
 }
 
@@ -34,9 +36,11 @@ const SEEDED = ['r1', 'r2', null, 'b1', null];
 
 function seededBuffer(rows: number): Buffer {
   const workbook = new Workbook();
+
   for (let row = 1; row <= rows; row++) {
     workbook.setCellValue('Sheet1', `A${row}`, `r${row}`);
   }
+
   return workbook.writeBufferSync();
 }
 
@@ -123,10 +127,15 @@ describe.each(factories)('numeric argument validation via %s', (_label, create) 
     'open options reject %s sheetRows and maxZipEntries',
     (_name, value) => {
       const data = seededBuffer(3);
-      const open = (options: { sheetRows?: number; maxZipEntries?: number }): unknown =>
+
+      const open = (options: {
+        sheetRows?: number;
+        maxZipEntries?: number;
+      }): Workbook | NativeWorkbook =>
         create === factories[0][1]
           ? Workbook.openBufferSync(data, options)
           : NativeWorkbook.openBufferSync(data, options);
+
       expect(() => open({ sheetRows: value })).toThrow(/sheetRows must be an integer/);
       // 2^32 + 1 is a safe integer, so it reaches the hard ceiling check
       // instead of wrapping to 1 as the previous u32 coercion did.
@@ -166,6 +175,7 @@ describe('numeric option boundaries', () => {
       expect(() => NativeWorkbook.builtinFormatCode(value)).toThrow(INTEGER_ERROR);
       expect(() => new Workbook().getThemeColor(value)).toThrow(INTEGER_ERROR);
     }
+
     expect(NativeWorkbook.builtinFormatCode(0)).toBe('General');
   });
 });
@@ -226,11 +236,13 @@ describe('toHTML output limit', () => {
     const exact = Buffer.byteLength(html);
     expect(workbook.toHTML('Sheet1', { limits: { maxOutputBytes: exact } })).toBe(html);
     let error: unknown;
+
     try {
       workbook.toHTML('Sheet1', { limits: { maxOutputBytes: exact - 1 } });
     } catch (caught) {
       error = caught;
     }
+
     expect(isResourceLimitError(error)).toBe(true);
     expect(error).toMatchObject({
       operation: 'export',

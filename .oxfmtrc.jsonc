@@ -21,6 +21,6 @@
     "benchmarks/node/baseline-results.json",
     "packages/sheetkit/binding.js",
     "packages/sheetkit/binding.d.ts",
-    "packages/sheetkit/npm"
-  ]
+    "packages/sheetkit/npm",
+  ],
 }

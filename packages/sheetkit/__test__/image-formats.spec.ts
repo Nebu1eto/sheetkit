@@ -182,16 +182,16 @@ describe('Image formats - case insensitive', () => {
 describe('Image formats - unsupported', () => {
   it('should reject unsupported format string', () => {
     const wb = new Workbook();
-    expect(() => addTestImage(wb, 'webp')).toThrow();
+    expect(() => addTestImage(wb, 'webp')).toThrow('unsupported image format: webp');
   });
 
   it('should reject empty format string', () => {
     const wb = new Workbook();
-    expect(() => addTestImage(wb, '')).toThrow();
+    expect(() => addTestImage(wb, '')).toThrow(/^unsupported image format: $/);
   });
 
   it('should reject arbitrary string', () => {
     const wb = new Workbook();
-    expect(() => addTestImage(wb, 'notaformat')).toThrow();
+    expect(() => addTestImage(wb, 'notaformat')).toThrow('unsupported image format: notaformat');
   });
 });

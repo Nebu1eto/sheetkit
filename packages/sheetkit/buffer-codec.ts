@@ -42,6 +42,7 @@ function decodeUtf8Range(buf: Buffer, start: number, end: number): string {
       return decodeUtf8(new Uint8Array(buf.buffer, buf.byteOffset + start, end - start));
     }
   }
+
   return buf.toString('latin1', start, end);
 }
 
@@ -54,6 +55,7 @@ function validateUtf8Range(bytes: Uint8Array, start: number, end: number): void 
   for (let i = start; i < end; i++) {
     if (bytes[i] > 0x7f) {
       decodeUtf8(bytes.subarray(start, end));
+
       return;
     }
   }
@@ -91,19 +93,26 @@ class LazyValidatedStringTable implements ValidatedStringTable {
 
   get(index: number): string {
     const cached = this.#cache.get(index);
+
     if (cached !== undefined) return cached;
+
     if (!Number.isInteger(index) || index < 0 || index >= this.count) {
       throw new Error('Invalid buffer: string index is out of range');
     }
+
     const start = this.#view.getUint32(this.#offsetsStart + index * 4, true);
+
     const end =
       index + 1 < this.count
         ? this.#view.getUint32(this.#offsetsStart + (index + 1) * 4, true)
         : this.#blobSize;
+
     const value = decodeUtf8(
       new Uint8Array(this.#buf.buffer, this.#buf.byteOffset + this.#blobStart + start, end - start),
     );
+
     this.#cache.set(index, value);
+
     return value;
   }
 }
@@ -158,19 +167,24 @@ const colNameCache: string[] = [];
 function cachedColumnName(n: number): string {
   if (n <= 0) return '';
   const idx = n - 1;
+
   if (idx < colNameCache.length) {
     return colNameCache[idx];
   }
+
   for (let i = colNameCache.length; i <= idx; i++) {
     let num = i + 1;
     let name = '';
+
     while (num > 0) {
       num--;
       name = String.fromCharCode(65 + (num % 26)) + name;
       num = Math.floor(num / 26);
     }
+
     colNameCache.push(name);
   }
+
   return colNameCache[idx];
 }
 
@@ -191,10 +205,31 @@ function requireRange(length: number, offset: number, size: number, section: str
   if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(size) || offset < 0 || size < 0) {
     throw new Error(`Invalid buffer: ${section} offset overflow`);
   }
+
   const end = offset + size;
+
   if (!Number.isSafeInteger(end) || end > length) {
     throw new Error(`Invalid buffer: truncated ${section}`);
   }
+}
+
+/** Header fields, row index, and cell data offset of a validated buffer. */
+interface ValidatedHeader {
+  header: ValidatedBufferHeader;
+  rowIndex: ValidatedRowIndexEntry[];
+  cellDataStart: number;
+}
+
+/** Row and cell totals counted while validating sparse row payloads. */
+interface SparseRowCounts {
+  totalRows: number;
+  totalCells: number;
+}
+
+/** A decoded inline string and the bytes its length prefix and payload occupy. */
+interface InlineString {
+  value: string;
+  bytesConsumed: number;
 }
 
 function validateHeader(
@@ -202,7 +237,7 @@ function validateHeader(
   view: DataView,
   magic: number,
   materializeRowIndex = true,
-): { header: ValidatedBufferHeader; rowIndex: ValidatedRowIndexEntry[]; cellDataStart: number } {
+): ValidatedHeader {
   const length = buf.length;
   const version = view.getUint16(4, true);
   const rowCount = view.getUint32(6, true);
@@ -210,17 +245,22 @@ function validateHeader(
   const flags = view.getUint32(12, true);
   const isV2 = magic === MAGIC_V2;
   const expectedVersion = isV2 ? VERSION_V2 : VERSION_V1;
+
   if (version !== expectedVersion)
     throw new Error(`Invalid buffer: unsupported version ${version}`);
+
   if (isV2 ? (flags & 0xffff) !== 0 : (flags & 0xfffe) !== 0) {
     throw new Error('Invalid buffer: invalid flags');
   }
+
   if ((rowCount === 0) !== (colCount === 0)) {
     throw new Error('Invalid buffer: empty dimensions are inconsistent');
   }
+
   if (rowCount === 0) {
     if (flags !== 0 || length !== HEADER_SIZE)
       throw new Error('Invalid buffer: malformed empty buffer');
+
     return {
       header: { version, rowCount, colCount, flags, minCol: 1, isSparse: isV2 },
       rowIndex: [],
@@ -230,18 +270,22 @@ function validateHeader(
 
   const minCol = flags >>> 16 || 1;
   const maxCol = minCol + colCount - 1;
+
   if (minCol > MAX_COLUMNS || maxCol > MAX_COLUMNS) {
     throw new Error('Invalid buffer: column range is out of bounds');
   }
+
   const isSparse = isV2 || (flags & FLAG_SPARSE) !== 0;
   const rowIndexSize = rowCount * ROW_INDEX_ENTRY_SIZE;
   requireRange(length, HEADER_SIZE, rowIndexSize, 'row index');
   const cellDataStart = HEADER_SIZE + rowIndexSize;
+
   // Callers that read the validated index straight from the buffer skip
   // building one object per row; validation is identical either way.
   const entries: ValidatedRowIndexEntry[] = materializeRowIndex
     ? new Array<ValidatedRowIndexEntry>(rowCount)
     : [];
+
   // Build the result before the row loop: a large index is usually entered
   // through on-stack replacement, which records no feedback for code after
   // the loop and would deoptimize the next optimized call there.
@@ -250,21 +294,28 @@ function validateHeader(
     rowIndex: entries,
     cellDataStart,
   };
+
   let previousRow = 0;
+
   for (let i = 0; i < rowCount; i++) {
     const offset = HEADER_SIZE + i * ROW_INDEX_ENTRY_SIZE;
     const rowNum = view.getUint32(offset, true);
+
     if (rowNum === 0 || rowNum > MAX_ROWS) {
       throw new Error('Invalid buffer: row number is out of range');
     }
+
     if (rowNum <= previousRow) {
       throw new Error('Invalid buffer: row numbers must be strictly increasing');
     }
+
     previousRow = rowNum;
+
     if (materializeRowIndex) {
       entries[i] = { rowNum, cellOffset: view.getUint32(offset + 4, true) };
     }
   }
+
   return result;
 }
 
@@ -277,6 +328,7 @@ function validateBuffer(
   const length = buf.length;
   const isV2 = magic === MAGIC_V2;
   const { header, rowIndex, cellDataStart } = validateHeader(buf, view, magic);
+
   if (header.rowCount === 0) {
     return isV2
       ? {
@@ -313,20 +365,27 @@ function validateBuffer(
     const blobStart = offsetsStart + offsetsSize;
     requireRange(length, blobStart, blobSize, 'string table blob');
     let previous = 0;
+
     for (let i = 0; i < stringCount; i++) {
       const offset = view.getUint32(offsetsStart + i * 4, true);
+
       if (i === 0 && offset !== 0) {
         throw new Error('Invalid buffer: first string offset must be zero');
       }
+
       if (offset < previous || offset > blobSize) {
         throw new Error('Invalid buffer: string offsets must be monotonic and in bounds');
       }
+
       previous = offset;
     }
+
     if (stringCount === 0 && blobSize !== 0) {
       throw new Error('Invalid buffer: string blob has no index entries');
     }
+
     const dataStart = blobStart + blobSize;
+
     const strings = readValidatedStringTable(
       buf,
       view,
@@ -335,30 +394,38 @@ function validateBuffer(
       offsetsStart,
       blobStart,
     );
+
     if (!header.isSparse) {
       const rowSize = header.colCount * CELL_STRIDE;
       requireRange(length, dataStart, header.rowCount * rowSize, 'dense cell data');
       let totalRows = 0;
       let totalCells = 0;
+
       for (let i = 0; i < header.rowCount; i++) {
         if (rowIndex[i].cellOffset !== EMPTY_ROW_OFFSET && rowIndex[i].cellOffset !== i * rowSize) {
           throw new Error('Invalid buffer: dense row offsets are inconsistent');
         }
+
         const includeRow = rowIndex[i].cellOffset !== EMPTY_ROW_OFFSET;
         let rowCells = 0;
         const rowStart = dataStart + i * rowSize;
+
         for (let column = 0; column < header.colCount; column++) {
           const offset = rowStart + column * CELL_STRIDE;
           validateV1Cell(view, offset, strings, validateUtf8);
+
           if (includeRow && view.getUint8(offset) !== TYPE_EMPTY) rowCells++;
         }
+
         if (rowCells > 0) {
           totalRows++;
           totalCells += rowCells;
         }
       }
+
       if (dataStart + header.rowCount * rowSize !== length)
         throw new Error('Invalid buffer: trailing data');
+
       return {
         format: 'v1',
         view,
@@ -371,6 +438,7 @@ function validateBuffer(
         totalCells,
       };
     }
+
     const counts = validateSparseRows(
       view,
       length,
@@ -381,6 +449,7 @@ function validateBuffer(
       strings,
       validateUtf8,
     );
+
     return {
       format: 'v1',
       view,
@@ -392,9 +461,11 @@ function validateBuffer(
       ...counts,
     };
   }
+
   const counts = validateUtf8
     ? validateSparseRows(view, length, rowIndex, cellDataStart, true, header.colCount)
     : validateSparseRowsV2ForRaw(view, length, rowIndex, cellDataStart, header.colCount);
+
   return {
     format: 'v2',
     buf,
@@ -413,19 +484,23 @@ function validateSparseRowsV2ForRaw(
   entries: ValidatedRowIndexEntry[],
   dataStart: number,
   colCount: number,
-): { totalRows: number; totalCells: number } {
+): SparseRowCounts {
   let cursor = dataStart;
   let totalRows = 0;
   let totalCells = 0;
+
   for (let rowIndex = 0; rowIndex < entries.length; rowIndex++) {
     if (cursor > length - 2) throw new Error('Invalid buffer: truncated sparse row');
     const entry = entries[rowIndex];
+
     if (entry.cellOffset === EMPTY_ROW_OFFSET) {
       throw new Error('Invalid buffer: v2 row cannot use an empty-row sentinel');
     }
+
     if (entry.cellOffset !== cursor - dataStart) {
       throw new Error('Invalid buffer: sparse row offsets are inconsistent');
     }
+
     const cellCount = view.getUint16(cursor, true);
     cursor += 2;
     let previousColumn = -1;
@@ -434,19 +509,25 @@ function validateSparseRowsV2ForRaw(
     for (let cellIndex = 0; cellIndex < cellCount; cellIndex++) {
       if (cursor > length - 3) throw new Error('Invalid buffer: truncated sparse cell');
       const column = view.getUint16(cursor, true);
+
       if (column >= colCount) throw new Error('Invalid buffer: cell column is out of range');
+
       if (column <= previousColumn) {
         throw new Error('Invalid buffer: cell columns must be strictly increasing');
       }
+
       previousColumn = column;
       const type = view.getUint8(cursor + 2);
+
       if (type > TYPE_RICH_STRING) {
         throw new Error(`Invalid buffer: unknown cell type ${type}`);
       }
+
       if (type !== TYPE_EMPTY) rowCells++;
       cursor += 3;
 
       let payloadSize = 0;
+
       if (type === TYPE_NUMBER || type === TYPE_DATE) {
         payloadSize = 8;
       } else if (type === TYPE_BOOL) {
@@ -455,14 +536,18 @@ function validateSparseRowsV2ForRaw(
         if (cursor > length - 4) {
           throw new Error('Invalid buffer: truncated v2 string length');
         }
+
         payloadSize = 4 + view.getUint32(cursor, true);
       }
+
       if (cursor > length - payloadSize) {
         throw new Error('Invalid buffer: truncated v2 cell payload');
       }
+
       if (type === TYPE_BOOL && view.getUint8(cursor) > 1) {
         throw new Error('Invalid buffer: boolean payload');
       }
+
       cursor += payloadSize;
     }
 
@@ -471,7 +556,9 @@ function validateSparseRowsV2ForRaw(
       totalCells += rowCells;
     }
   }
+
   if (cursor !== length) throw new Error('Invalid buffer: trailing data');
+
   return { totalRows, totalCells };
 }
 
@@ -484,48 +571,64 @@ function validateSparseRows(
   colCount: number,
   strings?: ValidatedStringTable,
   validateUtf8 = true,
-): { totalRows: number; totalCells: number } {
+): SparseRowCounts {
   let cursor = dataStart;
   let totalRows = 0;
   let totalCells = 0;
   const bytes = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+
   for (const entry of entries) {
     if (cursor > length - 2) throw new Error('Invalid buffer: truncated sparse row');
     const cellCount = view.getUint16(cursor, true);
+
     if (entry.cellOffset === EMPTY_ROW_OFFSET) {
       if (isV2) throw new Error('Invalid buffer: v2 row cannot use an empty-row sentinel');
+
       if (cellCount !== 0) throw new Error('Invalid buffer: empty row has cells');
       cursor += 2;
       continue;
     }
+
     if (entry.cellOffset !== cursor - dataStart) {
       throw new Error('Invalid buffer: sparse row offsets are inconsistent');
     }
+
     cursor += 2;
     let previousColumn = -1;
     let rowCells = 0;
+
     for (let i = 0; i < cellCount; i++) {
       const entrySize = isV2 ? 3 : SPARSE_ENTRY_SIZE;
+
       if (cursor > length - entrySize) {
         throw new Error('Invalid buffer: truncated sparse cell');
       }
+
       const col = view.getUint16(cursor, true);
+
       if (col >= colCount) throw new Error('Invalid buffer: cell column is out of range');
+
       if (col <= previousColumn) {
         throw new Error('Invalid buffer: cell columns must be strictly increasing');
       }
+
       previousColumn = col;
       const type = view.getUint8(cursor + 2);
+
       if (type > TYPE_RICH_STRING) throw new Error(`Invalid buffer: unknown cell type ${type}`);
+
       if (type !== TYPE_EMPTY) rowCells++;
+
       if (!isV2) {
         if (!strings) throw new Error('Invalid buffer: missing string table');
         validateV1Cell(view, cursor + 2, strings, validateUtf8);
         cursor += SPARSE_ENTRY_SIZE;
         continue;
       }
+
       cursor += 3;
       let payloadSize = 0;
+
       if (type === TYPE_NUMBER || type === TYPE_DATE) payloadSize = 8;
       else if (type === TYPE_BOOL) {
         payloadSize = 1;
@@ -533,26 +636,34 @@ function validateSparseRows(
         if (cursor > length - 4) {
           throw new Error('Invalid buffer: truncated v2 string length');
         }
+
         payloadSize = 4 + view.getUint32(cursor, true);
       }
+
       if (cursor > length - payloadSize) {
         throw new Error('Invalid buffer: truncated v2 cell payload');
       }
+
       if (type === TYPE_BOOL && view.getUint8(cursor) > 1) {
         throw new Error('Invalid buffer: boolean payload');
       }
+
       if (validateUtf8 && isStringCellType(type)) {
         const stringStart = cursor + 4;
         validateUtf8Range(bytes, stringStart, stringStart + view.getUint32(cursor, true));
       }
+
       cursor += payloadSize;
     }
+
     if (rowCells > 0) {
       totalRows++;
       totalCells += rowCells;
     }
   }
+
   if (cursor !== length) throw new Error('Invalid buffer: trailing data');
+
   return { totalRows, totalCells };
 }
 
@@ -574,14 +685,18 @@ function validateV1Cell(
   validateUtf8 = true,
 ): void {
   const type = view.getUint8(offset);
+
   if (type > TYPE_RICH_STRING) throw new Error(`Invalid buffer: unknown cell type ${type}`);
   const payloadOffset = offset + 1;
+
   if (type === TYPE_BOOL && view.getUint8(payloadOffset) > 1) {
     throw new Error('Invalid buffer: boolean payload');
   }
+
   if (isStringCellType(type) && view.getUint32(payloadOffset, true) >= strings.count) {
     throw new Error('Invalid buffer: string index is out of range');
   }
+
   if (validateUtf8 && isStringCellType(type)) {
     strings.get(view.getUint32(payloadOffset, true));
   }
@@ -597,45 +712,56 @@ function decodeCellToRowCell(
   switch (type) {
     case TYPE_NUMBER: {
       const n = view.getFloat64(offset + 1, true);
+
       return { column: colName, valueType: 'number', numberValue: n };
     }
+
     case TYPE_STRING: {
       const idx = view.getUint32(offset + 1, true);
+
       return { column: colName, valueType: 'string', value: strings.get(idx) };
     }
+
     case TYPE_BOOL: {
       const b = view.getUint8(offset + 1) !== 0;
+
       return { column: colName, valueType: 'boolean', boolValue: b };
     }
+
     case TYPE_DATE: {
       const serial = view.getFloat64(offset + 1, true);
+
       return { column: colName, valueType: 'date', numberValue: serial };
     }
+
     case TYPE_ERROR: {
       const idx = view.getUint32(offset + 1, true);
+
       return { column: colName, valueType: 'error', value: strings.get(idx) };
     }
+
     case TYPE_FORMULA: {
       const idx = view.getUint32(offset + 1, true);
+
       return { column: colName, valueType: 'formula', value: strings.get(idx) };
     }
+
     case TYPE_RICH_STRING: {
       const idx = view.getUint32(offset + 1, true);
+
       return { column: colName, valueType: 'string', value: strings.get(idx) };
     }
+
     default:
       return null;
   }
 }
 
 /** Read inline string at the given offset. Returns the string and bytes consumed. */
-function readInlineString(
-  buf: Buffer,
-  view: DataView,
-  offset: number,
-): { value: string; bytesConsumed: number } {
+function readInlineString(buf: Buffer, view: DataView, offset: number): InlineString {
   const len = view.getUint32(offset, true);
   const slice = new Uint8Array(buf.buffer, buf.byteOffset + offset + 4, len);
+
   return { value: decodeUtf8(slice), bytesConsumed: 4 + len };
 }
 
@@ -654,8 +780,10 @@ function v2PayloadSize(view: DataView, payloadOffset: number, type: number): num
     case TYPE_FORMULA:
     case TYPE_RICH_STRING: {
       const len = view.getUint32(payloadOffset, true);
+
       return 4 + len;
     }
+
     default:
       return 0;
   }
@@ -672,29 +800,41 @@ function decodeCellToRowCellV2(
   switch (type) {
     case TYPE_NUMBER: {
       const n = view.getFloat64(payloadOffset, true);
+
       return { column: colName, valueType: 'number', numberValue: n };
     }
+
     case TYPE_STRING:
     case TYPE_RICH_STRING: {
       const { value } = readInlineString(buf, view, payloadOffset);
+
       return { column: colName, valueType: 'string', value };
     }
+
     case TYPE_BOOL: {
       const b = view.getUint8(payloadOffset) !== 0;
+
       return { column: colName, valueType: 'boolean', boolValue: b };
     }
+
     case TYPE_DATE: {
       const serial = view.getFloat64(payloadOffset, true);
+
       return { column: colName, valueType: 'date', numberValue: serial };
     }
+
     case TYPE_ERROR: {
       const { value } = readInlineString(buf, view, payloadOffset);
+
       return { column: colName, valueType: 'error', value };
     }
+
     case TYPE_FORMULA: {
       const { value } = readInlineString(buf, view, payloadOffset);
+
       return { column: colName, valueType: 'formula', value };
     }
+
     default:
       return null;
   }
@@ -724,6 +864,7 @@ function fillCellValueV2(
       stringValues[idx] = value;
       break;
     }
+
     case TYPE_BOOL:
       boolValues[idx] = view.getUint8(payloadOffset);
       numericValues[idx] = Number.NaN;
@@ -736,6 +877,7 @@ function fillCellValueV2(
       stringValues[idx] = value;
       break;
     }
+
     default:
       numericValues[idx] = Number.NaN;
       stringValues[idx] = '';
@@ -786,7 +928,9 @@ function parseRowsBufferInternal(
   if (!input || input.length === 0) {
     return null;
   }
+
   const buf = stableBufferView(input);
+
   if (buf.length < HEADER_SIZE) throw new Error('Invalid buffer: truncated header');
   const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
   const magic = detectMagic(view);
@@ -794,7 +938,9 @@ function parseRowsBufferInternal(
   if (magic !== MAGIC_V1 && magic !== MAGIC_V2) {
     throw new Error(`Invalid buffer: bad magic 0x${magic.toString(16)}`);
   }
+
   const parsed = validateBuffer(buf, view, magic, validateUtf8);
+
   return parsed.header.rowCount === 0 ? null : parsed;
 }
 
@@ -810,20 +956,29 @@ export function parseRowsBuffer(buf: Buffer | null): ValidatedBuffer | null {
 export function decodeRowsBuffer(input: Buffer | null): JsRowData[] {
   if (!input || input.length === 0) return [];
   const buf = stableBufferView(input);
+
   if (buf.length < HEADER_SIZE) throw new Error('Invalid buffer: truncated header');
   const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
   const magic = detectMagic(view);
+
   if (magic === MAGIC_V2) {
     const { header, cellDataStart } = validateHeader(buf, view, magic, false);
+
     if (header.rowCount === 0) return [];
+
     return decodeAndValidateRowsBufferV2(buf, view, header, cellDataStart);
   }
+
   if (magic !== MAGIC_V1) {
     throw new Error(`Invalid buffer: bad magic 0x${magic.toString(16)}`);
   }
+
   const parsed = validateBuffer(buf, view, magic);
+
   if (parsed.header.rowCount === 0) return [];
+
   if (parsed.format !== 'v1') throw new Error('Invalid buffer: unexpected format');
+
   return decodeRowsBufferV1(parsed);
 }
 
@@ -839,6 +994,7 @@ function decodeRowsBufferV1(parsed: ValidatedBufferV1): JsRowData[] {
 
   for (let ri = 0; ri < rowIndex.length; ri++) {
     const entry = rowIndex[ri];
+
     if (entry.cellOffset === EMPTY_ROW_OFFSET) {
       continue;
     }
@@ -849,28 +1005,36 @@ function decodeRowsBufferV1(parsed: ValidatedBufferV1): JsRowData[] {
       const absOffset = cellDataStart + entry.cellOffset;
       const cellCount = view.getUint16(absOffset, true);
       let pos = absOffset + 2;
+
       for (let i = 0; i < cellCount; i++) {
         const col = view.getUint16(pos, true);
         const type = view.getUint8(pos + 2);
+
         if (type !== TYPE_EMPTY) {
           const colName = cachedColumnName(minCol + col);
           const cell = decodeCellToRowCell(view, pos + 2, type, strings, colName);
+
           if (cell) {
             cells.push(cell);
           }
         }
+
         pos += SPARSE_ENTRY_SIZE;
       }
     } else {
       const rowStart = cellDataStart + entry.cellOffset;
+
       for (let c = 0; c < header.colCount; c++) {
         const cellPos = rowStart + c * CELL_STRIDE;
         const type = view.getUint8(cellPos);
+
         if (type === TYPE_EMPTY) {
           continue;
         }
+
         const colName = cachedColumnName(minCol + c);
         const cell = decodeCellToRowCell(view, cellPos, type, strings, colName);
+
         if (cell) {
           cells.push(cell);
         }
@@ -905,31 +1069,40 @@ function decodeAndValidateRowCellsV2(
 ): number {
   let cursor = start;
   let previousColumn = -1;
+
   for (let i = 0; i < cellCount; i++) {
     if (cursor + 3 > length) throw new Error('Invalid buffer: truncated sparse cell');
     const column = view.getUint16(cursor, true);
+
     if (column >= colCount) {
       throw new Error('Invalid buffer: cell column is out of range');
     }
+
     if (column <= previousColumn) {
       throw new Error('Invalid buffer: cell columns must be strictly increasing');
     }
+
     previousColumn = column;
     const type = view.getUint8(cursor + 2);
+
     if (type > TYPE_RICH_STRING) {
       throw new Error(`Invalid buffer: unknown cell type ${type}`);
     }
+
     const payloadOffset = cursor + 3;
     let payloadSize = 0;
+
     if (type === TYPE_NUMBER || type === TYPE_DATE) payloadSize = 8;
     else if (type === TYPE_BOOL) payloadSize = 1;
     else if (isStringCellType(type)) {
       if (payloadOffset + 4 > length) throw new Error('Invalid buffer: truncated v2 string length');
       payloadSize = 4 + view.getUint32(payloadOffset, true);
     }
+
     if (payloadOffset + payloadSize > length) {
       throw new Error('Invalid buffer: truncated v2 cell payload');
     }
+
     const colName = colNameCache[columnNameOffset + column];
 
     if (type === TYPE_NUMBER) {
@@ -946,18 +1119,23 @@ function decodeAndValidateRowCellsV2(
       });
     } else if (type === TYPE_BOOL) {
       const value = view.getUint8(payloadOffset);
+
       if (value > 1) throw new Error('Invalid buffer: boolean payload');
       cells.push({ column: colName, valueType: 'boolean', boolValue: value !== 0 });
     } else if (isStringCellType(type)) {
       const stringLength = view.getUint32(payloadOffset, true);
       const stringStart = payloadOffset + 4;
       const value = decodeUtf8Range(buf, stringStart, stringStart + stringLength);
+
       const valueType =
         type === TYPE_ERROR ? 'error' : type === TYPE_FORMULA ? 'formula' : 'string';
+
       cells.push({ column: colName, valueType, value });
     }
+
     cursor = payloadOffset + payloadSize;
   }
+
   return cursor;
 }
 
@@ -983,13 +1161,17 @@ function decodeAndValidateRowsBufferV2(
     const indexOffset = HEADER_SIZE + ri * ROW_INDEX_ENTRY_SIZE;
     const rowNum = view.getUint32(indexOffset, true);
     const cellOffset = view.getUint32(indexOffset + 4, true);
+
     if (cursor + 2 > length) throw new Error('Invalid buffer: truncated sparse row');
+
     if (cellOffset === EMPTY_ROW_OFFSET) {
       throw new Error('Invalid buffer: v2 row cannot use an empty-row sentinel');
     }
+
     if (cellOffset !== cursor - cellDataStart) {
       throw new Error('Invalid buffer: sparse row offsets are inconsistent');
     }
+
     const cellCount = view.getUint16(cursor, true);
     const cells: JsRowCell[] = [];
     cursor = decodeAndValidateRowCellsV2(
@@ -1002,12 +1184,15 @@ function decodeAndValidateRowsBufferV2(
       cellCount,
       cells,
     );
+
     if (cells.length > 0) {
       rows.push({ row: rowNum, cells });
     }
   }
+
   // Use the hoisted length: code after an OSR-entered loop has no feedback.
   if (cursor !== length) throw new Error('Invalid buffer: trailing data');
+
   return rows;
 }
 
@@ -1030,11 +1215,13 @@ export function decodeRowsRawBuffer(buf: Buffer | null): RawRowsResult {
   };
 
   const parsed = parseRowsBufferInternal(buf, false);
+
   if (!parsed) return empty;
 
   if (parsed.format === 'v2') {
     return decodeRowsRawBufferV2(parsed);
   }
+
   return decodeRowsRawBufferV1(parsed);
 }
 
@@ -1070,6 +1257,7 @@ function decodeRowsRawBufferV1(parsed: ValidatedBufferV1): RawRowsResult {
 
   for (let ri = 0; ri < rowIndex.length; ri++) {
     const entry = rowIndex[ri];
+
     if (entry.cellOffset === EMPTY_ROW_OFFSET) continue;
 
     const cellStart = cellIdx;
@@ -1078,9 +1266,11 @@ function decodeRowsRawBufferV1(parsed: ValidatedBufferV1): RawRowsResult {
       const absOffset = cellDataStart + entry.cellOffset;
       const cellCount = view.getUint16(absOffset, true);
       let pos = absOffset + 2;
+
       for (let i = 0; i < cellCount; i++) {
         const col = view.getUint16(pos, true);
         const type = view.getUint8(pos + 2);
+
         if (type !== TYPE_EMPTY) {
           cellColumns[cellIdx] = minCol + col;
           cellTypes[cellIdx] = type;
@@ -1096,13 +1286,16 @@ function decodeRowsRawBufferV1(parsed: ValidatedBufferV1): RawRowsResult {
           );
           cellIdx++;
         }
+
         pos += SPARSE_ENTRY_SIZE;
       }
     } else {
       const rowStart = cellDataStart + entry.cellOffset;
+
       for (let c = 0; c < header.colCount; c++) {
         const cellPos = rowStart + c * CELL_STRIDE;
         const type = view.getUint8(cellPos);
+
         if (type === TYPE_EMPTY) continue;
         cellColumns[cellIdx] = minCol + c;
         cellTypes[cellIdx] = type;
@@ -1121,6 +1314,7 @@ function decodeRowsRawBufferV1(parsed: ValidatedBufferV1): RawRowsResult {
     }
 
     const count = cellIdx - cellStart;
+
     if (count > 0) {
       rowNumbers[rowIdx] = entry.rowNum;
       rowCellOffsets[rowIdx] = cellStart;
@@ -1176,6 +1370,7 @@ function decodeRowsRawBufferV2(parsed: ValidatedBufferV2): RawRowsResult {
 
   for (let ri = 0; ri < rowIndex.length; ri++) {
     const entry = rowIndex[ri];
+
     if (entry.cellOffset === EMPTY_ROW_OFFSET) continue;
 
     const cellStart = cellIdx;
@@ -1209,6 +1404,7 @@ function decodeRowsRawBufferV2(parsed: ValidatedBufferV2): RawRowsResult {
     }
 
     const count = cellIdx - cellStart;
+
     if (count > 0) {
       rowNumbers[rowIdx] = entry.rowNum;
       rowCellOffsets[rowIdx] = cellStart;
@@ -1254,6 +1450,7 @@ function fillCellValueV1(
       stringValues[idx] = strings.get(si);
       break;
     }
+
     case TYPE_BOOL:
       boolValues[idx] = view.getUint8(payloadOffset);
       numericValues[idx] = Number.NaN;
@@ -1266,6 +1463,7 @@ function fillCellValueV1(
       stringValues[idx] = strings.get(si);
       break;
     }
+
     default:
       numericValues[idx] = Number.NaN;
       stringValues[idx] = '';
@@ -1279,12 +1477,15 @@ function fillCellValueV1(
  */
 export function* decodeRowsIterator(buf: Buffer | null): Generator<JsRowData> {
   const parsed = parseRowsBuffer(buf);
+
   if (!parsed) return;
 
   if (parsed.format === 'v2') {
     yield* decodeRowsIteratorV2(parsed);
+
     return;
   }
+
   yield* decodeRowsIteratorV1(parsed);
 }
 
@@ -1298,6 +1499,7 @@ function* decodeRowsIteratorV1(parsed: ValidatedBufferV1): Generator<JsRowData> 
 
   for (let ri = 0; ri < rowIndex.length; ri++) {
     const entry = rowIndex[ri];
+
     if (entry.cellOffset === EMPTY_ROW_OFFSET) continue;
 
     const cells: JsRowCell[] = [];
@@ -1306,24 +1508,31 @@ function* decodeRowsIteratorV1(parsed: ValidatedBufferV1): Generator<JsRowData> 
       const absOffset = cellDataStart + entry.cellOffset;
       const cellCount = view.getUint16(absOffset, true);
       let pos = absOffset + 2;
+
       for (let i = 0; i < cellCount; i++) {
         const col = view.getUint16(pos, true);
         const type = view.getUint8(pos + 2);
+
         if (type !== TYPE_EMPTY) {
           const colName = cachedColumnName(minCol + col);
           const cell = decodeCellToRowCell(view, pos + 2, type, strings, colName);
+
           if (cell) cells.push(cell);
         }
+
         pos += SPARSE_ENTRY_SIZE;
       }
     } else {
       const rowStart = cellDataStart + entry.cellOffset;
+
       for (let c = 0; c < header.colCount; c++) {
         const cellPos = rowStart + c * CELL_STRIDE;
         const type = view.getUint8(cellPos);
+
         if (type === TYPE_EMPTY) continue;
         const colName = cachedColumnName(minCol + c);
         const cell = decodeCellToRowCell(view, cellPos, type, strings, colName);
+
         if (cell) cells.push(cell);
       }
     }
@@ -1339,6 +1548,7 @@ function* decodeRowsIteratorV2(parsed: ValidatedBufferV2): Generator<JsRowData> 
 
   for (let ri = 0; ri < rowIndex.length; ri++) {
     const entry = rowIndex[ri];
+
     if (entry.cellOffset === EMPTY_ROW_OFFSET) continue;
 
     const cells: JsRowCell[] = [];
@@ -1354,6 +1564,7 @@ function* decodeRowsIteratorV2(parsed: ValidatedBufferV2): Generator<JsRowData> 
       if (type !== TYPE_EMPTY) {
         const colName = cachedColumnName(minCol + col);
         const cell = decodeCellToRowCellV2(buf, view, payloadOffset, type, colName);
+
         if (cell) cells.push(cell);
       }
 

@@ -22,10 +22,12 @@ const FIXTURES_DIR = join(import.meta.dirname, 'fixtures');
 
 function colLetter(n: number): string {
   let s = '';
+
   while (n >= 0) {
     s = String.fromCharCode((n % 26) + 65) + s;
     n = Math.floor(n / 26) - 1;
   }
+
   return s;
 }
 
@@ -45,6 +47,7 @@ function generateLargeData() {
   for (let r = 2; r <= 50001; r++) {
     for (let c = 0; c < 20; c++) {
       const mod = c % 4;
+
       if (mod === 0) {
         wb.setCellValue(sheet, cellRef(r, c), r * (c + 1));
       } else if (mod === 1) {
@@ -117,6 +120,7 @@ function generateHeavyStyles() {
     'Notes',
     'Status',
   ];
+
   for (let c = 0; c < headers.length; c++) {
     wb.setCellValue(sheet, cellRef(1, c), headers[c]);
     wb.setCellStyle(sheet, cellRef(1, c), boldStyle);
@@ -125,6 +129,7 @@ function generateHeavyStyles() {
   for (let r = 2; r <= 5001; r++) {
     for (let c = 0; c < 10; c++) {
       const mod = c % 5;
+
       if (mod === 0) {
         wb.setCellValue(sheet, cellRef(r, c), r - 1);
       } else if (mod === 1) {
@@ -136,6 +141,7 @@ function generateHeavyStyles() {
       } else {
         wb.setCellValue(sheet, cellRef(r, c), `Notes for row ${r - 1}`);
       }
+
       wb.setCellStyle(sheet, cellRef(r, c), styles[mod]);
     }
   }
@@ -150,6 +156,7 @@ function generateMultiSheet() {
 
   for (let s = 0; s < 10; s++) {
     const sheetName = s === 0 ? 'Sheet1' : `Sheet${s + 1}`;
+
     if (s > 0) wb.newSheet(sheetName);
 
     for (let c = 0; c < 10; c++) {
@@ -177,6 +184,7 @@ function generateFormulas() {
   const sheet = 'Sheet1';
 
   const headers = ['Value_A', 'Value_B', 'Sum', 'Product', 'Average', 'Max', 'Condition'];
+
   for (let c = 0; c < headers.length; c++) {
     wb.setCellValue(sheet, cellRef(1, c), headers[c]);
   }
@@ -235,6 +243,7 @@ function generateStrings() {
     'Title',
     'Bio',
   ];
+
   for (let c = 0; c < headers.length; c++) {
     wb.setCellValue(sheet, cellRef(1, c), headers[c]);
   }
@@ -283,6 +292,7 @@ function generateDataValidation() {
     'Code',
     'Notes',
   ];
+
   for (let c = 0; c < headers.length; c++) {
     wb.setCellValue(sheet, cellRef(1, c), headers[c]);
   }
@@ -366,6 +376,7 @@ function generateDataValidation() {
   // Fill data
   const statuses = ['Active', 'Inactive', 'Pending', 'Closed', 'Archived'];
   const priorities = ['Critical', 'High', 'Medium', 'Low'];
+
   const depts = [
     'Engineering',
     'Sales',
@@ -398,6 +409,7 @@ function generateComments() {
   const sheet = 'Sheet1';
 
   const headers = ['ID', 'Name', 'Score', 'Status', 'Review_Notes'];
+
   for (let c = 0; c < headers.length; c++) {
     wb.setCellValue(sheet, cellRef(1, c), headers[c]);
   }
@@ -450,6 +462,7 @@ function generateMergedCells() {
       wb.setCellValue(sheet, cellRef(currentRow, leftCol), `SubHeader_${pair + 1}`);
       wb.mergeCells(sheet, cellRef(currentRow, leftCol), cellRef(currentRow, leftCol + 1));
     }
+
     currentRow++;
 
     // Data rows (3 rows per section)
@@ -457,6 +470,7 @@ function generateMergedCells() {
       for (let c = 0; c < 8; c++) {
         wb.setCellValue(sheet, cellRef(currentRow, c), section * 3 + dr + c);
       }
+
       currentRow++;
     }
   }
@@ -471,6 +485,7 @@ function generateMixedWorkload() {
 
   // Sheet 1: Invoice list with styles, formulas, validation
   const invoiceSheet = 'Sheet1';
+
   const boldId = wb.addStyle({
     font: { bold: true, size: 12, name: 'Arial', color: 'FFFFFFFF' },
     fill: { pattern: 'solid', fgColor: 'FF2F5496' },
@@ -482,6 +497,7 @@ function generateMixedWorkload() {
       right: { style: 'thin', color: 'FF000000' },
     },
   });
+
   const currencyId = wb.addStyle({ customNumFmt: '$#,##0.00' });
   const pctId = wb.addStyle({ numFmtId: 10 });
 
@@ -500,6 +516,7 @@ function generateMixedWorkload() {
     'Due_Date',
     'Notes',
   ];
+
   for (let c = 0; c < invHeaders.length; c++) {
     wb.setCellValue(invoiceSheet, cellRef(2, c), invHeaders[c]);
     wb.setCellStyle(invoiceSheet, cellRef(2, c), boldId);
@@ -523,6 +540,7 @@ function generateMixedWorkload() {
     'Massive Dynamic',
     'Soylent Corp',
   ];
+
   const statuses = ['Paid', 'Unpaid', 'Overdue', 'Cancelled'];
 
   for (let r = 3; r <= 3002; r++) {
@@ -576,6 +594,7 @@ function generateMixedWorkload() {
     'Status',
     'Notes',
   ];
+
   for (let c = 0; c < empHeaders.length; c++) {
     wb.setCellValue(empSheet, cellRef(1, c), empHeaders[c]);
     wb.setCellStyle(empSheet, cellRef(1, c), boldId);
@@ -613,7 +632,9 @@ function generateMixedWorkload() {
     'Michael',
     'Linda',
   ];
+
   const lastNames = ['Smith', 'Johnson', 'Williams', 'Brown', 'Jones', 'Garcia', 'Miller', 'Davis'];
+
   const depts = [
     'Engineering',
     'Sales',
@@ -624,6 +645,7 @@ function generateMixedWorkload() {
     'Operations',
     'Support',
   ];
+
   const titles = [
     'Analyst',
     'Engineer',
@@ -634,6 +656,7 @@ function generateMixedWorkload() {
     'Specialist',
     'Coordinator',
   ];
+
   const locations = [
     'New York',
     'San Francisco',
@@ -666,6 +689,7 @@ function generateMixedWorkload() {
     wb.setCellValue(empSheet, cellRef(r, 11), locations[i % locations.length]);
     wb.setCellValue(empSheet, cellRef(r, 12), `+1-555-${String(i % 10000).padStart(4, '0')}`);
     wb.setCellValue(empSheet, cellRef(r, 13), i % 20 === 0 ? 'Inactive' : 'Active');
+
     if (i % 10 === 0) {
       wb.setCellValue(empSheet, cellRef(r, 14), `Performance review pending for ${fn} ${ln}`);
     }
@@ -710,6 +734,7 @@ function generateScaleFixture(rows: number, label: string) {
   for (let r = 2; r <= rows + 1; r++) {
     for (let c = 0; c < 10; c++) {
       const mod = c % 3;
+
       if (mod === 0) wb.setCellValue(sheet, cellRef(r, c), r * (c + 1));
       else if (mod === 1) wb.setCellValue(sheet, cellRef(r, c), `R${r}C${c}`);
       else wb.setCellValue(sheet, cellRef(r, c), (r * c) / 100);
@@ -728,18 +753,31 @@ if (!existsSync(FIXTURES_DIR)) {
 console.log(`Generating fixtures in ${FIXTURES_DIR}\n`);
 
 const start = performance.now();
+
 generateLargeData();
+
 generateHeavyStyles();
+
 generateMultiSheet();
+
 generateFormulas();
+
 generateStrings();
+
 generateDataValidation();
+
 generateComments();
+
 generateMergedCells();
+
 generateMixedWorkload();
+
 generateScaleFixture(1_000, '1k');
+
 generateScaleFixture(10_000, '10k');
+
 generateScaleFixture(100_000, '100k');
 
 const elapsed = ((performance.now() - start) / 1000).toFixed(1);
+
 console.log(`\nAll fixtures generated in ${elapsed}s`);

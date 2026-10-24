@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { isResourceLimitError, MAX_CSV_OUTPUT_BYTES, SheetData, Workbook } from '../index.js';
+import { captureError } from './helpers/errors.js';
 
 const sparseLimits = {
   maxRows: 2,
@@ -12,20 +13,13 @@ function sparseExtremeWorkbook(): Workbook {
   const workbook = new Workbook();
   workbook.setCellValue('Sheet1', 'A1', 'first');
   workbook.setCellValue('Sheet1', 'A1048576', 'last');
+
   return workbook;
 }
 
-function captureError(action: () => unknown): unknown {
-  try {
-    action();
-  } catch (error) {
-    return error;
-  }
-  throw new Error('Expected action to throw');
-}
-
-function expectTraversalLimit(error: unknown): void {
+function expectTraversalLimit(error: Error): void {
   expect(isResourceLimitError(error)).toBe(true);
+
   if (!isResourceLimitError(error)) throw new Error('Expected a resource limit error');
   expect(error.operation).toBe('data_traverse');
   expect(error.category).toBe('traversal');
@@ -69,6 +63,7 @@ describe('secure worksheet traversal', () => {
   it('keeps sparse exports proportional across extreme column gaps', () => {
     const workbook = new Workbook();
     const rowCount = 32;
+
     for (let row = 1; row <= rowCount; row++) {
       workbook.setCellValue('Sheet1', `A${row}`, `left-${row}`);
       workbook.setCellValue('Sheet1', `XFD${row}`, `right-${row}`);
@@ -83,6 +78,7 @@ describe('secure worksheet traversal', () => {
         maxOutputBytes: 1_048_576,
       },
     };
+
     const data = new SheetData(workbook.getRowsBufferV2('Sheet1', traversal));
     const v1Data = new SheetData(workbook.getRowsBuffer('Sheet1', traversal));
 
@@ -122,6 +118,7 @@ describe('secure worksheet traversal', () => {
     workbook.setCellValue('Sheet1', 'A1', 'left');
     workbook.setCellValue('Sheet1', 'C1', 'right');
     workbook.setCellValue('Sheet1', 'A2', 'next');
+
     const dense = {
       mode: 'dense' as const,
       limits: { maxRows: 2, maxColumns: 3, maxCells: 6, maxOutputBytes: 4_096 },
@@ -153,6 +150,7 @@ describe('secure worksheet traversal', () => {
     workbook.setCellValue('Sheet1', 'A1', 'xx');
     const error = captureError(() => workbook.toCSV('Sheet1', { limits: { maxOutputBytes: 1 } }));
     expect(isResourceLimitError(error)).toBe(true);
+
     if (!isResourceLimitError(error)) throw new Error('Expected a resource limit error');
     expect(error.operation).toBe('export');
     expect(error.category).toBe('output');
@@ -173,6 +171,7 @@ describe('secure worksheet traversal', () => {
     const error = captureError(() => workbook.toCSV('Sheet1', { limits: { maxOutputBytes: 1 } }));
 
     expect(isResourceLimitError(error)).toBe(true);
+
     if (!isResourceLimitError(error)) throw new Error('Expected a resource limit error');
     expect(error.operation).toBe('data_traverse');
     expect(error.category).toBe('traversal');
@@ -191,6 +190,7 @@ describe('secure worksheet traversal', () => {
     const csv = workbook.toCSV('Sheet1', {
       limits: { maxOutputBytes: MAX_CSV_OUTPUT_BYTES },
     });
+
     expect(Buffer.byteLength(csv)).toBe(expectedBytes);
     expect(expectedBytes).toBe(MAX_CSV_OUTPUT_BYTES - 1);
   });
@@ -222,7 +222,9 @@ describe('secure worksheet traversal', () => {
         limits: { maxCells: 100_000_001 },
       }),
     );
+
     expect(isResourceLimitError(hardCeiling)).toBe(true);
+
     if (!isResourceLimitError(hardCeiling)) throw new Error('Expected a resource limit error');
     expect(hardCeiling.dimension).toBe('cell_count');
     expect(hardCeiling.limit).toBe(100_000_000n);
@@ -237,6 +239,7 @@ describe('secure worksheet traversal', () => {
     const workbook = new Workbook();
     workbook.setCellValue('Sheet1', 'A1', 'first');
     workbook.setCellValue('Sheet1', 'A3', 'last');
+
     const dense = {
       mode: 'dense' as const,
       limits: { maxRows: 3, maxColumns: 1, maxCells: 3, maxOutputBytes: 1_024 },

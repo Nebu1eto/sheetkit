@@ -79,27 +79,74 @@ const fixturesDirectory = join(scriptDirectory, 'fixtures');
 
 function env(name: string): string | undefined {
   const value = process.env[name];
+
   return value === undefined || value.length === 0 ? undefined : value;
 }
 
 function integerEnv(name: string, fallback: number): number {
   const raw = env(name);
+
   if (raw === undefined) return fallback;
   const value = Number(raw);
+
   if (!Number.isSafeInteger(value) || value < 0) {
     throw new Error(`${name} must be a non-negative safe integer`);
   }
+
   return value;
 }
 
 function listEnv(name: string, fallback: readonly string[]): string[] {
   const raw = env(name);
+
   return raw === undefined
     ? [...fallback]
     : raw
         .split(',')
         .map((item) => item.trim())
         .filter(Boolean);
+}
+
+function isOperation(value: string): value is Operation {
+  return OPERATIONS.some((operation) => operation === value);
+}
+
+function isString(value: unknown): value is string {
+  return typeof value === 'string';
+}
+
+function isObject(value: unknown): value is object {
+  return typeof value === 'object' && value !== null;
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
+}
+
+function isSafeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value);
+}
+
+/** Decodes a release-gate JSON output file, rejecting missing or mistyped fields. */
+function parseGateResult(source: string): GateResult {
+  const parsed: unknown = JSON.parse(source);
+  assert(
+    isObject(parsed) &&
+      'operation' in parsed &&
+      'fixture' in parsed &&
+      'medianMs' in parsed &&
+      'madMs' in parsed &&
+      'samples' in parsed,
+    'release gate output is missing required fields',
+  );
+
+  const { operation, fixture, medianMs, madMs, samples } = parsed;
+  assert(isString(operation) && isOperation(operation), 'invalid release gate operation');
+  assert(isString(fixture), 'invalid release gate fixture');
+  assert(isFiniteNumber(medianMs) && isFiniteNumber(madMs), 'invalid release gate timing');
+  assert(isSafeInteger(samples), 'invalid release gate sample count');
+
+  return { operation, fixture, medianMs, madMs, samples };
 }
 
 function git(args: readonly string[], cwd: string = repositoryRoot): string {
@@ -117,6 +164,7 @@ function run(
     stdio: 'inherit',
     env: { ...process.env, ...extraEnv },
   });
+
   if (result.status !== 0) {
     throw new Error(`${command} ${args.join(' ')} failed in ${cwd} with status ${result.status}`);
   }
@@ -124,20 +172,25 @@ function run(
 
 function prepareWorktree(revision: string, sha: string, scratch: string, owned: string[]): string {
   const path = join(scratch, `worktree-${owned.length}-${sha.slice(0, 12)}`);
+
   if (existsSync(path)) {
     git(['worktree', 'remove', '--force', path]);
   }
+
   git(['worktree', 'add', '--detach', path, sha]);
   owned.push(path);
   const lock = join(repositoryRoot, 'Cargo.lock');
+
   if (existsSync(lock)) {
     copyFileSync(lock, join(path, 'Cargo.lock'));
   }
+
   console.log(`[compare] ${revision} -> ${sha} at ${path}`);
   run('pnpm', ['install', '--frozen-lockfile', '--prefer-offline'], path);
   run('pnpm', ['--filter', '@sheetkit/node', 'build'], path, {
     CARGO_TARGET_DIR: join(scratch, `target-${sha.slice(0, 12)}`),
   });
+
   return path;
 }
 
@@ -151,10 +204,12 @@ const borrowedGateScript = new Set<string>();
 
 function gateScriptFor(worktree: string): string {
   const target = join(worktree, 'benchmarks', 'node', 'release-gate.ts');
+
   if (!existsSync(target)) {
     copyFileSync(join(scriptDirectory, 'release-gate.ts'), target);
     borrowedGateScript.add(worktree);
   }
+
   return target;
 }
 
@@ -169,6 +224,7 @@ function runGate(
   password: string | undefined,
 ): GateOutcome {
   if (existsSync(output)) rmSync(output);
+
   const gateEnv: NodeJS.ProcessEnv = {
     SHEETKIT_GATE_OPERATION: operation,
     SHEETKIT_GATE_FIXTURE: fixture,
@@ -176,8 +232,11 @@ function runGate(
     SHEETKIT_GATE_SAMPLES: String(samples),
     SHEETKIT_GATE_WARMUPS: String(warmups),
   };
+
   if (encryptedFixture !== undefined) gateEnv.SHEETKIT_GATE_ENCRYPTED_FIXTURE = encryptedFixture;
+
   if (password !== undefined) gateEnv.SHEETKIT_GATE_PASSWORD = password;
+
   const result = spawnSync(
     process.execPath,
     ['--expose-gc', '--import', 'tsx', gateScriptFor(worktree)],
@@ -188,9 +247,12 @@ function runGate(
       env: { ...process.env, ...gateEnv },
     },
   );
+
   if (result.status !== 0 || !existsSync(output)) {
-    const stderr = typeof result.stderr === 'string' ? result.stderr : '';
+    // stderr is null when the child could not be spawned.
+    const stderr = result.stderr ?? '';
     process.stderr.write(stderr);
+
     // Classify by the first line that looks like an error so identical
     // failures on both sides can be recognised as a skipped workload.
     const firstError =
@@ -198,12 +260,13 @@ function runGate(
         .split('\n')
         .map((line) => line.trim())
         .find((line) => /error/i.test(line)) ?? `exit status ${String(result.status)}`;
+
     console.error(`[compare] ${operation} on ${fixture} failed for ${worktree}: ${firstError}`);
+
     return { error: firstError };
   }
-  const parsed: unknown = JSON.parse(readFileSync(output, 'utf8'));
-  assert(typeof parsed === 'object' && parsed !== null);
-  return { result: parsed as GateResult };
+
+  return { result: parseGateResult(readFileSync(output, 'utf8')) };
 }
 
 function formatMs(value: number | undefined): string {
@@ -213,14 +276,17 @@ function formatMs(value: number | undefined): string {
 function formatDelta(value: number | undefined): string {
   if (value === undefined) return 'n/a';
   const sign = value > 0 ? '+' : '';
+
   return `${sign}${value.toFixed(1)}%`;
 }
 
 function main(): void {
   const baseRevision = env('SHEETKIT_COMPARE_BASE');
+
   if (baseRevision === undefined) {
     throw new Error('SHEETKIT_COMPARE_BASE is required');
   }
+
   const headRevision = env('SHEETKIT_COMPARE_HEAD') ?? 'HEAD';
   const samples = integerEnv('SHEETKIT_COMPARE_SAMPLES', 20);
   const warmups = integerEnv('SHEETKIT_COMPARE_WARMUPS', 3);
@@ -228,12 +294,15 @@ function main(): void {
   const scratch = env('SHEETKIT_COMPARE_SCRATCH') ?? '/tmp/sheetkit-compare';
   const password = env('SHEETKIT_COMPARE_PASSWORD');
   const keep = env('SHEETKIT_COMPARE_KEEP') === '1';
+
   const operations = listEnv('SHEETKIT_COMPARE_OPERATIONS', OPERATIONS).map((name) => {
-    if (!OPERATIONS.includes(name as Operation)) {
+    if (!isOperation(name)) {
       throw new Error(`Unsupported operation: ${name}`);
     }
-    return name as Operation;
+
+    return name;
   });
+
   const fixtures = listEnv(
     'SHEETKIT_COMPARE_FIXTURES',
     readdirSync(fixturesDirectory).filter((name) => name.endsWith('.xlsx')),
@@ -249,11 +318,14 @@ function main(): void {
   const runScratch = join(scratch, `${label}-${process.pid}`);
   mkdirSync(runScratch, { recursive: true });
   const ownedWorktrees: string[] = [];
+
   const cleanup = (): void => {
     if (keep) {
       console.log(`[compare] keeping ${runScratch}`);
+
       return;
     }
+
     for (const path of ownedWorktrees) {
       try {
         git(['worktree', 'remove', '--force', path]);
@@ -261,6 +333,7 @@ function main(): void {
         console.error(`[compare] failed to remove worktree ${path}: ${String(error)}`);
       }
     }
+
     rmSync(runScratch, { recursive: true, force: true });
   };
 
@@ -320,6 +393,7 @@ function runComparison(comparisonRun: ComparisonRun): void {
     operations,
     fixtures,
   } = comparisonRun;
+
   const worktrees = {
     base: prepareWorktree(baseRevision, baseSha, runScratch, ownedWorktrees),
     head: prepareWorktree(headRevision, headSha, runScratch, ownedWorktrees),
@@ -327,6 +401,7 @@ function runComparison(comparisonRun: ComparisonRun): void {
 
   const encryptedFixture =
     password === undefined ? undefined : join(outputDirectory, 'encrypted-fixture.xlsx');
+
   if (encryptedFixture !== undefined && !existsSync(encryptedFixture) && fixtures.length > 0) {
     run(
       process.execPath,
@@ -342,8 +417,10 @@ function runComparison(comparisonRun: ComparisonRun): void {
 
   const comparisons: Comparison[] = [];
   let cellIndex = 0;
+
   for (const fixture of fixtures) {
     const fixtureName = fixture.slice(fixture.lastIndexOf('/') + 1);
+
     for (const operation of operations) {
       if (operation === 'encrypted-open' && encryptedFixture === undefined) continue;
       const results: Partial<Record<'base' | 'head', GateOutcome>> = {};
@@ -351,6 +428,7 @@ function runComparison(comparisonRun: ComparisonRun): void {
       // one revision consistently.
       const order = cellIndex % 2 === 0 ? (['base', 'head'] as const) : (['head', 'base'] as const);
       cellIndex += 1;
+
       for (const side of order) {
         results[side] = runGate(
           worktrees[side],
@@ -363,16 +441,21 @@ function runComparison(comparisonRun: ComparisonRun): void {
           password,
         );
       }
+
       const baseOutcome = results.base;
       const headOutcome = results.head;
+
       const base =
         baseOutcome !== undefined && 'result' in baseOutcome ? baseOutcome.result : undefined;
+
       const head =
         headOutcome !== undefined && 'result' in headOutcome ? headOutcome.result : undefined;
+
       const deltaPercent =
         base !== undefined && head !== undefined && base.medianMs > 0
           ? ((head.medianMs - base.medianMs) / base.medianMs) * 100
           : undefined;
+
       comparisons.push({
         operation,
         fixture: fixtureName,
@@ -401,11 +484,14 @@ function runComparison(comparisonRun: ComparisonRun): void {
     '| Operation | Fixture | Base median (ms) | Base MAD | Head median (ms) | Head MAD | Delta | Verdict |',
     '|---|---|---|---|---|---|---|---|',
   ];
+
   let regressions = 0;
   let missingResults = 0;
   let skipped = 0;
+
   for (const item of comparisons) {
     const regressed = item.deltaPercent !== undefined && item.deltaPercent > threshold;
+
     // Both sides failing with the same error (for example a workload that
     // exceeds a default output limit on this fixture) is a skipped cell,
     // not an incomplete comparison.
@@ -414,10 +500,15 @@ function runComparison(comparisonRun: ComparisonRun): void {
       item.head === undefined &&
       item.baseError !== undefined &&
       item.baseError === item.headError;
+
     const missing = !sameFailure && (item.base === undefined || item.head === undefined);
+
     if (regressed) regressions += 1;
+
     if (missing) missingResults += 1;
+
     if (sameFailure) skipped += 1;
+
     const verdict = sameFailure
       ? `skipped (${item.baseError ?? 'unknown'})`
       : missing
@@ -425,10 +516,12 @@ function runComparison(comparisonRun: ComparisonRun): void {
         : regressed
           ? 'REGRESSION'
           : 'ok';
+
     lines.push(
       `| ${item.operation} | ${item.fixture} | ${formatMs(item.base?.medianMs)} | ${formatMs(item.base?.madMs)} | ${formatMs(item.head?.medianMs)} | ${formatMs(item.head?.madMs)} | ${formatDelta(item.deltaPercent)} | ${verdict} |`,
     );
   }
+
   const report = `${lines.join('\n')}\n`;
   const reportPath = join(scriptDirectory, 'output', `${label}.md`);
   writeFileSync(reportPath, report);
@@ -440,10 +533,12 @@ function runComparison(comparisonRun: ComparisonRun): void {
       `[compare] ${skipped} workload(s) skipped because both revisions failed identically`,
     );
   }
+
   if (missingResults > 0) {
     console.error(`[compare] ${missingResults} measurement(s) missing; comparison incomplete`);
     process.exitCode = 1;
   }
+
   if (regressions > 0) {
     console.error(`[compare] ${regressions} operation(s) regressed beyond +${threshold}%`);
     process.exitCode = 1;

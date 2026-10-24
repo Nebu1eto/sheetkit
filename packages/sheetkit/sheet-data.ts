@@ -13,6 +13,7 @@ export interface DateValue {
 }
 
 export type CellValue = string | number | boolean | DateValue | null;
+
 export type CellTypeName = 'empty' | 'number' | 'string' | 'boolean' | 'date' | 'error' | 'formula';
 
 /** An occupied cell with its absolute 1-based worksheet column. */
@@ -57,20 +58,25 @@ function decodeUtf8(bytes: Uint8Array): string {
     throw new Error('Invalid buffer: malformed UTF-8 string');
   }
 }
+
 const EXCEL_EPOCH_UTC = Date.UTC(1899, 11, 31);
 const MILLISECONDS_PER_DAY = 86_400_000;
 
 function excelSerialToIso(serial: number): string | null {
   if (!Number.isFinite(serial)) return null;
   const serialDay = Math.floor(serial);
+
   if (serialDay < 1) return null;
   const adjustedDay = serialDay >= 60 ? serialDay - 1 : serialDay;
   const seconds = Math.round(Math.abs(serial - serialDay) * 86_400);
+
   if (seconds >= 86_400) return null;
   const timestamp = EXCEL_EPOCH_UTC + adjustedDay * MILLISECONDS_PER_DAY + seconds * 1_000;
   const date = new Date(timestamp);
+
   if (!Number.isFinite(date.getTime())) return null;
   const iso = date.toISOString();
+
   return serial % 1 === 0 ? iso.slice(0, 10) : iso.slice(0, 19);
 }
 
@@ -87,11 +93,13 @@ const TYPE_NAMES: CellTypeName[] = [
 
 function columnNumberToName(n: number): string {
   let name = '';
+
   while (n > 0) {
     n--;
     name = String.fromCharCode(65 + (n % 26)) + name;
     n = Math.floor(n / 26);
   }
+
   return name;
 }
 
@@ -116,6 +124,7 @@ export class SheetData {
 
   constructor(buffer: Buffer | null) {
     const parsed = parseRowsBuffer(buffer);
+
     if (!parsed) {
       this.#rowCount = 0;
       this.#colCount = 0;
@@ -130,6 +139,7 @@ export class SheetData {
       this.#view = EMPTY_VIEW;
       this.#bytes = EMPTY_BYTES;
       this.#text = EMPTY_TEXT;
+
       return;
     }
 
@@ -180,9 +190,11 @@ export class SheetData {
 
   #denseOccupiedRowCount(): number {
     let occupied = 0;
+
     for (const { cellOffset } of this.#rowIndex) {
       if (cellOffset === EMPTY_ROW_OFFSET) continue;
       const rowStart = this.#cellDataStart + cellOffset;
+
       for (let column = 0; column < this.#colCount; column++) {
         if (this.#view.getUint8(rowStart + column * CELL_STRIDE) !== TYPE_EMPTY) {
           occupied++;
@@ -190,6 +202,7 @@ export class SheetData {
         }
       }
     }
+
     return occupied;
   }
 
@@ -204,26 +217,34 @@ export class SheetData {
         return this.#view.getFloat64(payloadOffset, true);
       case TYPE_DATE: {
         const serial = this.#view.getFloat64(payloadOffset, true);
+
         return { type: 'date', serial, iso: excelSerialToIso(serial) };
       }
+
       case TYPE_STRING:
       case TYPE_RICH_STRING: {
         const idx = this.#view.getUint32(payloadOffset, true);
         assert(this.#strings != null, 'String table must be available for v1 data');
+
         return this.#strings.get(idx);
       }
+
       case TYPE_BOOL:
         return this.#view.getUint8(payloadOffset) !== 0;
       case TYPE_ERROR: {
         const idx = this.#view.getUint32(payloadOffset, true);
         assert(this.#strings != null, 'String table must be available for v1 data');
+
         return this.#strings.get(idx);
       }
+
       case TYPE_FORMULA: {
         const idx = this.#view.getUint32(payloadOffset, true);
         assert(this.#strings != null, 'String table must be available for v1 data');
+
         return this.#strings.get(idx);
       }
+
       default:
         return null;
     }
@@ -234,9 +255,11 @@ export class SheetData {
     const start = offset + 4;
     const end = start + this.#view.getUint32(offset, true);
     const bytes = this.#bytes;
+
     for (let i = start; i < end; i++) {
       if (bytes[i] > 0x7f) return decodeUtf8(bytes.subarray(start, end));
     }
+
     return this.#text.toString('latin1', start, end);
   }
 
@@ -246,8 +269,10 @@ export class SheetData {
         return this.#view.getFloat64(payloadOffset, true);
       case TYPE_DATE: {
         const serial = this.#view.getFloat64(payloadOffset, true);
+
         return { type: 'date', serial, iso: excelSerialToIso(serial) };
       }
+
       case TYPE_STRING:
       case TYPE_RICH_STRING:
         return this.#readInlineString(payloadOffset);
@@ -276,8 +301,10 @@ export class SheetData {
       case TYPE_FORMULA:
       case TYPE_RICH_STRING: {
         const len = this.#view.getUint32(payloadOffset, true);
+
         return 4 + len;
       }
+
       default:
         return 0;
     }
@@ -286,23 +313,30 @@ export class SheetData {
   #findRowIndex(rowNum: number): number {
     let low = 0;
     let high = this.#rowIndex.length - 1;
+
     while (low <= high) {
       const middle = low + Math.floor((high - low) / 2);
       const candidate = this.#rowIndex[middle].rowNum;
+
       if (candidate === rowNum) return middle;
+
       if (candidate < rowNum) low = middle + 1;
       else high = middle - 1;
     }
+
     return -1;
   }
 
   getCell(row: number, col: number): CellValue {
     if (this.#rowCount === 0) return null;
     const ri = this.#findRowIndex(row);
+
     if (ri === -1) return null;
     const { cellOffset } = this.#rowIndex[ri];
+
     if (cellOffset === EMPTY_ROW_OFFSET) return null;
     const colIdx = col - this.#minCol;
+
     if (colIdx < 0 || colIdx >= this.#colCount) return null;
 
     if (this.#isV2) {
@@ -313,21 +347,29 @@ export class SheetData {
       const absOff = this.#cellDataStart + cellOffset;
       const cellCount = this.#view.getUint16(absOff, true);
       let pos = absOff + 2;
+
       for (let i = 0; i < cellCount; i++) {
         const c = this.#view.getUint16(pos, true);
+
         if (c === colIdx) {
           const type = this.#view.getUint8(pos + 2);
+
           if (type === TYPE_EMPTY) return null;
+
           return this.#decodeCellValueV1(type, pos + 3);
         }
+
         pos += SPARSE_ENTRY_SIZE;
       }
+
       return null;
     }
 
     const cellPos = this.#cellDataStart + cellOffset + colIdx * CELL_STRIDE;
     const type = this.#view.getUint8(cellPos);
+
     if (type === TYPE_EMPTY) return null;
+
     return this.#decodeCellValueV1(type, cellPos + 1);
   }
 
@@ -335,26 +377,34 @@ export class SheetData {
     const absOff = this.#cellDataStart + cellOffset;
     const cellCount = this.#view.getUint16(absOff, true);
     let pos = absOff + 2;
+
     for (let i = 0; i < cellCount; i++) {
       const c = this.#view.getUint16(pos, true);
       const type = this.#view.getUint8(pos + 2);
       const payloadOffset = pos + 3;
+
       if (c === colIdx) {
         if (type === TYPE_EMPTY) return null;
+
         return this.#decodeCellValueV2(type, payloadOffset);
       }
+
       pos = payloadOffset + this.#v2PayloadSize(payloadOffset, type);
     }
+
     return null;
   }
 
   getCellType(row: number, col: number): CellTypeName {
     if (this.#rowCount === 0) return 'empty';
     const ri = this.#findRowIndex(row);
+
     if (ri === -1) return 'empty';
     const { cellOffset } = this.#rowIndex[ri];
+
     if (cellOffset === EMPTY_ROW_OFFSET) return 'empty';
     const colIdx = col - this.#minCol;
+
     if (colIdx < 0 || colIdx >= this.#colCount) return 'empty';
 
     if (this.#isV2) {
@@ -365,19 +415,25 @@ export class SheetData {
       const absOff = this.#cellDataStart + cellOffset;
       const cellCount = this.#view.getUint16(absOff, true);
       let pos = absOff + 2;
+
       for (let i = 0; i < cellCount; i++) {
         const c = this.#view.getUint16(pos, true);
+
         if (c === colIdx) {
           const type = this.#view.getUint8(pos + 2);
+
           return TYPE_NAMES[type] ?? 'empty';
         }
+
         pos += SPARSE_ENTRY_SIZE;
       }
+
       return 'empty';
     }
 
     const cellPos = this.#cellDataStart + cellOffset + colIdx * CELL_STRIDE;
     const type = this.#view.getUint8(cellPos);
+
     return TYPE_NAMES[type] ?? 'empty';
   }
 
@@ -385,23 +441,29 @@ export class SheetData {
     const absOff = this.#cellDataStart + cellOffset;
     const cellCount = this.#view.getUint16(absOff, true);
     let pos = absOff + 2;
+
     for (let i = 0; i < cellCount; i++) {
       const c = this.#view.getUint16(pos, true);
       const type = this.#view.getUint8(pos + 2);
       const payloadOffset = pos + 3;
+
       if (c === colIdx) {
         return TYPE_NAMES[type] ?? 'empty';
       }
+
       pos = payloadOffset + this.#v2PayloadSize(payloadOffset, type);
     }
+
     return 'empty';
   }
 
   getRow(rowNum: number): CellValue[] {
     if (this.#rowCount === 0) return [];
     const ri = this.#findRowIndex(rowNum);
+
     if (ri === -1) return [];
     const { cellOffset } = this.#rowIndex[ri];
+
     if (cellOffset === EMPTY_ROW_OFFSET) return [];
 
     if (this.#isSparse) return this.#getOccupiedCells(cellOffset).map(({ value }) => value);
@@ -411,12 +473,14 @@ export class SheetData {
     for (let c = 0; c < this.#colCount; c++) {
       const cellPos = this.#cellDataStart + cellOffset + c * CELL_STRIDE;
       const type = this.#view.getUint8(cellPos);
+
       if (type === TYPE_EMPTY) {
         result.push(null);
       } else {
         result.push(this.#decodeCellValueV1(type, cellPos + 1));
       }
     }
+
     return result;
   }
 
@@ -424,15 +488,18 @@ export class SheetData {
     if (!this.#isSparse) {
       const cells: OccupiedCell[] = [];
       const rowStart = this.#cellDataStart + cellOffset;
+
       for (let column = 0; column < this.#colCount; column++) {
         const cellPos = rowStart + column * CELL_STRIDE;
         const type = this.#view.getUint8(cellPos);
+
         if (type === TYPE_EMPTY) continue;
         cells.push({
           column: this.#minCol + column,
           value: this.#decodeCellValueV1(type, cellPos + 1),
         });
       }
+
       return cells;
     }
 
@@ -444,17 +511,21 @@ export class SheetData {
     const absOff = this.#cellDataStart + cellOffset;
     const cellCount = this.#view.getUint16(absOff, true);
     let pos = absOff + 2;
+
     for (let i = 0; i < cellCount; i++) {
       const column = this.#view.getUint16(pos, true);
       const type = this.#view.getUint8(pos + 2);
+
       if (type !== TYPE_EMPTY) {
         cells.push({
           column: this.#minCol + column,
           value: this.#decodeCellValueV1(type, pos + 3),
         });
       }
+
       pos += SPARSE_ENTRY_SIZE;
     }
+
     return cells;
   }
 
@@ -463,18 +534,22 @@ export class SheetData {
     const absOff = this.#cellDataStart + cellOffset;
     const cellCount = this.#view.getUint16(absOff, true);
     let pos = absOff + 2;
+
     for (let i = 0; i < cellCount; i++) {
       const column = this.#view.getUint16(pos, true);
       const type = this.#view.getUint8(pos + 2);
       const payloadOffset = pos + 3;
+
       if (type !== TYPE_EMPTY) {
         cells.push({
           column: this.#minCol + column,
           value: this.#decodeCellValueV2(type, payloadOffset),
         });
       }
+
       pos = payloadOffset + this.#v2PayloadSize(payloadOffset, type);
     }
+
     return cells;
   }
 
@@ -482,9 +557,11 @@ export class SheetData {
     if (!this.#isSparse) {
       const cells: TypedOccupiedCell[] = [];
       const rowStart = this.#cellDataStart + cellOffset;
+
       for (let column = 0; column < this.#colCount; column++) {
         const cellPos = rowStart + column * CELL_STRIDE;
         const type = this.#view.getUint8(cellPos);
+
         if (type === TYPE_EMPTY) continue;
         cells.push({
           column: this.#minCol + column,
@@ -492,6 +569,7 @@ export class SheetData {
           cellType: TYPE_NAMES[type] ?? 'empty',
         });
       }
+
       return cells;
     }
 
@@ -499,10 +577,12 @@ export class SheetData {
     const absOff = this.#cellDataStart + cellOffset;
     const cellCount = this.#view.getUint16(absOff, true);
     let pos = absOff + 2;
+
     for (let i = 0; i < cellCount; i++) {
       const column = this.#view.getUint16(pos, true);
       const type = this.#view.getUint8(pos + 2);
       const payloadOffset = pos + 3;
+
       if (type !== TYPE_EMPTY) {
         cells.push({
           column: this.#minCol + column,
@@ -512,22 +592,27 @@ export class SheetData {
           cellType: TYPE_NAMES[type] ?? 'empty',
         });
       }
+
       pos = this.#isV2
         ? payloadOffset + this.#v2PayloadSize(payloadOffset, type)
         : pos + SPARSE_ENTRY_SIZE;
     }
+
     return cells;
   }
 
   toArray(): CellValue[][] {
     const result: CellValue[][] = [];
+
     for (const { rowNum, cellOffset } of this.#rowIndex) {
       if (cellOffset === EMPTY_ROW_OFFSET) {
         result.push([]);
         continue;
       }
+
       result.push(this.getRow(rowNum));
     }
+
     return result;
   }
 
@@ -537,6 +622,7 @@ export class SheetData {
         yield { row: rowNum, values: [] };
         continue;
       }
+
       yield { row: rowNum, values: this.getRow(rowNum) };
     }
   }
@@ -546,6 +632,7 @@ export class SheetData {
     for (const { rowNum, cellOffset } of this.#rowIndex) {
       if (cellOffset === EMPTY_ROW_OFFSET) continue;
       const cells = this.#getOccupiedCells(cellOffset);
+
       if (cells.length > 0) yield { row: rowNum, cells };
     }
   }
@@ -555,6 +642,7 @@ export class SheetData {
     for (const { rowNum, cellOffset } of this.#rowIndex) {
       if (cellOffset === EMPTY_ROW_OFFSET) continue;
       const cells = this.#getTypedOccupiedCells(cellOffset);
+
       if (cells.length > 0) yield { row: rowNum, cells };
     }
   }

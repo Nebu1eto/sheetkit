@@ -1,14 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { isResourceLimitError, MAX_CSV_OUTPUT_BYTES, Workbook } from '../index.js';
-
-function captureError(action: () => unknown): unknown {
-  try {
-    action();
-  } catch (error) {
-    return error;
-  }
-  throw new Error('Expected action to throw');
-}
+import {
+  isResourceLimitError,
+  MAX_CSV_OUTPUT_BYTES,
+  type ToCsvOptions,
+  Workbook,
+} from '../index.js';
+import { withForeignField } from './helpers/contract-violation.js';
+import { captureError } from './helpers/errors.js';
 
 describe('CSV formula policy', () => {
   it('exports formula expressions with exact Rust and CLI record bytes', () => {
@@ -49,7 +47,7 @@ describe('CSV formula policy', () => {
     workbook.setSheetData('Sheet1', [['=cmd']]);
 
     expect(() =>
-      workbook.toCSV('Sheet1', { formulaPolicy: 'unsafe' as 'spreadsheet-safe' }),
+      workbook.toCSV('Sheet1', withForeignField<ToCsvOptions>({}, 'formulaPolicy', 'unsafe')),
     ).toThrow(/formulaPolicy/);
   });
 
@@ -91,7 +89,9 @@ describe('CSV formula policy', () => {
     const error = captureError(() =>
       workbook.toCSV('Sheet1', { limits: { maxOutputBytes: exactBytes - 1 } }),
     );
+
     expect(isResourceLimitError(error)).toBe(true);
+
     if (!isResourceLimitError(error)) throw new Error('Expected a resource limit error');
     expect(error.operation).toBe('export');
     expect(error.category).toBe('output');

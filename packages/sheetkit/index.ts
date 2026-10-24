@@ -1,7 +1,9 @@
 import { isProxy } from 'node:util/types';
 import type {
+  FormulaResultValue as NativeFormulaResultValue,
+  DateValue as NativeDateValue,
   JsAppProperties,
-  JsCellEntry,
+  JsCellEntry as NativeJsCellEntry,
   JsChartConfig,
   JsColData,
   JsCommentConfig,
@@ -48,17 +50,33 @@ import type {
   JsVbaProject,
   JsWorkbookProtectionConfig,
 } from './binding.js';
+
+/** Value types as the native binding declares them, used by the native stream and column APIs. */
+export type {
+  DateValue as NativeDateValue,
+  FormulaResultValue as NativeFormulaResultValue,
+  FormulaValue as NativeFormulaValue,
+} from './binding.js';
+
 import {
   JsStreamWriter,
   type NativeSheetStreamReader,
   Workbook as NativeWorkbook,
 } from './binding.js';
+import { toNativeOpenOptions } from './open-options.js';
 import type { RawRowsResult } from './buffer-codec.js';
 import { decodeRowsBuffer, decodeRowsIterator, decodeRowsRawBuffer } from './buffer-codec.js';
 import type { CellTypeName, CellValue as SheetDataCellValue } from './sheet-data.js';
 import { SheetData } from './sheet-data.js';
 
-export type { DateValue, OccupiedCell, OccupiedRow } from './sheet-data.js';
+export type {
+  CellValue as SheetDataCellValue,
+  DateValue,
+  OccupiedCell,
+  OccupiedRow,
+  TypedOccupiedCell,
+  TypedOccupiedRow,
+} from './sheet-data.js';
 
 import type { DateValue } from './sheet-data.js';
 
@@ -67,7 +85,6 @@ export type {
   JsAppProperties,
   JsBorderSideStyle,
   JsBorderStyle,
-  JsCellEntry,
   JsChartConfig,
   JsChartSeries,
   JsColCell,
@@ -292,7 +309,89 @@ export interface OpenOptions {
   dateInterpretation?: DateInterpretation;
 }
 
-const RESOURCE_OPERATIONS = [
+/** Public operation that exhausted a finite resource budget. */
+export type ResourceOperation =
+  | 'workbook_open'
+  | 'workbook_save'
+  | 'formula_parse'
+  | 'formula_mutate'
+  | 'formula_calculate'
+  | 'data_traverse'
+  | 'render'
+  | 'export'
+  | 'encrypt'
+  | 'decrypt'
+  | 'macro_read'
+  | 'stream_read'
+  | 'stream_write';
+
+/** Subsystem whose finite resource budget was exhausted. */
+export type ResourceCategory =
+  | 'archive'
+  | 'container'
+  | 'xml'
+  | 'formula'
+  | 'traversal'
+  | 'output'
+  | 'encryption'
+  | 'macro'
+  | 'streaming'
+  | 'structure';
+
+/** Independently bounded resource dimension that was exhausted. */
+export type ResourceDimension =
+  | 'input_bytes'
+  | 'output_bytes'
+  | 'retained_bytes'
+  | 'entry_count'
+  | 'entry_declared_bytes'
+  | 'entry_actual_bytes'
+  | 'aggregate_declared_bytes'
+  | 'aggregate_actual_bytes'
+  | 'compression_ratio'
+  | 'compression_ratio_floor_bytes'
+  | 'xml_bytes'
+  | 'nesting_depth'
+  | 'token_count'
+  | 'node_count'
+  | 'range_cell_count'
+  | 'dependency_edge_count'
+  | 'operation_count'
+  | 'match_work'
+  | 'row_count'
+  | 'column_count'
+  | 'cell_count'
+  | 'stream_count'
+  | 'module_count'
+  | 'chunk_count'
+  | 'iteration_count'
+  | 'collection_count';
+
+/** Processing stage at which resource exhaustion was detected. */
+export type ResourceStage =
+  | 'inspect'
+  | 'read'
+  | 'parse'
+  | 'decode'
+  | 'validate'
+  | 'calculate'
+  | 'render'
+  | 'serialize'
+  | 'write'
+  | 'replace';
+
+/**
+ * Builds the runtime list for a closed string-literal union. The compiler rejects
+ * a list that omits a union member or contains a value outside the union.
+ */
+const closedCodes =
+  <Code extends string>() =>
+  <const Values extends readonly Code[]>(
+    codes: Values & ([Code] extends [Values[number]] ? unknown : never),
+  ): Values =>
+    codes;
+
+const RESOURCE_OPERATIONS = closedCodes<ResourceOperation>()([
   'workbook_open',
   'workbook_save',
   'formula_parse',
@@ -306,9 +405,9 @@ const RESOURCE_OPERATIONS = [
   'macro_read',
   'stream_read',
   'stream_write',
-] as const;
+]);
 
-const RESOURCE_CATEGORIES = [
+const RESOURCE_CATEGORIES = closedCodes<ResourceCategory>()([
   'archive',
   'container',
   'xml',
@@ -319,9 +418,9 @@ const RESOURCE_CATEGORIES = [
   'macro',
   'streaming',
   'structure',
-] as const;
+]);
 
-const RESOURCE_DIMENSIONS = [
+const RESOURCE_DIMENSIONS = closedCodes<ResourceDimension>()([
   'input_bytes',
   'output_bytes',
   'retained_bytes',
@@ -348,9 +447,9 @@ const RESOURCE_DIMENSIONS = [
   'chunk_count',
   'iteration_count',
   'collection_count',
-] as const;
+]);
 
-const RESOURCE_STAGES = [
+const RESOURCE_STAGES = closedCodes<ResourceStage>()([
   'inspect',
   'read',
   'parse',
@@ -361,19 +460,7 @@ const RESOURCE_STAGES = [
   'serialize',
   'write',
   'replace',
-] as const;
-
-/** Public operation that exhausted a finite resource budget. */
-export type ResourceOperation = (typeof RESOURCE_OPERATIONS)[number];
-
-/** Subsystem whose finite resource budget was exhausted. */
-export type ResourceCategory = (typeof RESOURCE_CATEGORIES)[number];
-
-/** Independently bounded resource dimension that was exhausted. */
-export type ResourceDimension = (typeof RESOURCE_DIMENSIONS)[number];
-
-/** Processing stage at which resource exhaustion was detected. */
-export type ResourceStage = (typeof RESOURCE_STAGES)[number];
+]);
 
 /** Stable machine-readable contract for bounded resource failures. */
 export interface ResourceLimitError extends Error {
@@ -393,30 +480,78 @@ function createResourceLimitError(
   return Object.assign(new Error(message), metadata);
 }
 
+/**
+ * A non-null, non-callable object whose structure has not been verified.
+ * Callers read its members only through own-property descriptors.
+ */
+interface UntrustedObject {}
+
+/** Optional resource-error fields read from a thrown non-callable object. */
+interface ResourceLimitErrorCandidate {
+  readonly code?: unknown;
+  readonly operation?: unknown;
+  readonly category?: unknown;
+  readonly dimension?: unknown;
+  readonly limit?: unknown;
+  readonly observed?: unknown;
+  readonly stage?: unknown;
+}
+
+/** True for string primitives. */
+function isStringValue<Value>(value: Value): value is Value & string {
+  return typeof value === 'string';
+}
+
+/** True for number primitives, including NaN and the infinities. */
+function isNumberValue<Value>(value: Value): value is Value & number {
+  return typeof value === 'number';
+}
+
+/** True for boolean primitives. */
+function isBooleanValue<Value>(value: Value): value is Value & boolean {
+  return typeof value === 'boolean';
+}
+
+/** True for bigint primitives. */
+function isBigIntValue<Value>(value: Value): value is Value & bigint {
+  return typeof value === 'bigint';
+}
+
+/** True for non-null, non-callable, non-array objects, including proxies. */
+function isNonArrayObject<Value>(value: Value): value is Value & object {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/** True for thrown non-null, non-callable objects; every such object has these optional fields. */
+function isResourceLimitErrorCandidate(value: unknown): value is ResourceLimitErrorCandidate {
+  return typeof value === 'object' && value !== null;
+}
+
 function isClosedCode<const Values extends readonly string[]>(
   values: Values,
   value: unknown,
 ): value is Values[number] {
-  return typeof value === 'string' && (values as readonly string[]).includes(value);
+  return isStringValue(value) && values.some((code) => code === value);
 }
 
 /** Returns whether a thrown value satisfies the stable resource-error contract. */
 export function isResourceLimitError(error: unknown): error is ResourceLimitError {
-  if (typeof error !== 'object' || error === null) return false;
+  if (!isResourceLimitErrorCandidate(error)) return false;
 
   try {
-    const candidate = error as Record<string, unknown>;
+    const candidate = error;
     const { limit, observed, stage } = candidate;
     const maxU64 = 18_446_744_073_709_551_615n;
+
     return (
       candidate.code === 'resource_limit_exceeded' &&
       isClosedCode(RESOURCE_OPERATIONS, candidate.operation) &&
       isClosedCode(RESOURCE_CATEGORIES, candidate.category) &&
       isClosedCode(RESOURCE_DIMENSIONS, candidate.dimension) &&
-      typeof limit === 'bigint' &&
+      isBigIntValue(limit) &&
       limit >= 0n &&
       limit <= maxU64 &&
-      typeof observed === 'bigint' &&
+      isBigIntValue(observed) &&
       observed > limit &&
       observed <= maxU64 &&
       (stage === null || isClosedCode(RESOURCE_STAGES, stage))
@@ -445,16 +580,29 @@ export interface FormulaValue {
 /** A cell's public value representation. */
 export type CellValue = string | number | boolean | DateValue | FormulaValue | null;
 
-type CellValueInput = string | number | boolean | DateValue | FormulaValue | null;
+type CellValueInput = CellValue;
+
+/** One cell address paired with the value to write there. */
+export interface JsCellEntry {
+  /** Cell reference such as "A1". */
+  cell: string;
+  value: CellValue;
+}
+
 type NativeCellValueInput = Parameters<NativeWorkbook['setCellValue']>[2];
 
+/** True for the date and formula members of a declared cell value input. */
+function isStructuredCellValue(value: CellValueInput): value is DateValue | FormulaValue {
+  return typeof value === 'object' && value !== null;
+}
+
 function toNativeCellValue(value: CellValueInput): NativeCellValueInput {
-  if (typeof value !== 'object' || value === null) {
-    return value as NativeCellValueInput;
-  }
+  if (!isStructuredCellValue(value)) return value;
+
   if ('type' in value && value.type === 'date') {
-    return { ...value, iso: value.iso ?? undefined } as NativeCellValueInput;
+    return { ...value, iso: value.iso ?? undefined };
   }
+
   if ('type' in value && value.type === 'formula' && value.result?.date) {
     return {
       ...value,
@@ -462,8 +610,12 @@ function toNativeCellValue(value: CellValueInput): NativeCellValueInput {
         ...value.result,
         date: { ...value.result.date, iso: value.result.date.iso ?? undefined },
       },
-    } as NativeCellValueInput;
+    };
   }
+
+  // SAFETY: the branches above rewrote every `type: 'date'` value and every
+  // `result.date`, the only places where the public `iso: null` differs from
+  // the native `iso?: string`; the remaining members share one native shape.
   return value as NativeCellValueInput;
 }
 
@@ -570,21 +722,23 @@ function resolveFromJsonLimit(
   dimension: 'row_count' | 'column_count' | 'cell_count' | 'retained_bytes',
 ): number {
   if (value === undefined) return fallback;
+
   if (!Number.isSafeInteger(value) || value < 0) {
     throw new TypeError('JSON import limits must be non-negative safe integers');
   }
+
   if (value === 0) throw fromJsonLimitError(dimension, 0, 1);
+
   if (value > hardLimit) throw fromJsonLimitError(dimension, hardLimit, value);
+
   return value;
 }
 
 function resolveFromJsonLimits(limits: FromJsonLimits | undefined): ResolvedFromJsonLimits {
-  if (
-    limits !== undefined &&
-    (typeof limits !== 'object' || limits === null || Array.isArray(limits))
-  ) {
+  if (limits !== undefined && !isNonArrayObject(limits)) {
     throw new TypeError('JSON import limits must be an object');
   }
+
   return {
     maxRows: resolveFromJsonLimit(limits?.maxRows, EXCEL_MAX_ROWS, EXCEL_MAX_ROWS, 'row_count'),
     maxColumns: resolveFromJsonLimit(
@@ -623,10 +777,13 @@ function checkedFromJsonAdd(
   dimension: 'cell_count' | 'retained_bytes',
 ): number {
   const observed = current + additional;
+
   if (!Number.isSafeInteger(observed)) {
     throw fromJsonLimitError(dimension, limit, limit + 1);
   }
+
   checkFromJsonLimit(dimension, limit, observed);
+
   return observed;
 }
 
@@ -636,55 +793,63 @@ interface OwnDataProperty {
 }
 
 interface JsonCellSnapshot {
-  value: JsCellEntry['value'];
+  value: NativeJsCellEntry['value'];
   retainedBytes: number;
 }
 
-function ownDataProperty(value: Record<string, unknown>, key: string): OwnDataProperty {
+interface JsonDateSnapshot {
+  value: NativeDateValue;
+  retainedBytes: number;
+}
+
+interface JsonFormulaResultSnapshot {
+  value: NativeFormulaResultValue;
+  retainedBytes: number;
+}
+
+function ownDataProperty(value: UntrustedObject, key: string): OwnDataProperty {
   const descriptor = Object.getOwnPropertyDescriptor(value, key);
+
   if (descriptor === undefined) return { present: false, value: undefined };
+
   if (!('value' in descriptor)) throw new TypeError('JSON values must use data properties');
+
   return { present: true, value: descriptor.value };
 }
 
-function snapshotDateValue(value: unknown, knownKind?: 'date'): JsonCellSnapshot {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    throw new TypeError('Invalid JSON cell value');
-  }
-  const candidate = value as Record<string, unknown>;
+/** Snapshot a date object; callers have already verified a non-null, non-array object. */
+function snapshotDateValue(candidate: UntrustedObject, knownKind?: 'date'): JsonDateSnapshot {
   const kind = knownKind ?? ownDataProperty(candidate, 'type').value;
   const serial = ownDataProperty(candidate, 'serial');
   const iso = ownDataProperty(candidate, 'iso');
+
   if (
     kind !== 'date' ||
-    typeof serial.value !== 'number' ||
+    !isNumberValue(serial.value) ||
     !Number.isFinite(serial.value) ||
-    (iso.value !== null && iso.value !== undefined && typeof iso.value !== 'string')
+    (iso.value !== null && iso.value !== undefined && !isStringValue(iso.value))
   ) {
     throw new TypeError('Invalid JSON cell value');
   }
-  const isoBytes = typeof iso.value === 'string' ? Buffer.byteLength(iso.value) : 0;
+
+  const isoBytes = isStringValue(iso.value) ? Buffer.byteLength(iso.value) : 0;
+
   if (isoBytes > MAX_FROM_JSON_DATE_ISO_BYTES) {
     throw new TypeError('Invalid JSON cell value');
   }
+
   return {
     value: Object.freeze({
       type: 'date',
       serial: serial.value,
-      iso: typeof iso.value === 'string' ? iso.value : undefined,
-    }) as JsCellEntry['value'],
+      iso: isStringValue(iso.value) ? iso.value : undefined,
+    }),
     retainedBytes: 16 + isoBytes,
   };
 }
 
-function snapshotFormulaResult(value: unknown): {
-  value: Record<string, unknown>;
-  retainedBytes: number;
-} {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    throw new TypeError('Invalid JSON formula result');
-  }
-  const candidate = value as Record<string, unknown>;
+/** Snapshot a formula result; callers have already verified a non-null, non-array object. */
+function snapshotFormulaResult(candidate: UntrustedObject): JsonFormulaResultSnapshot {
   const valueType = ownDataProperty(candidate, 'valueType');
   const stringValue = ownDataProperty(candidate, 'value');
   const numberValue = ownDataProperty(candidate, 'numberValue');
@@ -700,18 +865,20 @@ function snapshotFormulaResult(value: unknown): {
       if (hasValue || hasNumber || hasBoolean || hasDate) {
         throw new TypeError('Invalid JSON formula result');
       }
+
       return { value: Object.freeze({ valueType: 'empty' }), retainedBytes: 0 };
     case 'boolean':
-      if (typeof boolValue.value !== 'boolean' || hasValue || hasNumber || hasDate) {
+      if (!isBooleanValue(boolValue.value) || hasValue || hasNumber || hasDate) {
         throw new TypeError('Invalid JSON formula result');
       }
+
       return {
         value: Object.freeze({ valueType: 'boolean', boolValue: boolValue.value }),
         retainedBytes: 1,
       };
     case 'number':
       if (
-        typeof numberValue.value !== 'number' ||
+        !isNumberValue(numberValue.value) ||
         !Number.isFinite(numberValue.value) ||
         hasValue ||
         hasBoolean ||
@@ -719,6 +886,7 @@ function snapshotFormulaResult(value: unknown): {
       ) {
         throw new TypeError('Invalid JSON formula result');
       }
+
       return {
         value: Object.freeze({ valueType: 'number', numberValue: numberValue.value }),
         retainedBytes: 8,
@@ -727,100 +895,139 @@ function snapshotFormulaResult(value: unknown): {
       if (hasValue || hasNumber || hasBoolean || !hasDate) {
         throw new TypeError('Invalid JSON formula result');
       }
+
+      if (!isNonArrayObject(date.value)) throw new TypeError('Invalid JSON cell value');
+
       const snapshot = snapshotDateValue(date.value);
+
       return {
         value: Object.freeze({ valueType: 'date', date: snapshot.value }),
         retainedBytes: snapshot.retainedBytes,
       };
     }
+
     case 'error':
     case 'string': {
-      if (typeof stringValue.value !== 'string' || hasNumber || hasBoolean || hasDate) {
+      if (!isStringValue(stringValue.value) || hasNumber || hasBoolean || hasDate) {
         throw new TypeError('Invalid JSON formula result');
       }
+
       const bytes = Buffer.byteLength(stringValue.value);
+
       if (bytes > MAX_FROM_JSON_CELL_STRING_BYTES) {
         throw new TypeError('JSON cell string exceeds the Excel limit');
       }
+
       return {
         value: Object.freeze({ valueType: valueType.value, value: stringValue.value }),
         retainedBytes: bytes,
       };
     }
+
     default:
       throw new TypeError('Invalid JSON formula result');
   }
 }
 
-function snapshotJsonCellValue(value: unknown): JsonCellSnapshot {
+/** Snapshot an optional formula result after verifying it is a non-null, non-array object. */
+function snapshotOptionalFormulaResult(result: OwnDataProperty): JsonFormulaResultSnapshot | null {
+  if (result.value === undefined) return null;
+
+  if (!isNonArrayObject(result.value)) throw new TypeError('Invalid JSON formula result');
+
+  return snapshotFormulaResult(result.value);
+}
+
+/**
+ * Snapshot one imported cell. The declared type is the public input contract;
+ * every member is still checked at runtime because callers may pass any value.
+ */
+function snapshotJsonCellValue(value: CellValueInput | undefined): JsonCellSnapshot {
   if (value === undefined || value === null) return { value: null, retainedBytes: 0 };
-  if (typeof value === 'string') {
+
+  if (isStringValue(value)) {
     const bytes = Buffer.byteLength(value);
+
     if (bytes > MAX_FROM_JSON_CELL_STRING_BYTES) {
       throw new TypeError('JSON cell string exceeds the Excel limit');
     }
+
     return { value, retainedBytes: bytes };
   }
-  if (typeof value === 'boolean') return { value, retainedBytes: 1 };
-  if (typeof value === 'number') {
+
+  if (isBooleanValue(value)) return { value, retainedBytes: 1 };
+
+  if (isNumberValue(value)) {
     if (!Number.isFinite(value)) throw new TypeError('Invalid JSON cell value');
+
     return { value, retainedBytes: 8 };
   }
-  if (typeof value !== 'object' || Array.isArray(value)) {
-    throw new TypeError('Invalid JSON cell value');
-  }
 
-  const candidate = value as Record<string, unknown>;
+  if (!isNonArrayObject(value)) throw new TypeError('Invalid JSON cell value');
+
+  const candidate = value;
   const kind = ownDataProperty(candidate, 'type');
+
   if (kind.value === 'date') return snapshotDateValue(candidate, 'date');
+
   if (kind.value !== 'formula') throw new TypeError('Invalid JSON cell value');
 
   const formula = ownDataProperty(candidate, 'formula');
   const result = ownDataProperty(candidate, 'result');
-  if (typeof formula.value !== 'string') throw new TypeError('Invalid JSON cell value');
-  const resultSnapshot = result.value === undefined ? null : snapshotFormulaResult(result.value);
+
+  if (!isStringValue(formula.value)) throw new TypeError('Invalid JSON cell value');
+  const resultSnapshot = snapshotOptionalFormulaResult(result);
+
   return {
     value: Object.freeze({
       type: 'formula',
       formula: formula.value,
       result: resultSnapshot?.value,
-    }) as JsCellEntry['value'],
+    }),
     retainedBytes: Buffer.byteLength(formula.value) + (resultSnapshot?.retainedBytes ?? 0),
   };
 }
 
-function isJsonRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-function* jsonRecordKeys(record: Record<string, unknown>): Generator<string> {
+function* jsonRecordKeys(record: Record<string, CellValueInput>): Generator<string> {
   if (isProxy(record)) {
     throw new TypeError('JSON import rows must be plain objects');
   }
+
   const prototype = Object.getPrototypeOf(record);
+
   if (prototype !== null && prototype !== Object.prototype) {
     throw new TypeError('JSON import rows must be plain objects');
   }
+
   if (prototype === Object.prototype) {
-    for (const _key in Object.prototype) {
-      throw new TypeError('JSON import rows require an unmodified object prototype');
+    for (const inheritedKey in Object.prototype) {
+      throw new TypeError('JSON import rows require an unmodified object prototype', {
+        cause: `inherited key "${inheritedKey}"`,
+      });
     }
   }
+
   for (const key in record) {
     yield key;
   }
 }
 
-function jsonRecordValue(record: Record<string, unknown>, key: string): unknown {
+function jsonRecordValue(
+  record: Record<string, CellValueInput>,
+  key: string,
+): CellValueInput | undefined {
   const descriptor = Object.getOwnPropertyDescriptor(record, key);
+
   if (descriptor === undefined || !descriptor.enumerable || !('value' in descriptor)) {
     throw new TypeError('JSON import rows must use enumerable data properties');
   }
+
   return descriptor.value;
 }
 
-function jsonArrayLength(value: unknown[]): number {
+function jsonArrayLength<Element>(value: readonly Element[]): number {
   const descriptor = Object.getOwnPropertyDescriptor(value, 'length');
+
   if (
     descriptor === undefined ||
     !('value' in descriptor) ||
@@ -829,25 +1036,36 @@ function jsonArrayLength(value: unknown[]): number {
   ) {
     throw new TypeError('Invalid JSON array');
   }
+
   return descriptor.value;
 }
 
-function jsonArrayElement(value: unknown[], index: number): unknown {
+function jsonArrayElement<Element>(value: readonly Element[], index: number): Element {
   const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+
   if (descriptor === undefined || !descriptor.enumerable || !('value' in descriptor)) {
     throw new TypeError('JSON arrays must use dense data properties');
   }
+
   return descriptor.value;
+}
+
+/** True for the date member of a decoded sheet cell value. */
+function isSheetDateValue(value: SheetDataCellValue): value is DateValue {
+  return typeof value === 'object' && value !== null;
 }
 
 function cellValueToString(v: SheetDataCellValue): string {
   if (v === null || v === undefined) return '';
-  if (typeof v === 'object' && v.type === 'date') return v.iso ?? String(v.serial);
+
+  if (isSheetDateValue(v) && v.type === 'date') return v.iso ?? String(v.serial);
+
   return String(v);
 }
 
 function isFormulaLeadingCharacter(character: string): boolean {
   const codePoint = character.codePointAt(0);
+
   return (
     character === '\uFEFF' ||
     /\s/u.test(character) ||
@@ -858,16 +1076,20 @@ function isFormulaLeadingCharacter(character: string): boolean {
 function isFormulaCapableText(value: string): boolean {
   for (const character of value) {
     if (isFormulaLeadingCharacter(character)) continue;
+
     return '=+-@'.includes(character);
   }
+
   return false;
 }
 
 function csvFormulaPolicy(value: CsvFormulaPolicy | undefined): CsvFormulaPolicy {
   const policy = value ?? 'spreadsheet-safe';
+
   if (policy !== 'spreadsheet-safe' && policy !== 'raw-exchange') {
     throw new TypeError('formulaPolicy must be "spreadsheet-safe" or "raw-exchange"');
   }
+
   return policy;
 }
 
@@ -880,8 +1102,10 @@ function validateCsvSyntax(
   if ([...delimiter].length !== 1 || [...quote].length !== 1) {
     throw new TypeError('delimiter and quote must each be one character');
   }
+
   const isControl = (value: string): boolean => {
     const codePoint = value.codePointAt(0);
+
     return (
       codePoint === undefined ||
       codePoint <= 0x1f ||
@@ -889,12 +1113,15 @@ function validateCsvSyntax(
       (codePoint >= 0x80 && codePoint <= 0x9f)
     );
   };
+
   if (delimiter === quote || isControl(delimiter) || isControl(quote)) {
     throw new TypeError('delimiter and quote must be distinct non-control characters');
   }
+
   if (lineEnding !== '\n' && lineEnding !== '\r\n') {
     throw new TypeError('lineEnding must be "\\n" or "\\r\\n"');
   }
+
   if (formulaPolicy === 'spreadsheet-safe' && [delimiter, quote].some(isFormulaCapableText)) {
     throw new TypeError('CSV syntax must not introduce a spreadsheet formula');
   }
@@ -902,10 +1129,13 @@ function validateCsvSyntax(
 
 function csvOutputLimit(options: ToCsvOptions | undefined): number {
   const requested = options?.limits?.maxOutputBytes;
+
   if (requested === undefined) return MAX_CSV_OUTPUT_BYTES;
+
   if (!Number.isSafeInteger(requested) || requested <= 0) {
     throw new TypeError('maxOutputBytes must be a positive safe integer');
   }
+
   return Math.min(requested, MAX_CSV_OUTPUT_BYTES);
 }
 
@@ -914,6 +1144,7 @@ function csvTraversalOptions(
   outputLimit: number,
 ): TraversalOptions {
   const limits = options?.limits;
+
   // With R rows, C cells, and F field bytes, sparse v2 is at most
   // 16 + 10R + 10C + F. CSV has R <= C and at least F + C - 1
   // bytes, so 64 + 21 * CSV is a conservative sparse admission bound.
@@ -921,10 +1152,13 @@ function csvTraversalOptions(
   // derived limit. Retain the library's finite default ceiling overall.
   const derivedTransferCandidate =
     CSV_TRANSFER_BASE_BYTES + outputLimit * CSV_TRANSFER_OVERHEAD_FACTOR;
+
   if (!Number.isSafeInteger(derivedTransferCandidate)) {
     throw new TypeError('derived CSV transfer limit must be a safe integer');
   }
+
   const derivedTransferLimit = Math.min(DEFAULT_CSV_TRANSFER_BYTES, derivedTransferCandidate);
+
   return {
     mode: options?.mode,
     limits: {
@@ -953,9 +1187,11 @@ const HTML_TABLE_CLOSE = '</table>';
 /** Add `bytes` to `observed`; throw the HTML output limit error when the total exceeds `limit`. */
 function chargeHtmlOutput(observed: number, bytes: number, limit: number): number {
   const next = observed + bytes;
+
   if (next > limit || !Number.isSafeInteger(next)) {
     throw htmlOutputLimitError(limit, Number.isSafeInteger(next) ? next : limit + 1);
   }
+
   return next;
 }
 
@@ -980,8 +1216,10 @@ interface CsvCell {
 function countOccurrences(value: string, needle: string): number {
   let count = 0;
   let offset = 0;
+
   while (true) {
     const index = value.indexOf(needle, offset);
+
     if (index === -1) return count;
     count++;
     offset = index + needle.length;
@@ -999,8 +1237,9 @@ function csvField(
   const value = cell?.value ?? null;
   const isFormula = cell?.formula === true || cell?.cellType === 'formula';
   const field = isFormula ? `=${cellValueToString(value)}` : cellValueToString(value);
+
   return formulaPolicy === 'spreadsheet-safe' &&
-    (isFormula || typeof value === 'string') &&
+    (isFormula || isStringValue(value)) &&
     isFormulaCapableText(field)
     ? `'${field}`
     : field;
@@ -1022,11 +1261,14 @@ function encodeCsvOutput(
   const quotePattern = new RegExp(escapeRegExp(quote), 'g');
   const lines: string[] = [];
   let observed = 0;
+
   const charge = (bytes: number): void => {
     const next = observed + bytes;
+
     if (!Number.isSafeInteger(next) || next > limit) {
       throw csvOutputLimitError(limit, Number.isSafeInteger(next) ? next : limit + 1);
     }
+
     observed = next;
   };
 
@@ -1035,6 +1277,7 @@ function encodeCsvOutput(
     const row = rows[rowIndex];
     const fieldCount = maxColumns === null ? row.length : leadingEmptyFields + maxColumns;
     const escapedFields: string[] = [];
+
     for (let column = 0; column < fieldCount; column++) {
       if (column > 0) charge(delimiterBytes);
       const field = csvField(row, column, leadingEmptyFields, formulaPolicy);
@@ -1044,33 +1287,44 @@ function encodeCsvOutput(
         field.includes(quote) ||
         field.includes('\n') ||
         field.includes('\r');
+
       const escapedBytes =
         Buffer.byteLength(field) +
         (needsQuotes ? (countOccurrences(field, quote) + 2) * quoteBytes : 0);
+
       charge(escapedBytes);
+
       const escapedField = needsQuotes
         ? quote + field.replace(quotePattern, quote + quote) + quote
         : field;
+
       escapedFields.push(escapedField);
     }
+
     lines.push(escapedFields.join(delimiter));
   }
+
   return lines.join(lineEnding);
 }
 
 function createJsonOutputObject(): Record<string, CellValue> {
+  // SAFETY: Object.create(null) returns a fresh object with no own or inherited
+  // properties, so it is an empty Record<string, CellValue>.
   return Object.create(null) as Record<string, CellValue>;
 }
 
 function finishJsonOutputObject(object: Record<string, CellValue>): Record<string, CellValue> {
   Object.setPrototypeOf(object, Object.prototype);
+
   return object;
 }
 
 /** Column letters for `count` consecutive columns starting at `minCol`. */
 function columnLetterKeys(minCol: number, count: number): string[] {
   const keys = new Array<string>(count);
+
   for (let index = 0; index < count; index++) keys[index] = columnNumberToLetter(minCol + index);
+
   return keys;
 }
 
@@ -1082,9 +1336,12 @@ function columnLetterKeys(minCol: number, count: number): string[] {
 function jsonKeysAvoidPrototype(keys: ReadonlyArray<string | undefined>): boolean {
   for (let index = 0; index < keys.length; index++) {
     const key = keys[index];
+
     if (key === undefined) continue;
-    if (typeof key !== 'string' || key in Object.prototype) return false;
+
+    if (!isStringValue(key) || key in Object.prototype) return false;
   }
+
   return true;
 }
 
@@ -1097,63 +1354,56 @@ function escapeHtml(s: string): string {
     .replace(/'/g, '&#39;');
 }
 
-function parseCellRef(ref: string): { col: number; row: number } {
+/** One-based column and row numbers of an A1-style cell reference. */
+interface CellCoordinates {
+  col: number;
+  row: number;
+}
+
+function parseCellRef(ref: string): CellCoordinates {
   const match = ref.match(/^([A-Za-z]+)(\d+)$/);
+
   if (!match) {
     throw new TypeError('Invalid cell reference');
   }
+
   const letters = match[1].toUpperCase();
   let col = 0;
+
   for (let i = 0; i < letters.length; i++) {
     col = col * 26 + (letters.charCodeAt(i) - 64);
+
     if (col > EXCEL_MAX_COLUMNS) {
       throw fromJsonLimitError('column_count', EXCEL_MAX_COLUMNS, col);
     }
   }
 
   let row = 0;
+
   for (const digit of match[2]) {
     row = row * 10 + (digit.charCodeAt(0) - 48);
+
     if (row > EXCEL_MAX_ROWS) {
       throw fromJsonLimitError('row_count', EXCEL_MAX_ROWS, row);
     }
   }
+
   if (row === 0) throw new TypeError('Invalid cell reference');
+
   return { col, row };
 }
 
 function columnNumberToLetter(n: number): string {
   let name = '';
   let num = n;
+
   while (num > 0) {
     num--;
     name = String.fromCharCode(65 + (num % 26)) + name;
     num = Math.floor(num / 26);
   }
-  return name;
-}
 
-/**
- * Convert user-facing `OpenOptions` to the internal napi `JsOpenOptions`.
- * Also accepts raw `JsOpenOptions` for backward compatibility.
- */
-function toNativeOpenOptions(
-  options?: OpenOptions | JsOpenOptions | null,
-): JsOpenOptions | undefined {
-  // Preserve raw napi parseMode behavior when callers pass legacy JsOpenOptions.
-  if (
-    options &&
-    'parseMode' in options &&
-    typeof (options as JsOpenOptions).parseMode === 'string' &&
-    (options as JsOpenOptions).readMode == null
-  ) {
-    return options as JsOpenOptions;
-  }
-  return {
-    ...(options ?? {}),
-    readMode: (options as OpenOptions | JsOpenOptions | undefined)?.readMode ?? 'lazy',
-    auxParts: (options as OpenOptions | JsOpenOptions | undefined)?.auxParts ?? 'deferred',
-  } satisfies JsOpenOptions;
+  return name;
 }
 
 /** Row data from streaming reader, matching JsRowData shape. */
@@ -1173,13 +1423,16 @@ function streamColumnName(col: number): string {
   for (let next = streamColumnNames.length; next <= col; next++) {
     let num = next;
     let name = '';
+
     while (num > 0) {
       num--;
       name = String.fromCharCode(65 + (num % 26)) + name;
       num = Math.floor(num / 26);
     }
+
     streamColumnNames.push(name);
   }
+
   return streamColumnNames[col];
 }
 
@@ -1201,73 +1454,96 @@ class StreamBatchDecoder {
   decode(): RowData[] {
     const rowCount = this.#u32();
     const rows: RowData[] = new Array(rowCount);
+
     for (let r = 0; r < rowCount; r++) {
       const row = this.#u32();
       const cellCount = this.#u32();
       const cells: JsRowData['cells'] = new Array(cellCount);
+
       for (let c = 0; c < cellCount; c++) {
         cells[c] = this.#cell();
       }
+
       rows[r] = { row, cells };
     }
+
     if (this.#pos !== this.#buf.length) {
       throw new Error('Invalid stream batch: trailing bytes');
     }
+
     return rows;
   }
 
   #cell(): JsRowData['cells'][number] {
     const col = this.#view.getUint16(this.#pos, true);
     this.#pos += 2;
+
     const cell: JsRowData['cells'][number] = {
       column: streamColumnName(col),
       valueType: this.#tag(),
     };
+
     const flags = this.#u8();
+
     if (flags & STREAM_HAS_VALUE) cell.value = this.#str();
+
     if (flags & STREAM_HAS_NUMBER) cell.numberValue = this.#f64();
+
     if (flags & STREAM_HAS_BOOL) cell.boolValue = this.#u8() !== 0;
+
     if (flags & STREAM_HAS_NESTED) {
       const formula: NonNullable<JsRowData['cells'][number]['formula']> = {
         type: this.#tag(),
         formula: this.#str(),
       };
+
       if (this.#u8() !== 0) {
         const result: NonNullable<typeof formula.result> = { valueType: this.#tag() };
         const resultFlags = this.#u8();
+
         if (resultFlags & STREAM_HAS_VALUE) result.value = this.#str();
+
         if (resultFlags & STREAM_HAS_NUMBER) result.numberValue = this.#f64();
+
         if (resultFlags & STREAM_HAS_BOOL) result.boolValue = this.#u8() !== 0;
+
         if (resultFlags & STREAM_HAS_NESTED) {
           const date: NonNullable<typeof result.date> = {
             type: this.#tag(),
             serial: this.#f64(),
           };
+
           if (this.#u8() !== 0) date.iso = this.#str();
           result.date = date;
         }
+
         formula.result = result;
       }
+
       cell.formula = formula;
     }
+
     return cell;
   }
 
   #u8(): number {
     const value = this.#view.getUint8(this.#pos);
     this.#pos += 1;
+
     return value;
   }
 
   #u32(): number {
     const value = this.#view.getUint32(this.#pos, true);
     this.#pos += 4;
+
     return value;
   }
 
   #f64(): number {
     const value = this.#view.getFloat64(this.#pos, true);
     this.#pos += 8;
+
     return value;
   }
 
@@ -1275,16 +1551,21 @@ class StreamBatchDecoder {
     const length = this.#u32();
     const start = this.#pos;
     const end = start + length;
+
     if (end > this.#buf.length) throw new Error('Invalid stream batch: truncated string');
     this.#pos = end;
+
     return this.#buf.toString('utf8', start, end);
   }
 
   #tag(): string {
     const code = this.#u8();
+
     if (code === STREAM_TAG_LITERAL) return this.#str();
     const tag = STREAM_TAGS[code];
+
     if (tag === undefined) throw new Error('Invalid stream batch: unknown tag');
+
     return tag;
   }
 }
@@ -1307,6 +1588,7 @@ class SheetStreamReader {
   async next(batchSize?: number): Promise<RowData[] | null> {
     const size = batchSize ?? this.#defaultBatchSize;
     const buf = this.#native.nextBatchBuffer(size);
+
     return buf === null ? null : new StreamBatchDecoder(buf).decode();
   }
 
@@ -1320,6 +1602,7 @@ class SheetStreamReader {
     try {
       while (true) {
         const batch = await this.next();
+
         if (batch === null) break;
         yield batch;
       }
@@ -1340,6 +1623,7 @@ class Workbook {
   static #wrap(native: NativeWorkbook): Workbook {
     const wb = new Workbook();
     wb.#native = native;
+
     return wb;
   }
 
@@ -1474,6 +1758,10 @@ class Workbook {
 
   /** Get the value of a cell. */
   getCellValue(sheet: string, cell: string): CellValue {
+    // SAFETY: cell_value_to_either (src/conversions.rs) returns null, a boolean,
+    // number, or string, or a DateValue whose `type` is always "date", which is
+    // the literal CellValue requires. Known gap: an unrepresentable serial omits
+    // `iso` instead of setting it to null.
     return this.#native.getCellValue(sheet, cell) as CellValue;
   }
 
@@ -1488,7 +1776,7 @@ class Workbook {
   }
 
   /** Set multiple cell values at once. */
-  setCellValues(sheet: string, cells: Array<{ cell: string; value: CellValueInput }>): void {
+  setCellValues(sheet: string, cells: JsCellEntry[]): void {
     this.#native.setCellValues(
       sheet,
       cells.map(({ cell, value }) => ({ cell, value: toNativeCellValue(value) })),
@@ -1841,6 +2129,7 @@ class Workbook {
   async openSheetReader(sheet: string, opts?: { batchSize?: number }): Promise<SheetStreamReader> {
     const batchSize = opts?.batchSize ?? 1000;
     const native = this.#native.openSheetReader(sheet, batchSize);
+
     return new SheetStreamReader(native, batchSize);
   }
 
@@ -1988,6 +2277,7 @@ class Workbook {
       options?.mode === undefined && options?.limits === undefined
         ? undefined
         : { mode: options.mode, limits: options.limits };
+
     return options?.mode === 'dense'
       ? this.#native.getRowsBuffer(sheet, nativeOptions)
       : this.#native.getRowsBufferV2(sheet, nativeOptions);
@@ -1996,6 +2286,7 @@ class Workbook {
   /** Get all rows with their data from a sheet using buffer-based transfer. */
   getRows(sheet: string, options?: TraversalOptions): JsRowData[] {
     const buf = this.#rowsBuffer(sheet, options);
+
     return decodeRowsBuffer(buf);
   }
 
@@ -2021,6 +2312,7 @@ class Workbook {
    */
   getRowsRaw(sheet: string, options?: TraversalOptions): RawRowsResult {
     const buf = this.#rowsBuffer(sheet, options);
+
     return decodeRowsRawBuffer(buf);
   }
 
@@ -2055,6 +2347,9 @@ class Workbook {
 
   /** Evaluate a formula string against the current workbook data. */
   evaluateFormula(sheet: string, formula: string, limits?: FormulaLimits): CellValue {
+    // SAFETY: evaluate_formula (src/lib.rs) converts its result with
+    // cell_value_to_either, whose only object output is a DateValue with
+    // `type` "date"; an unrepresentable serial omits `iso` instead of null.
     return this.#native.evaluateFormula(sheet, formula, limits) as CellValue;
   }
 
@@ -2177,24 +2472,30 @@ class Workbook {
   toJSON(sheet: string, options?: ToJsonOptions): Record<string, CellValue>[] {
     const buf = this.#rowsBuffer(sheet, options);
     const sd = new SheetData(buf);
+
     if (options?.mode !== 'dense') {
       const rows = [...sd.occupiedRows()];
+
       if (rows.length === 0) return [];
 
       const headerOpt = options?.header;
       let keys: Array<string | undefined> | null = null;
       let dataStartIndex = 0;
+
       if (Array.isArray(headerOpt)) {
         keys = headerOpt;
       } else if (headerOpt === true || headerOpt === undefined) {
         keys = [];
+
         for (const { column, value } of rows[0].cells) {
           keys[column - sd.minCol] = cellValueToString(value);
         }
+
         dataStartIndex = 1;
       }
 
       const result: Record<string, CellValue>[] = [];
+
       // Workbook-derived keys that cannot reach Object.prototype use ordinary
       // objects; caller-supplied headers keep the null-prototype construction.
       const plainKeys =
@@ -2203,34 +2504,46 @@ class Workbook {
           : Array.isArray(headerOpt)
             ? null
             : keys;
+
       if (plainKeys !== null && jsonKeysAvoidPrototype(plainKeys)) {
         const minCol = sd.minCol;
+
         for (let rowIndex = dataStartIndex; rowIndex < rows.length; rowIndex++) {
           const cells = rows[rowIndex].cells;
           const obj: Record<string, CellValue> = {};
+
           for (let cellIndex = 0; cellIndex < cells.length; cellIndex++) {
             const { column, value } = cells[cellIndex];
             const key = plainKeys[column - minCol];
+
             if (key === undefined) continue;
             obj[key] = value;
           }
+
           result.push(obj);
         }
+
         return result;
       }
+
       for (let rowIndex = dataStartIndex; rowIndex < rows.length; rowIndex++) {
         const obj = createJsonOutputObject();
+
         for (const { column, value } of rows[rowIndex].cells) {
           const key = keys === null ? columnNumberToLetter(column) : keys[column - sd.minCol];
+
           if (key === undefined) continue;
           obj[key] = value;
         }
+
         result.push(finishJsonOutputObject(obj));
       }
+
       return result;
     }
 
     const rows = sd.toArray();
+
     if (rows.length === 0) return [];
 
     const headerOpt = options?.header;
@@ -2250,25 +2563,33 @@ class Workbook {
     }
 
     const result: Record<string, CellValue>[] = [];
+
     if (!Array.isArray(headerOpt) && jsonKeysAvoidPrototype(keys)) {
       for (let r = dataStartIndex; r < rows.length; r++) {
         const row = rows[r];
         const obj: Record<string, CellValue> = {};
+
         for (let c = 0; c < keys.length; c++) {
           obj[keys[c]] = c < row.length ? row[c] : null;
         }
+
         result.push(obj);
       }
+
       return result;
     }
+
     for (let r = dataStartIndex; r < rows.length; r++) {
       const row = rows[r];
       const obj = createJsonOutputObject();
+
       for (let c = 0; c < keys.length; c++) {
         obj[keys[c]] = c < row.length ? row[c] : null;
       }
+
       result.push(finishJsonOutputObject(obj));
     }
+
     return result;
   }
 
@@ -2287,6 +2608,7 @@ class Workbook {
     const buf = this.#rowsBuffer(sheet, csvTraversalOptions(options, outputLimit));
     const sd = new SheetData(buf);
     const dense = options?.mode === 'dense';
+
     const rows: CsvCell[][] = dense
       ? sd.toArray().map((row, rowIndex) =>
           row.map((value, columnIndex) => ({
@@ -2295,10 +2617,12 @@ class Workbook {
           })),
         )
       : [...sd.typedOccupiedRows()].map(({ cells }) => cells);
+
     if (rows.length === 0) return '';
 
     const maxCols = dense ? rows.reduce((max, row) => Math.max(max, row.length), 0) : null;
     const leadingEmptyFields = dense ? sd.minCol - 1 : 0;
+
     return encodeCsvOutput(
       rows,
       leadingEmptyFields,
@@ -2316,6 +2640,7 @@ class Workbook {
     const className = options?.className;
     const buf = this.#rowsBuffer(sheet, options);
     const sd = new SheetData(buf);
+
     const rows =
       options?.mode === 'dense'
         ? sd.toArray()
@@ -2326,47 +2651,56 @@ class Workbook {
     const open = `<table${classAttr}>`;
     let observed = chargeHtmlOutput(0, Buffer.byteLength(open), limit);
     const parts: string[] = [open];
+
     // Build and charge one string per row; per-cell byte counting dominated runtime.
     for (const row of rows) {
       let line = '<tr>';
+
       for (const cell of row) {
         line += `<td>${escapeHtml(cellValueToString(cell))}</td>`;
       }
+
       line += '</tr>';
       observed = chargeHtmlOutput(observed, Buffer.byteLength(line), limit);
       parts.push(line);
     }
+
     chargeHtmlOutput(observed, HTML_TABLE_CLOSE.length, limit);
     parts.push(HTML_TABLE_CLOSE);
+
     return parts.join('');
   }
 
   /** Write an array of JSON objects to a sheet. */
-  fromJSON(sheet: string, data: Record<string, CellValueInput>[], options?: FromJsonOptions): void {
+  fromJSON(sheet: string, data: Record<string, CellValue>[], options?: FromJsonOptions): void {
     if (!Array.isArray(data)) throw new TypeError('JSON import data must be an array');
-    if (
-      options !== undefined &&
-      (typeof options !== 'object' || options === null || Array.isArray(options))
-    ) {
+
+    if (options !== undefined && !isNonArrayObject(options)) {
       throw new TypeError('JSON import options must be an object');
     }
 
     const limits = resolveFromJsonLimits(options?.limits);
     const startCell = options?.startCell ?? 'A1';
-    if (typeof startCell !== 'string') throw new TypeError('Invalid cell reference');
+
+    if (!isStringValue(startCell)) throw new TypeError('Invalid cell reference');
     const { col: startCol, row: startRow } = parseCellRef(startCell);
 
     const headerOpt = options?.header;
-    if (headerOpt !== undefined && typeof headerOpt !== 'boolean' && !Array.isArray(headerOpt)) {
+
+    if (headerOpt !== undefined && !isBooleanValue(headerOpt) && !Array.isArray(headerOpt)) {
       throw new TypeError('header must be a boolean or an array of strings');
     }
+
     const writeHeader = headerOpt !== false;
-    const dataLength = jsonArrayLength(data as unknown[]);
+    const dataLength = jsonArrayLength(data);
     const rowCount = dataLength === 0 ? 0 : dataLength + (writeHeader ? 1 : 0);
+
     if (!Number.isSafeInteger(rowCount)) {
       throw fromJsonLimitError('row_count', limits.maxRows, limits.maxRows + 1);
     }
+
     checkFromJsonLimit('row_count', limits.maxRows, rowCount);
+
     if (rowCount > 0) {
       const lastRow = startRow + rowCount - 1;
       checkFromJsonLimit('row_count', EXCEL_MAX_ROWS, lastRow);
@@ -2375,8 +2709,10 @@ class Workbook {
     const keys: string[] = [];
     const keyToOffset = new Map<string, number>();
     let retainedBytes = 0;
+
     const addKey = (key: string): number => {
       const existing = keyToOffset.get(key);
+
       if (existing !== undefined) return existing;
       const columnCount = keys.length + 1;
       checkFromJsonLimit('column_count', limits.maxColumns, columnCount);
@@ -2391,40 +2727,52 @@ class Workbook {
       const offset = keys.length;
       keys.push(key);
       keyToOffset.set(key, offset);
+
       return offset;
     };
 
     if (Array.isArray(headerOpt)) {
-      const headerLength = jsonArrayLength(headerOpt as unknown[]);
+      const headerLength = jsonArrayLength(headerOpt);
       checkFromJsonLimit('column_count', limits.maxColumns, headerLength);
       checkFromJsonLimit('column_count', EXCEL_MAX_COLUMNS, headerLength);
+
       for (let index = 0; index < headerLength; index++) {
-        const key = jsonArrayElement(headerOpt as unknown[], index);
-        if (typeof key !== 'string') throw new TypeError('header names must be strings');
+        const key = jsonArrayElement(headerOpt, index);
+
+        if (!isStringValue(key)) throw new TypeError('header names must be strings');
+
         if (keyToOffset.has(key)) throw new TypeError('header names must be unique');
         addKey(key);
       }
     }
+
     if (dataLength === 0) return;
 
-    const entries: JsCellEntry[] = [];
+    const entries: NativeJsCellEntry[] = [];
     let cellCount = 0;
 
     for (let rowOffset = 0; rowOffset < dataLength; rowOffset++) {
-      const record = jsonArrayElement(data as unknown[], rowOffset);
-      if (!isJsonRecord(record)) throw new TypeError('JSON import rows must be objects');
+      const record = jsonArrayElement(data, rowOffset);
+
+      if (!isNonArrayObject(record)) throw new TypeError('JSON import rows must be objects');
+
       for (const key of jsonRecordKeys(record)) {
         let columnOffset = keyToOffset.get(key);
+
         if (columnOffset === undefined) {
           if (Array.isArray(headerOpt)) {
             throw new TypeError('JSON import row keys must match custom headers');
           }
+
           columnOffset = addKey(key);
         }
+
         cellCount = checkedFromJsonAdd(cellCount, 1, limits.maxCells, 'cell_count');
+
         const cell = `${columnNumberToLetter(startCol + columnOffset)}${
           startRow + rowOffset + (writeHeader ? 1 : 0)
         }`;
+
         retainedBytes = checkedFromJsonAdd(
           retainedBytes,
           FROM_JSON_ENTRY_OVERHEAD_BYTES + Buffer.byteLength(cell),
@@ -2449,9 +2797,11 @@ class Workbook {
       for (let offset = 0; offset < keys.length; offset++) {
         const key = keys[offset];
         const keyBytes = Buffer.byteLength(key);
+
         if (keyBytes > MAX_FROM_JSON_CELL_STRING_BYTES) {
           throw new TypeError('JSON cell string exceeds the Excel limit');
         }
+
         cellCount = checkedFromJsonAdd(cellCount, 1, limits.maxCells, 'cell_count');
         const cell = `${columnNumberToLetter(startCol + offset)}${startRow}`;
         retainedBytes = checkedFromJsonAdd(
@@ -2525,4 +2875,5 @@ function builtinFormatCode(id: number): string | null {
 }
 
 export type { CellTypeName, RawRowsResult, RowData };
+
 export { builtinFormatCode, formatNumber, JsStreamWriter, SheetData, SheetStreamReader, Workbook };

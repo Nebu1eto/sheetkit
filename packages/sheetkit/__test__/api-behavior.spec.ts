@@ -34,7 +34,7 @@ describe('Workbook API behavior', () => {
         chartType: 'unknown-chart',
         series: [{ name: 'S1', categories: 'Sheet1!$A$1:$A$1', values: 'Sheet1!$B$1:$B$1' }],
       }),
-    ).toThrow();
+    ).toThrow('unknown chart type: unknown-chart');
   });
 
   it('should throw on unknown validation type', () => {
@@ -44,7 +44,7 @@ describe('Workbook API behavior', () => {
         sqref: 'A1:A2',
         validationType: 'unknown-validation',
       }),
-    ).toThrow();
+    ).toThrow('unknown validation type: unknown-validation');
   });
 
   it('should throw on unknown pivot aggregate function', () => {
@@ -60,6 +60,6 @@ describe('Workbook API behavior', () => {
         columns: [],
         data: [{ name: 'Amount', function: 'unknown-fn' }],
       }),
-    ).toThrow();
+    ).toThrow('unknown aggregate function: unknown-fn');
   });
 });

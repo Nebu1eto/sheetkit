@@ -3,67 +3,58 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { isResourceLimitError, Workbook } from '../index.js';
+import { captureError, captureRejection } from './helpers/errors.js';
 
 const password = 'Password1234_';
+
 const fixturePath = join(
   dirname(fileURLToPath(import.meta.url)),
   '../../../crates/sheetkit-core/tests/fixtures/encryption/msoffcrypto-tool-v6.0.0/agile-password.xlsx',
 );
+
 const encrypted = readFileSync(fixturePath);
 
-function captureError(action: () => unknown): unknown {
-  try {
-    action();
-  } catch (error) {
-    return error;
-  }
-  throw new Error('Expected action to throw');
-}
-
-async function captureRejection(action: Promise<unknown>): Promise<unknown> {
-  try {
-    await action;
-  } catch (error) {
-    return error;
-  }
-  throw new Error('Expected promise to reject');
-}
-
 function expectResource(
-  error: unknown,
+  error: Error,
   operation: string,
   category: string,
   dimension: string,
 ): void {
   expect(isResourceLimitError(error)).toBe(true);
+
   if (!isResourceLimitError(error)) throw new Error('Expected resource limit error');
   expect(error.operation).toBe(operation);
   expect(error.category).toBe(category);
   expect(error.dimension).toBe(dimension);
-  expect(typeof error.limit).toBe('bigint');
-  expect(typeof error.observed).toBe('bigint');
+  expect(error.limit).toBeTypeOf('bigint');
+  expect(error.observed).toBeTypeOf('bigint');
   expect(error.observed).toBeGreaterThan(error.limit);
 }
 
 function crc32(data: Buffer): number {
   let crc = 0xffffffff;
+
   for (const byte of data) {
     crc ^= byte;
+
     for (let bit = 0; bit < 8; bit += 1) {
       crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
     }
   }
+
   return (crc ^ 0xffffffff) >>> 0;
 }
 
 function appendStoredZipEntry(source: Buffer, path: string, data: Buffer): Buffer {
   let eocdOffset = -1;
+
   for (let offset = source.length - 22; offset >= 0; offset -= 1) {
     if (source.readUInt32LE(offset) === 0x06054b50) {
       eocdOffset = offset;
       break;
     }
   }
+
   if (eocdOffset < 0) throw new Error('EOCD not found');
 
   const entryCount = source.readUInt16LE(eocdOffset + 10);
@@ -131,12 +122,14 @@ describe('encrypted and VBA resource boundaries', () => {
 
   it('preserves typed sync/async container limit errors', async () => {
     const options = { cryptLimits: { outerCfbBytes: encrypted.length - 1 } };
+
     const errors = [
       captureError(() => Workbook.openWithPasswordSync(fixturePath, password, options)),
       await captureRejection(Workbook.openWithPassword(fixturePath, password, options)),
       captureError(() => Workbook.openBufferWithPasswordSync(encrypted, password, options)),
       await captureRejection(Workbook.openBufferWithPassword(encrypted, password, options)),
     ];
+
     for (const error of errors) expectResource(error, 'decrypt', 'container', 'input_bytes');
   });
 
@@ -162,18 +155,23 @@ describe('encrypted and VBA resource boundaries', () => {
         dimension: 'aggregate_declared_bytes',
       },
     ];
+
     for (const testCase of cases) {
       const syncError = captureError(() =>
         Workbook.openBufferWithPasswordSync(encrypted, password, testCase.options),
       );
+
       const asyncError = await captureRejection(
         Workbook.openBufferWithPassword(encrypted, password, testCase.options),
       );
+
       expectResource(syncError, testCase.operation, testCase.category, testCase.dimension);
       expectResource(asyncError, testCase.operation, testCase.category, testCase.dimension);
+
       if (!isResourceLimitError(syncError) || !isResourceLimitError(asyncError)) {
         throw new Error('Expected paired resource limit errors');
       }
+
       expect(asyncError.limit).toBe(syncError.limit);
       expect(asyncError.observed).toBe(syncError.observed);
     }
@@ -185,9 +183,11 @@ describe('encrypted and VBA resource boundaries', () => {
     const syncError = captureError(() =>
       Workbook.openBufferWithPasswordSync(encrypted, 'wrong password'),
     );
+
     const asyncError = await captureRejection(
       Workbook.openBufferWithPassword(encrypted, 'wrong password'),
     );
+
     expect(isResourceLimitError(syncError)).toBe(false);
     expect(isResourceLimitError(asyncError)).toBe(false);
   });

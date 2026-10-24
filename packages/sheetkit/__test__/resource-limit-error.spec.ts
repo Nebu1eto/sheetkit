@@ -3,28 +3,22 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { isResourceLimitError, Workbook } from '../index.js';
+import { captureError, captureRejection } from './helpers/errors.js';
 
-function captureError(action: () => unknown): unknown {
-  try {
-    action();
-  } catch (error) {
-    return error;
-  }
-  throw new Error('Expected action to throw');
-}
-
-function expectOpenResourceError(error: unknown) {
+function expectOpenResourceError(error: Error) {
   expect(isResourceLimitError(error)).toBe(true);
+
   if (!isResourceLimitError(error)) throw new Error('Expected a resource limit error');
   expect(error).toBeInstanceOf(Error);
   expect(error.code).toBe('resource_limit_exceeded');
   expect(error.operation).toBe('workbook_open');
   expect(error.category).toBe('archive');
   expect(error.dimension).toBe('entry_count');
-  expect(typeof error.limit).toBe('bigint');
-  expect(typeof error.observed).toBe('bigint');
+  expect(error.limit).toBeTypeOf('bigint');
+  expect(error.observed).toBeTypeOf('bigint');
   expect(error.observed).toBeGreaterThan(error.limit);
   expect(error.stage).toBe('inspect');
+
   return error;
 }
 
@@ -52,6 +46,7 @@ describe('resource limit errors', () => {
         throw new Error('poisoned getter');
       },
     });
+
     expect(() => isResourceLimitError(poisoned)).not.toThrow();
     expect(isResourceLimitError(poisoned)).toBe(false);
   });
@@ -79,16 +74,13 @@ describe('resource limit errors', () => {
 
     try {
       new Workbook().saveSync(path);
+
       const syncError = expectOpenResourceError(
         captureError(() => Workbook.openSync(path, { maxZipEntries: 1 })),
       );
+
       const asyncError = expectOpenResourceError(
-        await Workbook.open(path, { maxZipEntries: 1 }).then(
-          () => {
-            throw new Error('Expected open to reject');
-          },
-          (error: unknown) => error,
-        ),
+        await captureRejection(Workbook.open(path, { maxZipEntries: 1 })),
       );
 
       expect(asyncError.limit).toBe(syncError.limit);

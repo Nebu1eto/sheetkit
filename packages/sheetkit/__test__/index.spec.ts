@@ -50,7 +50,7 @@ describe('Phase 1 - Basic I/O', () => {
   });
 
   it('should throw on invalid path', async () => {
-    await expect(Workbook.open('/nonexistent/path.xlsx')).rejects.toThrow();
+    await expect(Workbook.open('/nonexistent/path.xlsx')).rejects.toThrow('I/O error');
   });
 });
 
@@ -235,21 +235,27 @@ describe('Row/Col Getters & Outline Levels', () => {
 
   it('should reject outline level > 7 for row', () => {
     const wb = new Workbook();
-    expect(() => wb.setRowOutlineLevel('Sheet1', 1, 8)).toThrow();
+    expect(() => wb.setRowOutlineLevel('Sheet1', 1, 8)).toThrow(
+      'outline level 8 exceeds maximum 7',
+    );
   });
 
   it('should reject outline level > 7 for col', () => {
     const wb = new Workbook();
-    expect(() => wb.setColOutlineLevel('Sheet1', 'A', 8)).toThrow();
+    expect(() => wb.setColOutlineLevel('Sheet1', 'A', 8)).toThrow(
+      'outline level 8 exceeds maximum 7',
+    );
   });
 });
 
 describe('Phase 4 - Style', () => {
   it('should add a style with font and apply to cell', () => {
     const wb = new Workbook();
+
     const styleId = wb.addStyle({
       font: { bold: true, size: 14, color: '#FF0000' },
     });
+
     expect(styleId).toBeGreaterThanOrEqual(0);
     wb.setCellStyle('Sheet1', 'A1', styleId);
     expect(wb.getCellStyle('Sheet1', 'A1')).toBe(styleId);
@@ -257,28 +263,34 @@ describe('Phase 4 - Style', () => {
 
   it('should add a style with fill', () => {
     const wb = new Workbook();
+
     const styleId = wb.addStyle({
       fill: { pattern: 'solid', fgColor: '#FFFF00' },
     });
+
     expect(styleId).toBeGreaterThanOrEqual(0);
   });
 
   it('should add a style with border', () => {
     const wb = new Workbook();
+
     const styleId = wb.addStyle({
       border: {
         left: { style: 'thin', color: '#000000' },
         right: { style: 'thin', color: '#000000' },
       },
     });
+
     expect(styleId).toBeGreaterThanOrEqual(0);
   });
 
   it('should add a style with alignment', () => {
     const wb = new Workbook();
+
     const styleId = wb.addStyle({
       alignment: { horizontal: 'center', vertical: 'center', wrapText: true },
     });
+
     expect(styleId).toBeGreaterThanOrEqual(0);
   });
 
@@ -317,7 +329,7 @@ describe('Row/Col Style', () => {
 
   it('should reject invalid row style ID', () => {
     const wb = new Workbook();
-    expect(() => wb.setRowStyle('Sheet1', 1, 999)).toThrow();
+    expect(() => wb.setRowStyle('Sheet1', 1, 999)).toThrow('style not found: 999');
   });
 
   it('should set and get col style', () => {
@@ -334,7 +346,7 @@ describe('Row/Col Style', () => {
 
   it('should reject invalid col style ID', () => {
     const wb = new Workbook();
-    expect(() => wb.setColStyle('Sheet1', 'A', 999)).toThrow();
+    expect(() => wb.setColStyle('Sheet1', 'A', 999)).toThrow('style not found: 999');
   });
 });
 
@@ -356,6 +368,7 @@ describe('Phase 7 - Charts & Images', () => {
 
   it('should add a PNG image and save', async () => {
     const wb = new Workbook();
+
     const pngData = Buffer.from([
       0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
       0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f,
@@ -363,6 +376,7 @@ describe('Phase 7 - Charts & Images', () => {
       0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49,
       0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
     ]);
+
     wb.addImage('Sheet1', {
       data: pngData,
       format: 'png',
@@ -390,7 +404,9 @@ describe('Chart & Picture CRUD', () => {
 
   it('should throw when deleting a chart at empty cell', () => {
     const wb = new Workbook();
-    expect(() => wb.deleteChart('Sheet1', 'A1')).toThrow();
+    expect(() => wb.deleteChart('Sheet1', 'A1')).toThrow(
+      "no chart found at cell 'A1' on sheet 'Sheet1'",
+    );
   });
 
   it('should delete a picture', () => {
@@ -408,7 +424,9 @@ describe('Chart & Picture CRUD', () => {
 
   it('should throw when deleting a picture at empty cell', () => {
     const wb = new Workbook();
-    expect(() => wb.deletePicture('Sheet1', 'A1')).toThrow();
+    expect(() => wb.deletePicture('Sheet1', 'A1')).toThrow(
+      "no picture found at cell 'A1' on sheet 'Sheet1'",
+    );
   });
 
   it('should get picture cells', () => {
@@ -855,7 +873,7 @@ describe('Phase 8 - Data Validation', () => {
         validationType: 'list',
         formula1: '"A,B"',
       }),
-    ).toThrow();
+    ).toThrow(/^invalid reference: $/);
   });
 
   it('should reject list validation without formula1', () => {
@@ -865,7 +883,7 @@ describe('Phase 8 - Data Validation', () => {
         sqref: 'A1:A10',
         validationType: 'list',
       }),
-    ).toThrow();
+    ).toThrow('formula1 is required for List validation');
   });
 
   it('should reject between operator without formula2', () => {
@@ -877,7 +895,7 @@ describe('Phase 8 - Data Validation', () => {
         operator: 'between',
         formula1: '1',
       }),
-    ).toThrow();
+    ).toThrow('formula2 is required for Between operator');
   });
 
   it('should accept case-insensitive operator input', () => {
@@ -1029,7 +1047,9 @@ describe('Merge Cells', () => {
   it('should detect overlapping merge ranges', () => {
     const wb = new Workbook();
     wb.mergeCells('Sheet1', 'A1', 'C3');
-    expect(() => wb.mergeCells('Sheet1', 'B2', 'D4')).toThrow();
+    expect(() => wb.mergeCells('Sheet1', 'B2', 'D4')).toThrow(
+      "merge cell range 'B2:D4' overlaps with existing range 'A1:C3'",
+    );
   });
 
   it('should unmerge a range', () => {
@@ -1041,7 +1061,7 @@ describe('Merge Cells', () => {
 
   it('should throw when unmerging non-existent range', () => {
     const wb = new Workbook();
-    expect(() => wb.unmergeCell('Sheet1', 'A1:B2')).toThrow();
+    expect(() => wb.unmergeCell('Sheet1', 'A1:B2')).toThrow("merge cell range 'A1:B2' not found");
   });
 
   it('should return empty array for no merge cells', () => {
@@ -1568,12 +1588,12 @@ describe('Freeze Panes', () => {
 
   it('should throw for A1 cell reference', () => {
     const wb = new Workbook();
-    expect(() => wb.setPanes('Sheet1', 'A1')).toThrow();
+    expect(() => wb.setPanes('Sheet1', 'A1')).toThrow('freeze pane at A1 has no effect');
   });
 
   it('should throw for nonexistent sheet', () => {
     const wb = new Workbook();
-    expect(() => wb.setPanes('NoSheet', 'A2')).toThrow();
+    expect(() => wb.setPanes('NoSheet', 'A2')).toThrow("sheet 'NoSheet' does not exist");
   });
 
   it('should overwrite previous panes', () => {
@@ -1619,7 +1639,7 @@ describe('Date CellValue', () => {
     wb.setCellValue('Sheet1', 'A1', 45292);
     // Without a date style, it should come back as a number
     const val = wb.getCellValue('Sheet1', 'A1');
-    expect(typeof val).toBe('number');
+    expect(val).toBeTypeOf('number');
     expect(val).toBe(45292);
   });
 
@@ -1683,11 +1703,13 @@ describe('style normalization', () => {
 
   it('should normalize RGB colors and omit none border sides', async () => {
     const wb = new Workbook();
+
     const styleId = wb.addStyle({
       font: { color: '#a1b2c3' },
       fill: { pattern: 'solid', fgColor: '80d4e5f6' },
       border: { left: { style: 'none', color: '#ff0000' } },
     });
+
     wb.setCellValue('Sheet1', 'A1', 'styled');
     wb.setCellStyle('Sheet1', 'A1', styleId);
     await wb.save(out);
@@ -1778,8 +1800,8 @@ describe('Row/Col Iterators', () => {
 
   it('should throw for non-existent sheet', () => {
     const wb = new Workbook();
-    expect(() => wb.getRows('NoSheet')).toThrow();
-    expect(() => wb.getCols('NoSheet')).toThrow();
+    expect(() => wb.getRows('NoSheet')).toThrow("sheet 'NoSheet' does not exist");
+    expect(() => wb.getCols('NoSheet')).toThrow("sheet 'NoSheet' does not exist");
   });
 
   it('should roundtrip rows through save/open', async () => {
@@ -2141,7 +2163,7 @@ describe('Pivot Tables', () => {
         columns: [],
         data: [{ name: 'Y', function: 'count' }],
       }),
-    ).toThrow();
+    ).toThrow("pivot table 'PT1' already exists");
   });
 });
 
@@ -2163,6 +2185,7 @@ describe('Sparklines', () => {
       lineWeight: 0.75,
       style: 1,
     };
+
     expect(config.dataRange).toBe('Sheet1!A1:A10');
     expect(config.location).toBe('B1');
     expect(config.sparklineType).toBe('line');
@@ -2228,7 +2251,9 @@ describe('Buffer I/O', () => {
   });
 
   it('should throw on invalid buffer', () => {
-    expect(() => Workbook.openBufferSync(Buffer.from('not a zip'))).toThrow();
+    expect(() => Workbook.openBufferSync(Buffer.from('not a zip'))).toThrow(
+      'ZIP error: invalid Zip archive',
+    );
   });
 });
 
@@ -2262,12 +2287,14 @@ describe('setCellFormula / fillFormula', () => {
 
   it('should throw on invalid range', () => {
     const wb = new Workbook();
-    expect(() => wb.fillFormula('Sheet1', 'INVALID', 'A1')).toThrow();
+    expect(() => wb.fillFormula('Sheet1', 'INVALID', 'A1')).toThrow('invalid fill formula range');
   });
 
   it('should throw on multi-column range', () => {
     const wb = new Workbook();
-    expect(() => wb.fillFormula('Sheet1', 'A1:B5', 'C1')).toThrow();
+    expect(() => wb.fillFormula('Sheet1', 'A1:B5', 'C1')).toThrow(
+      'fill_formula only supports single-column ranges',
+    );
   });
 });
 
@@ -2455,13 +2482,17 @@ describe('Batch APIs', () => {
   it('should handle large batch efficiently', () => {
     const wb = new Workbook();
     const rows: (string | number)[][] = [];
+
     for (let r = 0; r < 1000; r++) {
       const row: (string | number)[] = [];
+
       for (let c = 0; c < 20; c++) {
         row.push(r * 20 + c);
       }
+
       rows.push(row);
     }
+
     wb.setSheetData('Sheet1', rows);
 
     // Spot-check
@@ -2527,7 +2558,7 @@ describe('getRowsBuffer', () => {
 
   it('should throw on non-existent sheet', () => {
     const wb = new Workbook();
-    expect(() => wb.getRowsBuffer('NoSheet')).toThrow();
+    expect(() => wb.getRowsBuffer('NoSheet')).toThrow("sheet 'NoSheet' does not exist");
   });
 });
 
@@ -2886,9 +2917,11 @@ describe('SheetData', () => {
     const buf = wb.getRowsBuffer('Sheet1');
     const sd = new SheetData(buf);
     const collected = [];
+
     for (const r of sd.rows()) {
       collected.push(r);
     }
+
     expect(collected.length).toBe(2);
     expect(collected[0].row).toBe(1);
     expect(collected[0].values).toEqual(['first']);
@@ -2965,7 +2998,9 @@ describe('decodeRowsBuffer', () => {
     expect(() => decodeRowsBuffer(oversizedRows)).toThrow('truncated row index');
 
     for (let length = 16; length < valid.length; length++) {
-      expect(() => decodeRowsBuffer(valid.subarray(0, length))).toThrow();
+      expect(() => decodeRowsBuffer(valid.subarray(0, length))).toThrow(
+        /^Invalid buffer: truncated /,
+      );
     }
   });
 
@@ -3113,13 +3148,17 @@ describe('Buffer large dataset', () => {
   it('should handle 1000 rows x 20 cols via SheetData', () => {
     const wb = new Workbook();
     const data: number[][] = [];
+
     for (let r = 0; r < 1000; r++) {
       const row: number[] = [];
+
       for (let c = 0; c < 20; c++) {
         row.push(r * 20 + c);
       }
+
       data.push(row);
     }
+
     wb.setSheetData('Sheet1', data);
 
     const buf = wb.getRowsBuffer('Sheet1');
@@ -3137,13 +3176,17 @@ describe('Buffer large dataset', () => {
   it('should produce consistent results between getRows and decodeRowsBuffer for large data', () => {
     const wb = new Workbook();
     const data: (string | number)[][] = [];
+
     for (let r = 0; r < 100; r++) {
       const row: (string | number)[] = [];
+
       for (let c = 0; c < 10; c++) {
         row.push(r % 2 === 0 ? r * 10 + c : `val_${r}_${c}`);
       }
+
       data.push(row);
     }
+
     wb.setSheetData('Sheet1', data);
 
     const rows = wb.getRows('Sheet1');
@@ -3507,11 +3550,13 @@ describe('fromJSON', () => {
 
   it('should roundtrip with toJSON', () => {
     const wb = new Workbook();
+
     const original = [
       { Name: 'Alice', Score: 95, Pass: true },
       { Name: 'Bob', Score: 80, Pass: true },
       { Name: 'Charlie', Score: 55, Pass: false },
     ];
+
     wb.fromJSON('Sheet1', original);
     const result = wb.toJSON('Sheet1');
     expect(result).toEqual(original);
@@ -3600,8 +3645,12 @@ describe('Sheet View Options', () => {
 
   it('should reject invalid zoom scale', () => {
     const wb = new Workbook();
-    expect(() => wb.setSheetViewOptions('Sheet1', { zoomScale: 5 })).toThrow();
-    expect(() => wb.setSheetViewOptions('Sheet1', { zoomScale: 500 })).toThrow();
+    expect(() => wb.setSheetViewOptions('Sheet1', { zoomScale: 5 })).toThrow(
+      'zoom scale 5 is outside the valid range 10-400',
+    );
+    expect(() => wb.setSheetViewOptions('Sheet1', { zoomScale: 500 })).toThrow(
+      'zoom scale 500 is outside the valid range 10-400',
+    );
   });
 
   it('should set and get view mode', () => {
@@ -3678,8 +3727,10 @@ describe('Sheet View Options', () => {
 
   it('should throw for non-existent sheet', () => {
     const wb = new Workbook();
-    expect(() => wb.getSheetViewOptions('NoSheet')).toThrow();
-    expect(() => wb.setSheetViewOptions('NoSheet', { zoomScale: 100 })).toThrow();
+    expect(() => wb.getSheetViewOptions('NoSheet')).toThrow("sheet 'NoSheet' does not exist");
+    expect(() => wb.setSheetViewOptions('NoSheet', { zoomScale: 100 })).toThrow(
+      "sheet 'NoSheet' does not exist",
+    );
   });
 });
 
@@ -3708,7 +3759,9 @@ describe('Sheet Visibility', () => {
 
   it('should not allow hiding the last visible sheet', () => {
     const wb = new Workbook();
-    expect(() => wb.setSheetVisibility('Sheet1', 'hidden')).toThrow();
+    expect(() => wb.setSheetVisibility('Sheet1', 'hidden')).toThrow(
+      'cannot hide the last visible sheet',
+    );
   });
 
   it('should roundtrip visibility through save/open', async () => {
@@ -3727,8 +3780,10 @@ describe('Sheet Visibility', () => {
 
   it('should throw for non-existent sheet', () => {
     const wb = new Workbook();
-    expect(() => wb.getSheetVisibility('NoSheet')).toThrow();
-    expect(() => wb.setSheetVisibility('NoSheet', 'hidden')).toThrow();
+    expect(() => wb.getSheetVisibility('NoSheet')).toThrow("sheet 'NoSheet' does not exist");
+    expect(() => wb.setSheetVisibility('NoSheet', 'hidden')).toThrow(
+      "sheet 'NoSheet' does not exist",
+    );
   });
 
   it('should throw for invalid visibility string', () => {
@@ -3860,17 +3915,17 @@ describe('Table CRUD', () => {
         range: 'C1:D5',
         columns: [{ name: 'Col3' }, { name: 'Col4' }],
       }),
-    ).toThrow();
+    ).toThrow("table 'Dup' already exists");
   });
 
   it('should throw when deleting non-existent table', () => {
     const wb = new Workbook();
-    expect(() => wb.deleteTable('Sheet1', 'NoSuchTable')).toThrow();
+    expect(() => wb.deleteTable('Sheet1', 'NoSuchTable')).toThrow("table 'NoSuchTable' not found");
   });
 
   it('should throw for non-existent sheet', () => {
     const wb = new Workbook();
-    expect(() => wb.getTables('NoSheet')).toThrow();
+    expect(() => wb.getTables('NoSheet')).toThrow("sheet 'NoSheet' does not exist");
   });
 
   it('should support multiple tables on different sheets', () => {
@@ -4018,7 +4073,7 @@ describe('Shapes', () => {
         fromCell: 'A1',
         toCell: 'C3',
       }),
-    ).toThrow();
+    ).toThrow('unknown shape type: nonexistent');
   });
 
   it('should throw for nonexistent sheet', () => {
@@ -4029,7 +4084,7 @@ describe('Shapes', () => {
         fromCell: 'A1',
         toCell: 'C3',
       }),
-    ).toThrow();
+    ).toThrow("sheet 'NoSheet' does not exist");
   });
 
   it('should coexist with charts on the same sheet', async () => {
@@ -4120,6 +4175,7 @@ describe('Cross-feature integration', () => {
     const boldStyle = wb.addStyle({
       font: { bold: true, size: 12 },
     });
+
     wb.setCellStyle('Sheet1', 'A1', boldStyle);
     wb.setCellStyle('Sheet1', 'B1', boldStyle);
 
@@ -4258,15 +4314,19 @@ describe('Open Options', () => {
 
   it('should limit rows with sheetRows option', () => {
     const wb = new Workbook();
+
     for (let i = 1; i <= 20; i++) {
       wb.setCellValue('Sheet1', `A${i}`, i);
     }
+
     const buf = wb.writeBufferSync();
 
     const wb2 = Workbook.openBufferSync(buf, { sheetRows: 5 });
+
     for (let i = 1; i <= 5; i++) {
       expect(wb2.getCellValue('Sheet1', `A${i}`)).toBe(i);
     }
+
     for (let i = 6; i <= 20; i++) {
       expect(wb2.getCellValue('Sheet1', `A${i}`)).toBeNull();
     }
@@ -4274,9 +4334,11 @@ describe('Open Options', () => {
 
   it('should limit rows with sheetRows option via file', async () => {
     const wb = new Workbook();
+
     for (let i = 1; i <= 15; i++) {
       wb.setCellValue('Sheet1', `A${i}`, i * 10);
     }
+
     await wb.save(out);
 
     const wb2 = Workbook.openSync(out, { sheetRows: 3 });
@@ -4319,7 +4381,9 @@ describe('Open Options', () => {
   it('should reject when maxZipEntries is exceeded', () => {
     const wb = new Workbook();
     const buf = wb.writeBufferSync();
-    expect(() => Workbook.openBufferSync(buf, { maxZipEntries: 2 })).toThrow();
+    expect(() => Workbook.openBufferSync(buf, { maxZipEntries: 2 })).toThrow(
+      'dimension=entry_count limit=2',
+    );
   });
 
   it('should accept when maxZipEntries is within limit', () => {
@@ -4331,11 +4395,15 @@ describe('Open Options', () => {
 
   it('should reject when maxUnzipSize is exceeded', () => {
     const wb = new Workbook();
+
     for (let i = 1; i <= 100; i++) {
       wb.setCellValue('Sheet1', `A${i}`, 'x'.repeat(200));
     }
+
     const buf = wb.writeBufferSync();
-    expect(() => Workbook.openBufferSync(buf, { maxUnzipSize: 50 })).toThrow();
+    expect(() => Workbook.openBufferSync(buf, { maxUnzipSize: 50 })).toThrow(
+      'dimension=aggregate_declared_bytes limit=50',
+    );
   });
 
   it('should accept when maxUnzipSize is within limit', () => {
@@ -4349,16 +4417,19 @@ describe('Open Options', () => {
     const wb = new Workbook();
     wb.newSheet('Parsed');
     wb.newSheet('Skipped');
+
     for (let i = 1; i <= 10; i++) {
       wb.setCellValue('Parsed', `A${i}`, i);
       wb.setCellValue('Skipped', `A${i}`, i * 100);
     }
+
     const buf = wb.writeBufferSync();
 
     const wb2 = Workbook.openBufferSync(buf, {
       sheets: ['Parsed'],
       sheetRows: 3,
     });
+
     expect(wb2.getCellValue('Parsed', 'A3')).toBe(3);
     expect(wb2.getCellValue('Parsed', 'A4')).toBeNull();
     expect(wb2.getCellValue('Skipped', 'A1')).toBeNull();
@@ -4374,9 +4445,11 @@ describe('Open Options', () => {
 
   it('should work with async open', async () => {
     const wb = new Workbook();
+
     for (let i = 1; i <= 10; i++) {
       wb.setCellValue('Sheet1', `A${i}`, i);
     }
+
     await wb.save(out);
 
     const wb2 = await Workbook.open(out, { sheetRows: 2 });
@@ -4441,7 +4514,7 @@ describe('Additional Chart Types', () => {
     const wb = new Workbook();
     expect(() =>
       wb.addChart('Sheet1', 'D1', 'J10', { chartType: 'unknownType', series: chartSeries }),
-    ).toThrow();
+    ).toThrow('unknown chart type: unknownType');
   });
 });
 
@@ -4824,7 +4897,9 @@ describe('SVG Renderer', () => {
 
   it('should throw for invalid sheet name', () => {
     const wb = new Workbook();
-    expect(() => wb.renderToSvg({ sheetName: 'NonExistent' })).toThrow();
+    expect(() => wb.renderToSvg({ sheetName: 'NonExistent' })).toThrow(
+      "sheet 'NonExistent' does not exist",
+    );
   });
 
   it('should render styled cells with bold text', () => {
@@ -4856,10 +4931,12 @@ describe('Threaded Comments', () => {
 
   it('should add and get a threaded comment', () => {
     const wb = new Workbook();
+
     const id = wb.addThreadedComment('Sheet1', 'A1', {
       author: 'Alice',
       text: 'Hello thread',
     });
+
     expect(id).toBeTruthy();
 
     const comments = wb.getThreadedComments('Sheet1');
@@ -4872,10 +4949,12 @@ describe('Threaded Comments', () => {
 
   it('should add a reply to a threaded comment', () => {
     const wb = new Workbook();
+
     const parentId = wb.addThreadedComment('Sheet1', 'A1', {
       author: 'Alice',
       text: 'Initial comment',
     });
+
     wb.addThreadedComment('Sheet1', 'A1', {
       author: 'Bob',
       text: 'Reply to Alice',
@@ -4913,10 +4992,12 @@ describe('Threaded Comments', () => {
 
   it('should delete a threaded comment', () => {
     const wb = new Workbook();
+
     const id = wb.addThreadedComment('Sheet1', 'A1', {
       author: 'Alice',
       text: 'Delete me',
     });
+
     wb.deleteThreadedComment('Sheet1', id);
 
     const comments = wb.getThreadedComments('Sheet1');
@@ -4925,6 +5006,7 @@ describe('Threaded Comments', () => {
 
   it('should resolve and unresolve a threaded comment', () => {
     const wb = new Workbook();
+
     const id = wb.addThreadedComment('Sheet1', 'A1', {
       author: 'Alice',
       text: 'Resolve me',
@@ -4941,11 +5023,13 @@ describe('Threaded Comments', () => {
 
   it('should add and get persons', () => {
     const wb = new Workbook();
+
     const id = wb.addPerson({
       displayName: 'Alice',
       userId: 'alice@example.com',
       providerId: 'ADAL',
     });
+
     expect(id).toBeTruthy();
 
     const persons = wb.getPersons();
@@ -4968,10 +5052,12 @@ describe('Threaded Comments', () => {
 
   it('should round-trip threaded comments through save/open', async () => {
     const wb = new Workbook();
+
     const id = wb.addThreadedComment('Sheet1', 'A1', {
       author: 'Alice',
       text: 'Persisted comment',
     });
+
     wb.resolveThreadedComment('Sheet1', id, true);
     await wb.save(out);
 
@@ -4990,10 +5076,12 @@ describe('Threaded Comments', () => {
 
   it('should round-trip threaded comments with replies', async () => {
     const wb = new Workbook();
+
     const parentId = wb.addThreadedComment('Sheet1', 'B2', {
       author: 'Bob',
       text: 'Parent comment',
     });
+
     wb.addThreadedComment('Sheet1', 'B2', {
       author: 'Alice',
       text: 'Reply comment',
@@ -5341,16 +5429,18 @@ describe('Form Controls', () => {
 
   it('should throw for invalid sheet name', () => {
     const wb = new Workbook();
-    expect(() => wb.getFormControls('NoSheet')).toThrow();
+    expect(() => wb.getFormControls('NoSheet')).toThrow("sheet 'NoSheet' does not exist");
     expect(() =>
       wb.addFormControl('NoSheet', { controlType: 'button', cell: 'A1', text: 'Test' }),
-    ).toThrow();
-    expect(() => wb.deleteFormControl('NoSheet', 0)).toThrow();
+    ).toThrow("sheet 'NoSheet' does not exist");
+    expect(() => wb.deleteFormControl('NoSheet', 0)).toThrow("sheet 'NoSheet' does not exist");
   });
 
   it('should throw for invalid control type', () => {
     const wb = new Workbook();
-    expect(() => wb.addFormControl('Sheet1', { controlType: 'invalid', cell: 'A1' })).toThrow();
+    expect(() => wb.addFormControl('Sheet1', { controlType: 'invalid', cell: 'A1' })).toThrow(
+      'unknown form control type: invalid',
+    );
   });
 
   it('should save and re-open with form controls preserved', async () => {
@@ -5657,13 +5747,17 @@ describe('getRowsRaw', () => {
     const rows = 500;
     const cols = 10;
     const data: number[][] = [];
+
     for (let r = 0; r < rows; r++) {
       const row: number[] = [];
+
       for (let c = 0; c < cols; c++) {
         row.push(r * cols + c);
       }
+
       data.push(row);
     }
+
     wb.setSheetData('Sheet1', data);
 
     const raw = wb.getRowsRaw('Sheet1');
@@ -5691,9 +5785,11 @@ describe('getRowsRaw', () => {
     expect(raw.totalRows).toBe(rows.length);
 
     let totalCells = 0;
+
     for (const r of rows) {
       totalCells += r.cells.length;
     }
+
     expect(raw.totalCells).toBe(totalCells);
 
     for (let ri = 0; ri < rows.length; ri++) {
@@ -5704,7 +5800,7 @@ describe('getRowsRaw', () => {
 
   it('should throw for non-existent sheet', () => {
     const wb = new Workbook();
-    expect(() => wb.getRowsRaw('NoSheet')).toThrow();
+    expect(() => wb.getRowsRaw('NoSheet')).toThrow("sheet 'NoSheet' does not exist");
   });
 });
 
@@ -5735,9 +5831,11 @@ describe('decodeRowsRawBuffer', () => {
     const actualValues: Array<number | string | undefined> = [];
     const expectedValues: Array<number | string | undefined> = [];
     let ci = 0;
+
     for (let ri = 0; ri < decoded.length; ri++) {
       expect(raw.rowNumbers[ri]).toBe(decoded[ri].row);
       expect(raw.rowCellCounts[ri]).toBe(decoded[ri].cells.length);
+
       for (const cell of decoded[ri].cells) {
         if (cell.valueType === 'number') {
           actualValues.push(raw.cellNumericValues[ci]);
@@ -5749,9 +5847,11 @@ describe('decodeRowsRawBuffer', () => {
           actualValues.push(raw.cellBoolValues[ci]);
           expectedValues.push(cell.boolValue ? 1 : 0);
         }
+
         ci++;
       }
     }
+
     expect(actualValues).toHaveLength(ci);
     expect(actualValues).toEqual(expectedValues);
   });
@@ -5834,19 +5934,23 @@ describe('getRowsIterator', () => {
 
   it('should throw for non-existent sheet', () => {
     const wb = new Workbook();
-    expect(() => [...wb.getRowsIterator('NoSheet')]).toThrow();
+    expect(() => [...wb.getRowsIterator('NoSheet')]).toThrow("sheet 'NoSheet' does not exist");
   });
 
   it('should handle large dataset consistently with getRows', () => {
     const wb = new Workbook();
     const data: (string | number)[][] = [];
+
     for (let r = 0; r < 100; r++) {
       const row: (string | number)[] = [];
+
       for (let c = 0; c < 10; c++) {
         row.push(r % 2 === 0 ? r * 10 + c : `val_${r}_${c}`);
       }
+
       data.push(row);
     }
+
     wb.setSheetData('Sheet1', data);
 
     const rows = wb.getRows('Sheet1');
@@ -5912,7 +6016,7 @@ describe('getRowsBufferV2', () => {
 
   it('should throw on non-existent sheet', () => {
     const wb = new Workbook();
-    expect(() => wb.getRowsBufferV2('NoSheet')).toThrow();
+    expect(() => wb.getRowsBufferV2('NoSheet')).toThrow("sheet 'NoSheet' does not exist");
   });
 });
 
@@ -6043,9 +6147,11 @@ describe('v2 SheetData', () => {
     const buf = wb.getRowsBufferV2('Sheet1');
     const sd = new SheetData(buf);
     const collected = [];
+
     for (const r of sd.rows()) {
       collected.push(r);
     }
+
     expect(collected.length).toBe(2);
     expect(collected[0].row).toBe(1);
     expect(collected[0].values).toEqual(['first']);
@@ -6169,9 +6275,11 @@ describe('v2 decodeRowsRawBuffer', () => {
     const actualValues: Array<number | string | undefined> = [];
     const expectedValues: Array<number | string | undefined> = [];
     let ci = 0;
+
     for (let ri = 0; ri < decoded.length; ri++) {
       expect(raw.rowNumbers[ri]).toBe(decoded[ri].row);
       expect(raw.rowCellCounts[ri]).toBe(decoded[ri].cells.length);
+
       for (const cell of decoded[ri].cells) {
         if (cell.valueType === 'number') {
           actualValues.push(raw.cellNumericValues[ci]);
@@ -6183,9 +6291,11 @@ describe('v2 decodeRowsRawBuffer', () => {
           actualValues.push(raw.cellBoolValues[ci]);
           expectedValues.push(cell.boolValue ? 1 : 0);
         }
+
         ci++;
       }
     }
+
     expect(actualValues).toHaveLength(ci);
     expect(actualValues).toEqual(expectedValues);
   });
@@ -6268,6 +6378,7 @@ describe('v2 consistency with v1', () => {
     for (let ri = 0; ri < v1sd.rowCount; ri++) {
       const v1row = v1sd.toArray()[ri];
       const v2row = v2sd.toArray()[ri];
+
       for (let ci = 0; ci < Math.max(v1row.length, v2row.length); ci++) {
         expect(v2row[ci] ?? null).toBe(v1row[ci] ?? null);
       }
@@ -6277,8 +6388,10 @@ describe('v2 consistency with v1', () => {
   it('should produce identical decodeRowsBuffer results', () => {
     const wb = new Workbook();
     const data: (string | number | boolean)[][] = [];
+
     for (let r = 0; r < 50; r++) {
       const row: (string | number | boolean)[] = [];
+
       for (let c = 0; c < 5; c++) {
         if (c === 0) row.push(`row_${r}`);
         else if (c === 1) row.push(r * 10 + c);
@@ -6286,8 +6399,10 @@ describe('v2 consistency with v1', () => {
         else if (c === 3) row.push(`data_${r}_${c}`);
         else row.push(r + 0.5);
       }
+
       data.push(row);
     }
+
     wb.setSheetData('Sheet1', data);
 
     const v1buf = wb.getRowsBuffer('Sheet1');
@@ -6395,11 +6510,13 @@ describe('Async worker thread offloading', () => {
   });
 
   it('async open propagates errors correctly', async () => {
-    await expect(Workbook.open('/nonexistent/path.xlsx')).rejects.toThrow();
+    await expect(Workbook.open('/nonexistent/path.xlsx')).rejects.toThrow('I/O error');
   });
 
   it('async openBuffer propagates errors for invalid data', async () => {
-    await expect(Workbook.openBuffer(Buffer.from('not-a-zip'))).rejects.toThrow();
+    await expect(Workbook.openBuffer(Buffer.from('not-a-zip'))).rejects.toThrow(
+      'ZIP error: invalid Zip archive',
+    );
   });
 });
 
@@ -6439,9 +6556,11 @@ describe('SheetStreamReader', () => {
 
   it('should read rows with custom batch size', async () => {
     const wb = new Workbook();
+
     for (let i = 1; i <= 10; i++) {
       wb.setCellValue('Sheet1', `A${i}`, i);
     }
+
     await wb.save(out);
 
     const wb2 = await Workbook.open(out, { readMode: 'lazy' });
@@ -6475,15 +6594,18 @@ describe('SheetStreamReader', () => {
 
   it('should support async iterator protocol', async () => {
     const wb = new Workbook();
+
     for (let i = 1; i <= 5; i++) {
       wb.setCellValue('Sheet1', `A${i}`, `row-${i}`);
     }
+
     await wb.save(out);
 
     const wb2 = await Workbook.open(out, { readMode: 'lazy' });
     const reader = await wb2.openSheetReader('Sheet1', { batchSize: 2 });
 
     const allBatches: typeof reader extends AsyncIterable<infer T> ? T[] : never[] = [];
+
     for await (const batch of reader) {
       allBatches.push(batch);
     }
@@ -6498,9 +6620,11 @@ describe('SheetStreamReader', () => {
 
   it('should respect sheetRows limit', async () => {
     const wb = new Workbook();
+
     for (let i = 1; i <= 20; i++) {
       wb.setCellValue('Sheet1', `A${i}`, i);
     }
+
     await wb.save(out);
 
     const wb2 = await Workbook.open(out, { readMode: 'lazy', sheetRows: 5 });
@@ -6508,6 +6632,7 @@ describe('SheetStreamReader', () => {
 
     const allRows: Array<{ cells: Array<{ numberValue?: number }> }> = [];
     let batch = await reader.next();
+
     while (batch !== null) {
       allRows.push(...batch);
       batch = await reader.next();
@@ -6536,7 +6661,9 @@ describe('SheetStreamReader', () => {
     await wb.save(out);
 
     const wb2 = await Workbook.open(out, { readMode: 'lazy' });
-    await expect(wb2.openSheetReader('NonExistent')).rejects.toThrow();
+    await expect(wb2.openSheetReader('NonExistent')).rejects.toThrow(
+      "sheet 'NonExistent' does not exist",
+    );
   });
 
   it('should handle empty sheet', async () => {
@@ -6585,9 +6712,13 @@ describe('SheetStreamReader', () => {
     const wb2 = await Workbook.open(out, { readMode: 'lazy' });
     const reader = await wb2.openSheetReader('Sheet1');
 
-    for await (const _batch of reader) {
-      // consume all
+    let consumedRows = 0;
+
+    for await (const batch of reader) {
+      consumedRows += batch.length;
     }
+
+    expect(consumedRows).toBe(1);
 
     // Reader should be closed after iterator completes
     await expect(reader.next()).rejects.toThrow('already closed');

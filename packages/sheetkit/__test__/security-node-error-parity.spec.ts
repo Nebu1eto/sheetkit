@@ -3,8 +3,9 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { Workbook as NativeWorkbook } from '../binding.js';
+import { type JsOpenOptions, Workbook as NativeWorkbook } from '../binding.js';
 import { isResourceLimitError, Workbook } from '../index.js';
+import { captureError, captureRejection } from './helpers/errors.js';
 
 const encryptedFixture = readFileSync(
   join(
@@ -13,26 +14,8 @@ const encryptedFixture = readFileSync(
   ),
 );
 
-function captureError(action: () => unknown): unknown {
-  try {
-    action();
-  } catch (error) {
-    return error;
-  }
-  throw new Error('Expected action to throw');
-}
-
-async function captureRejection(action: Promise<unknown>): Promise<unknown> {
-  try {
-    await action;
-  } catch (error) {
-    return error;
-  }
-  throw new Error('Expected promise to reject');
-}
-
 function expectResourceError(
-  error: unknown,
+  error: Error,
   expected: {
     operation:
       | 'render'
@@ -51,9 +34,10 @@ function expectResourceError(
   },
 ): void {
   expect(isResourceLimitError(error)).toBe(true);
+
   if (!isResourceLimitError(error)) throw new Error('Expected a resource limit error');
-  const { limit, observed, ...shape } = expected;
-  expect(error).toMatchObject(shape);
+  const { limit, observed, ...classification } = expected;
+  expect(error).toMatchObject(classification);
   expect(error.limit).toBe(limit ?? error.limit);
   expect(error.observed).toBe(observed ?? error.observed);
   expect(error.observed).toBeGreaterThan(error.limit);
@@ -89,6 +73,7 @@ describe('Node resource error parity', () => {
     const path = join(directory, 'atomic.xlsx');
     const sentinel = Buffer.from('existing destination');
     writeFileSync(path, sentinel);
+
     try {
       const syncSaveError = captureError(() => workbook.saveSync(path, limits));
       expectResourceError(syncSaveError, {
@@ -121,12 +106,14 @@ describe('Node resource error parity', () => {
 
   it('maps StreamWriter row limits without publishing the rejected row', () => {
     const workbook = new Workbook();
+
     const writer = workbook.newStreamWriter('Bounded', {
       rowCount: 1,
       cellCount: 1,
       rowXmlBytes: 1_024,
       outputBytes: 1_024,
     });
+
     writer.writeRow(1, ['accepted']);
 
     const error = captureError(() => writer.writeRow(2, ['rejected']));
@@ -147,9 +134,11 @@ describe('Node resource error parity', () => {
 
   it('preserves typed lazy hydration failures across cell and feature methods', () => {
     const source = new Workbook();
+
     for (let row = 1; row <= 512; row++) {
       source.setCellValue('Sheet1', `A${row}`, row);
     }
+
     const data = source.writeBufferSync();
     const options = { readMode: 'lazy' as const, maxXmlPartBytes: 4_096 };
 
@@ -174,6 +163,7 @@ describe('Node resource error parity', () => {
       readMode: 'lazy',
       maxXmlPartBytes: 64 * 1_024,
     });
+
     expect(accepted.getCellValue('Sheet1', 'A1')).toBe(1);
     expect(accepted.getDataValidations('Sheet1')).toEqual([]);
   });
@@ -200,7 +190,9 @@ describe('Node resource error parity', () => {
         operationInputBytes: 3,
       }),
     );
+
     expect(isResourceLimitError(error)).toBe(true);
+
     if (!isResourceLimitError(error)) throw new Error('Expected a resource limit error');
     expect(error.operation).toBe('formula_calculate');
     expect(error.category).toBe('formula');
@@ -221,7 +213,9 @@ describe('Node resource error parity', () => {
         operationInputBytes: 2,
       }),
     );
+
     expect(isResourceLimitError(error)).toBe(true);
+
     if (!isResourceLimitError(error)) throw new Error('Expected a resource limit error');
     expect(error.operation).toBe('formula_calculate');
     expect(error.category).toBe('formula');
@@ -242,6 +236,7 @@ describe('Node resource error parity', () => {
     const native = new NativeWorkbook();
     native.setCellValue('Sheet1', 'A1', 'first');
     native.setCellValue('Sheet1', 'B2', 'second');
+
     const exact = {
       mode: 'sparse',
       limits: { maxRows: 2, maxColumns: 2, maxCells: 2, maxOutputBytes: 1_024 },
@@ -256,6 +251,7 @@ describe('Node resource error parity', () => {
     ]) {
       const error = captureError(collect);
       expect(isResourceLimitError(error)).toBe(true);
+
       if (!isResourceLimitError(error)) throw new Error('Expected a resource limit error');
       expect(error.operation).toBe('data_traverse');
       expect(error.category).toBe('traversal');
@@ -271,6 +267,7 @@ describe('Node resource error parity', () => {
     ]) {
       const error = captureError(collect);
       expect(isResourceLimitError(error)).toBe(true);
+
       if (!isResourceLimitError(error)) throw new Error('Expected a resource limit error');
       expect(error.dimension).toBe('column_count');
       expect(error.limit).toBe(1n);
@@ -304,12 +301,14 @@ describe('Node resource error parity', () => {
     const missingSheetError = captureError(() =>
       target.setSheetDataBuffer('Missing', oversizedFormulaBuffer),
     );
+
     expect(isResourceLimitError(missingSheetError)).toBe(false);
     expect(String(missingSheetError)).toMatch(/sheet.*(?:not found|does not exist)/i);
 
     const shiftedFormulaError = captureError(() =>
       target.setSheetDataBuffer('Sheet1', oversizedFormulaBuffer, 'A1048576'),
     );
+
     expect(isResourceLimitError(shiftedFormulaError)).toBe(false);
     expect(String(shiftedFormulaError)).toMatch(/row|range/i);
     expect(target.writeBufferSync()).toEqual(before);
@@ -318,9 +317,11 @@ describe('Node resource error parity', () => {
     const writer = streamed.newStreamWriter('Streamed');
     writer.writeRow(1, ['sentinel']);
     streamed.applyStreamWriter(writer);
+
     const streamedError = captureError(() =>
       streamed.setSheetDataBuffer('Streamed', oversizedFormulaBuffer),
     );
+
     expect(isResourceLimitError(streamedError)).toBe(false);
     expect(String(streamedError)).toMatch(/streamed sheet/i);
 
@@ -377,14 +378,17 @@ describe('Node resource error parity', () => {
   it('shares the cumulative formula budget across v1 and v2 transfer imports', () => {
     const formula = 'x'.repeat(32_768);
     const exactSource = new Workbook();
+
     for (let row = 1; row <= 128; row++) {
       exactSource.setCellFormula('Sheet1', `A${row}`, formula);
     }
 
     const oversizedSource = new Workbook();
+
     for (let row = 1; row <= 128; row++) {
       oversizedSource.setCellFormula('Sheet1', `A${row}`, formula);
     }
+
     oversizedSource.setCellFormula('Sheet1', 'A129', 'x');
 
     const reusableSource = new Workbook();
@@ -432,7 +436,8 @@ describe('Node resource error parity', () => {
 
   it('rejects malformed compatibility options instead of silently defaulting', async () => {
     const data = new Workbook().writeBufferSync();
-    const invalidOptions = [
+
+    const invalidOptions: JsOpenOptions[] = [
       { readMode: 'unknown' },
       { auxParts: 'unknown' },
       { dateInterpretation: 'unknown' },
@@ -443,15 +448,13 @@ describe('Node resource error parity', () => {
     ];
 
     for (const options of invalidOptions) {
-      const syncError = captureError(() =>
-        Workbook.openBufferSync(data, options as Parameters<typeof Workbook.openBufferSync>[1]),
-      );
+      const syncError = captureError(() => Workbook.openBufferSync(data, options));
+
       expect(isResourceLimitError(syncError)).toBe(false);
       expect(String(syncError)).toMatch(/must be|readMode|auxParts|dateInterpretation/);
 
-      const asyncError = await captureRejection(
-        Workbook.openBuffer(data, options as Parameters<typeof Workbook.openBuffer>[1]),
-      );
+      const asyncError = await captureRejection(Workbook.openBuffer(data, options));
+
       expect(isResourceLimitError(asyncError)).toBe(false);
       expect(String(asyncError)).toMatch(/must be|readMode|auxParts|dateInterpretation/);
     }
@@ -467,6 +470,7 @@ describe('Node resource error parity', () => {
     const rejected = { maxOuterInputBytes: data.length - 1 };
     const syncError = captureError(() => Workbook.openBufferSync(data, rejected));
     const asyncError = await captureRejection(Workbook.openBuffer(data, rejected));
+
     for (const error of [syncError, asyncError]) {
       expectResourceError(error, {
         operation: 'workbook_open',
@@ -484,15 +488,18 @@ describe('Node resource error parity', () => {
       maxOuterInputBytes: encryptedFixture.length,
       cryptLimits: { outerCfbBytes: encryptedFixture.length - 1 },
     };
+
     const syncError = captureError(() =>
       Workbook.openBufferWithPasswordSync(encryptedFixture, 'unused', options),
     );
+
     const asyncError = await captureRejection(
       Workbook.openBufferWithPassword(encryptedFixture, 'unused', options),
     );
 
     for (const error of [syncError, asyncError]) {
       expect(isResourceLimitError(error)).toBe(true);
+
       if (!isResourceLimitError(error)) throw new Error('Expected a resource limit error');
       expect(error.operation).toBe('decrypt');
       expect(error.category).toBe('container');
@@ -519,12 +526,14 @@ describe('Node resource error parity', () => {
 
       const rejected = { kdfIterations: 99_999, kdfWork: 300_000 };
       const syncError = captureError(() => workbook.saveWithPasswordSync(path, 'secret', rejected));
+
       const asyncError = await captureRejection(
         workbook.saveWithPassword(path, 'secret', rejected),
       );
 
       for (const error of [syncError, asyncError]) {
         expect(isResourceLimitError(error)).toBe(true);
+
         if (!isResourceLimitError(error)) throw new Error('Expected a resource limit error');
         expect(error.operation).toBe('encrypt');
         expect(error.category).toBe('encryption');
@@ -533,6 +542,7 @@ describe('Node resource error parity', () => {
         expect(error.limit).toBe(99_999n);
         expect(error.observed).toBe(100_000n);
       }
+
       expect(readFileSync(path)).toEqual(accepted);
       workbook.setCellValue('Sheet1', 'B1', 'task released');
       expect(workbook.getCellValue('Sheet1', 'B1')).toBe('task released');
@@ -545,6 +555,7 @@ describe('Node resource error parity', () => {
     const workbook = new Workbook();
     workbook.setCellValue('Sheet1', 'A1', 'first');
     workbook.setCellValue('Sheet1', 'B1', 'second');
+
     const exact = {
       mode: 'dense' as const,
       limits: { maxRows: 1, maxColumns: 2, maxCells: 2 },
@@ -558,6 +569,7 @@ describe('Node resource error parity', () => {
         { ...exact, limits: { ...exact.limits, maxCells: 1 } },
       ),
     );
+
     expectResourceError(error, {
       operation: 'render',
       category: 'traversal',
@@ -578,6 +590,7 @@ describe('Node resource error parity', () => {
         { mode: 'dense', limits: { maxOutputBytes: 16 } },
       ),
     );
+
     expectResourceError(outputError, {
       operation: 'render',
       category: 'output',
@@ -589,6 +602,7 @@ describe('Node resource error parity', () => {
     const rangeError = captureError(() =>
       workbook.renderToSvg({ sheetName: 'Sheet1', range: 'A1:XFD1048576' }),
     );
+
     expectResourceError(rangeError, {
       operation: 'render',
       category: 'traversal',
@@ -608,13 +622,16 @@ describe('Node resource error parity', () => {
       columns: [],
       data: [{ name: 'Sales', function: 'sum' }],
     };
+
     const makeWorkbook = () => {
       const workbook = new Workbook();
       workbook.setRowValues('Sheet1', 1, 'A', ['Region', 'Sales']);
       workbook.setRowValues('Sheet1', 2, 'A', ['East', 10]);
       workbook.newSheet('PivotSheet');
+
       return workbook;
     };
+
     const exact = {
       mode: 'dense' as const,
       limits: { maxRows: 2, maxColumns: 2, maxCells: 4 },
@@ -625,12 +642,14 @@ describe('Node resource error parity', () => {
     expect(accepted.getPivotTables()).toHaveLength(1);
 
     const rejected = makeWorkbook();
+
     const error = captureError(() =>
       rejected.addPivotTable(config, {
         ...exact,
         limits: { ...exact.limits, maxCells: 3 },
       }),
     );
+
     expectResourceError(error, {
       operation: 'data_traverse',
       category: 'traversal',
@@ -644,6 +663,9 @@ describe('Node resource error parity', () => {
 
   it('rejects oversized pivot config allocations before core validation', () => {
     const oversized = 'x'.repeat(4096);
+
+    const noColumns: { name: string }[] = [];
+
     const base = {
       name: 'PivotTable1',
       sourceSheet: 'MissingSheet',
@@ -651,9 +673,10 @@ describe('Node resource error parity', () => {
       targetSheet: 'PivotSheet',
       targetCell: 'A1',
       rows: [{ name: 'Region' }],
-      columns: [] as Array<{ name: string }>,
+      columns: noColumns,
       data: [{ name: 'Sales', function: 'sum' as const }],
     };
+
     const cases = [
       { ...base, name: oversized },
       { ...base, data: [{ ...base.data[0], displayName: oversized }] },
@@ -666,12 +689,14 @@ describe('Node resource error parity', () => {
     for (const config of cases) {
       const workbook = new Workbook();
       workbook.newSheet('PivotSheet');
+
       const error = captureError(() =>
         workbook.addPivotTable(config, {
           mode: 'dense',
           limits: { maxOutputBytes: 512 },
         }),
       );
+
       expectResourceError(error, {
         operation: 'data_traverse',
         category: 'traversal',
@@ -687,6 +712,7 @@ describe('Node resource error parity', () => {
   it('preserves typed pivot errors under secure finite defaults', () => {
     const workbook = new Workbook();
     workbook.newSheet('PivotSheet');
+
     const error = captureError(() =>
       workbook.addPivotTable({
         name: 'OversizedPivot',

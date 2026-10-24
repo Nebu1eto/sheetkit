@@ -1,7 +1,7 @@
 import { defineConfig } from 'tsdown';
 
 export default defineConfig({
-  entry: ['index.ts', 'buffer-codec.ts', 'sheet-data.ts'],
+  entry: ['index.ts', 'buffer-codec.ts', 'sheet-data.ts', 'open-options.ts'],
   outDir: '.',
   format: 'esm',
   dts: true,

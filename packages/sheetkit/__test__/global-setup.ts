@@ -4,6 +4,7 @@ import { join } from 'node:path';
 
 const BENCHMARK_DIR = join(import.meta.dirname, '..', '..', '..', 'benchmarks', 'node');
 const FIXTURE_DIR = join(BENCHMARK_DIR, 'fixtures');
+
 const FIXTURES = [
   'comments.xlsx',
   'data-validation.xlsx',

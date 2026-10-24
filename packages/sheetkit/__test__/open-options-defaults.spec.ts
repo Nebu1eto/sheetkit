@@ -1,107 +1,33 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { JsOpenOptions } from '../binding.js';
-
-const nativeCalls = vi.hoisted(() => ({
-  openSync: vi.fn<(path: string, options?: unknown) => unknown>(() => ({})),
-  open: vi.fn<(path: string, options?: unknown) => Promise<unknown>>(async () => ({})),
-  openBufferSync: vi.fn<(data: Buffer, options?: unknown) => unknown>(() => ({})),
-  openBuffer: vi.fn<(data: Buffer, options?: unknown) => Promise<unknown>>(async () => ({})),
-}));
-
-vi.mock('../binding.js', () => {
-  class MockNativeWorkbook {
-    noop(): void {}
-
-    static openSync(path: string, options?: unknown): unknown {
-      return nativeCalls.openSync(path, options);
-    }
-
-    static async open(path: string, options?: unknown): Promise<unknown> {
-      return nativeCalls.open(path, options);
-    }
-
-    static openBufferSync(data: Buffer, options?: unknown): unknown {
-      return nativeCalls.openBufferSync(data, options);
-    }
-
-    static async openBuffer(data: Buffer, options?: unknown): Promise<unknown> {
-      return nativeCalls.openBuffer(data, options);
-    }
-
-    static formatNumber(value: number, formatCode: string): string {
-      return `${value}:${formatCode}`;
-    }
-
-    static builtinFormatCode(_id: number): string | null {
-      return null;
-    }
-  }
-
-  class MockNativeSheetStreamReader {
-    nextBatch(_size: number): null {
-      return null;
-    }
-
-    close(): void {}
-  }
-
-  class MockJsStreamWriter {
-    close(): void {}
-  }
-
-  return {
-    JsStreamWriter: MockJsStreamWriter,
-    NativeSheetStreamReader: MockNativeSheetStreamReader,
-    Workbook: MockNativeWorkbook,
-  };
-});
-
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Workbook } from '../index.js';
+import { toNativeOpenOptions } from '../open-options.js';
+
+const DEFAULTS = { readMode: 'lazy', auxParts: 'deferred' } as const;
 
 describe('OpenOptions wrapper defaults', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
+  it('uses readMode=lazy and auxParts=deferred when options are omitted', () => {
+    expect(toNativeOpenOptions()).toEqual(DEFAULTS);
+    expect(toNativeOpenOptions(undefined)).toEqual(DEFAULTS);
   });
 
-  it('uses readMode=lazy and auxParts=deferred when options are omitted', async () => {
-    const path = '/tmp/test.xlsx';
-    const buffer = Buffer.from('xlsx');
-
-    Workbook.openSync(path);
-    await Workbook.open(path);
-    Workbook.openBufferSync(buffer);
-    await Workbook.openBuffer(buffer);
-
-    const expectedDefaults = { readMode: 'lazy', auxParts: 'deferred' } as const;
-    expect(nativeCalls.openSync).toHaveBeenCalledWith(path, expectedDefaults);
-    expect(nativeCalls.open).toHaveBeenCalledWith(path, expectedDefaults);
-    expect(nativeCalls.openBufferSync).toHaveBeenCalledWith(buffer, expectedDefaults);
-    expect(nativeCalls.openBuffer).toHaveBeenCalledWith(buffer, expectedDefaults);
-  });
-
-  it('applies defaults when options are partial', async () => {
-    const path = '/tmp/test.xlsx';
-    const buffer = Buffer.from('xlsx');
-
-    Workbook.openSync(path, { sheetRows: 5 });
-    await Workbook.open(path, { auxParts: 'eager' });
-    Workbook.openBufferSync(buffer, { readMode: 'eager' });
-    await Workbook.openBuffer(buffer, { sheets: ['Sheet1'] });
-
-    expect(nativeCalls.openSync).toHaveBeenCalledWith(path, {
+  it('applies defaults when options are partial', () => {
+    expect(toNativeOpenOptions({ sheetRows: 5 })).toEqual({
       sheetRows: 5,
       readMode: 'lazy',
       auxParts: 'deferred',
     });
-    expect(nativeCalls.open).toHaveBeenCalledWith(path, {
+    expect(toNativeOpenOptions({ auxParts: 'eager' })).toEqual({
       auxParts: 'eager',
       readMode: 'lazy',
     });
-    expect(nativeCalls.openBufferSync).toHaveBeenCalledWith(buffer, {
+    expect(toNativeOpenOptions({ readMode: 'eager' })).toEqual({
       readMode: 'eager',
       auxParts: 'deferred',
     });
-    expect(nativeCalls.openBuffer).toHaveBeenCalledWith(buffer, {
+    expect(toNativeOpenOptions({ sheets: ['Sheet1'] })).toEqual({
       sheets: ['Sheet1'],
       readMode: 'lazy',
       auxParts: 'deferred',
@@ -109,37 +35,55 @@ describe('OpenOptions wrapper defaults', () => {
   });
 
   it('applies defaults when a partial option explicitly contains undefined', () => {
-    const path = '/tmp/test.xlsx';
-    const buffer = Buffer.from('xlsx');
-
-    Workbook.openSync(path, { readMode: undefined });
-    Workbook.openBufferSync(buffer, { auxParts: undefined });
-
-    expect(nativeCalls.openSync).toHaveBeenCalledWith(path, {
+    expect(toNativeOpenOptions({ readMode: undefined })).toEqual({
       readMode: 'lazy',
       auxParts: 'deferred',
     });
-    expect(nativeCalls.openBufferSync).toHaveBeenCalledWith(buffer, {
+    expect(toNativeOpenOptions({ auxParts: undefined })).toEqual({
       auxParts: 'deferred',
       readMode: 'lazy',
     });
   });
 
-  it('applies defaults when options are null', async () => {
-    const path = '/tmp/test.xlsx';
-    const buffer = Buffer.from('xlsx');
-
-    Workbook.openSync(path, null);
-    await Workbook.openBuffer(buffer, null);
-
-    const expectedDefaults = { readMode: 'lazy', auxParts: 'deferred' } as const;
-    expect(nativeCalls.openSync).toHaveBeenCalledWith(path, expectedDefaults);
-    expect(nativeCalls.openBuffer).toHaveBeenCalledWith(buffer, expectedDefaults);
+  it('applies defaults when options are null', () => {
+    expect(toNativeOpenOptions(null)).toEqual(DEFAULTS);
   });
 
   it('preserves legacy parseMode-only options', () => {
-    const path = '/tmp/test.xlsx';
-    Workbook.openSync(path, { parseMode: 'full' } as JsOpenOptions);
-    expect(nativeCalls.openSync).toHaveBeenCalledWith(path, { parseMode: 'full' });
+    expect(toNativeOpenOptions({ parseMode: 'full' })).toEqual({ parseMode: 'full' });
+  });
+});
+
+describe('OpenOptions defaults through the public open entry points', () => {
+  let directory = '';
+  let path = '';
+  let buffer: Buffer = Buffer.alloc(0);
+
+  beforeAll(() => {
+    directory = mkdtempSync(join(tmpdir(), 'sheetkit-open-defaults-'));
+    path = join(directory, 'tiny.xlsx');
+    const workbook = new Workbook();
+    workbook.setCellValue('Sheet1', 'A1', 'tiny');
+    workbook.saveSync(path);
+    buffer = workbook.writeBufferSync();
+  });
+
+  afterAll(() => {
+    rmSync(directory, { recursive: true, force: true });
+  });
+
+  it('opens a real workbook from every entry point with omitted and null options', async () => {
+    const opened = [
+      Workbook.openSync(path),
+      Workbook.openSync(path, null),
+      await Workbook.open(path),
+      Workbook.openBufferSync(buffer),
+      await Workbook.openBuffer(buffer, null),
+    ];
+
+    for (const workbook of opened) {
+      expect(workbook.sheetNames).toEqual(['Sheet1']);
+      expect(workbook.getCellValue('Sheet1', 'A1')).toBe('tiny');
+    }
   });
 });

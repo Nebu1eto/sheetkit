@@ -6,6 +6,7 @@ import { Workbook } from '../index.js';
 
 const TEST_DIR = import.meta.dirname;
 const tmpFile = (name: string) => join(TEST_DIR, name);
+
 const cleanup = async (...files: string[]) => {
   for (const f of files) await unlink(f).catch(() => {});
 };
@@ -76,6 +77,7 @@ describe('dateInterpretation option', () => {
       readMode: 'lazy',
       dateInterpretation: 'numFmt',
     });
+
     const reader = await wb.openSheetReader('Sheet1');
     const batch = await reader.next();
     assert(batch != null);
@@ -95,6 +97,7 @@ describe('dateInterpretation option', () => {
       readMode: 'lazy',
       dateInterpretation: 'cellType',
     });
+
     const reader = await wb.openSheetReader('Sheet1');
     const batch = await reader.next();
     assert(batch != null);
@@ -102,6 +105,7 @@ describe('dateInterpretation option', () => {
     for (const cell of batch[0].cells) {
       expect(cell.valueType).toBe('number');
     }
+
     expect(batch[0].cells[0].numberValue).toBe(46127);
     expect(batch[0].cells[2].numberValue).toBe(2.5);
     expect(batch[0].cells[3].numberValue).toBe(42);

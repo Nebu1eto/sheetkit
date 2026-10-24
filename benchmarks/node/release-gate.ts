@@ -44,8 +44,13 @@ interface GateResult {
   };
 }
 
+/** Holds the latest sample result. */
+interface ResultSink {
+  value: unknown;
+}
+
 /** Keeps each sample result reachable so the work is not optimized away. */
-const retained: { value: unknown } = { value: undefined };
+const retained: ResultSink = { value: undefined };
 
 function usage(): string {
   return [
@@ -70,33 +75,45 @@ function usage(): string {
 
 function requiredEnvironment(name: string): string {
   const value = process.env[name];
+
   if (value === undefined || value.length === 0) {
     throw new Error(`${name} is required`);
   }
+
   return value;
 }
 
 function positiveIntegerEnvironment(name: string, fallback: number): number {
   const raw = process.env[name];
+
   if (raw === undefined) return fallback;
   const value = Number(raw);
+
   if (!Number.isSafeInteger(value) || value < 0) {
     throw new Error(`${name} must be a non-negative safe integer`);
   }
+
   return value;
+}
+
+function isOperation(value: string): value is Operation {
+  return OPERATIONS.some((operation) => operation === value);
 }
 
 function operationEnvironment(): Operation {
   const value = requiredEnvironment('SHEETKIT_GATE_OPERATION');
-  if (!OPERATIONS.includes(value as Operation)) {
+
+  if (!isOperation(value)) {
     throw new Error(`Unsupported SHEETKIT_GATE_OPERATION: ${value}`);
   }
-  return value as Operation;
+
+  return value;
 }
 
 function median(values: readonly number[]): number {
   const sorted = [...values].sort((left, right) => left - right);
   const middle = Math.floor(sorted.length / 2);
+
   return sorted.length % 2 === 0 ? (sorted[middle - 1] + sorted[middle]) / 2 : sorted[middle];
 }
 
@@ -107,19 +124,23 @@ function mad(values: readonly number[], center: number): number {
 async function consumeStream(workbook: Workbook): Promise<number> {
   const reader = await workbook.openSheetReader('Sheet1', { batchSize: 1_000 });
   let rowCount = 0;
+
   for await (const batch of reader) {
     rowCount += batch.length;
   }
+
   return rowCount;
 }
 
 function scalarCalculation(workbook: Workbook): number {
   const formulas = ['SUM(1,2,3,4,5)', 'IF(10>5,10,5)', 'ROUND(1234.5678,2)', 'ABS(-42)+SQRT(81)'];
+
   for (let iteration = 0; iteration < 250; iteration += 1) {
     for (const formula of formulas) {
       retained.value = workbook.evaluateFormula('Sheet1', formula);
     }
   }
+
   return formulas.length * 250;
 }
 
@@ -132,51 +153,67 @@ async function prepareOperation(
       return () => {
         retained.value = Workbook.openSync(fixture);
       };
+
     case 'encrypted-open': {
       const encryptedFixture = resolve(requiredEnvironment('SHEETKIT_GATE_ENCRYPTED_FIXTURE'));
       const password = requiredEnvironment('SHEETKIT_GATE_PASSWORD');
+
       return () => {
         retained.value = Workbook.openWithPasswordSync(encryptedFixture, password);
       };
     }
+
     case 'scalar-calculation': {
       const workbook = new Workbook();
+
       return () => {
         retained.value = scalarCalculation(workbook);
       };
     }
+
     case 'dense-traversal': {
       const workbook = Workbook.openSync(fixture);
+
       return () => {
         retained.value = decodeRowsBuffer(workbook.getRowsBufferV2('Sheet1'));
       };
     }
+
     case 'streaming': {
       const workbook = await Workbook.open(fixture, { readMode: 'stream' });
+
       return async () => {
         retained.value = await consumeStream(workbook);
       };
     }
+
     case 'output-csv': {
       const workbook = Workbook.openSync(fixture);
+
       return () => {
         retained.value = workbook.toCSV('Sheet1');
       };
     }
+
     case 'output-json': {
       const workbook = Workbook.openSync(fixture);
+
       return () => {
         retained.value = workbook.toJSON('Sheet1');
       };
     }
+
     case 'output-html': {
       const workbook = Workbook.openSync(fixture);
+
       return () => {
         retained.value = workbook.toHTML('Sheet1');
       };
     }
+
     case 'output-svg': {
       const workbook = Workbook.openSync(fixture);
+
       return () => {
         retained.value = workbook.renderToSvg({ sheetName: 'Sheet1' });
       };
@@ -187,18 +224,23 @@ async function prepareOperation(
 async function main(): Promise<void> {
   if (process.argv.includes('--help')) {
     console.log(usage());
+
     return;
   }
+
   if (process.argv.includes('--generate-encrypted')) {
     const fixture = resolve(requiredEnvironment('SHEETKIT_GATE_FIXTURE'));
     const encryptedFixture = resolve(requiredEnvironment('SHEETKIT_GATE_ENCRYPTED_FIXTURE'));
     const password = requiredEnvironment('SHEETKIT_GATE_PASSWORD');
+
     if (existsSync(encryptedFixture)) {
       throw new Error(`Encrypted fixture already exists: ${encryptedFixture}`);
     }
+
     mkdirSync(dirname(encryptedFixture), { recursive: true });
     Workbook.openSync(fixture).saveWithPasswordSync(encryptedFixture, password);
     console.log(encryptedFixture);
+
     return;
   }
 
@@ -207,11 +249,13 @@ async function main(): Promise<void> {
   const output = resolve(requiredEnvironment('SHEETKIT_GATE_OUTPUT'));
   const samples = positiveIntegerEnvironment('SHEETKIT_GATE_SAMPLES', 20);
   const warmups = positiveIntegerEnvironment('SHEETKIT_GATE_WARMUPS', 3);
+
   if (samples === 0) {
     throw new Error('SHEETKIT_GATE_SAMPLES must be greater than zero');
   }
 
   const run = await prepareOperation(operation, fixture);
+
   for (let index = 0; index < warmups; index += 1) {
     retained.value = undefined;
     globalThis.gc?.();
@@ -219,6 +263,7 @@ async function main(): Promise<void> {
   }
 
   const timesMs: number[] = [];
+
   for (let index = 0; index < samples; index += 1) {
     retained.value = undefined;
     globalThis.gc?.();
@@ -228,6 +273,7 @@ async function main(): Promise<void> {
   }
 
   const medianMs = median(timesMs);
+
   const result: GateResult = {
     schemaVersion: 1,
     operation,
@@ -245,6 +291,7 @@ async function main(): Promise<void> {
       ramBytes: totalmem(),
     },
   };
+
   mkdirSync(dirname(output), { recursive: true });
   writeFileSync(output, `${JSON.stringify(result, null, 2)}\n`, { flag: 'wx' });
   console.log(JSON.stringify(result));

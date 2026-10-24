@@ -4,7 +4,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { decodeRowsBuffer } from '../buffer-codec.js';
-import { Workbook } from '../index.js';
+import { type CellValue, type DateValue, Workbook } from '../index.js';
 
 const FIXTURES = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -186,11 +186,13 @@ const EXPECTED: ReadonlyArray<readonly [string, string, string, string, string]>
   ],
 ];
 
-function contentHash(value: unknown): string {
+type JsonRows = ReturnType<Workbook['toJSON']>;
+
+function contentHash(value: ReturnType<typeof decodeRowsBuffer> | JsonRows): string {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex').slice(0, 16);
 }
 
-function expectPlainRecords(rows: Record<string, unknown>[]): void {
+function expectPlainRecords(rows: JsonRows): void {
   for (const row of rows) {
     expect(Object.getPrototypeOf(row)).toBe(Object.prototype);
   }
@@ -232,48 +234,45 @@ describe('toJSON workbook-derived keys', () => {
       assert(row != null);
       expect(Object.getPrototypeOf(row)).toBe(Object.prototype);
       expect(Object.keys(row)).toEqual(['__proto__', 'constructor', 'toString', 'name']);
+
       for (const key of Object.keys(row)) {
         const descriptor = Object.getOwnPropertyDescriptor(row, key);
         assert(descriptor != null);
         expect(descriptor).toMatchObject({ writable: true, enumerable: true, configurable: true });
       }
+
       expect(Object.getOwnPropertyDescriptor(row, '__proto__')?.value).toBe('proto-value');
     }
   });
 
-  it('does not invoke inherited setters for header cells or column letters', () => {
-    const headerKey = '__sheetkit_header_setter__';
-    let setterCalls = 0;
-    const descriptor = {
+  it('does not invoke the inherited __proto__ setter for header cells or column letters', () => {
+    const cellValue: DateValue = { type: 'date', serial: 45000, iso: '2023-03-15' };
+
+    const dataProperty = (value: CellValue) => ({
+      value,
+      writable: true,
+      enumerable: true,
       configurable: true,
-      set: () => {
-        setterCalls++;
-      },
-    };
-    // oxlint-disable-next-line eslint/no-extend-native -- the test injects an inherited setter on purpose
-    Object.defineProperty(Object.prototype, headerKey, descriptor);
-    // oxlint-disable-next-line eslint/no-extend-native -- the test injects an inherited setter on purpose
-    Object.defineProperty(Object.prototype, 'B', descriptor);
-    try {
-      const workbook = new Workbook();
-      workbook.setRowValues('Sheet1', 1, 'A', [headerKey, 'plain']);
-      workbook.setRowValues('Sheet1', 2, 'A', ['first', 'second']);
+    });
 
-      for (const mode of ['sparse', 'dense'] as const) {
-        const [row] = workbook.toJSON('Sheet1', { mode });
-        assert(row != null);
-        expect(Object.getOwnPropertyDescriptor(row, headerKey)?.value).toBe('first');
-        expect(Object.getOwnPropertyDescriptor(row, 'plain')?.value).toBe('second');
+    const workbook = new Workbook();
+    workbook.setRowValues('Sheet1', 1, 'A', ['__proto__', 'plain']);
+    workbook.setCellValue('Sheet1', 'A2', cellValue);
+    workbook.setCellValue('Sheet1', 'B2', 'second');
 
-        const [lettered] = workbook.toJSON('Sheet1', { mode, header: false });
-        assert(lettered != null);
-        expect(Object.getOwnPropertyDescriptor(lettered, 'A')?.value).toBe(headerKey);
-        expect(Object.getOwnPropertyDescriptor(lettered, 'B')?.value).toBe('plain');
-      }
-      expect(setterCalls).toBe(0);
-    } finally {
-      Reflect.deleteProperty(Object.prototype, headerKey);
-      Reflect.deleteProperty(Object.prototype, 'B');
+    for (const mode of ['sparse', 'dense'] as const) {
+      const [row] = workbook.toJSON('Sheet1', { mode });
+      assert(row != null);
+      // Had the inherited setter run, the object value would have become the prototype.
+      expect(Object.getPrototypeOf(row)).toBe(Object.prototype);
+      expect(Object.getOwnPropertyDescriptor(row, '__proto__')).toEqual(dataProperty(cellValue));
+      expect(Object.getOwnPropertyDescriptor(row, 'plain')).toEqual(dataProperty('second'));
+
+      const [lettered] = workbook.toJSON('Sheet1', { mode, header: false });
+      assert(lettered != null);
+      expect(Object.getPrototypeOf(lettered)).toBe(Object.prototype);
+      expect(Object.getOwnPropertyDescriptor(lettered, 'A')).toEqual(dataProperty('__proto__'));
+      expect(Object.getOwnPropertyDescriptor(lettered, 'B')).toEqual(dataProperty('plain'));
     }
   });
 
@@ -284,6 +283,7 @@ describe('toJSON workbook-derived keys', () => {
     values.forEach((value, index) => {
       workbook.setCellValue('Sheet1', `A${index + 2}`, value);
     });
+
     for (const mode of ['sparse', 'dense'] as const) {
       expect(workbook.toJSON('Sheet1', { mode }).map((row) => row.key)).toEqual(values);
     }

@@ -1,27 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import { type FormulaLimits, type FormulaValue, isResourceLimitError, Workbook } from '../index.js';
-
-function captureError(action: () => unknown): unknown {
-  try {
-    action();
-  } catch (error) {
-    return error;
-  }
-  throw new Error('Expected action to throw');
-}
+import { captureError } from './helpers/errors.js';
 
 function formula(value: string): FormulaValue {
   return { type: 'formula', formula: value };
 }
 
 function expectFormulaLimit(
-  error: unknown,
+  error: Error,
   dimension: 'input_bytes' | 'output_bytes' | 'range_cell_count',
   limit: bigint,
   observed: bigint,
   stage: 'validate' | 'serialize',
 ): void {
   expect(isResourceLimitError(error)).toBe(true);
+
   if (!isResourceLimitError(error)) throw new Error('Expected a resource limit error');
   expect(error.operation).toBe('formula_mutate');
   expect(error.category).toBe('formula');
@@ -45,6 +38,7 @@ describe('formula mutation limits', () => {
   it('accepts an opaque Excel formula at exact caller-selected limits', () => {
     const workbook = new Workbook();
     const value = '_xlfn.UNSUPPORTED(A1)';
+
     const limits: FormulaLimits = {
       perFormulaInputBytes: value.length,
       operationInputBytes: value.length,
@@ -64,6 +58,7 @@ describe('formula mutation limits', () => {
     const rejected = new Workbook();
     rejected.setCellValue('Sheet1', 'D1', 'first');
     rejected.setCellValue('Sheet1', 'D2', 'second');
+
     const error = captureError(() =>
       rejected.fillFormula('Sheet1', 'D1:D2', 'A1', { operationRangeCells: 1 }),
     );
@@ -81,6 +76,7 @@ describe('formula mutation limits', () => {
     const rejected = new Workbook();
     rejected.setCellValue('Sheet1', 'D1', 'first');
     rejected.setCellValue('Sheet1', 'D2', 'second');
+
     const error = captureError(() =>
       rejected.fillFormula('Sheet1', 'D1:D2', 'A9', { operationOutputBytes: 4 }),
     );
@@ -185,6 +181,7 @@ describe('formula mutation limits', () => {
 
   it('enforces the cumulative cached-result output budget atomically', () => {
     const cachedText = 'x'.repeat(32_767);
+
     const exactValues: FormulaValue[] = Array.from({ length: 512 }, () => ({
       type: 'formula',
       formula: 'x',
@@ -198,6 +195,7 @@ describe('formula mutation limits', () => {
     const rejected = new Workbook();
     rejected.setCellValue('Sheet1', 'A1', 'first');
     rejected.setCellValue('Sheet1', 'B1', 'second');
+
     const error = captureError(() =>
       rejected.setRowValues('Sheet1', 1, 'A', [...exactValues, formula('x')]),
     );

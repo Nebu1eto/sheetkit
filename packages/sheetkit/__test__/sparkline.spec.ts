@@ -79,13 +79,14 @@ describe('Sparklines', () => {
         dataRange: 'Sheet1!A1:A10',
         location: 'B1',
       }),
-    ).toThrow();
-    expect(() => wb.getSparklines('NoSheet')).toThrow();
-    expect(() => wb.removeSparkline('NoSheet', 'B1')).toThrow();
+    ).toThrow("sheet 'NoSheet' does not exist");
+    expect(() => wb.getSparklines('NoSheet')).toThrow("sheet 'NoSheet' does not exist");
+    expect(() => wb.removeSparkline('NoSheet', 'B1')).toThrow("sheet 'NoSheet' does not exist");
   });
 
   it('should preserve sparklines through save/open roundtrip', async () => {
     const wb = new Workbook();
+
     for (let i = 1; i <= 10; i++) {
       wb.setCellValue('Sheet1', `A${i}`, i * 10);
     }

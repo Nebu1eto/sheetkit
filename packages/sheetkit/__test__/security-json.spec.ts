@@ -1,6 +1,7 @@
 import assert from 'node:assert';
 import { describe, expect, it } from 'vitest';
 import { Workbook } from '../index.js';
+import { parseJsonObject } from './helpers/json.js';
 
 describe('toJSON property safety', () => {
   it('preserves special headers as own data properties', () => {
@@ -19,6 +20,7 @@ describe('toJSON property safety', () => {
     const [row] = wb.toJSON('Sheet1', {
       header: ['__proto__', 'constructor', 'prototype', 'duplicate', 'duplicate', '顧客名'],
     });
+
     assert(row != null);
 
     expect(Object.getPrototypeOf(row)).toBe(Object.prototype);
@@ -39,34 +41,28 @@ describe('toJSON property safety', () => {
       expect(descriptor.configurable).toBe(true);
     }
 
-    const parsed = JSON.parse(JSON.stringify(row)) as Record<string, unknown>;
+    const parsed = parseJsonObject(JSON.stringify(row));
     expect(Object.getPrototypeOf(parsed)).toBe(Object.prototype);
     expect(Object.hasOwn(parsed, '__proto__')).toBe(true);
     expect(parsed).toEqual(row);
   });
 
-  it('does not invoke inherited setters for workbook-controlled headers', () => {
-    const key = '__sheetkit_inherited_setter__';
-    let setterCalls = 0;
-    // oxlint-disable-next-line eslint/no-extend-native -- the test injects an inherited setter on purpose
-    Object.defineProperty(Object.prototype, key, {
-      configurable: true,
-      set: () => {
-        setterCalls++;
-      },
-    });
+  it('does not invoke the inherited __proto__ setter for caller-supplied headers', () => {
+    const workbook = new Workbook();
+    workbook.setCellValue('Sheet1', 'A1', { type: 'date', serial: 45000, iso: '2023-03-15' });
 
-    try {
-      const workbook = new Workbook();
-      workbook.setCellValue('Sheet1', 'A1', 'value');
-      const [row] = workbook.toJSON('Sheet1', { header: [key] });
+    for (const mode of ['sparse', 'dense'] as const) {
+      const [row] = workbook.toJSON('Sheet1', { mode, header: ['__proto__'] });
       assert(row != null);
 
-      expect(setterCalls).toBe(0);
-      expect(Object.hasOwn(row, key)).toBe(true);
-      expect(Object.getOwnPropertyDescriptor(row, key)?.value).toBe('value');
-    } finally {
-      Reflect.deleteProperty(Object.prototype, key);
+      // Had the inherited setter run, the object value would have become the prototype.
+      expect(Object.getPrototypeOf(row)).toBe(Object.prototype);
+      expect(Object.getOwnPropertyDescriptor(row, '__proto__')).toEqual({
+        value: { type: 'date', serial: 45000, iso: '2023-03-15' },
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      });
     }
   });
 });
