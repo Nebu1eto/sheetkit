@@ -9,11 +9,11 @@ publish = false
 crate-type = ["cdylib"]
 
 [dependencies]
-napi = { version = "3", features = ["napi8", "async"] }
-napi-derive = "3"
+napi = { version = "3.15", features = ["napi8", "async"] }
+napi-derive = "3.6"
 sheetkit-core = { workspace = true, features = ["encryption"] }
 sheetkit-xml = { workspace = true }
 tokio = { version = "1", features = ["rt"] }
 
 [build-dependencies]
-napi-build = "2"
+napi-build = "2.6"

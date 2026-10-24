@@ -2,7 +2,7 @@
 	"name": "sheetkit-monorepo",
 	"private": true,
 	"license": "MIT OR Apache-2.0",
-	"packageManager": "pnpm@10.29.1",
+	"packageManager": "pnpm@10.34.8",
 	"scripts": {
 		"lint": "biome lint .",
 		"format": "biome format --write .",
@@ -19,19 +19,20 @@
 	"devDependencies": {
 		"@biomejs/biome": "2.6.2",
 		"@braintree/sanitize-url": "^7.1.2",
-		"cytoscape": "^3.33.1",
+		"cytoscape": "^3.34.4",
 		"cytoscape-cose-bilkent": "^4.1.0",
-		"dayjs": "^1.11.19",
+		"dayjs": "^1.11.23",
 		"debug": "^4.4.3",
-		"mermaid": "^11.12.2",
-		"typedoc": "^0.28.16",
-		"typedoc-plugin-markdown": "^4.10.0",
-		"typedoc-vitepress-theme": "^1.1.2",
-		"typescript": "^5.6.0",
+		"mermaid": "^11.17.2",
+		"typedoc": "^0.28.20",
+		"typedoc-plugin-markdown": "^4.14.1",
+		"typedoc-vitepress-theme": "^1.1.4",
+		"typescript": "^6.0.3",
+		"vite": "^8.3.5",
 		"vitepress": "^1.6.4",
-		"vitepress-plugin-llms": "^1.11.0",
+		"vitepress-plugin-llms": "^1.14.0",
 		"vitepress-plugin-mermaid": "^2.0.17",
-		"vitest": "^4.0.18",
-		"vue": "^3.5.28"
+		"vitest": "^5.0.5",
+		"vue": "^3.5.44"
 	}
 }

@@ -44,10 +44,14 @@
 import { Workbook as SheetKitWorkbook, JsStreamWriter } from '@sheetkit/node';
 import ExcelJS from 'exceljs';
 import XLSX from 'xlsx';
+import * as fs from 'node:fs';
 import { readFileSync, writeFileSync, existsSync, unlinkSync, statSync } from 'node:fs';
 import { cpus, totalmem } from 'node:os';
 import { execSync } from 'node:child_process';
 import { join } from 'node:path';
+
+// SheetJS ESM builds need an explicit fs handle for writeFile/readFile.
+XLSX.set_fs(fs);
 
 const FIXTURES_DIR = join(import.meta.dirname, 'fixtures');
 const OUTPUT_DIR = join(import.meta.dirname, 'output');

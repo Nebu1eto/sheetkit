@@ -1,10 +1,10 @@
 {
   "extends": "../../../../tsconfig.json",
   "compilerOptions": {
-    "baseUrl": ".",
     "declaration": false,
     "declarationMap": false,
     "noEmit": true,
+    "rootDir": "../..",
     "paths": {
       "@sheetkit/node": ["../../index.d.ts"],
       "@sheetkit/node/binding.js": ["../../binding.d.ts"]

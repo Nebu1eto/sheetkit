@@ -54,9 +54,10 @@
     "version": "napi version"
   },
   "devDependencies": {
-    "@napi-rs/cli": "^3.5.1",
-    "@types/node": "^24.0.0",
-    "tsdown": "^0.20.3"
+    "@napi-rs/cli": "^3.10.9",
+    "@types/node": "^24.19.2",
+    "tsdown": "^0.23.2",
+    "typescript": "^6.0.3"
   },
   "optionalDependencies": {
     "@sheetkit/node-darwin-arm64": "1.0.0",

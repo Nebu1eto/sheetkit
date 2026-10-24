@@ -9,5 +9,7 @@ export default defineConfig({
   clean: false,
   fixedExtension: false,
   sourcemap: false,
-  external: [/\.\/binding/],
+  deps: {
+    neverBundle: [/\.\/binding/],
+  },
 });
