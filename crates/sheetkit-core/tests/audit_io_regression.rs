@@ -1,6 +1,8 @@
 use sheetkit_core::cell::CellValue;
 use sheetkit_core::error::Error;
 use sheetkit_core::save::SaveLimits;
+#[cfg(unix)]
+use sheetkit_core::save::SaveOptions;
 use sheetkit_core::workbook::{AuxParts, OpenOptions, ReadMode, Workbook};
 use sheetkit_core::ResourceDimension;
 use std::io::{Cursor, Read, Write};
@@ -226,13 +228,33 @@ fn io_f1_lazy_clean_save_accepts_exact_actual_size() {
 #[cfg(unix)]
 #[test]
 fn io_f2_save_preserves_existing_mode_and_default_mode() {
+    for options in SAVE_MODES {
+        save_preserves_existing_mode_and_default_mode(options);
+    }
+}
+
+#[cfg(unix)]
+const SAVE_MODES: [SaveOptions; 2] = [
+    SaveOptions { durable: false },
+    SaveOptions { durable: true },
+];
+
+#[cfg(unix)]
+fn save_with(workbook: &Workbook, path: &std::path::Path, options: SaveOptions) {
+    workbook
+        .save_with_options(path, SaveLimits::default(), options)
+        .unwrap();
+}
+
+#[cfg(unix)]
+fn save_preserves_existing_mode_and_default_mode(options: SaveOptions) {
     use std::os::unix::fs::PermissionsExt;
 
     let directory = tempfile::tempdir().unwrap();
     let existing = directory.path().join("existing.xlsx");
     std::fs::write(&existing, b"old").unwrap();
     std::fs::set_permissions(&existing, std::fs::Permissions::from_mode(0o640)).unwrap();
-    Workbook::new().save(&existing).unwrap();
+    save_with(&Workbook::new(), &existing, options);
     let mode = std::fs::metadata(&existing).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, 0o640);
     Workbook::open(&existing).unwrap();
@@ -241,7 +263,7 @@ fn io_f2_save_preserves_existing_mode_and_default_mode() {
     std::fs::File::create(&reference).unwrap();
     let default_mode = std::fs::metadata(&reference).unwrap().permissions().mode() & 0o777;
     let created = directory.path().join("created.xlsx");
-    Workbook::new().save(&created).unwrap();
+    save_with(&Workbook::new(), &created, options);
     let mode = std::fs::metadata(&created).unwrap().permissions().mode() & 0o777;
     assert_eq!(mode, default_mode);
 }
@@ -249,6 +271,13 @@ fn io_f2_save_preserves_existing_mode_and_default_mode() {
 #[cfg(unix)]
 #[test]
 fn io_f2_save_through_symlink_updates_the_link_target() {
+    for options in SAVE_MODES {
+        save_through_symlink_updates_the_link_target(options);
+    }
+}
+
+#[cfg(unix)]
+fn save_through_symlink_updates_the_link_target(options: SaveOptions) {
     let directory = tempfile::tempdir().unwrap();
     let nested = directory.path().join("nested");
     std::fs::create_dir(&nested).unwrap();
@@ -261,7 +290,7 @@ fn io_f2_save_through_symlink_updates_the_link_target() {
     workbook
         .set_cell_value("Sheet1", "A1", CellValue::String("saved".into()))
         .unwrap();
-    workbook.save(&link).unwrap();
+    save_with(&workbook, &link, options);
 
     assert!(std::fs::symlink_metadata(&link)
         .unwrap()
@@ -282,7 +311,7 @@ fn io_f2_save_through_symlink_updates_the_link_target() {
 
     let dangling = directory.path().join("dangling.xlsx");
     std::os::unix::fs::symlink("nested/new.xlsx", &dangling).unwrap();
-    workbook.save(&dangling).unwrap();
+    save_with(&workbook, &dangling, options);
     assert!(std::fs::symlink_metadata(&dangling)
         .unwrap()
         .file_type()

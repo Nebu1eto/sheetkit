@@ -72,9 +72,9 @@ export declare class Workbook {
   /** Open an existing .xlsx file from disk asynchronously. */
   static open(path: string, options?: JsOpenOptions | undefined | null): Promise<Workbook>
   /** Save the workbook to a .xlsx file. */
-  saveSync(path: string, limits?: JsSaveLimits | undefined | null): void
+  saveSync(path: string, limits?: JsSaveLimits | undefined | null, options?: JsSaveOptions | undefined | null): void
   /** Save the workbook to a .xlsx file using destination-preserving atomic replacement. */
-  save(path: string, limits?: JsSaveLimits | undefined | null): Promise<void>
+  save(path: string, limits?: JsSaveLimits | undefined | null, options?: JsSaveOptions | undefined | null): Promise<void>
   /** Open a workbook from an in-memory Buffer. */
   static openBufferSync(data: Buffer, options?: JsOpenOptions | undefined | null): Workbook
   /** Open a workbook from an in-memory Buffer asynchronously. */
@@ -92,9 +92,9 @@ export declare class Workbook {
   /** Serialize the workbook to an in-memory Buffer asynchronously. */
   writeBuffer(limits?: JsSaveLimits | undefined | null): Promise<Buffer>
   /** Save the workbook as an encrypted .xlsx file. */
-  saveWithPasswordSync(path: string, password: string, limits?: JsCryptLimits | undefined | null): void
+  saveWithPasswordSync(path: string, password: string, limits?: JsCryptLimits | undefined | null, options?: JsSaveOptions | undefined | null): void
   /** Save an encrypted workbook for the TypeScript async rejection bridge. */
-  saveWithPassword(path: string, password: string, limits?: JsCryptLimits | undefined | null): Promise<void>
+  saveWithPassword(path: string, password: string, limits?: JsCryptLimits | undefined | null, options?: JsSaveOptions | undefined | null): Promise<void>
   /** Get the names of all sheets in workbook order. */
   get sheetNames(): Array<string>
   /** Get the value of a cell. Returns string, number, boolean, DateValue, or null. */
@@ -1033,6 +1033,15 @@ export interface JsSaveLimits {
   xmlPartBytes?: number
   rowCount?: number
   cellCount?: number
+}
+
+/** Durability options for one path save. */
+export interface JsSaveOptions {
+  /**
+   * Flush the file and its directory entry to storage before returning.
+   * Defaults to false.
+   */
+  durable?: boolean
 }
 
 /** Configuration for inserting a shape into a worksheet. */

@@ -1682,6 +1682,14 @@ pub(crate) fn js_save_limits_to_core(
     })
 }
 
+pub(crate) fn js_save_options_to_core(
+    js: Option<&crate::types::JsSaveOptions>,
+) -> sheetkit_core::save::SaveOptions {
+    sheetkit_core::save::SaveOptions {
+        durable: js.and_then(|options| options.durable).unwrap_or(false),
+    }
+}
+
 pub(crate) fn js_stream_limits_to_core(
     js: Option<&crate::types::JsStreamLimits>,
 ) -> std::result::Result<sheetkit_core::save::StreamLimits, sheetkit_core::error::Error> {

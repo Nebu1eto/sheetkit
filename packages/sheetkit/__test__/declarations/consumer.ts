@@ -3,12 +3,14 @@ import {
   isResourceLimitError,
   type OpenOptions,
   type ResourceLimitError,
+  type SaveOptions,
   type TraversalOptions,
   Workbook,
 } from '@sheetkit/node';
 import {
   type JsFormulaLimits,
   type JsOpenOptions,
+  type JsSaveOptions,
   type JsTraversalOptions,
   Workbook as NativeWorkbook,
 } from '@sheetkit/node/binding.js';
@@ -42,6 +44,11 @@ workbook.evaluateFormula('Sheet1', '1+1', formulaLimits);
 workbook.calculateAll(formulaLimits);
 Workbook.openSync('workbook.xlsx', openOptions);
 Workbook.open('workbook.xlsx', legacyOpenOptions);
+const saveOptions: SaveOptions = { durable: true };
+const nativeSaveOptions: JsSaveOptions = saveOptions;
+workbook.saveSync('workbook.xlsx', undefined, saveOptions);
+workbook.save('workbook.xlsx', { outputBytes: 1024 }, nativeSaveOptions);
+workbook.saveWithPasswordSync('workbook.xlsx', 'password', undefined, saveOptions);
 
 const nativeWorkbook = new NativeWorkbook();
 nativeWorkbook.getRows('Sheet1', nativeTraversal);

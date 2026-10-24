@@ -123,7 +123,7 @@ XML 선언 `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`은 ZIP에 �
 
 ### ZIP 아카이브 처리
 
-`zip` 크레이트가 .xlsx 아카이브의 읽기와 쓰기를 담당합니다. 모든 ZIP 항목은 `SimpleFileOptions::default().compression_method(CompressionMethod::Deflated)`를 사용합니다. `open()` 시 모든 XML 파트가 메모리로 읽혀 역직렬화됩니다. `save()` 시 모든 파트가 재직렬화되어 새 ZIP 아카이브에 원자적으로 기록됩니다.
+`zip` 크레이트가 .xlsx 아카이브의 읽기와 쓰기를 담당합니다. 모든 ZIP 항목은 `SimpleFileOptions::default().compression_method(CompressionMethod::Deflated)`를 사용합니다. `open()` 시 모든 XML 파트가 메모리로 읽혀 역직렬화됩니다. `save()` 시 모든 파트가 재직렬화되어 같은 디렉터리의 임시 파일에 새 ZIP 아카이브로 기록되고, 이 임시 파일이 대상 파일 위로 rename됩니다. Rename 덕분에 교체는 원자적이지만, 파일과 디렉터리는 `SaveOptions::durable`을 설정한 경우에만 storage에 flush됩니다.
 
 ### SharedStrings (SST)
 

@@ -40,7 +40,7 @@ use sheetkit::{
     CustomPropertyValue, DataValidationConfig, DateInterpretation, DocProperties, Error,
     ErrorStyle, FormControlConfig, FormControlType, ImageConfig, ImageFormat, NumFmtStyle,
     OpenOptions, PersonInput, ReadMode, RenderOptions, Result, RichTextRun, SaveLimits,
-    ShapeConfig, ShapeType, SlicerConfig, SparklineConfig, SparklineType, Style,
+    SaveOptions, ShapeConfig, ShapeType, SlicerConfig, SparklineConfig, SparklineType, Style,
     ThreadedCommentInput, ValidationType, Workbook, WorkbookFormat, WorkbookProtectionConfig,
 };
 

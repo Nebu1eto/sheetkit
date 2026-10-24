@@ -31,6 +31,7 @@ import type {
   JsRichTextRun,
   JsRowData,
   JsSaveLimits,
+  JsSaveOptions,
   JsShapeConfig,
   JsSheetProtectionConfig,
   JsSheetViewOptions,
@@ -106,6 +107,7 @@ export type {
   JsRowCell,
   JsRowData,
   JsSaveLimits,
+  JsSaveOptions,
   JsShapeConfig,
   JsSheetProtectionConfig,
   JsSheetViewOptions,
@@ -189,6 +191,24 @@ export interface SaveLimits {
   xmlPartBytes?: number;
   rowCount?: number;
   cellCount?: number;
+}
+
+/**
+ * Durability options for one path save.
+ *
+ * Every path save writes a `.sheetkit-` temporary file in the destination
+ * directory and renames it over the destination, so a failed save or an
+ * application crash leaves the previous file intact.
+ * With `durable: false` (default) no flush is requested: a power loss or OS
+ * crash shortly after a successful save may leave the previous version, the
+ * new one, or an empty or incomplete file. With `durable: true` the file is
+ * flushed to storage before the rename and, on Unix, the directory is synced
+ * after it; a failed directory sync throws even though the new file is
+ * already in place.
+ */
+export interface SaveOptions {
+  /** Flush the file and its directory entry to storage. Defaults to false. */
+  durable?: boolean;
 }
 
 /** Finite limits for one streaming worksheet writer. */
@@ -1404,14 +1424,22 @@ class Workbook {
     return this.#native.sheetNames;
   }
 
-  /** Save the workbook to a .xlsx file. */
-  saveSync(path: string, limits?: SaveLimits | JsSaveLimits): void {
-    this.#native.saveSync(path, limits);
+  /** Save the workbook to a .xlsx file using atomic replacement. See {@link SaveOptions}. */
+  saveSync(
+    path: string,
+    limits?: SaveLimits | JsSaveLimits,
+    options?: SaveOptions | JsSaveOptions,
+  ): void {
+    this.#native.saveSync(path, limits, options);
   }
 
-  /** Save the workbook using destination-preserving atomic replacement. */
-  async save(path: string, limits?: SaveLimits | JsSaveLimits): Promise<void> {
-    await this.#native.save(path, limits);
+  /** Save the workbook using destination-preserving atomic replacement. See {@link SaveOptions}. */
+  async save(
+    path: string,
+    limits?: SaveLimits | JsSaveLimits,
+    options?: SaveOptions | JsSaveOptions,
+  ): Promise<void> {
+    await this.#native.save(path, limits, options);
   }
 
   /** Serialize the workbook to an in-memory Buffer. */
@@ -1424,9 +1452,14 @@ class Workbook {
     return this.#native.writeBuffer(limits);
   }
 
-  /** Save the workbook as an encrypted .xlsx file. */
-  saveWithPasswordSync(path: string, password: string, limits?: CryptLimits | JsCryptLimits): void {
-    this.#native.saveWithPasswordSync(path, password, limits);
+  /** Save the workbook as an encrypted .xlsx file. See {@link SaveOptions}. */
+  saveWithPasswordSync(
+    path: string,
+    password: string,
+    limits?: CryptLimits | JsCryptLimits,
+    options?: SaveOptions | JsSaveOptions,
+  ): void {
+    this.#native.saveWithPasswordSync(path, password, limits, options);
   }
 
   /** Save the workbook as an encrypted .xlsx file asynchronously. Both sync and async encrypted saves buffer in memory before encrypting, so peak memory is similar. */
@@ -1434,8 +1467,9 @@ class Workbook {
     path: string,
     password: string,
     limits?: CryptLimits | JsCryptLimits,
+    options?: SaveOptions | JsSaveOptions,
   ): Promise<void> {
-    await this.#native.saveWithPassword(path, password, limits);
+    await this.#native.saveWithPassword(path, password, limits, options);
   }
 
   /** Get the value of a cell. */

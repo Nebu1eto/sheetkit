@@ -572,6 +572,14 @@ pub struct JsSaveLimits {
     pub cell_count: Option<f64>,
 }
 
+/// Durability options for one path save.
+#[napi(object)]
+pub struct JsSaveOptions {
+    /// Flush the file and its directory entry to storage before returning.
+    /// Defaults to false.
+    pub durable: Option<bool>,
+}
+
 /// Finite limits for one streaming worksheet writer.
 #[napi(object)]
 pub struct JsStreamLimits {

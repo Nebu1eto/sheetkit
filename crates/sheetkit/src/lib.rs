@@ -19,7 +19,7 @@ pub use sheetkit_core::protection::WorkbookProtectionConfig;
 pub use sheetkit_core::resource::{
     ResourceCategory, ResourceDimension, ResourceLimitError, ResourceOperation, ResourceStage,
 };
-pub use sheetkit_core::save::{SaveLimits, StreamLimits};
+pub use sheetkit_core::save::{SaveLimits, SaveOptions, StreamLimits};
 pub use sheetkit_core::sheet::SheetProtectionConfig;
 pub use sheetkit_core::stream::StreamWriter;
 pub use sheetkit_core::workbook::{

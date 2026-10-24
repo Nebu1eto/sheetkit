@@ -1674,11 +1674,13 @@ wb.save_with_password("encrypted.xlsx", "secret")?;
 
 ```typescript
 // Sync
-wb.saveWithPassword("encrypted.xlsx", "secret");
+wb.saveWithPasswordSync("encrypted.xlsx", "secret");
 
 // Async
 await wb.saveWithPassword("encrypted.xlsx", "secret");
 ```
+
+Like plain path saves, encrypted saves replace the destination atomically but do not flush it to storage by default. Use `save_with_password_with_options` with `SaveOptions { durable: true }` in Rust, or pass `{ durable: true }` as the fourth argument in Node.js, to flush the file and sync its directory. See [Opt-in save durability](../guide/migration-v1.md#opt-in-save-durability).
 
 ### Error Types
 

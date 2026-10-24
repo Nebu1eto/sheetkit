@@ -60,6 +60,32 @@ await wb.save("output.xlsx");
 > ZIP 압축은 Deflate 방식을 사용합니다.
 > Node.js에서 `wb.save(path)`는 비동기이며 `Promise<void>`를 반환합니다. 동기 동작이 필요하면 `wb.saveSync(path)`를 사용합니다.
 
+### `wb.save_with_options(path, limits, options)` / `wb.save(path, limits, options)`
+
+Path 저장은 대상 디렉터리에 `.sheetkit-*` 임시 파일을 쓴 뒤 대상 파일 위로 rename합니다. 저장이 실패하거나 rename 전에 application이 비정상 종료되면 기존 파일은 그대로 유지됩니다. 강제 종료된 경우에는 `.sheetkit-*` 임시 파일이 남을 수 있습니다. 기본값에서는 운영체제에 storage flush를 요청하지 않습니다. 따라서 저장이 성공한 직후 전원이 끊기거나 OS가 비정상 종료되면 대상 파일에 이전 버전이나 새 버전이 남거나, 파일 시스템과 mount option에 따라 비어 있거나 불완전한 파일이 남을 수 있습니다.
+
+전원이 끊겨도 저장 결과가 남아야 하면 `durable: true`를 전달하세요. 이 경우 rename 전에 임시 파일을 storage에 flush하고, Unix에서는 rename 후 상위 디렉터리를 sync합니다. macOS에서는 flush에 `F_FULLFSYNC`를 사용하므로 저장마다 수 밀리초가 추가됩니다. Windows에는 디렉터리 sync가 없으므로 파일만 flush합니다. 디렉터리 sync가 실패하면 새 파일이 이미 대상 위치에 있다는 내용의 오류를 반환합니다. Network file system이나 flush 요청을 무시하는 드라이브에서는 두 보장 모두 약해질 수 있습니다.
+
+**Rust:**
+
+```rust
+use sheetkit::{SaveLimits, SaveOptions};
+
+wb.save_with_options("output.xlsx", SaveLimits::default(), SaveOptions { durable: true })?;
+```
+
+**TypeScript:**
+
+```typescript
+// 동기
+wb.saveSync("output.xlsx", undefined, { durable: true });
+
+// 비동기
+await wb.save("output.xlsx", undefined, { durable: true });
+```
+
+암호화 저장도 같은 옵션을 지원합니다. Rust에서는 `save_with_password_with_options`를, Node.js에서는 `saveWithPasswordSync`와 `saveWithPassword`의 마지막 `options` 인수를 사용하세요.
+
 ### `Workbook::open_from_buffer(data)` / `Workbook.openBufferSync(data)`
 
 파일 경로 대신 메모리 내 바이트 버퍼에서 워크북을 엽니다. 업로드된 파일이나 네트워크를 통해 수신한 데이터를 처리할 때 유용합니다.

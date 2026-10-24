@@ -526,6 +526,39 @@ Path saves use a same-directory temporary file and replace the destination only
 after a complete write. If a limit or I/O error occurs, an existing destination
 remains intact. Buffer save is all-or-error under the same save policy.
 
+### Opt-in save durability
+
+Path saves are atomic but not durable by default. They do not flush the file
+or its directory to storage, so a power loss or OS crash shortly after a
+successful save can leave the previous version, the new one, or, depending on
+the file system and mount options, an empty or incomplete file. An application
+crash or failed save still leaves the previous file intact, although a hard
+kill can leave an orphan `.sheetkit-*` temporary file.
+
+Request durability where a save must survive a power loss:
+
+```rust
+use sheetkit::{SaveLimits, SaveOptions};
+
+workbook.save_with_options("output.xlsx", SaveLimits::default(), SaveOptions { durable: true })?;
+```
+
+```typescript
+await workbook.save('output.xlsx', undefined, { durable: true });
+```
+
+A durable save flushes the temporary file before the rename and, on Unix,
+syncs the directory after it. On macOS the flush uses `F_FULLFSYNC` and costs
+several milliseconds per save. If the directory sync fails, the error states
+that the new file is already in place. Encrypted saves accept the same option
+through `save_with_password_with_options` and the trailing Node `options`
+argument. Network file systems and drives that ignore flush requests can
+weaken either guarantee.
+
+1.0 RC builds synced the file and directory on every path save and ignored
+directory sync failures. 1.0 syncs only when `durable` is set and reports
+directory sync failures.
+
 The 1.0.0 candidate did not apply `xml_part_bytes` to clean worksheets copied
 without re-serialization, and its atomic replace turned a symlinked destination
 into a regular file without keeping the destination's permission bits. Both
@@ -788,7 +821,8 @@ workbook or machine.
     unknown OOXML extensions.
 14. Confirm failed path saves preserve the existing destination and that the
     workbook remains usable after an error.
-15. Re-run the same application-specific fixtures if your workload differs
+15. Pass `durable: true` to saves that must survive a power loss or OS crash.
+16. Re-run the same application-specific fixtures if your workload differs
     materially from the release benchmark corpus.
 
 Contributor-only changes do not affect runtime migration. AI-assisted
@@ -808,6 +842,9 @@ in the [security finding ledger](../security/v1-finding-ledger.md#audit-v2-post-
 - Path saves follow symlinks and replace the target file, so the link stays in
   place. On Unix an existing destination keeps its permission bits, and a new
   file is created with `0o666` narrowed by the process umask.
+- Path saves no longer flush the file and directory to storage by default.
+  RC builds always synced and ignored directory sync failures; pass
+  `durable: true` to sync, which also reports a failed directory sync.
 - Open fails in every read mode when any part fails its CRC or decompression
   check. Earlier candidates dropped such parts silently. A part that is intact
   but contains malformed XML is still preserved.

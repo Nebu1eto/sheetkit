@@ -940,16 +940,28 @@ impl Workbook {
         path: P,
         limits: crate::save::SaveLimits,
     ) -> Result<()> {
+        self.save_with_options(path, limits, crate::save::SaveOptions::default())
+    }
+
+    /// Save the workbook to a file with explicit output limits and
+    /// durability options. See [`SaveOptions`](crate::save::SaveOptions) for
+    /// the guarantees of each mode.
+    pub fn save_with_options<P: AsRef<Path>>(
+        &self,
+        path: P,
+        limits: crate::save::SaveLimits,
+        options: crate::save::SaveOptions,
+    ) -> Result<()> {
         let path = path.as_ref();
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         let target_format = WorkbookFormat::from_extension(ext)
             .ok_or_else(|| Error::UnsupportedFileExtension(ext.to_string()))?;
 
-        atomic_write_file(path, |file| {
-            let options = SimpleFileOptions::default()
+        atomic_write_file(path, options, |file| {
+            let zip_options = SimpleFileOptions::default()
                 .compression_method(CompressionMethod::Deflated)
                 .compression_level(Some(1));
-            self.write_zip_archive_with_limits(file, options, Some(target_format), limits)?;
+            self.write_zip_archive_with_limits(file, zip_options, Some(target_format), limits)?;
             Ok(())
         })
     }
@@ -1101,6 +1113,28 @@ impl Workbook {
         crypt_limits: crate::crypt::CryptLimits,
         save_limits: crate::save::SaveLimits,
     ) -> Result<()> {
+        self.save_with_password_with_options(
+            path,
+            password,
+            crypt_limits,
+            save_limits,
+            crate::save::SaveOptions::default(),
+        )
+    }
+
+    /// Save an encrypted workbook with explicit encryption limits, output
+    /// limits, and durability options. See
+    /// [`SaveOptions`](crate::save::SaveOptions) for the guarantees of each
+    /// mode.
+    #[cfg(feature = "encryption")]
+    pub fn save_with_password_with_options<P: AsRef<Path>>(
+        &self,
+        path: P,
+        password: &str,
+        crypt_limits: crate::crypt::CryptLimits,
+        save_limits: crate::save::SaveLimits,
+        options: crate::save::SaveOptions,
+    ) -> Result<()> {
         let path = path.as_ref();
         let ext = path
             .extension()
@@ -1111,9 +1145,10 @@ impl Workbook {
 
         // First, serialize to an in-memory ZIP buffer
         let cursor = std::io::Cursor::new(Vec::new());
-        let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
+        let zip_options =
+            SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
         let zip_buf = self
-            .write_zip_archive_with_limits(cursor, options, Some(target_format), save_limits)?
+            .write_zip_archive_with_limits(cursor, zip_options, Some(target_format), save_limits)?
             .into_inner();
 
         // Encrypt and write to CFB container
@@ -1129,7 +1164,7 @@ impl Workbook {
                 crate::resource::ResourceStage::Write,
             ));
         }
-        atomic_write_file(path, |file| {
+        atomic_write_file(path, options, |file| {
             file.write_all(&cfb_data)?;
             Ok(())
         })
@@ -2537,16 +2572,27 @@ fn read_bounded_file(
     Ok(data)
 }
 
+/// Replace `path` atomically through a same-directory temporary file. Only
+/// durable saves request file and directory syncs.
 fn atomic_write_file(
     path: &Path,
+    options: crate::save::SaveOptions,
     write: impl FnOnce(&mut std::fs::File) -> Result<()>,
 ) -> Result<()> {
-    atomic_write_file_with_parent_sync(path, write, sync_parent_directory)
+    atomic_write_file_with_sync(
+        path,
+        options,
+        write,
+        sync_temporary_file,
+        sync_parent_directory,
+    )
 }
 
-fn atomic_write_file_with_parent_sync(
+fn atomic_write_file_with_sync(
     path: &Path,
+    options: crate::save::SaveOptions,
     write: impl FnOnce(&mut std::fs::File) -> Result<()>,
+    sync_file: impl FnOnce(&std::fs::File) -> std::io::Result<()>,
     sync_parent: impl FnOnce(&Path) -> std::io::Result<()>,
 ) -> Result<()> {
     // Replace the file a symlink points to rather than the link itself.
@@ -2572,14 +2618,41 @@ fn atomic_write_file_with_parent_sync(
     }
     #[cfg(not(unix))]
     let _ = existing_permissions;
-    temporary.as_file().sync_all()?;
+    if options.durable {
+        sync_file(temporary.as_file())?;
+    }
+    // Dropping the temporary on any earlier error removes it.
     temporary
         .persist(&destination)
         .map_err(|error| Error::Io(error.error))?;
 
-    // The rename is the commit point. A failed directory sync cannot undo it.
-    let _ = sync_parent(parent);
+    // The rename is the commit point, so a failed directory sync cannot undo
+    // it; the error must say the new file is already in place.
+    if options.durable {
+        sync_parent(parent).map_err(|error| {
+            Error::Io(std::io::Error::new(
+                error.kind(),
+                format!(
+                    "workbook saved to {} but syncing the parent directory failed: {error}; \
+                     the new file may not survive a crash",
+                    destination.display()
+                ),
+            ))
+        })?;
+    }
     Ok(())
+}
+
+#[cfg(test)]
+thread_local! {
+    static SYNC_CALLS: std::cell::RefCell<Vec<&'static str>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn sync_temporary_file(file: &std::fs::File) -> std::io::Result<()> {
+    #[cfg(test)]
+    SYNC_CALLS.with(|calls| calls.borrow_mut().push("file"));
+    file.sync_all()
 }
 
 /// Follow symlinks from `path` to the file a save must replace. Returns the
@@ -2615,9 +2688,13 @@ fn resolve_save_destination(
     ))
 }
 
+/// Sync a directory entry on Unix. Windows has no directory sync, so this is
+/// a no-op there.
 fn sync_parent_directory(parent: &Path) -> std::io::Result<()> {
     #[cfg(unix)]
     {
+        #[cfg(test)]
+        SYNC_CALLS.with(|calls| calls.borrow_mut().push("dir"));
         std::fs::File::open(parent)?.sync_all()
     }
 
@@ -6416,7 +6493,7 @@ mod tests {
         let original = b"existing destination bytes";
         std::fs::write(&destination, original).unwrap();
 
-        let error = atomic_write_file(&destination, |file| {
+        let error = atomic_write_file(&destination, crate::save::SaveOptions::default(), |file| {
             let mut zip = zip::ZipWriter::new(file);
             let options =
                 SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
@@ -6448,23 +6525,232 @@ mod tests {
         assert_eq!(preserved, vba_data);
     }
 
+    const DURABLE: crate::save::SaveOptions = crate::save::SaveOptions { durable: true };
+
+    fn sheetkit_temporaries(directory: &Path) -> Vec<String> {
+        std::fs::read_dir(directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with(".sheetkit-"))
+            .collect()
+    }
+
+    fn take_sync_calls() -> Vec<&'static str> {
+        SYNC_CALLS.with(|calls| std::mem::take(&mut *calls.borrow_mut()))
+    }
+
+    fn expected_durable_syncs() -> Vec<&'static str> {
+        if cfg!(unix) {
+            vec!["file", "dir"]
+        } else {
+            vec!["file"]
+        }
+    }
+
     #[test]
-    fn post_rename_directory_sync_failure_does_not_report_save_failure() {
+    fn default_save_requests_neither_file_nor_directory_sync() {
         let directory = TempDir::new().unwrap();
         let destination = directory.path().join("existing.xlsx");
         std::fs::write(&destination, b"old contents").unwrap();
 
-        atomic_write_file_with_parent_sync(
+        atomic_write_file_with_sync(
             &destination,
+            crate::save::SaveOptions::default(),
             |file| {
                 file.write_all(b"new contents")?;
                 Ok(())
             },
-            |_| Err(std::io::Error::other("injected directory sync failure")),
+            |_| panic!("default save must not sync the file"),
+            |_| panic!("default save must not sync the directory"),
         )
         .unwrap();
 
         assert_eq!(std::fs::read(&destination).unwrap(), b"new contents");
+        assert!(sheetkit_temporaries(directory.path()).is_empty());
+    }
+
+    #[test]
+    fn durable_save_syncs_file_before_rename_and_directory_after() {
+        let directory = TempDir::new().unwrap();
+        let destination = directory.path().join("existing.xlsx");
+        std::fs::write(&destination, b"old contents").unwrap();
+        let events = std::cell::RefCell::new(Vec::new());
+
+        atomic_write_file_with_sync(
+            &destination,
+            DURABLE,
+            |file| {
+                file.write_all(b"new contents")?;
+                Ok(())
+            },
+            |_| {
+                let current = std::fs::read(&destination).unwrap();
+                events.borrow_mut().push(("file", current));
+                Ok(())
+            },
+            |parent| {
+                assert_eq!(parent, directory.path());
+                let current = std::fs::read(&destination).unwrap();
+                events.borrow_mut().push(("dir", current));
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            events.into_inner(),
+            vec![
+                ("file", b"old contents".to_vec()),
+                ("dir", b"new contents".to_vec()),
+            ]
+        );
+    }
+
+    #[test]
+    fn durable_directory_sync_failure_is_reported_after_replacement() {
+        let directory = TempDir::new().unwrap();
+        let destination = directory.path().join("existing.xlsx");
+        std::fs::write(&destination, b"old contents").unwrap();
+
+        let error = atomic_write_file_with_sync(
+            &destination,
+            DURABLE,
+            |file| {
+                file.write_all(b"new contents")?;
+                Ok(())
+            },
+            |_| Ok(()),
+            |_| {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "injected directory sync failure",
+                ))
+            },
+        )
+        .unwrap_err();
+
+        let Error::Io(io_error) = &error else {
+            panic!("expected an I/O error, got {error:?}");
+        };
+        assert_eq!(io_error.kind(), std::io::ErrorKind::PermissionDenied);
+        let message = error.to_string();
+        assert!(
+            message.contains(&format!("workbook saved to {}", destination.display())),
+            "{message}"
+        );
+        assert!(message.contains("syncing the parent directory failed"));
+        assert!(message.contains("injected directory sync failure"));
+        assert!(message.contains("the new file may not survive a crash"));
+        assert_eq!(std::fs::read(&destination).unwrap(), b"new contents");
+        assert!(sheetkit_temporaries(directory.path()).is_empty());
+    }
+
+    #[test]
+    fn durable_file_sync_failure_preserves_destination() {
+        let directory = TempDir::new().unwrap();
+        let destination = directory.path().join("existing.xlsx");
+        std::fs::write(&destination, b"old contents").unwrap();
+
+        let error = atomic_write_file_with_sync(
+            &destination,
+            DURABLE,
+            |file| {
+                file.write_all(b"new contents")?;
+                Ok(())
+            },
+            |_| Err(std::io::Error::other("injected file sync failure")),
+            |_| panic!("directory sync must not run after a failed file sync"),
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, Error::Io(_)));
+        assert_eq!(std::fs::read(&destination).unwrap(), b"old contents");
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn write_failure_preserves_destination_in_both_modes() {
+        for options in [crate::save::SaveOptions::default(), DURABLE] {
+            let directory = TempDir::new().unwrap();
+            let destination = directory.path().join("existing.xlsx");
+            std::fs::write(&destination, b"old contents").unwrap();
+
+            let error = atomic_write_file_with_sync(
+                &destination,
+                options,
+                |file| {
+                    file.write_all(b"partial")?;
+                    Err(std::io::Error::other("injected write failure").into())
+                },
+                |_| panic!("file sync must not run after a failed write"),
+                |_| panic!("directory sync must not run after a failed write"),
+            )
+            .unwrap_err();
+
+            assert!(matches!(error, Error::Io(_)));
+            assert_eq!(std::fs::read(&destination).unwrap(), b"old contents");
+            assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+        }
+    }
+
+    #[test]
+    fn public_save_apis_apply_save_options() {
+        let directory = TempDir::new().unwrap();
+        let path = directory.path().join("book.xlsx");
+        let workbook = Workbook::new();
+        take_sync_calls();
+
+        workbook.save(&path).unwrap();
+        assert!(take_sync_calls().is_empty());
+        workbook
+            .save_with_limits(&path, crate::save::SaveLimits::default())
+            .unwrap();
+        assert!(take_sync_calls().is_empty());
+        workbook
+            .save_with_options(
+                &path,
+                crate::save::SaveLimits::default(),
+                crate::save::SaveOptions::default(),
+            )
+            .unwrap();
+        assert!(take_sync_calls().is_empty());
+
+        workbook
+            .save_with_options(&path, crate::save::SaveLimits::default(), DURABLE)
+            .unwrap();
+        assert_eq!(take_sync_calls(), expected_durable_syncs());
+        Workbook::open(&path).unwrap();
+    }
+
+    #[cfg(feature = "encryption")]
+    #[test]
+    fn encrypted_save_applies_save_options() {
+        let directory = TempDir::new().unwrap();
+        let path = directory.path().join("secret.xlsx");
+        let mut workbook = Workbook::new();
+        workbook
+            .set_cell_value("Sheet1", "A1", CellValue::String("hidden".into()))
+            .unwrap();
+        take_sync_calls();
+
+        workbook.save_with_password(&path, "pw").unwrap();
+        assert!(take_sync_calls().is_empty());
+
+        workbook
+            .save_with_password_with_options(
+                &path,
+                "pw",
+                crate::crypt::CryptLimits::default(),
+                crate::save::SaveLimits::default(),
+                DURABLE,
+            )
+            .unwrap();
+        assert_eq!(take_sync_calls(), expected_durable_syncs());
+        let reopened = Workbook::open_with_password(&path, "pw").unwrap();
+        assert_eq!(
+            reopened.get_cell_value("Sheet1", "A1").unwrap(),
+            CellValue::String("hidden".into())
+        );
     }
 
     #[test]

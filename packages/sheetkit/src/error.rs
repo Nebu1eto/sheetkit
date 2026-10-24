@@ -61,6 +61,7 @@ pub(crate) struct SavePathTask {
     workbook: Arc<sheetkit_core::workbook::Workbook>,
     path: String,
     limits: sheetkit_core::save::SaveLimits,
+    options: sheetkit_core::save::SaveOptions,
     resource_error: Option<ResourceLimitError>,
 }
 
@@ -69,11 +70,13 @@ impl SavePathTask {
         workbook: Arc<sheetkit_core::workbook::Workbook>,
         path: String,
         limits: sheetkit_core::save::SaveLimits,
+        options: sheetkit_core::save::SaveOptions,
     ) -> Self {
         Self {
             workbook,
             path,
             limits,
+            options,
             resource_error: None,
         }
     }
@@ -90,7 +93,7 @@ impl Task for SavePathTask {
 
     fn compute(&mut self) -> Result<Self::Output> {
         self.workbook
-            .save_with_limits(&self.path, self.limits)
+            .save_with_options(&self.path, self.limits, self.options)
             .map_err(|error| {
                 self.resource_error = error.resource_metadata().copied();
                 Error::from_reason(error.to_string())
@@ -134,6 +137,7 @@ pub(crate) struct SavePasswordTask {
     path: String,
     password: String,
     limits: sheetkit_core::crypt::CryptLimits,
+    options: sheetkit_core::save::SaveOptions,
     resource_error: Option<ResourceLimitError>,
 }
 
@@ -143,12 +147,14 @@ impl SavePasswordTask {
         path: String,
         password: String,
         limits: sheetkit_core::crypt::CryptLimits,
+        options: sheetkit_core::save::SaveOptions,
     ) -> Self {
         Self {
             workbook,
             path,
             password,
             limits,
+            options,
             resource_error: None,
         }
     }
@@ -165,7 +171,13 @@ impl Task for SavePasswordTask {
 
     fn compute(&mut self) -> Result<Self::Output> {
         self.workbook
-            .save_with_password_with_limits(&self.path, &self.password, self.limits)
+            .save_with_password_with_options(
+                &self.path,
+                &self.password,
+                self.limits,
+                sheetkit_core::save::SaveLimits::default(),
+                self.options,
+            )
             .map_err(|error| {
                 self.resource_error = error.resource_metadata().copied();
                 Error::from_reason(error.to_string())

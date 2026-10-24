@@ -1,4 +1,5 @@
-//! Finite resource limits for workbook and streamed-sheet serialization.
+//! Finite resource limits and durability options for workbook and
+//! streamed-sheet serialization.
 
 use crate::error::{Error, Result};
 use crate::resource::{
@@ -101,6 +102,33 @@ impl SaveLimits {
         )?;
         Ok(self)
     }
+}
+
+/// Durability policy for one path save.
+///
+/// Every path save writes a temporary file (prefix `.sheetkit-`) in the
+/// destination directory and renames it over the destination. A failed save
+/// or an application crash before the rename leaves the previous file intact;
+/// a hard kill can leave an orphan temporary file behind.
+///
+/// - `durable: false` (default): no flush is requested. After a power loss or
+///   operating-system crash shortly after a successful save, the destination
+///   may hold the previous version, the new one, or, depending on the file
+///   system and mount options, an empty or incomplete file.
+/// - `durable: true`: the temporary file is flushed to storage before the
+///   rename (`fsync`; `F_FULLFSYNC` on macOS, which costs several
+///   milliseconds; `FlushFileBuffers` on Windows), and on Unix the parent
+///   directory is synced after the rename. A failed directory sync returns
+///   [`Error::Io`] stating that the new file is already in place. Windows has
+///   no directory sync, so that step is skipped there.
+///
+/// Network file systems and drives that ignore flush requests can weaken
+/// either guarantee. Construct it with a struct literal or
+/// `SaveOptions::default()`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SaveOptions {
+    /// Flush the file and its directory entry to storage before returning.
+    pub durable: bool,
 }
 
 /// Finite limits for one streamed-sheet construction operation.

@@ -251,11 +251,18 @@ impl Workbook {
 
     /// Save the workbook to a .xlsx file.
     #[napi(js_name = "saveSync")]
-    pub fn save_sync(&self, env: Env, path: String, limits: Option<JsSaveLimits>) -> Result<()> {
+    pub fn save_sync(
+        &self,
+        env: Env,
+        path: String,
+        limits: Option<JsSaveLimits>,
+        options: Option<JsSaveOptions>,
+    ) -> Result<()> {
         let limits =
             js_save_limits_to_core(limits.as_ref()).map_err(|error| map_core_error(&env, error))?;
+        let options = js_save_options_to_core(options.as_ref());
         self.inner
-            .save_with_limits(&path, limits)
+            .save_with_options(&path, limits, options)
             .map_err(|error| map_core_error(&env, error))
     }
 
@@ -267,10 +274,12 @@ impl Workbook {
         env: Env,
         path: String,
         limits: Option<JsSaveLimits>,
+        options: Option<JsSaveOptions>,
     ) -> Result<AsyncTask<SavePathTask>> {
         let limits =
             js_save_limits_to_core(limits.as_ref()).map_err(|error| map_core_error(&env, error))?;
-        Ok(SavePathTask::new(self.inner.clone(), path, limits).into_async_task())
+        let options = js_save_options_to_core(options.as_ref());
+        Ok(SavePathTask::new(self.inner.clone(), path, limits, options).into_async_task())
     }
 
     /// Open a workbook from an in-memory Buffer.
@@ -403,11 +412,19 @@ impl Workbook {
         path: String,
         password: String,
         limits: Option<JsCryptLimits>,
+        options: Option<JsSaveOptions>,
     ) -> Result<()> {
         let limits = js_crypt_limits_to_core(limits.as_ref())
             .map_err(|error| map_core_error(&env, error))?;
+        let options = js_save_options_to_core(options.as_ref());
         self.inner
-            .save_with_password_with_limits(&path, &password, limits)
+            .save_with_password_with_options(
+                &path,
+                &password,
+                limits,
+                sheetkit_core::save::SaveLimits::default(),
+                options,
+            )
             .map_err(|error| map_core_error(&env, error))
     }
 
@@ -420,10 +437,15 @@ impl Workbook {
         path: String,
         password: String,
         limits: Option<JsCryptLimits>,
+        options: Option<JsSaveOptions>,
     ) -> Result<AsyncTask<SavePasswordTask>> {
         let limits = js_crypt_limits_to_core(limits.as_ref())
             .map_err(|error| map_core_error(&env, error))?;
-        Ok(SavePasswordTask::new(self.inner.clone(), path, password, limits).into_async_task())
+        let options = js_save_options_to_core(options.as_ref());
+        Ok(
+            SavePasswordTask::new(self.inner.clone(), path, password, limits, options)
+                .into_async_task(),
+        )
     }
 
     /// Get the names of all sheets in workbook order.

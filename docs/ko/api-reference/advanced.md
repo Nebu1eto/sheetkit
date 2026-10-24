@@ -1753,11 +1753,13 @@ wb.save_with_password("encrypted.xlsx", "secret")?;
 
 ```typescript
 // 동기
-wb.saveWithPassword("encrypted.xlsx", "secret");
+wb.saveWithPasswordSync("encrypted.xlsx", "secret");
 
 // 비동기
 await wb.saveWithPassword("encrypted.xlsx", "secret");
 ```
+
+일반 path 저장과 마찬가지로 암호화 저장도 대상 파일을 원자적으로 교체하지만, 기본값에서는 storage flush를 요청하지 않습니다. 파일을 flush하고 디렉터리를 sync하려면 Rust에서는 `SaveOptions { durable: true }`와 함께 `save_with_password_with_options`를 사용하고, Node.js에서는 네 번째 인수로 `{ durable: true }`를 전달하세요. 자세한 내용은 [opt-in 저장 durability](../guide/migration-v1.md#opt-in-save-durability)를 참고하세요.
 
 ### 에러 타입
 

@@ -58,6 +58,33 @@ await wb.save("output.xlsx");
 
 > Note (Node.js): `wb.save(path)` is async and returns `Promise<void>`. Use `wb.saveSync(path)` for synchronous behavior.
 
+### `wb.save_with_options(path, limits, options)` / `wb.save(path, limits, options)`
+
+Path saves write the workbook to a `.sheetkit-*` temporary file in the destination directory and then rename it over the destination. If the save fails or the application crashes before the rename, the previous file stays intact; a hard kill can leave an orphan `.sheetkit-*` file behind. By default SheetKit does not ask the operating system to flush data to storage, so a power loss or OS crash shortly after a successful save can leave the previous version, the new one, or, depending on the file system and mount options, an empty or incomplete file.
+
+Pass `durable: true` when a save must survive a power loss. SheetKit then flushes the temporary file to storage before the rename and, on Unix, syncs the parent directory after it. On macOS the flush uses `F_FULLFSYNC` and costs several milliseconds per save. Windows has no directory sync, so only the file is flushed there. If the directory sync fails, the save returns an error whose message states that the new file is already in place. Network file systems and drives that ignore flush requests can weaken either guarantee.
+
+**Rust:**
+
+```rust
+use sheetkit::{SaveLimits, SaveOptions};
+
+wb.save_with_options("output.xlsx", SaveLimits::default(), SaveOptions { durable: true })?;
+```
+
+**TypeScript:**
+
+```typescript
+// Sync
+wb.saveSync("output.xlsx", undefined, { durable: true });
+
+// Async
+await wb.save("output.xlsx", undefined, { durable: true });
+```
+
+Encrypted saves accept the same option through `save_with_password_with_options` in Rust and the trailing `options` argument of `saveWithPasswordSync` and `saveWithPassword` in Node.js.
+
+
 ### `Workbook::open_from_buffer(data)` / `Workbook.openBufferSync(data)`
 
 Open a workbook from an in-memory byte buffer instead of a file path. Useful for processing uploaded files or data received over the network.

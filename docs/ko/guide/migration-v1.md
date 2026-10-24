@@ -240,6 +240,28 @@ workbook.save_with_limits("report.xlsx", limits)?;
 
 1.0.0 후보는 다시 serialize하지 않고 복사한 clean worksheet에 `xml_part_bytes`를 적용하지 않았으며, 원자적 교체 과정에서 symlink 대상을 일반 파일로 바꾸고 기존 permission bit를 유지하지 않았습니다. 두 문제 모두 수정되었습니다. 자세한 내용은 [Audit v2 동작 변경](#audit-v2-behavior-changes)을 참고하세요.
 
+<a id="opt-in-save-durability"></a>
+
+### Opt-in 저장 durability
+
+Path 저장은 기본적으로 원자적이지만 durable하지는 않습니다. 파일과 디렉터리를 storage에 flush하지 않으므로, 저장이 성공한 직후 전원이 끊기거나 OS가 비정상 종료되면 이전 버전이나 새 버전이 남거나, 파일 시스템과 mount option에 따라 비어 있거나 불완전한 파일이 남을 수 있습니다. Application 비정상 종료나 저장 실패 시에는 여전히 기존 파일이 유지되며, 강제 종료된 경우에는 `.sheetkit-*` 임시 파일이 남을 수 있습니다.
+
+전원이 끊겨도 저장 결과가 남아야 하면 durability를 요청하세요.
+
+```rust
+use sheetkit::{SaveLimits, SaveOptions};
+
+workbook.save_with_options("output.xlsx", SaveLimits::default(), SaveOptions { durable: true })?;
+```
+
+```typescript
+await workbook.save('output.xlsx', undefined, { durable: true });
+```
+
+Durable 저장은 rename 전에 임시 파일을 flush하고, Unix에서는 rename 후 디렉터리를 sync합니다. macOS에서는 flush에 `F_FULLFSYNC`를 사용하므로 저장마다 수 밀리초가 추가됩니다. 디렉터리 sync가 실패하면 새 파일이 이미 대상 위치에 있다는 내용의 오류를 반환합니다. 암호화 저장은 `save_with_password_with_options`와 Node.js의 마지막 `options` 인수로 같은 옵션을 지원합니다. Network file system이나 flush 요청을 무시하는 드라이브에서는 두 보장 모두 약해질 수 있습니다.
+
+1.0 RC build는 모든 path 저장에서 파일과 디렉터리를 sync했고 디렉터리 sync 실패를 무시했습니다. 1.0은 `durable`을 설정한 경우에만 sync하며 디렉터리 sync 실패를 보고합니다.
+
 Standard와 Agile encryption parsing, password derivation, package HMAC는 Office-compatible 동작으로 정리되었습니다. `CryptLimits`는 outer CFB, named stream, encrypted package, KDF iteration과 work를 제한하며 `VbaLimits`는 compressed, decoded, retained, output byte와 module 수를 한 operation에서 누적합니다. 기존에 만든 비표준 암호화 fixture는 Office나 msoffcrypto로 다시 검증하세요.
 
 저장 대상 확장자가 최종 형식을 결정합니다. `.xlsx`와 `.xltx`는 VBA를 제거하며 `.xlsm`, `.xltm`, `.xlam`은 canonical VBA package를 보존합니다.
@@ -346,6 +368,7 @@ CLI의 table, JSON, CSV 출력은 byte 제한을 넘으면 성공한 prefix를 s
 - formula, JSON import, traversal, save, stream에 필요한 유한 limit만 명시하세요.
 - CSV automation은 `spreadsheet-safe`와 `raw-exchange` 중 하나를 의도적으로 선택하세요.
 - async save와 writeBuffer가 끝난 뒤 workbook을 변경하세요.
+- 전원 차단이나 OS 비정상 종료 후에도 남아야 하는 저장에는 `durable: true`를 전달하세요.
 - macro를 보존할 파일은 macro-capable 확장자로 저장하세요.
 - sheet copy/delete와 table, pivot, slicer, control, chart golden file을 새로 생성하세요.
 - byte-for-byte ZIP 비교 대신 save/reopen과 Excel/LibreOffice 의미 검증을 수행하세요.
@@ -361,6 +384,7 @@ CLI의 table, JSON, CSV 출력은 byte 제한을 넘으면 성공한 prefix를 s
 ### 열기와 저장
 
 - Path 저장은 symlink를 따라가 대상 파일을 교체하므로 link 자체는 그대로 남습니다. Unix에서는 기존 대상 파일의 permission bit를 유지하며, 새 파일은 `0o666`에서 process umask를 적용한 mode로 생성됩니다.
+- Path 저장은 더 이상 기본적으로 파일과 디렉터리를 storage에 flush하지 않습니다. RC build는 항상 sync했고 디렉터리 sync 실패를 무시했습니다. Sync가 필요하면 `durable: true`를 전달하세요. 이 경우 디렉터리 sync 실패도 보고됩니다.
 - 어떤 part든 CRC 또는 압축 해제 검사에 실패하면 모든 read mode에서 open이 실패합니다. 이전 후보는 이런 part를 조용히 제외했습니다. 내용은 손상되지 않았지만 XML 형식이 잘못된 optional part는 계속 보존됩니다.
 - Worksheet relationship이 다른 part를 가리키는 alias이거나, package 밖을 가리키거나, external이면 open이 실패합니다.
 - ZIP entry 이름이 중복되거나 대소문자만 다른 part 이름이 있으면 open이 실패합니다.

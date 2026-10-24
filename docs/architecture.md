@@ -123,7 +123,7 @@ The XML declaration `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` is
 
 ### ZIP Archive Handling
 
-The `zip` crate handles reading and writing .xlsx archives. All ZIP entries use `SimpleFileOptions::default().compression_method(CompressionMethod::Deflated)`. On `open()`, every XML part is read into memory and deserialized. On `save()`, every part is re-serialized and written to a new ZIP archive atomically.
+The `zip` crate handles reading and writing .xlsx archives. All ZIP entries use `SimpleFileOptions::default().compression_method(CompressionMethod::Deflated)`. On `open()`, every XML part is read into memory and deserialized. On `save()`, every part is re-serialized into a new ZIP archive in a same-directory temporary file, which is then renamed over the destination. The rename makes the replacement atomic, but the file and directory are flushed to storage only when `SaveOptions::durable` is set.
 
 ### SharedStrings (SST)
 
