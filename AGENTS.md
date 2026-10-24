@@ -1,172 +1,61 @@
-# SheetKit Development Guide
+# SheetKit Agent Guide
 
-## Project Overview
+SheetKit reads and writes Excel `.xlsx` files. Rust owns all logic; Node.js bindings wrap it with napi-rs.
 
-SheetKit is a Rust library for reading and writing Excel (.xlsx) files, with Node.js bindings via napi-rs.
+## Layout
 
-### Crate Structure
+- `crates/sheetkit-xml`: serde XML types for OOXML.
+- `crates/sheetkit-core`: all business logic (workbook, cells, styles, formulas, charts, streaming, encryption behind the `encryption` feature).
+- `crates/sheetkit`: public facade that re-exports `sheetkit-core`.
+- `packages/sheetkit`: napi cdylib plus the TypeScript wrapper (`index.ts`, `buffer-codec.ts`, `sheet-data.ts`, `open-options.ts`). `binding.js`/`binding.d.ts` and the `.js`/`.d.ts` next to the sources are generated.
+- `examples/`, `benchmarks/`, `docs/` (VitePress, English and Korean), `tools/oxlint/anti-slop` (vendored lint rules; see its `UPSTREAM.md`).
 
-- **sheetkit-xml** (`crates/sheetkit-xml`): Serde-based XML schema types for OOXML. Low-level XML data structures.
-- **sheetkit-core** (`crates/sheetkit-core`): Business logic -- workbook operations, cell manipulation, styles, formulas, charts, images, streaming, encryption, and more. Modules: cell, chart, col, comment, crypt (feature-gated), doc_props, error, formula, image, protection, row, sheet, sst, stream, style, table, utils, validation, workbook.
-- **sheetkit** (`crates/sheetkit`): Public facade crate that re-exports types from sheetkit-core for end users.
-- **sheetkit-node** (`packages/sheetkit`): Node.js bindings via napi-rs. The Rust crate produces a cdylib (`binding.js`/`binding.d.ts`). TypeScript source files (`index.ts`, `buffer-codec.ts`, `sheet-data.ts`) provide the public API wrapper. tsdown handles transpilation and `.d.ts` generation.
+Toolchain: `mise` provides Node.js (`.node-version`) and pnpm (`mise.toml`); Rust comes from rustup. Node.js 24 is the minimum supported runtime, so keep `@types/node` on 24.x and avoid newer APIs.
 
-### Tech Stack
+## Working rules
 
-- **quick-xml** (with `serialize` and `overlapped-lists` features): XML parsing and serialization
-- **serde**: Derive-based (de)serialization for XML types
-- **zip** (with `deflate` feature): ZIP archive handling for .xlsx files
-- **thiserror**: Error type definitions
-- **nom**: Formula parsing
-- **napi / napi-derive**: Node.js native addon bindings
-- **chrono**: Date/time handling
-- **tempfile**: Temporary file handling for StreamWriter (runtime dependency in sheetkit-core)
-- **pretty_assertions**: Testing utility
-- **Node.js runtime**: Develop and test on Node.js 26 (`.node-version`). The supported runtime is Node.js 24 or later (`engines` in `packages/sheetkit/package.json`; CI also tests 24), so keep `@types/node` on the 24.x line and do not use APIs that Node.js 24 lacks.
-- **aes**, **cbc**, **ecb**, **sha1**, **sha2**, **hmac**, **rand**, **cfb**, **base64** (optional, behind `encryption` feature): File-level encryption/decryption
+- Do the requested change and the validation it needs without asking first. Ask only when missing input would change the outcome. Confirm before destructive actions, publishing, releases, or dependency and toolchain changes the request did not cover.
+- Keep the diff to the request. Do not fix, refactor, or extend nearby code, and add tests only for behavior that the change introduces or protects.
+- Rust and Node.js APIs must behave identically: defaults, return values, and errors. A change on one side updates the other.
+- Zero tolerance for diagnostics: no warning or error from any linter, formatter, type checker, compiler, or test may remain. Fix the cause. Never suppress with disable comments, `@ts-ignore`/`@ts-expect-error`, `any`, assertion chains, rule downgrades, or new ignore patterns.
+- Prefer targeted edits to whole-file rewrites.
 
-## Development Workflow
+## Code style
 
-Follow a TDD approach: write tests FIRST, then implement. Tests should verify essential behaviors, not trivial things.
+- English for all identifiers, strings, comments, and example data, including demos and tests.
+- Doc comments (`///`, `/** */`) state inputs, behavior, and outputs briefly. Inline comments only for non-obvious logic. No decorative comments or emoji anywhere.
+- TypeScript: ESM only, no hand-written `.js`/`.mjs`/`.cjs`, no non-null `!` (use `assert(value != null)` from `node:assert`). Scripts run with `tsx`; library code builds with tsdown.
+- Korean docs (`docs/ko/`, `README.ko.md`): polite declarative endings only (`~합니다/~됩니다/~입니다/~세요`), never `~이다/~한다/~된다`. Keep common technical terms untranslated. Code blocks may carry Korean comments; identifiers and data stay English.
 
-### AI Usage
+## Commands and gates
 
-- Follow `AI_POLICY.md` for all AI-assisted work.
-- Disclose AI assistance in commit messages with an `Assisted-by` trailer in
-  the format `Assisted-by: <agent name>:<model version>`.
-- Do not use `Co-authored-by` or `Generated with` trailers for AI assistants.
-
-### Commits
-
-- Use the `commit` skill for all commits.
-- Use `[<package>] <type>(#<issue>): <summary>` for commit subjects.
-- Omit `(#<issue>)` when no GitHub issue number is provided or known.
-- Use `[*]` for repository-wide changes and the affected crate or package name
-  otherwise.
-- Write the body as concise `- <what and why changed>` bullets.
-- Keep the subject and each body bullet at or under 72 characters.
-- Sign commits when git signing is configured and available.
-- Add `Assisted-by` and `Signed-off-by` trailers.
-- Run `pnpm format` before committing.
-
-### Build Commands
+Run everything relevant to the change before reporting completion; CI runs the same set.
 
 ```bash
-# Rust workspace
 cargo build --workspace
-cargo test --workspace
-cargo clippy --workspace
+cargo clippy --workspace -- -D warnings
 cargo fmt --check
-
-# Node.js bindings
-cd packages/sheetkit && pnpm build
-cd packages/sheetkit && pnpm test
-```
-
-Always verify builds, lints, and formatting pass before declaring work complete.
-
-### Workspace Layout
-
-- Cargo workspace: `crates/sheetkit-xml`, `crates/sheetkit-core`, `crates/sheetkit`, `packages/sheetkit`, `examples/rust`
-- pnpm workspace: `packages/*`, `examples/*`
-
-## Code Style
-
-### Comments
-
-- Doc comments (`///` for Rust, `/** */` for TypeScript): Describe inputs, behavior, and outputs concisely.
-- Inline comments: Only for complex logic that is not self-evident from the code.
-- No section markers, decorative comments, or emoji in code or output.
-- Keep all comments concise.
-
-### Language
-
-- All code must be written in English. This includes variable names, string literals, comments, and example data values.
-- Even in example or demo code, use English for all content (e.g., "Name", "Sales", "Employee List" instead of localized text).
-- Documentation prose may be in other languages (e.g., Korean guide). Code blocks in Korean documentation (`docs/ko/`) may use Korean comments to aid reader comprehension, while variable names, string literals, and example data values must remain in English.
-- Korean documentation (`docs/ko/`, `README.ko.md`) must use concise polite speech consistently: all sentences end with "~합니다/~됩니다/~입니다/~세요" forms. Never use plain/해체 endings like "~이다", "~한다", "~된다" in prose. Commonly used technical terms (serialize, buffer, FFI, SST, AST, enum, trait, crate, facade, napi, callback, offset, payload) should be kept as-is without forced translation.
-
-### General
-
-- No emoji in any code or output.
-- Rust: Follow standard Rust conventions. Use `cargo fmt` for formatting.
-- TypeScript: Use Biome for formatting and linting. All code must pass `pnpm check` (Biome) with zero errors before committing.
-- Never use TypeScript non-null assertion operator (`!`). Instead, use `assert(value != null)` from `node:assert` (or an equivalent runtime check) to verify the value is not null/undefined before use. This applies to all TypeScript code including tests.
-- ESM only for all JavaScript/TypeScript. napi v3 with `--esm` produces ESM output directly.
-- No hand-written JavaScript (`.js`/`.mjs`/`.cjs`) files. All JS-side code must be TypeScript. Library code is transpiled by tsdown; scripts are executed via `tsx`.
-
-## Architecture
-
-### XML Layer (sheetkit-xml)
-
-Serde-based XML schema types mapping to OOXML structures. Used by sheetkit-core for reading and writing .xlsx internals.
-
-### Core Layer (sheetkit-core)
-
-All business logic lives here: workbook open/save, cell get/set, SST (shared strings table) management, sheet operations, row/column manipulation, style system, formula parsing, chart/image/drawing support, data validation, comments, streaming writer, document properties, workbook protection, and file-level encryption (`crypt` module, behind `encryption` feature flag).
-
-### Facade Layer (sheetkit)
-
-Thin re-export crate. Provides the public API surface (`Workbook`, `CellValue`, `Style`, `ChartConfig`, etc.) by re-exporting from sheetkit-core.
-
-### Node.js Layer (packages/sheetkit)
-
-TypeScript source files (`index.ts`, `buffer-codec.ts`, `sheet-data.ts`) provide the public API. These import from `binding.js`/`binding.d.ts` (generated by napi-rs) and add a JS `Workbook` wrapper class that delegates to the native `Workbook`. tsdown transpiles `.ts` to `.js` and generates `.d.ts` declarations in a single step. The generated `.js` and `.d.ts` files are gitignored.
-
-Build pipeline: `build:napi` (Rust compile + napi codegen) -> `typecheck` (tsc --noEmit) -> `build:ts` (tsdown transpile + declarations).
-
-### Key Patterns
-
-- **API behavior parity**: Rust and Node.js APIs must have identical default behavior. Default options, return value semantics, and error behavior must match across both layers. When changing defaults or behavior in one layer, always update the other to stay in sync.
-- XML declaration is prepended manually: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`
-- SharedStrings (SST) is optional on open -- use `Sst::default()` if the file has no sharedStrings.xml.
-- DC namespace (`dc:`, `dcterms:`, `cp:`) and `vt:` prefix require manual quick-xml Writer/Reader because serde does not handle namespace prefixes correctly.
-- napi `Workbook` (in `binding.d.ts`) wraps core Workbook. The TypeScript `Workbook` (in `index.ts`) wraps the napi one.
-- Encrypted `.xlsx` files use OLE/CFB containers (not ZIP). Detection is by magic bytes: ZIP = `PK\x03\x04`, CFB = `D0CF11E0A1B11AE1`.
-- The `encryption` feature flag gates all crypto dependencies and the `crypt` module. Node.js bindings always enable it.
-
-## Testing
-
-### Rust
-
-Run the full test suite:
-
-```bash
-cargo test --workspace
-# With encryption feature (needed for crypt module tests)
 cargo test --workspace --features sheetkit-core/encryption
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace
+pnpm check            # oxlint + oxfmt --check + vendored rule typecheck
+pnpm -r build         # napi build -> tsc --noEmit -> tsdown
+pnpm --filter @sheetkit/node typecheck:declarations
+pnpm test             # vitest for the Node.js binding
+pnpm docs:build       # rustdoc (warnings are errors) + typedoc + VitePress
 ```
 
-Test files are co-located with their modules using `#[cfg(test)]` inline test modules.
+`pnpm check:write` applies lint autofixes and formatting. Update `docs/` when a public API changes.
 
-### Node.js
+## Commits
 
-```bash
-cd packages/sheetkit && pnpm test
-```
+Use the `commit` skill. Subject `[<crate-or-package>] <type>(#<issue>): <summary>` (`[*]` for repo-wide, omit the issue segment when unknown), body of `- <what and why>` bullets, all lines at most 72 characters, `Assisted-by: <agent>:<model>` and `Signed-off-by` trailers, signed when signing is configured. Stage files explicitly; never `git add -A` or `git add .`. See `AI_POLICY.md`.
 
-Test file: `packages/sheetkit/__test__/index.spec.ts`
+## Facts that are easy to get wrong
 
-## Verification Checklist
-
-Before completing any task, confirm all of the following pass:
-
-- [ ] `cargo build --workspace` passes
-- [ ] `cargo test --workspace` passes
-- [ ] `cargo clippy --workspace` passes (no warnings)
-- [ ] `cargo fmt --check` passes
-- [ ] `pnpm check` passes at project root with zero errors (Biome lint/format across all pnpm workspaces)
-- [ ] `pnpm -r build` passes at project root (build all pnpm workspaces)
-- [ ] `pnpm test` passes at project root (if Node.js code changed)
-- [ ] Update docs if API changed
-
-## Common Gotchas
-
-- `cargo fmt` may reformat files in other crates -- include those reformatted files in commits.
-- ZIP options must use: `SimpleFileOptions::default().compression_method(CompressionMethod::Deflated)`
-- `nom` crate is used for formula parsing in sheetkit-core.
-- Put new features in separate files (e.g., `cell.rs`, `sst.rs`, `sheet.rs`, `formula/`) to minimize merge conflicts when working in parallel.
-- Stage only specific files when committing. Do not use `git add -A` or `git add .`.
-- `pnpm build` runs: napi build -> typecheck -> tsdown (transpile + declarations). Generated `.js`/`.d.ts` are gitignored.
-- `sheetkit-core` needs `quick-xml` and `serde` as direct dependencies for the workbook module.
-- Test output `.xlsx` files are gitignored (except under `fixtures/`).
+- The XML declaration is prepended by hand: `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>`.
+- `dc:`, `dcterms:`, `cp:`, and `vt:` prefixes need manual quick-xml readers and writers; serde does not handle the namespaces.
+- `sharedStrings.xml` is optional; use `Sst::default()` when absent.
+- ZIP entries use `SimpleFileOptions::default().compression_method(CompressionMethod::Deflated)`.
+- Encrypted files are OLE/CFB containers: ZIP starts with `PK\x03\x04`, CFB with `D0CF11E0A1B11AE1`. Node bindings always enable `encryption`.
+- `cargo fmt` may touch other crates; include those files in the commit.
+- Test output `.xlsx` files are gitignored except under `fixtures/`.
