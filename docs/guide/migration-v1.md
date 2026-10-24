@@ -1,133 +1,93 @@
-# Migrating from v0.5.1 to 1.0
+# Migrating from 0.5.1 to 1.0
 
-SheetKit 1.0 changes several defaults and rejects inputs that v0.5.1 could
-accept without a finite resource policy. It also corrects formula, package,
-rendering, and Office interoperability behavior accumulated since v0.5.1.
+SheetKit 1.0 puts finite limits on every operation, rejects malformed input that
+0.5.1 accepted, and fixes many results that differed from Excel. Most
+applications upgrade without code changes, but some defaults, return shapes,
+errors, and saved output change on purpose.
 
-This guide is for applications upgrading directly from v0.5.1. It covers the
-Rust crate, the `@sheetkit/node` package, and the CLI.
+This guide covers the Rust crates, the `@sheetkit/node` package, and the CLI.
+After upgrading, rebuild the native addon and recompile TypeScript against the
+new declarations. The Node.js package requires Node.js 24 or later.
 
-## Migration at a glance
+## What to check first
 
-Plan for these changes before updating:
+- **Resource limits.** Open, formula, traversal, stream, save, encryption, and
+  VBA operations use finite defaults. You can raise a limit for trusted input,
+  but you cannot remove it.
+- **Lazy open.** Node.js opens workbooks lazily and defers auxiliary parts.
+  Numeric cells with a date number format are read as dates.
+- **Sparse rows.** Row and column APIs return occupied cells only. Dense output
+  is an explicit, bounded option.
+- **Structured values.** Node.js returns formula and date cells as objects
+  instead of plain scalars.
+- **Atomic failures.** Formula, import, structural-edit, and save operations
+  either complete or leave the workbook unchanged.
+- **CSV.** Output neutralizes formula-like text by default.
+- **Async saves.** `save`, `writeBuffer`, and `saveWithPassword` run in the
+  background. The workbook cannot be modified until they settle.
+- **Macros.** Saving to `.xlsx` or `.xltx` removes VBA content.
+- **Strict validation.** Malformed references, buffers, tables, colors,
+  package parts, and Node.js arguments now fail instead of loading or applying
+  partially.
 
-- Workbook open, traversal, formula, stream, save, encryption, VBA, and output
-  operations now use finite defaults. Callers can select larger finite limits,
-  but cannot disable the hard ceilings.
-- Node open remains lazy by default. Auxiliary parts are deferred, and
-  date-formatted numeric cells use number-format interpretation by default.
-- Row and column traversal is sparse by default. Dense traversal is an
-  explicit, bounded v1 transfer-format compatibility mode.
-- Node formula and date cells are structured objects rather than flattened
-  scalar values.
-- Formula parsing, calculation, assignment, cached results, and reference
-  shifts share finite operation budgets. Failed bulk operations do not commit
-  partial results.
-- CSV output is spreadsheet-safe by default. Raw formula-capable text requires
-  an explicit `raw-exchange` policy.
-- Async Node save methods perform work off the JavaScript thread. The workbook
-  cannot be mutated while an async save or buffer write is in progress.
-- Saving a macro-enabled workbook to a macro-free format removes its VBA
-  content. Choose an XLSM, XLTM, or XLAM target to retain macros.
-- Strict cell references, transfer buffers, table ownership, style colors, and
-  advanced OOXML package graphs may reject malformed data that previously
-  loaded or mutated partially.
-- A second audit of the 1.0.0 candidate changed save, open, structural-edit,
-  formula, ID-allocation, and Node argument behavior. See
-  [Audit v2 behavior changes](#audit-v2-behavior-changes).
+## Resource limits and errors
 
-Recompile Rust and TypeScript consumers after upgrading. The generated Node
-declarations compile with Node 24 types, and the addon uses Node-API 8.
+Each operation applies its own limits. Limits are not global, are not stored
+on the workbook, and cannot exceed a fixed hard ceiling.
 
-## 1. Handle finite resource limits and structured errors
-
-### What changed
-
-The v0.5.1 compatibility methods remain available, but they now select secure
-finite defaults. Option-taking methods can raise a specific limit for a trusted
-workload. Every caller-selected value must still fit the non-overridable hard
-ceiling.
-
-Limits apply to one operation. They do not alter process-global state or store
-an unlimited policy on a workbook.
-
-| Operation | Rust policy | Node policy | Selected default ceilings |
+| Operation | Rust | Node.js | Main defaults |
 | --- | --- | --- | --- |
-| Open | `OpenOptions`, `OpenLimits`, `CryptLimits`, `VbaLimits` | `OpenOptions` | 128 MiB outer input, 4,096 ZIP entries, 512 MiB aggregate expansion, 256 MiB XML part |
-| Formula | `FormulaLimits` | `FormulaLimits` | 32 KiB per formula input, 4 MiB cumulative input, 16 MiB cumulative output |
+| Open | `OpenOptions`, `OpenLimits`, `CryptLimits`, `VbaLimits` | `OpenOptions` | 128 MiB input, 4,096 ZIP entries, 512 MiB total expanded size, 256 MiB per XML part |
+| Formula | `FormulaLimits` | `FormulaLimits` | 32 KiB per formula, 4 MiB total input, 16 MiB total output |
 | Traversal | `TraversalOptions`, `TraversalLimits` | `TraversalOptions` | 1,048,576 rows, 16,384 columns, 10 million cells, 512 MiB output |
-| Save | `SaveLimits` | `SaveLimits` | 512 MiB archive, 128 MiB XML part, 10 million rows and cells |
-| Stream write | `StreamLimits` | `StreamLimits` | 16 MiB row XML, 512 MiB row output, 1,048,576 rows, 10 million cells |
-| CSV | bounded CSV options | `ToCsvOptions` | 64 MiB returned UTF-8 |
+| Save | `SaveLimits` | `SaveLimits` | 512 MiB archive, 128 MiB per XML part, 10 million rows and cells |
+| Stream write | `StreamLimits` | `StreamLimits` | 16 MiB per row, 512 MiB total, 1,048,576 rows, 10 million cells |
+| JSON import | none | `limits` option | 1,048,576 rows, 16,384 columns, 10 million cells, 512 MiB retained |
+| CSV | CSV options | `ToCsvOptions` | 64 MiB output |
 
-These are defaults, not a promise that every input below one individual value
-will succeed. Operations charge multiple dimensions and cumulative work.
+An operation counts several dimensions at once, so an input can fail even when
+each individual value is below its default.
 
-### Rust error handling
+### Handling limit errors
 
-Resource exhaustion is `Error::ResourceLimitExceeded`. Match it separately from
-invalid data and I/O failures:
+In Rust, a limit failure is `Error::ResourceLimitExceeded`. Match it separately
+from invalid data and I/O errors:
 
 ```rust
 use sheetkit::{Error, OpenOptions, Workbook};
 
-fn inspect_report() -> sheetkit::Result<()> {
-    match Workbook::open_with_options("report.xlsx", &OpenOptions::default()) {
-        Ok(workbook) => {
-            println!("opened {} sheets", workbook.sheet_names().len());
-        }
-        Err(Error::ResourceLimitExceeded(details)) => {
-            eprintln!(
-                "{} exceeded {}: observed {}, limit {}",
-                details.operation_code(),
-                details.dimension_code(),
-                details.observed(),
-                details.limit(),
-            );
-        }
-        Err(error) => return Err(error),
-    }
-
-    Ok(())
+match Workbook::open_with_options("report.xlsx", &OpenOptions::default()) {
+    Ok(workbook) => println!("{} sheets", workbook.sheet_names().len()),
+    Err(Error::ResourceLimitExceeded(details)) => eprintln!(
+        "{} exceeded {}: {} > {}",
+        details.operation_code(),
+        details.dimension_code(),
+        details.observed(),
+        details.limit(),
+    ),
+    Err(error) => return Err(error),
 }
 ```
 
-Propagate `Result` from constructors and mutators. In particular,
-`CompactCellRef::new` and `CompactCellRef::from_coordinates` are fallible in
-1.0 and enforce Excel's row and column bounds.
-
-### Node error handling
-
-Do not parse error messages. Use `isResourceLimitError` and its stable fields:
+In Node.js, use `isResourceLimitError` instead of matching error messages.
+`limit` and `observed` are `bigint`:
 
 ```typescript
 import { isResourceLimitError, Workbook } from '@sheetkit/node';
 
 try {
   const workbook = await Workbook.open('report.xlsx');
-  await workbook.save('copy.xlsx');
 } catch (error) {
-  if (isResourceLimitError(error)) {
-    console.error({
-      operation: error.operation,
-      category: error.category,
-      dimension: error.dimension,
-      limit: error.limit,
-      observed: error.observed,
-      stage: error.stage,
-    });
-  } else {
-    throw error;
-  }
+  if (!isResourceLimitError(error)) throw error;
+  console.error(error.operation, error.dimension, error.limit, error.observed);
 }
 ```
 
-`limit` and `observed` are `bigint`. Lifecycle and ordinary argument failures
-remain normal JavaScript errors.
+Argument errors, lifecycle errors, and wrong passwords remain ordinary errors.
 
-### Raising a limit for trusted input
+### Raising a limit
 
-Override only the dimension required by a known workbook:
+Raise only the dimension that a known, trusted file needs:
 
 ```typescript
 const workbook = await Workbook.open('trusted-large.xlsx', {
@@ -137,43 +97,36 @@ const workbook = await Workbook.open('trusted-large.xlsx', {
 });
 ```
 
-`maxUnzipSize` and `maxZipEntries` remain accepted compatibility names, but no
-value turns the archive policy off. Unknown modes, unsafe JavaScript numbers,
-zero limits, and values above hard ceilings reject instead of silently
-falling back.
+`maxUnzipSize` and `maxZipEntries` are still accepted, but no value disables
+the archive checks. Zero, unsafe JavaScript numbers, values above the hard
+ceiling, and unknown modes are rejected.
 
-`maxXmlPartBytes` can lower the 256 MiB default XML ceiling. Raising that field
-alone does not admit an XML ZIP entry above the separate 256 MiB per-entry
-declared and actual defaults; Node 1.0 does not expose those two per-entry
-overrides.
+`maxXmlPartBytes` can lower the 256 MiB per-part default. Raising it has no
+effect, because each ZIP entry is also limited to 256 MiB and Node.js does not
+expose that limit.
 
-- The 100:1 compression-ratio limit applies only to ZIP entries larger than
-  8 MiB after decompression, so small repetitive parts such as shared strings
-  open at defaults. Set `compressionRatioFloorBytes` (Node) or
-  `OpenOptions::compression_ratio_floor_bytes` (Rust) to change the floor; `0`
-  checks every entry. Non-empty entries with zero compressed bytes always fail.
+The 100:1 compression-ratio check applies only to entries larger than 8 MiB
+after decompression, so small repetitive parts such as shared strings open
+normally. Change the threshold with `compressionRatioFloorBytes` (Node.js) or
+`OpenOptions::compression_ratio_floor_bytes` (Rust); `0` checks every entry.
 
-## 2. Open, lazy hydration, and date interpretation
+## Opening workbooks
 
-### Defaults in 1.0
+### Defaults
 
-Node open methods use:
+Node.js open methods default to:
 
 ```typescript
-{
-  readMode: 'lazy',
-  auxParts: 'deferred',
-  dateInterpretation: 'numFmt',
-}
+{ readMode: 'lazy', auxParts: 'deferred', dateInterpretation: 'numFmt' }
 ```
 
-The equivalent Rust values are `ReadMode::Lazy`, `AuxParts::Deferred`, and
+The Rust equivalents are `ReadMode::Lazy`, `AuxParts::Deferred`, and
 `DateInterpretation::NumFmt`.
 
-Lazy hydration retains the resolved open policy. A worksheet or auxiliary XML
-part that exceeds `maxXmlPartBytes` can therefore fail when first accessed,
-even if the initial `open` call succeeded. If the whole package must be
-validated immediately, open eagerly:
+A lazy workbook parses a worksheet or auxiliary part on first access, under the
+limits chosen at open. A part that exceeds `maxXmlPartBytes` can therefore fail
+on first access even though `open` succeeded. To validate the whole file up
+front, open eagerly:
 
 ```typescript
 const workbook = await Workbook.open('input.xlsx', {
@@ -182,334 +135,265 @@ const workbook = await Workbook.open('input.xlsx', {
 });
 ```
 
-Filtering with `sheets` no longer decompresses or validates excluded
-worksheets. Do not treat a filtered open as validation of the complete file.
-Unchanged excluded sheets remain package-backed for save.
+A lazy workbook keeps reading the file as it was at open time. Replacing the
+file afterward does not change what the workbook reads.
 
-### Legacy parse modes
+### Filtering and partial reads
 
-The compatibility adapter maps `parseMode: 'full'` to eager behavior and
-`parseMode: 'readfast'` to lazy behavior. New code should use `readMode`:
+Sheets excluded with `sheets` are no longer decompressed or validated, and are
+copied unchanged on save. `sheetRows` stops parsing after the requested row.
+Neither option validates the rest of the file.
+
+### Legacy option names
+
+`parseMode: 'full'` maps to eager open and `parseMode: 'readfast'` to lazy
+open. Use `readMode` in new code. `readMode: 'stream'` currently behaves like
+`'lazy'`; use `openSheetReader` for forward streaming.
+
+### Files that now fail to open
+
+Open now fails, in every read mode, when:
+
+- a part fails its CRC or decompression check (0.5.1 dropped such parts);
+- a ZIP entry name is duplicated, or two part names differ only by case;
+- a worksheet relationship points to another part, outside the package, or to
+  an external target;
+- an entry's declared size does not match its content (a lazy workbook fails
+  when it reads or copies that part).
+
+A part that decompresses correctly but contains malformed XML is still kept.
+
+## Cell values and dates
+
+Node.js cell values now use this type:
 
 ```typescript
-// v0.5.1 compatibility spelling
-const before = await Workbook.open('input.xlsx', {
-  parseMode: 'readfast',
-});
-
-// 1.0 spelling
-const after = await Workbook.open('input.xlsx', {
-  readMode: 'lazy',
-  auxParts: 'deferred',
-});
+type CellValue = string | number | boolean | DateValue | FormulaValue | null;
 ```
 
-`readMode: 'stream'` is currently a reserved selector with the same open-path
-behavior as `lazy`. `openSheetReader` is the forward batch API and does not
-require `readMode: 'stream'`. Random cell access still requires worksheet
-hydration.
+With the default `dateInterpretation: 'numFmt'`, a numeric cell with a date
+number format becomes a `DateValue`. Choose `'cellType'` to follow the stored
+cell type literally. Rust returns `CellValue::Date`.
 
-### Date values
-
-The default `numFmt` policy recognizes how Excel commonly stores dates: a
-numeric cell with a date number format becomes a structured `DateValue`.
-Choose `cellType` only when the XML cell type must be followed literally:
-
-```typescript
-const workbook = await Workbook.open('input.xlsx', {
-  dateInterpretation: 'cellType',
-});
-```
-
-Audit TypeScript code that assumed every numeric XML cell returned a `number`.
-In Node, direct reads, row traversal, raw transfer, and stream reads preserve
-`DateValue` consistently. Rust exposes the corresponding value as
-`CellValue::Date`.
-
-## 3. Formula values, mutation, and recalculation
-
-### Structured values
-
-Formula cells and cached results survive Node round trips:
+A formula cell keeps its formula and cached result:
 
 ```typescript
 const value = workbook.getCellValue('Sheet1', 'D2');
-
 if (typeof value === 'object' && value?.type === 'formula') {
-  console.log(value.formula);
-  console.log(value.result);
+  console.log(value.formula, value.result);
 }
 ```
 
-Update serializers and type guards that expected a cached formula result to
-replace the formula object.
+Dates and formulas keep this shape in direct reads, row traversal, raw
+buffers, stream reads, and JSON import. Update type guards and serializers that
+expected a `number` or a flattened formula result.
 
-### Finite, atomic operations
+In Rust, `CompactCellRef::new` and `CompactCellRef::from_coordinates` now
+return `Result` and enforce Excel's row and column bounds.
 
-The same `FormulaLimits` model covers parsing, evaluation, `calculateAll`,
-direct assignment, range fill, generic `FormulaValue` mutations, stream
-writes, JSON import, and raw v1/v2 import.
+## Formulas
 
-Before 1.0, generated formulas could consume unbounded nesting, range, matching,
-or output work. Some bulk paths could discover an error after earlier cells had
-changed. In 1.0, the operation preflights its cumulative budget and stages bulk
-results before commit.
+### Limits and atomic updates
+
+Parsing, evaluation, `calculateAll`, `setCellFormula`, `fillFormula`,
+`FormulaValue` assignment, stream writes, JSON import, and raw buffer import
+share one `FormulaLimits` budget per operation. The budget is checked before
+any cell changes, so a failed bulk operation leaves no partial results.
 
 ```typescript
-workbook.setCellFormula('Sheet1', 'D2', 'B2*C2', {
-  perFormulaInputBytes: 32 * 1024,
-  operationOutputBytes: 16 * 1024 * 1024,
-});
-
 workbook.fillFormula('Sheet1', 'D2:D1000', 'B2*C2', {
   operationInputBytes: 4 * 1024 * 1024,
   operationEvaluationSteps: 1_048_576,
 });
 ```
 
-Rust provides `set_cell_formula_with_limits`,
-`fill_formula_with_limits`, `evaluate_formula_with_limits`, and
-`calculate_all_with_limits`. Their no-options counterparts use secure defaults.
+Rust provides `set_cell_formula_with_limits`, `fill_formula_with_limits`,
+`evaluate_formula_with_limits`, and `calculate_all_with_limits`. The methods
+without limits use `FormulaLimits::secure_default()`.
 
-### Result changes
+An error inside one cell, such as `#DIV/0!`, is stored as that cell's cached
+result. Only cycles and engine failures abort `calculateAll`.
 
-Rebaseline formula tests where v0.5.1 differed from Excel. The corrections
-include:
+### Changed results
 
-- range and blank handling;
-- exponentiation and several financial functions;
-- holiday, `TEXT`, Unicode `LEN`, and Bessel behavior;
-- checked `places` values for base conversions;
-- bounded periods for depreciation and cumulative-interest functions;
-- bounded wildcard criteria for `COUNTIF(S)`, `SUMIF(S)`,
-  `AVERAGEIF(S)`, and `SEARCH`;
-- preflighted `SUBSTITUTE` amplification.
+Update expected values in formula tests. Results now match Excel for:
 
-Cell-domain errors are stored as cached errors for the affected formula cell.
-Cycle and engine failures still abort calculation. Do not assume every
-spreadsheet-domain error rejects the entire `calculateAll` call.
+- ranges, blank cells, and exponentiation;
+- financial, holiday, `TEXT`, Unicode `LEN`, and Bessel functions;
+- `SUM`, `AVERAGE`, `MIN`, `MAX`, `PRODUCT`, `MEDIAN`, `LARGE`, `SMALL`,
+  and `RANK`, which ignore booleans, text, and empty cells in references.
+  `AVERAGE` over a reference with no numbers returns `#DIV/0!`. Values typed
+  directly into the formula are still coerced, so `SUM("5", TRUE)` is 6;
+- `DATE`, `EDATE`, `EOMONTH`, and `WORKDAY`, which return `#NUM!` outside
+  the Excel date range;
+- `LEFT`, `RIGHT`, `MID`, `REPT`, and `REPLACE`, which return `#VALUE!`
+  for negative counts and clamp very large counts;
+- `ROUND`, `ROUNDUP`, and `ROUNDDOWN`, which never return NaN or infinity;
+- formulas reached through another sheet, which evaluate unqualified
+  references, `ROW()`, and `COLUMN()` in their own sheet and cell.
 
-### Structural edits and references
+Some inputs that 0.5.1 accepted are now rejected or bounded: wildcard criteria
+in `COUNTIF(S)`, `SUMIF(S)`, `AVERAGEIF(S)`, and `SEARCH`; large periods in
+depreciation and cumulative-interest functions; `SUBSTITUTE` results that
+would grow too large; and `places` outside 1 to 10 in base-conversion
+functions.
 
-Row and column insertion, deletion, copy, and formula fill use token-aware A1
-reference shifts. Qualified references, quoted sheet names, string literals,
-absolute rows, defined names, validations, charts, tables, and related package
-parts are updated as one operation.
+## Structural edits
 
-Remove workarounds that performed textual formula replacement. Rebaseline
-golden files that encoded the old partial-reference behavior.
+Inserting, deleting, and copying rows and columns now shifts references token
+by token instead of by text replacement. Formulas, defined names, data
+validations, conditional formats, charts, tables, and other dependent parts
+update together, or the edit fails without changes. Remove any workaround that
+rewrote formula text yourself.
 
-## 4. Sparse traversal, raw transfer, JSON, CSV, and HTML
+Behavior to expect:
 
-### Sparse is the default
+- `removeRow` and `removeCol` replace references to deleted cells with
+  `#REF!` and shrink ranges that lose rows or columns. Merges, validations,
+  conditional formats, hyperlinks, auto-filters, comments, and row page breaks
+  shrink or are removed.
+- Removing a column inside a table removes that table column. An edit that
+  would remove a table's header row, totals row, all data rows, or all columns
+  is rejected.
+- `insertRows` and `insertCols` fail if a comment would move off the sheet.
+- `duplicateRow` writes shared formulas on the copy as ordinary formulas.
+- Whole-row and whole-column references such as `1:1` and `A:A` shift.
+  Whole-sheet references (`1:1048576`, `A:XFD`) and 3-D references do not.
 
-In v0.5.1, a distant occupied cell could make row-oriented APIs expand the
-whole bounding rectangle. In 1.0, `getRows`, `getCols`, v2 raw buffers, JSON,
-CSV, and HTML operate on occupied data under finite traversal limits.
+```typescript
+workbook.setCellFormula('Sheet1', 'B1', 'A5+SUM(A1:A5)');
+workbook.removeRow('Sheet1', 5);
+// B1 now holds '#REF!+SUM(A1:A4)'.
+```
+
+Sheet copy and deletion now handle every part the sheet owns: drawings,
+charts, images, tables, comments, defined names, and controls. `copySheet`
+gives copied tables names that do not collide with existing table or defined
+names, ignoring case.
+
+### Generated IDs
+
+New relationship IDs, sheet IDs, custom property IDs, pivot cache IDs, table
+IDs, and custom number format IDs take the lowest unused value. After deleting
+`rId2`, the next relationship is `rId2`, not `rId4`. Conditional format
+priorities still use the current maximum plus one, so evaluation order does not
+change.
+
+## Rows, columns, raw buffers, JSON, CSV, and HTML
+
+### Sparse traversal
+
+In 0.5.1, one distant cell could make row APIs expand the whole rectangle up to
+it. In 1.0, `getRows`, `getCols`, raw buffers, `toJSON`, `toCSV`, and
+`toHTML` return occupied data only, within traversal limits:
 
 ```typescript
 const rows = workbook.getRows('Sheet1', {
   mode: 'sparse',
-  limits: {
-    maxRows: 100_000,
-    maxColumns: 1_000,
-    maxCells: 2_000_000,
-    maxOutputBytes: 128 * 1024 * 1024,
-  },
+  limits: { maxCells: 2_000_000, maxOutputBytes: 128 * 1024 * 1024 },
 });
 ```
 
-Sparse rows preserve their absolute row and column coordinates. Do not infer
-blank row counts from array positions.
+Each row carries its absolute row and column numbers. Do not count array
+positions to infer blank rows. Sparse CSV and HTML also drop leading and
+internal empty columns.
 
-If a legacy consumer requires the complete bounding rectangle, request bounded
-dense v1 transfer. `getRowsBuffer` returns an opaque buffer; decode it through
-`SheetData` or the exported buffer helpers:
+If a consumer needs the full rectangle, request dense v1 output with explicit
+limits and decode it with `SheetData`:
 
 ```typescript
 import { SheetData } from '@sheetkit/node';
 
-const denseV1Buffer = workbook.getRowsBuffer('Sheet1', {
+const buffer = workbook.getRowsBuffer('Sheet1', {
   mode: 'dense',
   limits: { maxCells: 250_000, maxOutputBytes: 64 * 1024 * 1024 },
 });
-const dense = new SheetData(denseV1Buffer).toArray();
+const dense = new SheetData(buffer).toArray();
 ```
 
-Dense mode is not available for v2. `getRows`, `getRowsRaw`, and
-`getRowsIterator` select the bounded v1 transfer internally when dense mode is
-requested. `getCols` accepts finite sparse limits and rejects dense mode.
+Dense mode exists only for the v1 buffer format. `getCols` rejects it.
 
-### Raw v1 and v2 buffers
+### Raw buffers
 
-V1 remains supported and now defaults to sparse output. V2 is the canonical
-sparse format with absolute coordinates and inline strings.
+The v1 format now defaults to sparse output. The v2 format is always sparse,
+with absolute coordinates and inline strings. Both decoders validate the whole
+buffer before returning data, and `setSheetDataBuffer` validates everything
+before writing any cell. Treat buffers from outside the process as untrusted;
+a rejected buffer leaves the workbook unchanged and usable.
 
-Both decoders validate headers, dimensions, offsets, tags, UTF-8, counts,
-ordering, and trailing bytes before exposing data. `setSheetDataBuffer`
-preflights shifted coordinates, retained values, strings, formulas, and stale
-SST references before one commit.
+### JSON
 
-Treat raw buffers as untrusted input:
+`toJSON` returns plain objects with own data properties. A header named
+`__proto__` becomes an ordinary property and no longer replaces the row's
+prototype.
+
+`fromJSON` reads array indexes and own data properties once, and ignores
+custom iterators. Proxies, getters, duplicate headers, invalid coordinates, and
+malformed date or formula objects are rejected without changing the sheet.
 
 ```typescript
-try {
-  workbook.setSheetDataBuffer('Sheet1', receivedBuffer, 'B2');
-} catch (error) {
-  // The workbook is reusable and unchanged when validation fails.
-  throw error;
-}
+workbook.fromJSON('Sheet1', records, {
+  header: true,
+  startCell: 'A1',
+  limits: { maxRows: 10_000, maxColumns: 100 },
+});
 ```
 
-Custom decoders must use the published absolute coordinates. Do not depend on
-gaps being represented by allocated blank rows.
+### CSV and HTML
 
-### JSON export
-
-`toJSON` creates row records with enumerable own data properties. A worksheet
-header such as `__proto__` remains ordinary data and does not replace the row
-object's prototype:
-
-```typescript
-const rows = workbook.toJSON('Sheet1', { header: true });
-const first = rows[0];
-if (first && Object.hasOwn(first, '__proto__')) {
-  console.log(first['__proto__']);
-}
-```
-
-Use own-property access for data-derived headers. Do not rely on prototype
-mutation from v0.5.1.
-
-### JSON import
-
-`fromJSON` accepts ordinary arrays of records and optional finite import
-limits:
-
-```typescript
-workbook.fromJSON(
-  'Sheet1',
-  [
-    { Name: 'Alice', Score: 42 },
-    { Name: 'Bob', Score: 37 },
-  ],
-  {
-    header: true,
-    startCell: 'A1',
-    limits: {
-      maxRows: 10_000,
-      maxColumns: 100,
-      maxCells: 1_000_000,
-      maxRetainedBytes: 64 * 1024 * 1024,
-    },
-  },
-);
-```
-
-Proxies, accessors, duplicate custom headers, non-canonical coordinates, and
-malformed date/formula objects can now reject. Overridden array iterators are
-ignored; imports use indexed own data properties and snapshot accepted
-descriptors once. Do not rely on repeated getter evaluation during import.
-
-### CSV policy
-
-Text beginning with a spreadsheet formula prefix is neutralized by default:
+CSV output adds an apostrophe before text that starts like a formula, so a
+spreadsheet does not execute it. Use `raw-exchange` only when the receiver is not a spreadsheet and
+the data is trusted:
 
 ```typescript
 const safeCsv = workbook.toCSV('Sheet1');
+const rawCsv = workbook.toCSV('Sheet1', { formulaPolicy: 'raw-exchange' });
 ```
 
-Use raw exchange only when the receiver treats the data as trusted and the
-formula-capable text is intentional:
+CSV output is limited to 64 MiB. HTML escapes text and attributes for their
+context and counts the final HTML size against `limits.maxOutputBytes`.
+
+## Streaming
+
+### Reading
+
+Use `openSheetReader` for large forward reads:
 
 ```typescript
-const rawCsv = workbook.toCSV('Sheet1', {
-  formulaPolicy: 'raw-exchange',
-  limits: { maxOutputBytes: 32 * 1024 * 1024 },
-});
-```
-
-CSV syntax values are validated, and returned UTF-8 cannot exceed 64 MiB.
-HTML and SVG use sink-specific escaping rather than CSV or XML pre-escaping.
-Sparse CSV and HTML compact each occupied row, so leading columns and internal
-column gaps are not represented as empty fields or cells. Select a finite dense
-v1 traversal when those positions or other blank regions are part of the output
-contract.
-
-## 5. Streaming reads and writes
-
-### Stream reads
-
-Prefer `openSheetReader` over the synchronous `getRowsIterator` for large
-forward reads:
-
-```typescript
-const workbook = await Workbook.open('large.xlsx');
-const reader = await workbook.openSheetReader('Sheet1', {
-  batchSize: 500,
-});
-
+const reader = await workbook.openSheetReader('Sheet1', { batchSize: 500 });
 for await (const batch of reader) {
-  for (const row of batch) {
-    processRow(row);
-  }
+  for (const row of batch) processRow(row);
 }
 ```
 
-Batch size is a positive finite integer with a fixed maximum. Package-backed
-bytes or a bounded disk spool replace full worksheet clones. Formula, rich
-text, date, and absolute coordinate values are retained across the stream.
-Rust uses `open_sheet_reader` or `open_sheet_reader_owned`; `ReadMode::Stream`
-does not select a separate parser in 1.0.
+The reader reads from the package or a bounded temporary file instead of
+cloning the worksheet. Batch size must be a positive integer up to 100,000. A
+truncated worksheet raises an error instead of returning partial rows. Rust
+uses `open_sheet_reader` or `open_sheet_reader_owned`.
 
-`sheetRows` stops worksheet parsing after the requested row count. It is a
-read filter, not full-file validation: malformed skipped rows may remain
-unread.
+### Writing
 
-### Stream writes
-
-Rust `StreamWriter::new` and Node `newStreamWriter` use finite defaults. Select
-limits at construction for a trusted workload:
+`newStreamWriter` (Node.js) and `StreamWriter::new` (Rust) use finite
+defaults. Pass limits when creating the writer:
 
 ```typescript
 const writer = workbook.newStreamWriter('Export', {
   rowCount: 500_000,
-  cellCount: 5_000_000,
-  rowXmlBytes: 8 * 1024 * 1024,
   outputBytes: 256 * 1024 * 1024,
 });
 ```
 
-One row is measured before publication, and a batch is admitted before its
-first row is written. Formula input and output consume the same cumulative
-formula budget as ordinary mutations. A rejected row is not appended. An I/O
-failure poisons the writer so later calls cannot report a misleading success.
+Rust uses `StreamWriter::new_with_limits`. A row or batch is checked before any
+of it is written, so a rejected row is not appended. After an I/O failure the
+writer refuses further calls. `addMergeCell` rejects overlapping ranges.
 
-Rust callers that construct explicit limits use
-`StreamWriter::new_with_limits`. Keep row order and Excel bounds canonical.
+## Saving
 
-## 6. Save, async work, encryption, and macros
+### Limits and atomic replacement
 
-### Bounded, atomic save
-
-Rust `save`, `save_to_buffer`, and password variants use finite defaults.
-Use `save_with_limits` or `save_to_buffer_with_limits` to select a trusted
-profile:
-
-```rust
-use sheetkit::{SaveLimits, Workbook};
-
-let workbook = Workbook::open("input.xlsx")?;
-let limits = SaveLimits {
-    output_bytes: 768 * 1024 * 1024,
-    xml_part_bytes: 256 * 1024 * 1024,
-    ..SaveLimits::default()
-};
-workbook.save_with_limits("output.xlsx", limits)?;
-```
-
-Node `saveSync`, `save`, `writeBufferSync`, and `writeBuffer` accept
-`SaveLimits`:
+All save methods use `SaveLimits`. In Rust, choose limits with
+`save_with_limits` or `save_to_buffer_with_limits`; in Node.js, pass them as
+the second argument:
 
 ```typescript
 await workbook.save('output.xlsx', {
@@ -518,24 +402,31 @@ await workbook.save('output.xlsx', {
 });
 ```
 
-Node `saveWithPasswordSync` and `saveWithPassword` accept `CryptLimits`, not
-`SaveLimits`; their intermediate archive uses finite save defaults. Rust can
-select both policies with `save_with_password_with_output_limits`.
+`xmlPartBytes` applies to every worksheet written, including unchanged sheets
+that a lazy save copies as is. A save that passed under a low limit in 0.5.1
+can now fail.
 
-Path saves use a same-directory temporary file and replace the destination only
-after a complete write. If a limit or I/O error occurs, an existing destination
-remains intact. Buffer save is all-or-error under the same save policy.
+A path save writes a temporary file in the same directory and replaces the
+destination only when the write is complete. If the save fails, the existing
+file is unchanged. Saving through a symlink replaces the target file and keeps
+the link. On Unix, an existing file keeps its permission bits, and a new file
+is created with mode `0o666` minus the process umask.
 
-### Opt-in save durability
+In Node.js, `saveWithPassword` and `saveWithPasswordSync` take `CryptLimits`
+instead of `SaveLimits`. In Rust, `save_with_password_with_output_limits`
+accepts both.
 
-Path saves are atomic but not durable by default. They do not flush the file
-or its directory to storage, so a power loss or OS crash shortly after a
-successful save can leave the previous version, the new one, or, depending on
-the file system and mount options, an empty or incomplete file. An application
-crash or failed save still leaves the previous file intact, although a hard
-kill can leave an orphan `.sheetkit-*` temporary file.
+<a id="opt-in-save-durability"></a>
 
-Request durability where a save must survive a power loss:
+### Durable saves
+
+By default, a save is atomic but not flushed to disk. A power loss or OS crash
+right after a save can leave the old file, the new file, or, on some file
+systems, an empty or incomplete file. An application crash still leaves the
+previous file intact, though a forced kill can leave a `.sheetkit-*`
+temporary file behind.
+
+Request durability when the file must survive a power loss:
 
 ```rust
 use sheetkit::{SaveLimits, SaveOptions};
@@ -548,392 +439,147 @@ await workbook.save('output.xlsx', undefined, { durable: true });
 ```
 
 A durable save flushes the temporary file before the rename and, on Unix,
-syncs the directory after it. On macOS the flush uses `F_FULLFSYNC` and costs
-several milliseconds per save. If the directory sync fails, the error states
-that the new file is already in place. Encrypted saves accept the same option
-through `save_with_password_with_options` and the trailing Node `options`
-argument. Network file systems and drives that ignore flush requests can
-weaken either guarantee.
+syncs the directory afterward. On macOS this uses `F_FULLFSYNC` and adds a few
+milliseconds per save. If the directory sync fails, the error says that the new
+file is already in place. Encrypted saves accept the same option through
+`save_with_password_with_options` in Rust and the last `options` argument in
+Node.js. Network file systems and drives that ignore flush requests weaken
+these guarantees.
 
-1.0 RC builds synced the file and directory on every path save and ignored
-directory sync failures. 1.0 syncs only when `durable` is set and reports
-directory sync failures.
+### Async saves
 
-The 1.0.0 candidate did not apply `xml_part_bytes` to clean worksheets copied
-without re-serialization, and its atomic replace turned a symlinked destination
-into a regular file without keeping the destination's permission bits. Both
-are fixed; see
-[Audit v2 behavior changes](#audit-v2-behavior-changes).
-
-Lazy saves copy unchanged package-backed parts without parsing and
-re-serializing them. Edited sheets and auxiliary parts hydrate on demand;
-unrelated preserved OOXML can therefore remain byte-identical while changed
-parts are canonicalized.
-
-Shared-string saves preserve significant whitespace and rich-text runs while
-emitting canonical SST counts and relationships. Remove workarounds that
-flattened rich text or restored whitespace after a save. Archive-byte snapshots
-may change even when the workbook meaning does not.
-
-### Await async save before mutation
-
-`save`, `writeBuffer`, and `saveWithPassword` now perform their work in a
-background task. The task holds a shared reference to the workbook. Mutation
-while it is pending rejects with
-`workbook has an async save operation in progress`.
+`save`, `writeBuffer`, and `saveWithPassword` now run in a background task.
+Modifying the workbook while one is pending throws
+`workbook has an async save operation in progress`:
 
 ```typescript
-// Incorrect in 1.0: mutation races the pending save task.
-const pending = workbook.save('output.xlsx');
-workbook.setCellValue('Sheet1', 'A1', 'next');
-await pending;
-
-// Correct: await the task before reusing the workbook for mutation.
 await workbook.save('output.xlsx');
 workbook.setCellValue('Sheet1', 'A1', 'next');
 ```
 
-After a successful or failed task settles, the workbook can be mutated and
-saved again. Independent workbook instances can save concurrently.
+Once the task settles, successfully or not, the workbook can be modified and
+saved again. Separate workbooks can save at the same time.
 
-### Office encryption
+### Saved content
 
-Password open applies `CryptLimits` before expensive KDF work and carries the
-same open budget into the decrypted ZIP. Standard and Agile parsing, integrity
-keys, and package HMAC handling now follow Office-compatible behavior.
+A lazy save copies unchanged parts byte for byte and rewrites only edited
+parts. Shared strings keep significant whitespace and rich-text runs, and a
+rich-text string no longer shares an entry with a plain string of the same
+text. Custom document properties keep empty strings. Compare saved files by
+reopening them rather than by ZIP bytes, which can change even when the
+content does not.
 
-Audit private encrypted fixtures made for earlier SheetKit behavior. Recreate
-nonstandard files and verify representative files with Microsoft Office or an
-independent Office-compatible implementation. When raising limits for a trusted
-legacy file, configure both the open and crypt dimensions; neither policy
-resets the other.
+### Macros
 
-VBA project and module inspection use one finite `VbaLimits` budget for
-container streams, compressed input, decoded modules, retained data, and
-returned output. VBA token decoding and comment-text interpretation also use
-corrected Office semantics, so rebaseline fixtures that asserted the
-v0.5.1-decoded text.
+The file extension decides whether VBA is kept:
 
-### Macro target format
-
-The destination extension controls macro retention:
-
-| Target | 1.0 behavior |
+| Target | Result |
 | --- | --- |
-| XLSX, XLTX | Remove VBA bytes, relationships, and macro content types |
-| XLSM, XLTM, XLAM | Preserve canonical VBA content |
+| `.xlsx`, `.xltx` | VBA parts, relationships, and content types are removed |
+| `.xlsm`, `.xltm`, `.xlam` | VBA is kept |
 
-This is an intentional content change. Code that saved an XLSM source as XLSX
-and expected the hidden VBA project to remain must choose a macro-enabled
-target.
+If you saved a macro workbook as `.xlsx` and relied on the VBA staying inside,
+save it as `.xlsm` instead.
 
-## 7. OOXML packages, charts, tables, and rendering
+## Encryption and VBA
 
-### Package graph corrections
+Password open applies `CryptLimits` before key derivation and keeps the same
+open limits for the decrypted package. Standard and Agile encryption, integrity
+keys, and package HMAC now follow Office behavior. Agile files whose password
+key and package key differ in size now open; a `saltSize` outside 1 to 65536 is
+rejected. Re-check encrypted test files made with 0.5.1 in Excel or another
+Office-compatible tool. To raise limits for a large encrypted file, set both
+the open and the crypt limits.
 
-Sheet copy and deletion now process the complete sheet-owned relationship
-closure. Drawings, charts, images, tables, comments, names, controls, and
-package paths are copied or removed atomically without ID collisions.
+VBA inspection uses one `VbaLimits` budget per operation. Module names come
+from the Unicode stream-name record when present. Source in CP932, CP949, or
+CP936 is decoded lossily: ASCII (and half-width katakana for CP932) is kept,
+other double-byte characters become U+FFFD, and each affected module adds a
+warning to the project's `warnings` list.
 
-Generated or modified advanced features now emit complete package graphs:
+## Charts, tables, pivots, and other parts
 
-- pivot tables include cache, table, record, workbook, and worksheet
-  relationships with collision-free IDs;
-- slicers include cache and view extension graphs and validate placement;
-- form controls preserve VML and property relationships, escape labels, and
-  avoid corrupting unrelated comments or VML;
-- charts, stock charts, drawings, images, shapes, and sparklines use unique IDs
-  and validated references;
-- tables preflight width before mutation and emit complete headers;
-- conditional formatting emits coherent priorities, formulas, and differential
-  styles;
-- workbook and sheet protection, data validation, page breaks, and comments
-  use corrected Office field, hash, range, and text semantics.
+Adding or changing these features now writes every related part and
+relationship, or fails without changes:
 
-Stock charts require the documented series count and order. Invalid placement,
-range, width, validation list, page-break, and package ownership data now
-reject rather than leaving a partial graph.
+- pivot tables write their cache, records, and relationships with unique IDs;
+- slicers write their cache and view extensions and validate placement;
+- form controls keep their VML and property relationships and escape labels;
+- charts, drawings, images, shapes, and sparklines use unique IDs; stock charts
+  require the documented series count and order;
+- tables check their width before changing anything and always write headers;
+  names follow Excel rules (1 to 255 characters, not cell-reference-like, and
+  unique among tables and defined names, ignoring case);
+- conditional formats write consistent priorities, formulas, and styles;
+- protection hashes, data validation, page breaks, and comments follow Office
+  semantics.
 
-Rebaseline generated OOXML and save/reopen tests. Compare workbook semantics
-and required package relationships instead of requiring complete ZIP byte
-identity.
+A table part that no worksheet clearly owns is reported as invalid instead of
+being attached to the first sheet. Lazy workbooks load sparklines, pictures,
+comments, controls, names, and merges before any edit that needs them, so you
+can remove eager-open workarounds added to keep them.
 
-### Strict ownership and deferred state
+Regenerate golden files for these features and check them by saving and
+reopening, or in Excel.
 
-An orphan or ambiguous table part is no longer assigned to the first
-worksheet. Content type, package path, relationship, and worksheet
-`tableParts` must agree.
+## Styles and rendering
 
-Lazy sparkline, picture, comment, control, name, merge, and auxiliary state is
-materialized before an edit that needs authoritative data. Remove eager-open
-workarounds used only to prevent these parts from disappearing.
+Theme tints, inherited styles, and number formats now render as in Excel, so
+formatted text and SVG snapshots change. SVG rendering escapes font names
+itself; pass plain names such as `A&B Sans`, not escaped ones. Colors must be
+6-digit RGB or 8-digit ARGB hex, optionally prefixed with `#`; anything else is
+rejected.
 
-### Styles and rendering
+## Node.js argument checks
 
-Theme tint, inherited styles, Excel number formats, and formatted values have
-corrected output in 1.0. SVG rendering validates RGB or ARGB colors, encodes
-font names separately for CSS and XML attributes, and bounds dense layout and
-output.
+- Integer arguments and numeric options reject fractions, NaN, infinity,
+  unsafe integers, and out-of-range values instead of truncating them.
+- Unknown style and conditional format enum strings throw an error that lists
+  the accepted values.
 
-Pass logical, unescaped font names and canonical ASCII colors:
+## CLI
 
-```typescript
-// Supply data, not pre-escaped CSS/XML fragments.
-const styleId = workbook.addStyle({
-  font: { name: 'A&B Sans', color: 'FF336699' },
-});
-workbook.setCellStyle('Sheet1', 'A1', styleId);
-```
-
-Rebaseline formatted text and SVG snapshots. Invalid non-ASCII or malformed
-color strings now reject instead of being copied into the document.
-
-## 8. CLI output and automation
-
-Human-readable CLI output escapes terminal control characters and has finite
-byte limits. JSON output preserves the original structured values.
-
-Use JSON for automation:
+Text output from `info`, `sheets`, `read`, and `get` escapes terminal control
+characters and is size-limited. Scripts should use JSON:
 
 ```bash
-# v0.5.1 scripts sometimes parsed the human table.
-sheetkit sheets input.xlsx
-
-# 1.0 machine-readable form.
 sheetkit sheets input.xlsx --format json
 ```
 
-The same rule applies to `info`, `read`, and `get`. Rebaseline terminal output
-if workbook metadata, sheet names, or cell values contain control characters.
-
-CSV reads and conversions use spreadsheet-safe output by default:
+`read --format csv` and `convert` neutralize formula-like text by default.
+Keep it raw only for trusted exchange:
 
 ```bash
-sheetkit read input.xlsx --sheet Sheet1 --format csv
-
-# Trusted data exchange that intentionally preserves formula-capable text.
-sheetkit read input.xlsx \
-  --sheet Sheet1 \
-  --format csv \
+sheetkit read input.xlsx --sheet Sheet1 --format csv \
   --csv-formula-policy raw-exchange
 ```
 
-Destination conversion is staged and replaced atomically. Existing output is
-preserved if serialization fails.
+If output exceeds its limit, nothing is written. A failed `convert` leaves the
+existing destination file unchanged.
 
-<a id="cumulative-change-map"></a>
+## Performance
 
-## 9. Cumulative change map since v0.5.1
+On a 100,000-row workbook, compared with 0.5.1 on an Apple M4 Pro with Node.js
+24, lazy open is about 29% faster and saving an unchanged lazy workbook about
+45% faster. Reading rows, streaming, and saving after edits are within 4% of
+0.5.1. Producing a v2 buffer is about 7% (1.8 ms) slower because of the added
+validation. If your workload differs, measure it with your own files.
 
-This map accounts for the 23 public or contributor changes included between
-v0.5.1 and the 1.0 security work.
+## Upgrade checklist
 
-| Change area | What to verify in 1.0 |
-| --- | --- |
-| AI contribution policy | Runtime behavior is unchanged. Contributors follow `AI_POLICY.md` and the repository's commit trailer rules. |
-| Unsafe workbook inputs | Formatting, formula, raw-transfer, stream, and sheet-edit paths return errors instead of panicking or leaving partial mutations. |
-| Reference-aware structural edits | Row and column changes update formulas and other reference-bearing parts atomically using token-aware shifts. |
-| Sheet lifecycle graphs | Sheet copy and deletion process the complete sheet-owned relationship closure. |
-| Save pipeline fidelity | Saves emit canonical SST metadata and preserve untouched lazy bytes, rich text, and significant whitespace. |
-| Advanced OOXML round trips | Unknown OOXML and reviewed style/property fields survive unrelated edits; graph mutations preflight before commit. |
-| Formula recalculation errors | Cell-domain errors become cached cell errors; engine and cycle errors still abort the operation. |
-| Excel formula results | Rebaseline range, blank, financial, date/text, Unicode, and Bessel results. |
-| Buffers and streaming | V1/v2 transfer validates structure and preserves absolute coordinates, formulas, and rich text. |
-| Node value and option parity | `DateValue`, `FormulaValue`, and open defaults have the same meaning as their Rust counterparts. |
-| Office encryption | Standard and Agile parsing and package HMAC use Office-compatible behavior. |
-| Office metadata semantics | VBA, protection, validation, page-break, and comment interpretation and validation are corrected. |
-| Tables and conditional formats | Width preflight, headers, formulas, priorities, and differential styles are complete. |
-| Formatting and theme rendering | Theme tint, inherited styles, and number-format display results are corrected. |
-| Lazy workbook features | Pictures, sparklines, comments, controls, names, and merges survive lazy workflows. |
-| Pivot packages | Cache, table, record, workbook, and worksheet graphs are complete. |
-| Slicer package graphs | Cache/view extensions, placement, and stale-part cleanup are validated. |
-| Form-control package graphs | VML/property relationships, label escaping, and placement are validated. |
-| Charts and drawings | IDs are unique; stock-chart series/axes and escaped ranges are valid. |
-| Agile integrity keys | SheetKit emits hash-sized keys and accepts the published salt-sized variant. |
-| Chart/control documentation | Stock-series order and control metadata requirements are explicit. |
-| Lazy sparkline state | Copy and shift hydrate sparkline state without dirtying unrelated tables. |
-| Audit-review parity | Lazy graphs, Node values/defaults, raw transfer, package paths, and Agile variants agree across Rust and Node. |
-
-The 77 reportable security findings map to the guide by domain:
-
-- Formula: `SK-DS-001` through `SK-DS-013`, `SK-DS-035` through
-  `SK-DS-041`, `SK-DS-044`, `SK-DS-051`, and `SK-DS-053` through
-  `SK-DS-061`.
-- Open, encryption, and VBA: `SK-DS-014` through `SK-DS-017`,
-  `SK-DS-045`, `SK-DS-046`, `SK-DS-048`, `SK-DS-049`, `SK-DS-064`,
-  `SK-DS-065`, `SK-DS-068`, `SK-DS-069`, and `SK-DS-077`.
-- Traversal and transfer: `SK-DS-023` through `SK-DS-034`, `SK-DS-043`,
-  `SK-DS-062`, `SK-DS-063`, `SK-DS-066`, `SK-DS-067`, and `SK-DS-070`.
-- SVG, output, and CLI: `SK-DS-018` through `SK-DS-022`, `SK-DS-042`,
-  `SK-DS-047`, `SK-DS-050`, `SK-DS-052`, and `SK-DS-071` through
-  `SK-DS-074`.
-- Package and macro handling: `SK-DS-076` and `SK-DS-078`.
-
-`SK-DS-075` was not reportable and is not part of the 77-finding count.
-
-## 10. Performance status
-
-The final clean-environment comparison used the repository's existing focused
-benchmark, identical fixtures, one warm-up, five measured samples, and median
-latency. It compared the 1.0 candidate with v0.5.1 and excluded installation,
-build, linking, and fixture-generation time.
-
-On the 100,000-row fixture, lazy path open improved by 28.6%, ordinary
-`getRows` changed by +0.2%, `getRowsRaw-only` by +1.4%, streaming by +3.3%,
-untouched copy-on-write save by -44.6%, and edited save by -1.0%. V2-to-V2
-buffer production changed by +7.1%, or 1.772 ms. That path now performs
-canonical coordinate, shared-formula, date-style, and finite-output checks; it
-remains below the 10% release-stop threshold.
-
-These measurements describe the recorded Apple M4 Pro and Node.js 24.18.0
-environment. They are release evidence, not a performance guarantee for every
-workbook or machine.
-
-## 11. Upgrade checklist
-
-1. Update Rust and Node dependencies together, then rebuild the native addon
-   and recompile TypeScript against the generated declarations.
-2. Run application tests on Node 24 when using `@sheetkit/node`.
-3. Replace message matching with `ResourceLimitExceeded` or
+1. Upgrade Rust and Node.js packages together, rebuild, and recompile
+   TypeScript. Use Node.js 24 or later.
+2. Replace error-message matching with `Error::ResourceLimitExceeded` or
    `isResourceLimitError`.
-4. Inventory trusted large inputs and set explicit finite open, crypt, VBA,
-   formula, traversal, stream, and save limits only where the defaults are too
-   small.
-5. Test lazy first access, eager validation, filtered sheets, deferred
-   auxiliary parts, and both date-interpretation policies.
-6. Update Node type guards and serializers for `DateValue`, `FormulaValue`, and
-   cached formula errors.
-7. Rebaseline formulas, structural reference edits, number formats, themes,
-   and SVG output.
-8. Update row and column consumers for sparse absolute coordinates. Use
-   bounded dense v1 output only where blank positions are part of the
-   application contract.
-9. Validate every external raw buffer before use and confirm failed
-   `setSheetDataBuffer` or `fromJSON` imports leave the workbook reusable.
-10. Select `spreadsheet-safe` or `raw-exchange` CSV policy explicitly and use
-    CLI JSON output for automation.
-11. Await each async plain save, encrypted save, or buffer write before
-    mutating that workbook.
-12. Verify encrypted files with Office-compatible tooling and choose a
-    macro-enabled target when VBA must survive.
-13. Open, modify, save, and reopen representative files containing tables,
-    pivots, charts, slicers, controls, comments, drawings, sparklines, and
-    unknown OOXML extensions.
-14. Confirm failed path saves preserve the existing destination and that the
-    workbook remains usable after an error.
-15. Pass `durable: true` to saves that must survive a power loss or OS crash.
-16. Re-run the same application-specific fixtures if your workload differs
-    materially from the release benchmark corpus.
-
-Contributor-only changes do not affect runtime migration. AI-assisted
-contributions must follow `AI_POLICY.md` and the repository's commit trailer
-convention.
-
-<a id="audit-v2-behavior-changes"></a>
-
-## 12. Audit v2 behavior changes
-
-A second audit of the 1.0.0 candidate produced the fixes below. Each fix
-changes behavior that an application may depend on. The finding IDs are listed
-in the [security finding ledger](../security/v1-finding-ledger.md#audit-v2-post-1-0-0-candidate).
-
-### Open and save
-
-- Path saves follow symlinks and replace the target file, so the link stays in
-  place. On Unix an existing destination keeps its permission bits, and a new
-  file is created with `0o666` narrowed by the process umask.
-- Path saves no longer flush the file and directory to storage by default.
-  RC builds always synced and ignored directory sync failures; pass
-  `durable: true` to sync, which also reports a failed directory sync.
-- Open fails in every read mode when any part fails its CRC or decompression
-  check. Earlier candidates dropped such parts silently. A part that is intact
-  but contains malformed XML is still preserved.
-- Open fails when a worksheet relationship aliases another part, points
-  outside the package, or is external.
-- Open fails on duplicate ZIP entry names and on part names that differ only
-  by case.
-- An entry whose declared size does not match its content is rejected: eager
-  open fails, and a lazy workbook fails when the part is hydrated or copied
-  during save.
-- Save charges `xml_part_bytes` (`xmlPartBytes`) against the bytes actually
-  written for every worksheet, including clean worksheets that lazy saves and
-  sheet filtering copy without re-serializing. A save that passed under a low
-  limit may now fail.
-- A lazy workbook keeps reading the package that was open when it was opened.
-  Replacing or rewriting the source path afterward does not change its reads.
-
-### Structural edits
-
-- `removeRow` and `removeCol` write `#REF!` for references to deleted cells and
-  shrink ranges that lose rows or columns. Defined names follow the same rule.
-  Merges, data validations, conditional formats, hyperlinks, auto-filters,
-  comments, threaded comments, and row page breaks are shrunk or dropped.
-- Removing a column inside a table drops that table column. An edit that would
-  remove a table's header row, totals row, every data row, or every column is
-  rejected without changing the workbook.
-- `insertRows` and `insertCols` fail when a comment would move off the grid.
-- `duplicateRow` expands shared formulas into ordinary formulas on the copy.
-- Whole-column and whole-row references such as `A:A` and `1:1` now shift.
-  Whole-sheet spans (`1:1048576`, `A:XFD`) and 3-D references do not.
-- `copySheet` generates table names that avoid existing table and defined
-  names case-insensitively.
-
-```typescript
-workbook.setCellFormula('Sheet1', 'B1', 'A5+SUM(A1:A5)');
-workbook.removeRow('Sheet1', 5);
-// B1 now holds '#REF!+SUM(A1:A4)'.
-```
-
-### Formula results
-
-- Numeric aggregates such as `SUM`, `AVERAGE`, `MIN`, `MAX`, `PRODUCT`,
-  `MEDIAN`, `LARGE`, `SMALL`, and `RANK` ignore booleans, text, and empty cells
-  in references. `AVERAGE` over a reference with no numbers returns `#DIV/0!`.
-  Scalar arguments typed directly into the formula keep their coercion, so
-  `SUM("5", TRUE)` is still 6.
-- `DATE` with a year outside 0..=9999 returns `#NUM!`. `DATE`, `EDATE`,
-  `EOMONTH`, and `WORKDAY` return `#NUM!` when the result falls outside the
-  Excel date range, and `WORKDAY` also returns `#NUM!` before serial 1.
-- `LEFT`, `RIGHT`, `MID`, `REPT`, and `REPLACE` return `#VALUE!` for negative
-  counts. Huge counts are clamped instead of overflowing.
-- `ROUND`, `ROUNDUP`, and `ROUNDDOWN` never return NaN or infinity. Digit counts
-  beyond `f64` precision keep the value or collapse it to zero. A result that
-  would be non-finite returns `#NUM!`.
-- A formula reached through a cross-sheet reference evaluates its unqualified
-  references, `ROW()`, and `COLUMN()` in its own sheet and cell.
-
-### IDs and stored values
-
-- New sheet relationship IDs, sheet IDs, hyperlink relationship IDs, custom
-  property `pid`s, pivot `cacheId`s, table IDs, and custom number format IDs
-  take the lowest unused value. After deleting `rId2`, the next relationship is
-  `rId2`, not `rId4`. Conditional-format priorities still use the current
-  maximum plus one so evaluation order does not change.
-- Rich-text and plain strings with the same text no longer share a shared
-  string entry.
-- Custom document properties keep empty strings and decode XML entities.
-  Slicer cache attributes decode entities.
-
-### Node arguments and output
-
-- Integer arguments and numeric options reject fractional, NaN, infinite,
-  unsafe, and out-of-range numbers instead of truncating or wrapping them.
-- Unknown style and conditional-format enum strings throw and list the accepted
-  values.
-- `toHTML` charges the final UTF-8 HTML against `limits.maxOutputBytes`.
-- `StreamWriter.addMergeCell` stores canonical ranges and throws on overlap.
-- The stream reader throws on a truncated worksheet instead of returning
-  partial rows.
-- Table names follow Excel rules: 1 to 255 characters, no cell-reference-like
-  names, and case-insensitive uniqueness across tables and defined names. See
-  the [API parity matrix](../security/v1-api-parity-matrix.md).
-
-### Encryption and VBA
-
-- Agile decryption accepts files whose password key and package key differ in
-  size. It rejects malformed numeric attributes and a `saltSize` outside
-  1..=65536.
-- VBA module names prefer the Unicode stream-name record. Source code in
-  CP932, CP949, or CP936 is decoded lossily: ASCII, plus half-width katakana
-  for CP932, is kept, and other double-byte characters become U+FFFD. Each
-  affected module adds a warning to the project's `warnings` list.
+3. Raise limits only for trusted files that need it.
+4. Decide between lazy and eager open, and check date handling.
+5. Update type guards and serializers for `DateValue` and `FormulaValue`.
+6. Update row consumers for sparse output with absolute coordinates.
+7. Update expected values for formulas, structural edits, number formats, and
+   SVG output.
+8. Choose a CSV formula policy explicitly and use JSON output from the CLI.
+9. Await async saves before modifying the workbook.
+10. Pass `durable: true` to saves that must survive a power loss.
+11. Save macro workbooks as `.xlsm`, `.xltm`, or `.xlam`.
+12. Save and reopen representative files with tables, pivots, charts, slicers,
+    controls, comments, and drawings.

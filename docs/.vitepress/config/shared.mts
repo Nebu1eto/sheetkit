@@ -6,6 +6,9 @@ export const shared = defineConfig({
 
   lastUpdated: true,
   cleanUrls: true,
+  // Internal planning and security review records stay in the repository
+  // but are not part of the published documentation.
+  srcExclude: ['plans/**', 'security/**'],
 
   head: [
     ['link', { rel: 'icon', type: 'image/svg+xml', href: '/sheetkit/logo.svg' }],

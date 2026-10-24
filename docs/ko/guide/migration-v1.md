@@ -1,252 +1,322 @@
-# 1.0 마이그레이션 가이드
+# 0.5.1에서 1.0으로 마이그레이션
 
-이 문서는 SheetKit `0.5.1` 사용자가 `1.0`으로 이전할 때 확인해야 하는 누적 변경 사항을 설명합니다. Rust, Node.js, CLI의 공개 동작을 함께 다루며, 보안 점검 산출물이나 commit 기록을 따로 읽지 않아도 이전할 수 있도록 구성했습니다.
+SheetKit 1.0은 모든 작업에 유한한 제한을 적용하고, 0.5.1에서 허용하던 잘못된 입력을 거부하며, Excel과 다르던 계산 결과를 바로잡았습니다. 대부분의 애플리케이션은 코드를 고치지 않고 업그레이드할 수 있지만, 일부 기본값, 반환 형태, 오류, 저장 결과는 의도적으로 바뀌었습니다.
 
-1.0에서는 잘못되거나 과도한 입력을 허용하던 동작보다 유한한 자원 사용과 원자적 실패를 우선합니다. 따라서 일부 기본값, 반환 형태, 오류, 저장 결과가 의도적으로 달라집니다.
+이 문서는 Rust crate, `@sheetkit/node` 패키지, CLI를 다룹니다. 업그레이드한 뒤에는 native addon을 다시 빌드하고 새 declaration으로 TypeScript를 다시 컴파일하세요. Node.js 패키지는 Node.js 24 이상이 필요합니다.
 
-Node.js package의 생성 declaration은 Node.js 24와 Node-API 8을 기준으로 검증되었습니다. Current-source release ESM addon은 Node.js 24.18.0에서 전체 test 646건을 통과했으며 declaration compile도 통과했습니다. Upgrade 후 native addon을 다시 build하고 TypeScript application을 새 declaration으로 typecheck하세요.
+## 먼저 확인할 사항
 
-## 먼저 확인할 변경 사항
+- **자원 제한.** 열기, 수식, 순회, 스트림, 저장, 암호화, VBA 작업에 유한한 기본 제한이 적용됩니다. 신뢰할 수 있는 입력에 한해 제한을 높일 수 있지만 제한을 없앨 수는 없습니다.
+- **Lazy 열기.** Node.js는 워크북을 lazy 방식으로 열고 보조 part를 나중에 읽습니다. 날짜 서식이 지정된 숫자 셀은 날짜로 읽습니다.
+- **Sparse 행.** 행과 열 API는 값이 있는 셀만 반환합니다. Dense 출력은 제한을 명시해서 선택하는 옵션입니다.
+- **구조화된 값.** Node.js는 수식 셀과 날짜 셀을 단순 값이 아닌 객체로 반환합니다.
+- **원자적 실패.** 수식, 가져오기, 구조 편집, 저장 작업은 끝까지 완료되거나 워크북을 바꾸지 않습니다.
+- **CSV.** 수식처럼 보이는 텍스트는 기본적으로 무력화해서 출력합니다.
+- **비동기 저장.** `save`, `writeBuffer`, `saveWithPassword`는 백그라운드에서 실행되며, 완료될 때까지 워크북을 수정할 수 없습니다.
+- **매크로.** `.xlsx`나 `.xltx`로 저장하면 VBA가 제거됩니다.
+- **엄격한 검증.** 잘못된 참조, 버퍼, 표, 색상, package part, Node.js 인수는 일부만 반영되는 대신 오류가 됩니다.
 
-| 영역 | 0.5.1 동작 | 1.0 동작 | 필요한 조치 |
+## 자원 제한과 오류
+
+제한은 작업마다 따로 적용됩니다. 전역 설정이 아니며 워크북에 저장되지 않고, 고정된 상한을 넘을 수 없습니다.
+
+| 작업 | Rust | Node.js | 주요 기본값 |
 | --- | --- | --- | --- |
-| 워크북 열기 | ZIP, 암호화 container, XML의 일부 자원 사용이 사실상 무제한이었습니다. | `OpenLimits`, `CryptLimits`, `VbaLimits`가 유한한 기본값과 해제할 수 없는 상한을 적용합니다. | `ResourceLimitError`를 처리하고, 신뢰할 수 있는 큰 파일에만 필요한 항목을 유한하게 높이세요. |
-| 읽기 기본값 | eager 처리와 dense 결과를 전제로 한 코드가 있었습니다. | lazy/deferred open과 sparse traversal이 기본값입니다. | 빈 행과 열을 암묵적으로 세던 코드를 수정하고, 필요한 경우에만 bounded dense v1 형식을 선택하세요. |
-| 날짜와 수식 | Node.js에서 날짜와 수식 cached result가 평탄화되거나 손실될 수 있었습니다. | `DateValue`와 `FormulaValue`가 직접 호출, raw transfer, stream에서 보존됩니다. | TypeScript의 value narrowing과 직렬화 코드를 갱신하세요. |
-| 수식 처리 | 깊거나 넓은 수식, 큰 range, wildcard, 증폭 결과가 과도한 작업을 만들 수 있었습니다. | parse, evaluate, calculate, assign, fill이 한 operation의 `FormulaLimits`를 공유하며 실패 전에 검증합니다. | 극단적으로 생성된 수식을 나누고 typed 자원 오류를 처리하세요. |
-| JSON, CSV, HTML | sparse sheet가 큰 dense rectangle로 확장될 수 있었고 CSV가 수식 형태의 text를 그대로 내보냈습니다. | sparse traversal과 출력 byte 제한을 적용하며 CSV는 `spreadsheet-safe`가 기본값입니다. | 자동화 결과를 다시 확인하고, 신뢰할 수 있는 교환에만 `raw-exchange`를 지정하세요. |
-| 저장과 stream write | 출력 크기와 stream row의 일부 경계가 없었으며 실패 중간 상태가 노출될 수 있었습니다. | `SaveLimits`와 `StreamLimits`를 적용하며 path 저장과 batch mutation이 원자적으로 실패합니다. | 제한 오류를 처리하고 async 저장 중에는 같은 workbook을 변경하지 마세요. |
-| macro와 package | macro workbook을 `.xlsx`로 저장해도 VBA가 남을 수 있었습니다. | 대상 확장자가 macro-free 형식이면 VBA byte, relationship, content type을 제거합니다. | macro를 보존하려면 `.xlsm`, `.xltm`, `.xlam`으로 저장하세요. |
-| CLI | 사람이 보는 출력에 terminal control 문자가 포함될 수 있었고 CSV가 raw였습니다. | human output은 control 문자를 보이게 escape하며 CSV는 안전하고 bounded입니다. | 자동화에서는 `--format json`을 사용하고 CSV policy를 명시하세요. |
+| 열기 | `OpenOptions`, `OpenLimits`, `CryptLimits`, `VbaLimits` | `OpenOptions` | 입력 128 MiB, ZIP entry 4,096개, 압축 해제 합계 512 MiB, XML part당 256 MiB |
+| 수식 | `FormulaLimits` | `FormulaLimits` | 수식당 32 KiB, 입력 합계 4 MiB, 출력 합계 16 MiB |
+| 순회 | `TraversalOptions`, `TraversalLimits` | `TraversalOptions` | 행 1,048,576개, 열 16,384개, 셀 1천만 개, 출력 512 MiB |
+| 저장 | `SaveLimits` | `SaveLimits` | archive 512 MiB, XML part당 128 MiB, 행과 셀 각 1천만 개 |
+| 스트림 쓰기 | `StreamLimits` | `StreamLimits` | 행당 16 MiB, 합계 512 MiB, 행 1,048,576개, 셀 1천만 개 |
+| JSON 가져오기 | 없음 | `limits` 옵션 | 행 1,048,576개, 열 16,384개, 셀 1천만 개, 보관 데이터 512 MiB |
+| CSV | CSV 옵션 | `ToCsvOptions` | 출력 64 MiB |
 
-## 유한한 limit과 typed 오류
+한 작업은 여러 항목을 함께 계산하므로, 각 값이 기본값보다 작아도 실패할 수 있습니다.
 
-제한을 생략해도 무제한으로 처리되지 않습니다. 기본 profile은 operation마다 새로 적용되며 process 전체나 workbook 전체를 변경하는 전역 override는 없습니다. 사용자가 지정한 값도 hard ceiling을 넘을 수 없습니다.
+### 제한 오류 처리
 
-주요 기본 제한은 다음과 같습니다.
+Rust에서는 제한 초과가 `Error::ResourceLimitExceeded`로 반환됩니다. 잘못된 데이터나 I/O 오류와 구분해서 처리하세요.
 
-| Profile | 주요 기본값 |
-| --- | --- |
-| Open | outer input 128 MiB, archive entry 4,096개, aggregate expanded data 512 MiB, XML part 256 MiB, compression ratio 100배입니다. |
-| Formula | formula당 input 32 KiB, operation 누적 input 4 MiB, cached result를 포함한 누적 output 16 MiB입니다. |
-| Traversal | row 1,048,576개, column 16,384개, cell 10,000,000개, output 512 MiB입니다. |
-| Save | archive output 512 MiB, XML part 128 MiB, row 10,000,000개, cell 10,000,000개입니다. |
-| Stream | row XML 16 MiB, total row XML 512 MiB, row 1,048,576개, cell 10,000,000개입니다. |
-| JSON import | row 1,048,576개, column 16,384개, cell 10,000,000개, retained data 512 MiB입니다. |
-| CSV return | UTF-8 output 64 MiB입니다. |
+```rust
+use sheetkit::{Error, OpenOptions, Workbook};
 
-- 100배 compression ratio 제한은 압축 해제 후 8 MiB를 넘는 ZIP entry에만 적용되므로 shared strings처럼 작고 반복적인 part는 기본값으로 열립니다. floor는 Node.js의 `compressionRatioFloorBytes` 또는 Rust의 `OpenOptions::compression_ratio_floor_bytes`로 변경하며, `0`을 지정하면 모든 entry를 검사합니다. compressed byte가 0인 비어 있지 않은 entry는 항상 거부됩니다.
+match Workbook::open_with_options("report.xlsx", &OpenOptions::default()) {
+    Ok(workbook) => println!("{} sheets", workbook.sheet_names().len()),
+    Err(Error::ResourceLimitExceeded(details)) => eprintln!(
+        "{} exceeded {}: {} > {}",
+        details.operation_code(),
+        details.dimension_code(),
+        details.observed(),
+        details.limit(),
+    ),
+    Err(error) => return Err(error),
+}
+```
 
-Node.js에서는 자원 제한 오류를 다음과 같이 구분할 수 있습니다. `limit`과 `observed`는 정밀도를 보존하기 위해 `bigint`입니다.
+Node.js에서는 오류 메시지를 비교하지 말고 `isResourceLimitError`를 사용하세요. `limit`과 `observed`는 `bigint`입니다.
 
 ```typescript
 import { isResourceLimitError, Workbook } from '@sheetkit/node';
 
 try {
-  await Workbook.open('large.xlsx');
+  const workbook = await Workbook.open('report.xlsx');
 } catch (error) {
-  if (isResourceLimitError(error)) {
-    console.error(error.operation, error.dimension, error.limit, error.observed);
-  } else {
-    throw error;
-  }
+  if (!isResourceLimitError(error)) throw error;
+  console.error(error.operation, error.dimension, error.limit, error.observed);
 }
 ```
 
-Rust에서는 `Error::ResourceLimitExceeded`를 match하면 `operation`, `category`, `dimension`, `limit`, `observed`, `stage`를 확인할 수 있습니다. 잘못된 argument, lifecycle 오류, password 오류는 자원 제한 오류와 구분됩니다.
+인수 오류, 수명 주기 오류, 잘못된 비밀번호는 기존처럼 일반 오류입니다.
 
-## 워크북 열기와 lazy hydration
+### 제한 높이기
 
-`Workbook::open`과 Node.js의 path, buffer, password variant는 모두 유한한 기본 제한을 사용합니다. ZIP32/ZIP64 entry count, 개별 entry, aggregate expansion, 압축 비율, outer buffer, 암호화 CFB stream을 allocation이나 큰 read 전에 검사합니다. 암호를 해제한 뒤에도 같은 open budget이 이어지므로 decrypted ZIP에서 제한이 초기화되지 않습니다.
-
-Node.js의 기본값은 `readMode: 'lazy'`, `auxParts: 'deferred'`, `dateInterpretation: 'numFmt'`입니다. `parseMode: 'full'`과 `parseMode: 'readfast'`는 각각 eager와 lazy로 매핑되는 compatibility 이름이며, 알 수 없는 mode는 더 이상 조용히 기본값으로 바뀌지 않습니다. `maxUnzipSize`와 `maxZipEntries`도 유한한 항목만 덮어쓰는 compatibility 이름입니다.
+신뢰할 수 있는 파일에 필요한 항목만 높이세요.
 
 ```typescript
-const workbook = await Workbook.open('report.xlsx', {
-  readMode: 'lazy',
-  auxParts: 'deferred',
-  dateInterpretation: 'numFmt',
+const workbook = await Workbook.open('trusted-large.xlsx', {
   maxOuterInputBytes: 256 * 1024 * 1024,
-  maxXmlPartBytes: 128 * 1024 * 1024,
-  maxZipEntries: 8192,
+  maxUnzipSize: 768 * 1024 * 1024,
+  maxZipEntries: 8_000,
 });
 ```
 
-Rust에서는 builder를 사용하여 같은 정책을 지정할 수 있습니다.
+`maxUnzipSize`와 `maxZipEntries`도 계속 사용할 수 있지만, 어떤 값으로도 archive 검사를 끌 수 없습니다. 0, 안전하지 않은 JavaScript 숫자, 상한을 넘는 값, 알 수 없는 모드는 거부됩니다.
 
-```rust
-use sheetkit::{AuxParts, OpenOptions, ReadMode, Workbook};
+`maxXmlPartBytes`로 part당 기본값 256 MiB를 낮출 수 있습니다. 각 ZIP entry도 256 MiB로 제한되고 Node.js에서는 이 제한을 바꿀 수 없으므로, 256 MiB보다 높게 지정해도 효과가 없습니다.
 
-let options = OpenOptions::new()
-    .read_mode(ReadMode::Lazy)
-    .aux_parts(AuxParts::Deferred)
-    .max_outer_input_bytes(256 * 1024 * 1024)
-    .max_xml_part_bytes(128 * 1024 * 1024);
-let workbook = Workbook::open_with_options("report.xlsx", &options)?;
-```
+100:1 압축률 검사는 압축을 풀었을 때 8 MiB를 넘는 entry에만 적용되므로, shared strings처럼 작고 반복이 많은 part는 그대로 열립니다. 기준은 Node.js의 `compressionRatioFloorBytes`나 Rust의 `OpenOptions::compression_ratio_floor_bytes`로 바꿀 수 있으며, `0`을 지정하면 모든 entry를 검사합니다.
 
-lazy workbook은 worksheet와 comments, charts, images, pivot, slicer, form control 같은 auxiliary part를 첫 접근까지 package-backed 상태로 보존합니다. `maxXmlPartBytes`는 open 시점뿐 아니라 나중의 hydration에도 적용됩니다. 잘못된 A1 reference나 table relationship은 해당 part를 hydrate할 때 오류가 날 수 있습니다.
+## 워크북 열기
 
-`sheets` filter로 제외한 sheet는 압축을 풀거나 hydrate하지 않으며, 저장 시에는 원래 compressed data를 이용하여 복사합니다. 따라서 제외한 sheet의 잘못된 내부 구조까지 검사한다고 가정하면 안 됩니다. 전체 파일을 검증해야 한다면 eager open을 사용하세요. `sheetRows`도 지정한 row에서 parsing을 멈추는 기능이며 파일 전체 검증 기능은 아닙니다.
+### 기본값
 
-lazy copy-on-write는 pictures, sparklines, comments, controls, names, merges, tables를 보존합니다. sheet copy/delete와 row/column insert/delete는 먼저 관련 package graph와 수식 reference를 검증한 뒤 원자적으로 반영합니다. lazy 처리 때문에 eager open을 강제하던 workaround는 제거할 수 있습니다.
-
-## 셀 값, 날짜, 수식, reference
-
-Node.js의 cell value는 다음 union으로 처리해야 합니다.
+Node.js의 열기 메서드는 다음 기본값을 사용합니다.
 
 ```typescript
-type CellValue =
-  | string
-  | number
-  | boolean
-  | { type: 'date'; serial: number; iso?: string }
-  | {
-      type: 'formula';
-      formula: string;
-      result?: {
-        valueType: 'empty' | 'string' | 'number' | 'boolean' | 'date' | 'error' | 'formula';
-        value?: string;
-        numberValue?: number;
-        boolValue?: boolean;
-        date?: { type: 'date'; serial: number; iso?: string };
-      };
-    }
-  | null;
+{ readMode: 'lazy', auxParts: 'deferred', dateInterpretation: 'numFmt' }
 ```
 
-기본 `dateInterpretation: 'numFmt'`는 Excel이 일반적으로 기록하는 date number format을 보고 number cell을 `DateValue`로 올립니다. OOXML의 cell type만 그대로 따르려면 `'cellType'`을 지정하세요. date와 formula cached result는 direct call, stream, v1/v2 raw transfer, JSON import에서 같은 형태로 보존됩니다.
+Rust에서는 `ReadMode::Lazy`, `AuxParts::Deferred`, `DateInterpretation::NumFmt`에 해당합니다.
 
-수식 parse, evaluation, `calculateAll`, `setCellFormula`, `fillFormula`, generic `FormulaValue` mutation은 유한한 `FormulaLimits`를 사용합니다. 하나의 bulk operation은 입력 byte, token, AST node, range cell, dependency edge, ready queue work, evaluation step, wildcard match, output byte를 누적하여 계산합니다. 한 항목이 실패하면 앞선 항목만 반영되는 partial mutation이 남지 않습니다.
+Lazy 워크북은 워크시트나 보조 part를 처음 접근할 때 열기 시점의 제한으로 파싱합니다. 그래서 `open`이 성공했더라도 `maxXmlPartBytes`를 넘는 part는 처음 접근할 때 실패할 수 있습니다. 파일 전체를 미리 검증하려면 eager로 여세요.
 
 ```typescript
-workbook.setCellFormula('Sheet1', 'C2', 'SUM(A2:B2)', {
-  perFormulaInputBytes: 32 * 1024,
+const workbook = await Workbook.open('input.xlsx', {
+  readMode: 'eager',
+  auxParts: 'eager',
+});
+```
+
+Lazy 워크북은 열었을 때의 파일 내용을 계속 읽습니다. 연 뒤에 파일을 교체해도 워크북이 읽는 내용은 바뀌지 않습니다.
+
+### 필터링과 부분 읽기
+
+`sheets`로 제외한 시트는 압축을 풀거나 검증하지 않고, 저장할 때 그대로 복사합니다. `sheetRows`는 지정한 행까지만 파싱합니다. 두 옵션 모두 나머지 내용을 검증하지 않습니다.
+
+### 이전 옵션 이름
+
+`parseMode: 'full'`은 eager 열기로, `parseMode: 'readfast'`는 lazy 열기로 처리됩니다. 새 코드에서는 `readMode`를 사용하세요. `readMode: 'stream'`은 현재 `'lazy'`와 같게 동작하며, 순방향 스트리밍에는 `openSheetReader`를 사용하세요.
+
+### 이제 열리지 않는 파일
+
+다음 경우에는 읽기 모드와 관계없이 열기가 실패합니다.
+
+- part가 CRC 검사나 압축 해제에 실패한 경우(0.5.1은 이런 part를 버렸습니다)
+- ZIP entry 이름이 중복되거나, 대소문자만 다른 part 이름이 있는 경우
+- 워크시트 relationship이 다른 part, package 바깥, 외부 대상을 가리키는 경우
+- entry에 선언된 크기가 실제 내용과 다른 경우(lazy 워크북은 해당 part를 읽거나 복사할 때 실패합니다)
+
+압축은 정상적으로 풀리지만 XML 형식이 잘못된 part는 계속 보존됩니다.
+
+## 셀 값과 날짜
+
+Node.js의 셀 값 타입은 다음과 같습니다.
+
+```typescript
+type CellValue = string | number | boolean | DateValue | FormulaValue | null;
+```
+
+기본값인 `dateInterpretation: 'numFmt'`에서는 날짜 서식이 지정된 숫자 셀이 `DateValue`가 됩니다. 저장된 셀 타입을 그대로 따르려면 `'cellType'`을 지정하세요. Rust에서는 `CellValue::Date`를 반환합니다.
+
+수식 셀은 수식과 캐시된 결과를 함께 유지합니다.
+
+```typescript
+const value = workbook.getCellValue('Sheet1', 'D2');
+if (typeof value === 'object' && value?.type === 'formula') {
+  console.log(value.formula, value.result);
+}
+```
+
+날짜와 수식은 직접 읽기, 행 순회, raw 버퍼, 스트림 읽기, JSON 가져오기에서 모두 같은 형태를 유지합니다. `number`나 평탄화된 수식 결과를 기대하던 타입 가드와 직렬화 코드를 수정하세요.
+
+Rust의 `CompactCellRef::new`와 `CompactCellRef::from_coordinates`는 이제 `Result`를 반환하며 Excel의 행과 열 범위를 검사합니다.
+
+## 수식
+
+### 제한과 원자적 갱신
+
+파싱, 계산, `calculateAll`, `setCellFormula`, `fillFormula`, `FormulaValue` 대입, 스트림 쓰기, JSON 가져오기, raw 버퍼 가져오기는 작업마다 하나의 `FormulaLimits` 예산을 공유합니다. 셀을 바꾸기 전에 예산을 검사하므로, 실패한 일괄 작업은 일부 결과도 남기지 않습니다.
+
+```typescript
+workbook.fillFormula('Sheet1', 'D2:D1000', 'B2*C2', {
   operationInputBytes: 4 * 1024 * 1024,
-  operationOutputBytes: 16 * 1024 * 1024,
-});
-
-workbook.calculateAll({
-  operationRangeCells: 1_000_000,
-  operationEvaluationSteps: 5_000_000,
+  operationEvaluationSteps: 1_048_576,
 });
 ```
 
-Rust에서는 `set_cell_formula_with_limits`, `fill_formula_with_limits`, `evaluate_formula_with_limits`, `calculate_all_with_limits`를 사용합니다. 기본 method도 `FormulaLimits::secure_default()`를 사용하므로 무제한 compatibility path가 아닙니다.
+Rust에서는 `set_cell_formula_with_limits`, `fill_formula_with_limits`, `evaluate_formula_with_limits`, `calculate_all_with_limits`를 사용합니다. 제한을 받지 않는 메서드는 `FormulaLimits::secure_default()`를 사용합니다.
 
-1.0의 계산 결과도 일부 달라집니다. range, blank, power, financial, holiday, `TEXT`, Unicode `LEN`, Bessel 함수가 Excel에 맞게 수정되었습니다. cell 단위 domain 오류는 해당 formula의 cached error가 되며, cycle이나 engine 오류만 전체 계산을 중단합니다. `COUNTIF(S)`, `SUMIF(S)`, `AVERAGEIF(S)`, `SEARCH`의 wildcard 처리는 bounded matcher를 사용하며 극단적인 pattern은 거부될 수 있습니다. `FACT`, `DB`, `DDB`, `CUMIPMT`, `CUMPRINC`, `BESSELK`, `BESSELY`, `SUBSTITUTE`도 작업량이나 출력 증폭을 미리 검사합니다. `BIN2HEX`, `BIN2OCT`, `DEC2BIN`, `DEC2HEX`, `DEC2OCT`, `HEX2BIN`, `HEX2OCT`, `OCT2BIN`, `OCT2HEX`의 `places`는 1부터 10까지만 허용됩니다.
+`#DIV/0!`처럼 한 셀 안에서 생긴 오류는 그 셀의 캐시된 결과로 저장됩니다. 순환 참조와 엔진 오류만 `calculateAll`을 중단합니다.
 
-Rust의 `CompactCellRef::new`와 `CompactCellRef::from_coordinates`는 panic 대신 `Result`를 반환하며 Excel의 row와 column 범위를 엄격하게 적용합니다. row/column 구조 변경은 문자열 치환이 아니라 token-aware reference shift를 사용하므로 literal, qualified reference, validation, table, chart, name 같은 종속 항목이 함께 갱신됩니다. 이전의 잘못된 textual shift 결과를 snapshot으로 고정했다면 새 결과로 바꾸세요.
+### 바뀐 계산 결과
 
-## Sparse traversal, raw transfer, JSON, CSV, HTML
+수식 테스트의 기대값을 갱신하세요. 다음 결과가 Excel과 같아졌습니다.
 
-`getRows`, `getCols`, `getRowsRaw`, `getRowsIterator`, `toJSON`, `toCSV`, `toHTML`은 occupied row와 cell을 기준으로 처리합니다. 큰 coordinate gap은 더 이상 빈 객체나 row를 자동으로 생성하지 않습니다.
+- 범위, 빈 셀, 거듭제곱
+- 재무, 휴일, `TEXT`, Unicode `LEN`, Bessel 함수
+- `SUM`, `AVERAGE`, `MIN`, `MAX`, `PRODUCT`, `MEDIAN`, `LARGE`, `SMALL`, `RANK`는 참조 안의 boolean, 텍스트, 빈 셀을 무시합니다. 숫자가 없는 참조에 대한 `AVERAGE`는 `#DIV/0!`를 반환합니다. 수식에 직접 입력한 값은 계속 변환되므로 `SUM("5", TRUE)`는 6입니다.
+- `DATE`, `EDATE`, `EOMONTH`, `WORKDAY`는 Excel 날짜 범위를 벗어나면 `#NUM!`을 반환합니다.
+- `LEFT`, `RIGHT`, `MID`, `REPT`, `REPLACE`는 음수 개수에 `#VALUE!`를 반환하고, 매우 큰 개수는 범위 안으로 제한합니다.
+- `ROUND`, `ROUNDUP`, `ROUNDDOWN`은 NaN이나 무한대를 반환하지 않습니다.
+- 다른 시트를 거쳐 계산되는 수식은 시트 이름이 없는 참조, `ROW()`, `COLUMN()`을 자기 시트와 셀 기준으로 계산합니다.
+
+0.5.1에서 허용하던 일부 입력은 이제 거부되거나 제한됩니다. `COUNTIF(S)`, `SUMIF(S)`, `AVERAGEIF(S)`, `SEARCH`의 와일드카드 조건, 감가상각과 누적 이자 함수의 큰 기간 값, 결과가 지나치게 커지는 `SUBSTITUTE`, 진법 변환 함수에서 1~10을 벗어난 `places`가 해당합니다.
+
+## 구조 편집
+
+행과 열의 삽입, 삭제, 복사는 이제 텍스트 치환이 아니라 수식 token 단위로 참조를 이동합니다. 수식, 정의된 이름, 데이터 유효성 검사, 조건부 서식, 차트, 표 등 관련된 부분이 함께 갱신되며, 그렇지 못하면 아무것도 바꾸지 않고 실패합니다. 수식 텍스트를 직접 고치던 우회 코드는 제거하세요.
+
+예상되는 동작은 다음과 같습니다.
+
+- `removeRow`와 `removeCol`은 삭제된 셀을 가리키는 참조를 `#REF!`로 바꾸고, 행이나 열을 잃은 범위를 줄입니다. 병합, 유효성 검사, 조건부 서식, 하이퍼링크, 자동 필터, 메모, 행 페이지 나누기도 줄어들거나 제거됩니다.
+- 표 안의 열을 삭제하면 해당 표 열도 제거됩니다. 표의 머리글 행, 요약 행, 모든 데이터 행, 모든 열을 없애는 편집은 거부됩니다.
+- 메모가 시트 밖으로 밀려나면 `insertRows`와 `insertCols`가 실패합니다.
+- `duplicateRow`는 복사본의 공유 수식을 일반 수식으로 기록합니다.
+- `1:1`, `A:A` 같은 전체 행과 전체 열 참조도 이동합니다. 시트 전체 참조(`1:1048576`, `A:XFD`)와 3차원 참조는 이동하지 않습니다.
+
+```typescript
+workbook.setCellFormula('Sheet1', 'B1', 'A5+SUM(A1:A5)');
+workbook.removeRow('Sheet1', 5);
+// B1은 '#REF!+SUM(A1:A4)'가 됩니다.
+```
+
+시트 복사와 삭제는 이제 시트에 속한 그림, 차트, 이미지, 표, 메모, 정의된 이름, 컨트롤을 모두 함께 처리합니다. `copySheet`는 복사한 표에 기존 표 이름이나 정의된 이름과 대소문자 구분 없이 겹치지 않는 이름을 붙입니다.
+
+### 생성되는 ID
+
+새 relationship ID, 시트 ID, 사용자 지정 속성 ID, 피벗 캐시 ID, 표 ID, 사용자 지정 숫자 서식 ID는 사용하지 않는 가장 작은 값을 받습니다. `rId2`를 삭제한 뒤 추가하는 relationship은 `rId4`가 아니라 `rId2`가 됩니다. 조건부 서식 우선순위는 계산 순서가 바뀌지 않도록 계속 현재 최댓값에 1을 더한 값을 사용합니다.
+
+## 행, 열, raw 버퍼, JSON, CSV, HTML
+
+### Sparse 순회
+
+0.5.1에서는 멀리 떨어진 셀 하나 때문에 행 API가 그 셀까지의 사각형 전체를 펼칠 수 있었습니다. 1.0의 `getRows`, `getCols`, raw 버퍼, `toJSON`, `toCSV`, `toHTML`은 순회 제한 안에서 값이 있는 데이터만 반환합니다.
 
 ```typescript
 const rows = workbook.getRows('Sheet1', {
   mode: 'sparse',
-  limits: {
-    maxRows: 100_000,
-    maxColumns: 1000,
-    maxCells: 1_000_000,
-    maxOutputBytes: 128 * 1024 * 1024,
-  },
-});
-
-const columns = workbook.getCols('Sheet1', {
-  limits: { maxCells: 1_000_000 },
+  limits: { maxCells: 2_000_000, maxOutputBytes: 128 * 1024 * 1024 },
 });
 ```
 
-v2 raw buffer는 absolute row와 column coordinate를 담는 canonical sparse 형식입니다. v1도 기본값은 sparse이며, 빈 row가 필요한 legacy consumer만 `mode: 'dense'`를 명시할 수 있습니다. dense mode는 v1에서만 허용되며 동일한 유한 limit을 적용합니다. decoder는 header, dimension, offset, tag, UTF-8, trailing byte, stale SST를 먼저 검증합니다. `setSheetDataBuffer`는 이동된 coordinate와 전체 formula budget을 검증한 뒤 한 번에 반영합니다.
+각 행은 절대 행 번호와 열 번호를 가집니다. 배열 위치로 빈 행을 추정하지 마세요. Sparse CSV와 HTML에서는 앞쪽과 중간의 빈 열도 빠집니다.
 
-`fromJSON`은 실제 array index와 own data property만 읽습니다. `__proto__` 같은 이름도 prototype을 바꾸지 않는 일반 own property로 기록합니다. custom header, duplicate key, accessor, iterator override, FormulaValue와 DateValue getter를 검증하고 snapshot한 뒤 native mutation에 넘깁니다. row, column, cell, retained byte, Excel coordinate limit을 넘으면 sheet를 변경하지 않습니다.
+사각형 전체가 필요한 코드라면 제한을 명시해서 dense v1 출력을 요청하고 `SheetData`로 해석하세요.
 
 ```typescript
-workbook.fromJSON(
-  'Sheet1',
-  [{ Name: 'Ada', Score: 98 }],
-  {
-    header: ['Name', 'Score'],
-    startCell: 'B2',
-    limits: {
-      maxRows: 10_000,
-      maxColumns: 100,
-      maxCells: 1_000_000,
-      maxRetainedBytes: 128 * 1024 * 1024,
-    },
-  },
-);
+import { SheetData } from '@sheetkit/node';
+
+const buffer = workbook.getRowsBuffer('Sheet1', {
+  mode: 'dense',
+  limits: { maxCells: 250_000, maxOutputBytes: 64 * 1024 * 1024 },
+});
+const dense = new SheetData(buffer).toArray();
 ```
 
-CSV는 formula-capable text 앞에 apostrophe를 붙이는 `spreadsheet-safe`가 기본값입니다. 외부 system과 원문을 교환해야 하고 입력을 신뢰할 수 있을 때만 `raw-exchange`를 지정하세요. 두 policy 모두 traversal과 64 MiB 반환 제한을 적용합니다.
+Dense 모드는 v1 버퍼 형식에만 있으며, `getCols`는 dense 모드를 거부합니다.
+
+### Raw 버퍼
+
+v1 형식은 이제 기본으로 sparse 출력을 만듭니다. v2 형식은 항상 sparse이며 절대 좌표와 인라인 문자열을 사용합니다. 두 디코더 모두 데이터를 반환하기 전에 버퍼 전체를 검증하고, `setSheetDataBuffer`는 셀을 쓰기 전에 모든 내용을 검증합니다. 프로세스 밖에서 받은 버퍼는 신뢰할 수 없는 입력으로 다루세요. 거부된 버퍼는 워크북을 바꾸지 않으며, 워크북은 계속 사용할 수 있습니다.
+
+### JSON
+
+`toJSON`은 자체 데이터 속성만 가진 일반 객체를 반환합니다. 머리글 이름이 `__proto__`여도 일반 속성이 되며 행 객체의 prototype을 바꾸지 않습니다.
+
+`fromJSON`은 배열 인덱스와 자체 데이터 속성을 한 번만 읽고, 사용자 지정 iterator는 무시합니다. Proxy, getter, 중복된 머리글, 잘못된 좌표, 형식이 잘못된 날짜나 수식 객체는 시트를 바꾸지 않고 거부됩니다.
+
+```typescript
+workbook.fromJSON('Sheet1', records, {
+  header: true,
+  startCell: 'A1',
+  limits: { maxRows: 10_000, maxColumns: 100 },
+});
+```
+
+### CSV와 HTML
+
+CSV 출력은 수식처럼 시작하는 텍스트 앞에 작은따옴표(`'`)를 붙여 스프레드시트가 실행하지 않게 합니다. 받는 쪽이 스프레드시트가 아니고 데이터를 신뢰할 수 있을 때만 `raw-exchange`를 사용하세요.
 
 ```typescript
 const safeCsv = workbook.toCSV('Sheet1');
-const rawCsv = workbook.toCSV('Sheet1', {
-  formulaPolicy: 'raw-exchange',
-  limits: { maxOutputBytes: 8 * 1024 * 1024 },
-});
+const rawCsv = workbook.toCSV('Sheet1', { formulaPolicy: 'raw-exchange' });
 ```
 
-HTML은 text와 attribute를 context에 맞게 escape하며 sparse traversal을 사용합니다. `addPivotTable`처럼 본질적으로 dense range가 필요한 API는 작업을 시작하기 전에 source rectangle을 유한한 traversal limit과 비교합니다.
+CSV 출력은 64 MiB로 제한됩니다. HTML은 텍스트와 속성을 위치에 맞게 escape하고, 최종 HTML 크기를 `limits.maxOutputBytes`에 포함합니다.
 
-## Streaming read와 write
+## 스트리밍
 
-`openSheetReader`는 package-backed data나 bounded disk spool에서 batch를 읽습니다. borrowed Rust reader와 owned/Node reader 모두 batch size를 reserve 전에 검증하며, 지나치게 큰 batch는 reader state를 소비하지 않고 거부합니다.
+### 읽기
+
+큰 시트를 앞에서부터 읽을 때는 `openSheetReader`를 사용하세요.
 
 ```typescript
 const reader = await workbook.openSheetReader('Sheet1', { batchSize: 500 });
 for await (const batch of reader) {
-  for (const row of batch) {
-    processRow(row);
-  }
+  for (const row of batch) processRow(row);
 }
 ```
 
-`StreamWriter`는 row count, cell count, 한 row의 XML byte, 전체 row XML byte, column/merge/pane configuration count와 byte를 제한합니다. batch는 모든 row를 검증한 뒤 처음 byte를 게시하므로 실패한 batch의 앞부분도 남지 않습니다. I/O가 일부 진행된 뒤 실패한 writer는 poisoned 상태가 되며 다시 성공한 것처럼 사용할 수 없습니다. streamed formula도 일반 formula mutation과 같은 누적 budget을 사용합니다.
+Reader는 워크시트를 복제하지 않고 package나 크기가 제한된 임시 파일에서 읽습니다. 배치 크기는 100,000 이하의 양의 정수여야 합니다. 잘린 워크시트는 일부 행을 반환하지 않고 오류를 발생시킵니다. Rust에서는 `open_sheet_reader`나 `open_sheet_reader_owned`를 사용합니다.
 
-async `save()`와 `writeBuffer()`는 background task에서 실행됩니다. 작업 중에는 native workbook snapshot을 보호하기 위해 같은 `Workbook`의 mutation이 `"workbook has an async save operation in progress"` 오류로 거부됩니다. 저장 Promise를 기다린 뒤 변경하세요.
+### 쓰기
+
+Node.js의 `newStreamWriter`와 Rust의 `StreamWriter::new`는 유한한 기본값을 사용합니다. 제한은 writer를 만들 때 지정하세요.
 
 ```typescript
-await workbook.save('snapshot.xlsx', {
-  outputBytes: 512 * 1024 * 1024,
-  xmlPartBytes: 128 * 1024 * 1024,
-  rowCount: 10_000_000,
-  cellCount: 10_000_000,
+const writer = workbook.newStreamWriter('Export', {
+  rowCount: 500_000,
+  outputBytes: 256 * 1024 * 1024,
 });
-
-workbook.setCellValue('Sheet1', 'A1', 'saved');
 ```
 
-저장이 자원 제한이나 I/O 오류로 실패해도 기존 destination byte는 유지되고 temporary file은 정리됩니다. task가 끝나면 workbook을 다시 변경하거나 저장할 수 있습니다.
+Rust에서는 `StreamWriter::new_with_limits`를 사용합니다. 행이나 배치는 쓰기 전에 검사하므로 거부된 행은 추가되지 않습니다. I/O 오류가 난 writer는 이후 호출을 거부합니다. `addMergeCell`은 겹치는 범위를 거부합니다.
 
-## 저장, 암호화, macro, package fidelity
+## 저장
 
-Rust의 `save`, `save_to_buffer`와 Node.js의 sync/async path 및 buffer 저장은 유한한 `SaveLimits`를 사용합니다. Rust에서 다른 profile이 필요하면 `save_with_limits`와 `save_to_buffer_with_limits`를 사용하세요.
+### 제한과 원자적 교체
 
-```rust
-use sheetkit::{SaveLimits, Workbook};
+모든 저장 메서드는 `SaveLimits`를 사용합니다. Rust에서는 `save_with_limits`나 `save_to_buffer_with_limits`로, Node.js에서는 두 번째 인수로 제한을 지정합니다.
 
-let workbook = Workbook::new();
-let limits = SaveLimits {
-    output_bytes: 512 * 1024 * 1024,
-    xml_part_bytes: 128 * 1024 * 1024,
-    row_count: 10_000_000,
-    cell_count: 10_000_000,
-};
-workbook.save_with_limits("report.xlsx", limits)?;
+```typescript
+await workbook.save('output.xlsx', {
+  outputBytes: 768 * 1024 * 1024,
+  xmlPartBytes: 256 * 1024 * 1024,
+});
 ```
 
-1.0.0 후보는 다시 serialize하지 않고 복사한 clean worksheet에 `xml_part_bytes`를 적용하지 않았으며, 원자적 교체 과정에서 symlink 대상을 일반 파일로 바꾸고 기존 permission bit를 유지하지 않았습니다. 두 문제 모두 수정되었습니다. 자세한 내용은 [Audit v2 동작 변경](#audit-v2-behavior-changes)을 참고하세요.
+`xmlPartBytes`는 lazy 저장이 그대로 복사하는 변경 없는 시트를 포함해 기록하는 모든 워크시트에 적용됩니다. 0.5.1에서 낮은 제한으로 통과하던 저장이 이제 실패할 수 있습니다.
+
+경로 저장은 같은 디렉터리에 임시 파일을 쓰고, 쓰기가 끝난 뒤에만 대상 파일을 교체합니다. 저장이 실패하면 기존 파일은 그대로 남습니다. Symlink 경로로 저장하면 link는 그대로 두고 link가 가리키는 파일을 교체합니다. Unix에서는 기존 파일의 권한 비트를 유지하고, 새 파일은 `0o666`에서 프로세스 umask를 뺀 권한으로 만듭니다.
+
+Node.js의 `saveWithPassword`와 `saveWithPasswordSync`는 `SaveLimits` 대신 `CryptLimits`를 받습니다. Rust의 `save_with_password_with_output_limits`는 두 제한을 모두 받습니다.
 
 <a id="opt-in-save-durability"></a>
 
-### Opt-in 저장 durability
+### Durable 저장
 
-Path 저장은 기본적으로 원자적이지만 durable하지는 않습니다. 파일과 디렉터리를 storage에 flush하지 않으므로, 저장이 성공한 직후 전원이 끊기거나 OS가 비정상 종료되면 이전 버전이나 새 버전이 남거나, 파일 시스템과 mount option에 따라 비어 있거나 불완전한 파일이 남을 수 있습니다. Application 비정상 종료나 저장 실패 시에는 여전히 기존 파일이 유지되며, 강제 종료된 경우에는 `.sheetkit-*` 임시 파일이 남을 수 있습니다.
+저장은 기본적으로 원자적이지만 디스크에 flush하지는 않습니다. 저장 직후 전원이 끊기거나 OS가 비정상 종료되면 이전 파일이나 새 파일이 남고, 파일 시스템에 따라서는 비어 있거나 불완전한 파일이 남을 수 있습니다. 애플리케이션이 비정상 종료되어도 이전 파일은 유지되지만, 강제 종료된 경우 `.sheetkit-*` 임시 파일이 남을 수 있습니다.
 
-전원이 끊겨도 저장 결과가 남아야 하면 durability를 요청하세요.
+전원이 끊겨도 파일이 남아야 한다면 durability를 요청하세요.
 
 ```rust
 use sheetkit::{SaveLimits, SaveOptions};
@@ -258,179 +328,97 @@ workbook.save_with_options("output.xlsx", SaveLimits::default(), SaveOptions { d
 await workbook.save('output.xlsx', undefined, { durable: true });
 ```
 
-Durable 저장은 rename 전에 임시 파일을 flush하고, Unix에서는 rename 후 디렉터리를 sync합니다. macOS에서는 flush에 `F_FULLFSYNC`를 사용하므로 저장마다 수 밀리초가 추가됩니다. 디렉터리 sync가 실패하면 새 파일이 이미 대상 위치에 있다는 내용의 오류를 반환합니다. 암호화 저장은 `save_with_password_with_options`와 Node.js의 마지막 `options` 인수로 같은 옵션을 지원합니다. Network file system이나 flush 요청을 무시하는 드라이브에서는 두 보장 모두 약해질 수 있습니다.
+Durable 저장은 rename 전에 임시 파일을 flush하고, Unix에서는 rename 뒤에 디렉터리를 sync합니다. macOS에서는 `F_FULLFSYNC`를 사용하므로 저장마다 수 밀리초가 더 걸립니다. 디렉터리 sync가 실패하면 새 파일이 이미 제자리에 있다는 오류를 반환합니다. 암호화 저장은 Rust의 `save_with_password_with_options`와 Node.js의 마지막 `options` 인수로 같은 옵션을 지원합니다. 네트워크 파일 시스템이나 flush 요청을 무시하는 드라이브에서는 이 보장이 약해집니다.
 
-1.0 RC build는 모든 path 저장에서 파일과 디렉터리를 sync했고 디렉터리 sync 실패를 무시했습니다. 1.0은 `durable`을 설정한 경우에만 sync하며 디렉터리 sync 실패를 보고합니다.
+### 비동기 저장
 
-Standard와 Agile encryption parsing, password derivation, package HMAC는 Office-compatible 동작으로 정리되었습니다. `CryptLimits`는 outer CFB, named stream, encrypted package, KDF iteration과 work를 제한하며 `VbaLimits`는 compressed, decoded, retained, output byte와 module 수를 한 operation에서 누적합니다. 기존에 만든 비표준 암호화 fixture는 Office나 msoffcrypto로 다시 검증하세요.
-
-저장 대상 확장자가 최종 형식을 결정합니다. `.xlsx`와 `.xltx`는 VBA를 제거하며 `.xlsm`, `.xltm`, `.xlam`은 canonical VBA package를 보존합니다.
+`save`, `writeBuffer`, `saveWithPassword`는 이제 백그라운드 작업으로 실행됩니다. 작업이 끝나기 전에 워크북을 수정하면 `workbook has an async save operation in progress` 오류가 발생합니다.
 
 ```typescript
-await workbook.save('macro-free.xlsx');
-await workbook.save('macro-preserved.xlsm');
+await workbook.save('output.xlsx');
+workbook.setCellValue('Sheet1', 'A1', 'next');
 ```
 
-save cycle은 untouched OOXML과 lazy auxiliary byte를 가능한 한 그대로 보존하지만 SST metadata, relationship, content type은 canonical 형태로 쓸 수 있습니다. ZIP archive의 byte-for-byte 동일성을 테스트하지 말고 Excel/LibreOffice에서의 의미와 package relationship을 검증하세요.
+작업이 성공하든 실패하든 끝나면 워크북을 다시 수정하고 저장할 수 있습니다. 서로 다른 워크북은 동시에 저장할 수 있습니다.
 
-## OOXML feature와 package graph
+### 저장 내용
 
-1.0은 sheet copy/delete, table, pivot, slicer, form control, chart, drawing, image, shape, sparkline의 package graph를 mutation 전에 검사합니다. 실패하면 일부 relationship이나 part만 남기지 않습니다.
+Lazy 저장은 변경되지 않은 part를 바이트 그대로 복사하고 편집한 part만 다시 씁니다. Shared strings는 의미 있는 공백과 서식 있는 텍스트를 보존하며, 서식 있는 텍스트와 같은 내용의 일반 문자열은 더 이상 항목을 공유하지 않습니다. 사용자 지정 문서 속성은 빈 문자열을 유지합니다. 저장 결과는 ZIP 바이트가 아니라 다시 열어서 비교하세요. 내용이 같아도 ZIP 바이트는 달라질 수 있습니다.
 
-- Sheet copy/delete는 drawing, chart, image, table, comment, defined name과 package path의 전체 closure를 함께 처리합니다.
-- Table은 width와 header를 먼저 검증하고 conditional formula, priority, DXF를 완전하게 기록합니다.
-- Pivot은 cache, table, record, workbook, worksheet relationship과 ID를 충돌 없이 생성합니다.
-- Slicer는 cache와 view extension graph, placement, stale part 제거를 함께 처리합니다.
-- Form control은 VML과 property relationship을 보존하고 label과 placement를 검증합니다.
-- Chart와 drawing은 ID를 중복 없이 생성하며 stock chart의 series 순서와 수, axis를 검증합니다.
-- Sparkline은 lazy state를 먼저 materialize한 뒤 copy와 structural shift를 처리합니다.
-- Validation, page break, comment, workbook protection hash와 VBA token은 Office semantics에 맞게 수정되었습니다.
-- Orphan table part나 모호한 `tableParts` ownership은 첫 sheet에 임의로 붙지 않고 invalid package 오류가 됩니다.
+### 매크로
 
-이 변경으로 생성된 OOXML과 기존 golden file이 달라질 수 있습니다. 이전 결과를 복사하는 대신 1.0에서 다시 생성하고 save/reopen 및 Excel/LibreOffice 확인을 수행하세요.
+파일 확장자가 VBA 보존 여부를 결정합니다.
 
-## Style, rendering, SVG
-
-theme와 inherited style, HSL tint, Excel number format의 rendering이 수정되었습니다. 표시 text와 SVG snapshot은 다시 기준을 잡아야 합니다.
-
-SVG는 XML text, XML attribute, CSS string을 별도로 escape합니다. font name을 미리 escape하지 말고 원래 논리 이름을 넘기세요. color는 선택적인 `#` 뒤에 6자리 RGB 또는 8자리 ARGB ASCII hex만 허용합니다. 잘못된 color는 panic이나 raw attribute가 아니라 sanitized 오류가 됩니다. 큰 render rectangle은 layout allocation과 output을 시작하기 전에 traversal limit으로 검사합니다.
-
-## CLI 자동화
-
-`info`, `sheets`, `read`, `get`의 human output은 C0, C1, DEL control 문자를 보이는 형태로 escape합니다. 원래 값을 기계적으로 처리하려면 JSON을 사용하세요.
-
-```bash
-sheetkit info report.xlsx --format json
-sheetkit sheets report.xlsx --format json
-sheetkit read report.xlsx --sheet Sheet1 --format json
-sheetkit get report.xlsx Sheet1 A1 --format json
-```
-
-CSV read와 convert는 `spreadsheet-safe`가 기본값입니다. 신뢰할 수 있는 data exchange에만 explicit policy를 사용하세요.
-
-```bash
-sheetkit read report.xlsx --format csv \
-  --csv-formula-policy raw-exchange
-
-sheetkit convert report.xlsx --format csv --output report.csv \
-  --csv-formula-policy raw-exchange
-```
-
-CLI의 table, JSON, CSV 출력은 byte 제한을 넘으면 성공한 prefix를 stdout이나 destination에 남기지 않습니다. `convert`가 실패하면 기존 destination을 보존합니다.
-
-## 0.5.1 이후 누적 변경 매핑
-
-다음 표는 0.5.1 이후 1.0에 포함된 23개 공개 또는 contributor 변경을 빠짐없이 연결합니다.
-
-| 변경 영역 | 1.0에서 확인할 내용 |
+| 대상 | 결과 |
 | --- | --- |
-| AI contribution policy | Runtime 변경은 없으며 contributor는 `AI_POLICY.md`와 commit trailer 규칙을 따릅니다. |
-| Unsafe workbook input 정리 | formatting, formula, raw transfer, stream, sheet edit가 panic이나 partial mutation 대신 오류를 반환합니다. |
-| Reference-aware structural edit | row/column 변경이 formula와 모든 reference-bearing part를 token 단위로 원자적으로 갱신합니다. |
-| Sheet lifecycle graph | copy/delete가 sheet-owned relationship closure 전체를 처리합니다. |
-| Save pipeline fidelity | canonical SST metadata를 쓰며 untouched lazy byte와 rich text/whitespace를 보존합니다. |
-| Advanced OOXML round trip | unknown OOXML과 검토된 style/property field를 보존하며 graph mutation을 preflight합니다. |
-| Formula recalculation error | cell domain 오류는 cached error가 되고 engine/cycle 오류만 operation을 중단합니다. |
-| Excel formula result | range, blank, financial, date/text, Unicode, Bessel 결과를 새 기준으로 확인해야 합니다. |
-| Buffer와 streaming | v1/v2 transfer를 엄격하게 검증하고 absolute coordinate, formula, rich text를 보존합니다. |
-| Node value/option parity | DateValue, FormulaValue, open default가 Rust와 같은 의미를 가집니다. |
-| Office encryption | Standard/Agile parsing과 HMAC가 Office-compatible 동작을 사용합니다. |
-| Office metadata semantics | VBA, protection, validation, page break, comment의 해석과 검증이 수정되었습니다. |
-| Table과 conditional format | width preflight, header, formula, priority, DXF를 완전하게 기록합니다. |
-| Formatting과 theme rendering | theme tint, inherited style, number format 표시 결과가 수정되었습니다. |
-| Lazy workbook feature | picture, sparkline, comment, control, name, merge를 lazy mode에서도 보존합니다. |
-| Pivot package | cache, table, record와 workbook/worksheet graph를 완전하게 생성합니다. |
-| Slicer package graph | cache/view extension, placement, stale part 정리를 검증합니다. |
-| Form control package graph | VML/property relationship, label escape, placement를 검증합니다. |
-| Chart와 drawing | unique ID, stock chart series/axis, escaped range를 생성합니다. |
-| Agile integrity key | hash-sized key를 생성하며 공개된 salt-sized variant도 읽습니다. |
-| Chart/control documentation | stock series 순서와 control metadata 요구 사항이 명확해졌습니다. |
-| Lazy sparkline state | copy/shift 전에 sparkline을 hydrate하며 무관한 table을 dirty로 만들지 않습니다. |
-| Audit review parity | lazy graph, Node value/default, raw transfer, package path, Agile variant가 Rust/Node에서 일치합니다. |
+| `.xlsx`, `.xltx` | VBA part, relationship, content type을 제거합니다 |
+| `.xlsm`, `.xltm`, `.xlam` | VBA를 유지합니다 |
 
-보안 hardening 77건은 이 문서의 영역에 모두 반영되었습니다. Formula 관련 항목은 `SK-DS-001`부터 `013`, `035`부터 `041`, `044`, `051`, `053`부터 `061`까지이며, open/encryption/VBA 항목은 `014`부터 `017`, `045`, `046`, `048`, `049`, `064`, `065`, `068`, `069`, `077`입니다. Traversal/transfer 항목은 `023`부터 `034`, `043`, `062`, `063`, `066`, `067`, `070`이며, SVG/output/CLI 항목은 `018`부터 `022`, `042`, `047`, `050`, `052`, `071`부터 `074`입니다. Package와 macro 항목은 `076`, `078`입니다. Reportable finding이 아니었던 `SK-DS-075`는 77건에 포함되지 않습니다.
+매크로 워크북을 `.xlsx`로 저장하면서 VBA가 남아 있기를 기대했다면 `.xlsm`으로 저장하세요.
 
-## 성능 측정 상태
+## 암호화와 VBA
 
-최종 clean 환경 비교는 repository의 기존 focused benchmark, 같은 fixture, warm-up 1회, 측정 5회와 median latency를 사용했습니다. 1.0 후보를 v0.5.1과 비교했으며 install, build, linking, fixture 생성 시간은 모두 제외했습니다.
+비밀번호로 열 때는 키 유도 전에 `CryptLimits`를 적용하고, 복호화한 package에도 같은 열기 제한을 이어서 적용합니다. Standard와 Agile 암호화, integrity key, package HMAC는 Office와 같은 방식으로 동작합니다. 비밀번호 키와 package 키의 크기가 다른 Agile 파일도 이제 열리며, 1~65536을 벗어난 `saltSize`는 거부됩니다. 0.5.1로 만든 암호화 테스트 파일은 Excel이나 Office 호환 도구로 다시 확인하세요. 큰 암호화 파일의 제한을 높이려면 열기 제한과 암호화 제한을 모두 지정해야 합니다.
 
-100,000-row fixture에서 lazy path open은 28.6% 개선되었고 일반 `getRows`는 +0.2%, `getRowsRaw-only`는 +1.4%, streaming은 +3.3%, 변경하지 않은 copy-on-write save는 -44.6%, 변경한 save는 -1.0%였습니다. V2-to-V2 buffer 생성은 +7.1%, 절대값 1.772 ms였습니다. 이 경로는 canonical coordinate, shared formula, date style과 유한한 output을 추가로 검증하며 10% release-stop 기준 아래에 있습니다.
+VBA 검사는 작업마다 하나의 `VbaLimits` 예산을 사용합니다. 모듈 이름은 Unicode stream-name record가 있으면 그 값을 사용합니다. CP932, CP949, CP936 소스는 손실이 있는 방식으로 디코딩합니다. ASCII와 CP932의 반각 가타카나는 유지되고 나머지 2바이트 문자는 U+FFFD가 되며, 해당 모듈마다 프로젝트의 `warnings` 목록에 경고가 추가됩니다.
 
-이 값은 Apple M4 Pro와 Node.js 24.18.0 환경에서 수집한 release evidence입니다. 모든 workbook과 기기에서 같은 성능을 보장하지는 않습니다.
+## 차트, 표, 피벗과 기타 part
 
-## 이전 확인 checklist
+다음 기능을 추가하거나 바꾸면 관련된 모든 part와 relationship을 함께 기록하며, 그렇지 못하면 아무것도 바꾸지 않고 실패합니다.
 
-- Node.js 24와 생성된 TypeScript declaration으로 application을 typecheck하세요.
-- open call에서 lazy/deferred 기본값과 date interpretation이 의도와 맞는지 확인하세요.
-- `ResourceLimitError`를 다른 argument, lifecycle, password 오류와 구분하여 처리하세요.
-- sparse row/column과 absolute raw coordinate를 기준으로 consumer를 수정하세요.
-- DateValue와 FormulaValue의 object shape를 보존하도록 serializer와 type narrowing을 수정하세요.
-- formula, JSON import, traversal, save, stream에 필요한 유한 limit만 명시하세요.
-- CSV automation은 `spreadsheet-safe`와 `raw-exchange` 중 하나를 의도적으로 선택하세요.
-- async save와 writeBuffer가 끝난 뒤 workbook을 변경하세요.
-- 전원 차단이나 OS 비정상 종료 후에도 남아야 하는 저장에는 `durable: true`를 전달하세요.
-- macro를 보존할 파일은 macro-capable 확장자로 저장하세요.
-- sheet copy/delete와 table, pivot, slicer, control, chart golden file을 새로 생성하세요.
-- byte-for-byte ZIP 비교 대신 save/reopen과 Excel/LibreOffice 의미 검증을 수행하세요.
-- CLI automation은 human text 대신 JSON을 사용하세요.
-- 실제 workload가 release fixture와 크게 다르면 같은 방식으로 application fixture를 다시 측정하세요.
+- 피벗 테이블은 캐시, 레코드, relationship을 겹치지 않는 ID로 기록합니다.
+- 슬라이서는 캐시와 view extension을 기록하고 배치를 검증합니다.
+- 양식 컨트롤은 VML과 속성 relationship을 유지하고 레이블을 escape합니다.
+- 차트, 그림, 이미지, 도형, 스파크라인은 고유한 ID를 사용합니다. 주식형 차트는 문서에 정해진 계열 수와 순서가 필요합니다.
+- 표는 무엇이든 바꾸기 전에 너비를 확인하고 항상 머리글을 기록합니다. 표 이름은 Excel 규칙을 따릅니다. 1~255자여야 하고, 셀 참조처럼 보이면 안 되며, 표와 정의된 이름 사이에서 대소문자 구분 없이 고유해야 합니다.
+- 조건부 서식은 일관된 우선순위, 수식, 스타일을 기록합니다.
+- 보호 해시, 데이터 유효성 검사, 페이지 나누기, 메모는 Office 동작을 따릅니다.
 
-<a id="audit-v2-behavior-changes"></a>
+어느 워크시트에 속하는지 분명하지 않은 표 part는 첫 번째 시트에 붙이지 않고 잘못된 package로 보고합니다. Lazy 워크북은 스파크라인, 그림, 메모, 컨트롤, 이름, 병합이 필요한 편집 전에 이를 먼저 읽으므로, 이 데이터를 지키려고 넣은 eager 열기 우회 코드는 제거할 수 있습니다.
 
-## Audit v2 동작 변경
+이 기능들의 기준 파일은 새로 만들고, 저장 후 다시 열거나 Excel에서 확인하세요.
 
-1.0.0 후보에 대한 두 번째 audit에서 아래 수정이 적용되었습니다. 각 수정은 application이 의존할 수 있는 동작을 바꿉니다. Finding ID는 [보안 finding ledger](../../security/v1-finding-ledger.md#audit-v2-post-1-0-0-candidate)에 정리되어 있습니다.
+## 스타일과 렌더링
 
-### 열기와 저장
+테마 tint, 상속된 스타일, 숫자 서식이 Excel과 같게 렌더링되므로 서식 적용 텍스트와 SVG 스냅샷이 바뀝니다. SVG 렌더링은 글꼴 이름을 직접 escape하므로 `A&B Sans`처럼 escape하지 않은 이름을 전달하세요. 색상은 6자리 RGB나 8자리 ARGB 16진수여야 하며 앞에 `#`를 붙일 수 있습니다. 그 밖의 값은 거부됩니다.
 
-- Path 저장은 symlink를 따라가 대상 파일을 교체하므로 link 자체는 그대로 남습니다. Unix에서는 기존 대상 파일의 permission bit를 유지하며, 새 파일은 `0o666`에서 process umask를 적용한 mode로 생성됩니다.
-- Path 저장은 더 이상 기본적으로 파일과 디렉터리를 storage에 flush하지 않습니다. RC build는 항상 sync했고 디렉터리 sync 실패를 무시했습니다. Sync가 필요하면 `durable: true`를 전달하세요. 이 경우 디렉터리 sync 실패도 보고됩니다.
-- 어떤 part든 CRC 또는 압축 해제 검사에 실패하면 모든 read mode에서 open이 실패합니다. 이전 후보는 이런 part를 조용히 제외했습니다. 내용은 손상되지 않았지만 XML 형식이 잘못된 optional part는 계속 보존됩니다.
-- Worksheet relationship이 다른 part를 가리키는 alias이거나, package 밖을 가리키거나, external이면 open이 실패합니다.
-- ZIP entry 이름이 중복되거나 대소문자만 다른 part 이름이 있으면 open이 실패합니다.
-- 선언된 크기와 실제 내용이 다른 entry는 거부됩니다. Eager open은 즉시 실패하며, lazy workbook은 해당 part를 hydrate하거나 저장 중 복사할 때 실패합니다.
-- 저장 시 `xml_part_bytes`(`xmlPartBytes`)는 모든 worksheet에 대해 실제로 쓰는 byte 수를 기준으로 적용됩니다. Lazy 저장과 sheet filtering이 다시 serialize하지 않고 복사하는 clean worksheet도 포함됩니다. 낮은 limit으로 통과하던 저장이 이제 실패할 수 있습니다.
-- Lazy workbook은 open 시점의 package를 계속 읽습니다. 이후 원본 path를 교체하거나 다시 써도 읽기 결과는 바뀌지 않습니다.
+## Node.js 인수 검사
 
-### 구조 편집
+- 정수 인수와 숫자 옵션은 소수, NaN, 무한대, 안전하지 않은 정수, 범위를 벗어난 값을 잘라내지 않고 거부합니다.
+- 알 수 없는 스타일 및 조건부 서식 enum 문자열은 허용되는 값 목록과 함께 오류를 발생시킵니다.
 
-- `removeRow`와 `removeCol`은 삭제된 cell을 가리키는 reference를 `#REF!`로 바꾸고, 행이나 열을 잃은 range를 축소합니다. Defined name도 같은 규칙을 따릅니다. Merge, data validation, conditional format, hyperlink, auto-filter, comment, threaded comment, 행 page break도 축소되거나 제거됩니다.
-- Table 안의 열을 삭제하면 해당 table column도 제거됩니다. Table의 header 행, totals 행, 모든 data 행, 모든 열을 제거하는 편집은 workbook을 변경하지 않고 거부됩니다.
-- Comment가 grid 밖으로 밀려나는 경우 `insertRows`와 `insertCols`가 실패합니다.
-- `duplicateRow`는 복사본의 shared formula를 일반 formula로 펼칩니다.
-- `A:A`, `1:1` 같은 전체 열/행 reference도 이동합니다. 전체 sheet span(`1:1048576`, `A:XFD`)과 3-D reference는 이동하지 않습니다.
-- `copySheet`는 기존 table 이름 및 defined name과 대소문자 구분 없이 겹치지 않는 table 이름을 생성합니다.
+## CLI
 
-```typescript
-workbook.setCellFormula('Sheet1', 'B1', 'A5+SUM(A1:A5)');
-workbook.removeRow('Sheet1', 5);
-// B1의 값은 '#REF!+SUM(A1:A4)'가 됩니다.
+`info`, `sheets`, `read`, `get`의 텍스트 출력은 터미널 제어 문자를 escape하고 크기가 제한됩니다. 스크립트에서는 JSON을 사용하세요.
+
+```bash
+sheetkit sheets input.xlsx --format json
 ```
 
-### 수식 결과
+`read --format csv`와 `convert`는 기본적으로 수식처럼 보이는 텍스트를 무력화합니다. 신뢰할 수 있는 데이터를 교환할 때만 원문을 유지하세요.
 
-- `SUM`, `AVERAGE`, `MIN`, `MAX`, `PRODUCT`, `MEDIAN`, `LARGE`, `SMALL`, `RANK` 같은 numeric aggregate는 reference 안의 boolean, text, 빈 cell을 무시합니다. 숫자가 없는 reference에 대한 `AVERAGE`는 `#DIV/0!`를 반환합니다. 수식에 직접 입력한 scalar 인수는 기존 coercion을 유지하므로 `SUM("5", TRUE)`는 여전히 6입니다.
-- 연도가 0..=9999 범위를 벗어난 `DATE`는 `#NUM!`을 반환합니다. `DATE`, `EDATE`, `EOMONTH`, `WORKDAY`는 결과가 Excel 날짜 범위를 벗어나면 `#NUM!`을 반환하며, `WORKDAY`는 serial 1 이전의 결과에도 `#NUM!`을 반환합니다.
-- `LEFT`, `RIGHT`, `MID`, `REPT`, `REPLACE`는 음수 count에 `#VALUE!`를 반환합니다. 매우 큰 count는 overflow 대신 clamp됩니다.
-- `ROUND`, `ROUNDUP`, `ROUNDDOWN`은 NaN이나 infinity를 반환하지 않습니다. `f64` 정밀도를 넘는 digit 수는 값을 그대로 두거나 0으로 만들며, non-finite 결과가 될 경우 `#NUM!`을 반환합니다.
-- Cross-sheet reference로 도달한 formula는 unqualified reference, `ROW()`, `COLUMN()`을 해당 formula의 sheet와 cell 기준으로 계산합니다.
+```bash
+sheetkit read input.xlsx --sheet Sheet1 --format csv \
+  --csv-formula-policy raw-exchange
+```
 
-### ID와 저장 값
+출력이 제한을 넘으면 아무것도 기록하지 않습니다. `convert`가 실패하면 기존 대상 파일은 그대로 남습니다.
 
-- 새 sheet relationship ID, sheet ID, hyperlink relationship ID, custom property `pid`, pivot `cacheId`, table ID, custom number format ID는 사용되지 않은 가장 작은 값을 사용합니다. `rId2`를 삭제한 뒤 추가하는 relationship은 `rId4`가 아니라 `rId2`가 됩니다. Conditional format priority는 평가 순서가 바뀌지 않도록 계속 현재 최댓값에 1을 더한 값을 사용합니다.
-- 같은 text를 가진 rich text 문자열과 일반 문자열은 더 이상 shared string entry를 공유하지 않습니다.
-- Custom document property는 빈 문자열을 유지하고 XML entity를 decode합니다. Slicer cache attribute도 entity를 decode합니다.
+## 성능
 
-### Node.js 인수와 출력
+Apple M4 Pro와 Node.js 24 환경에서 100,000행 워크북으로 0.5.1과 비교했을 때, lazy 열기는 약 29%, 변경하지 않은 lazy 워크북 저장은 약 45% 빨라졌습니다. 행 읽기, 스트리밍, 편집 후 저장은 0.5.1과 4% 이내로 차이가 납니다. v2 버퍼 생성은 추가된 검증 때문에 약 7%(1.8 ms) 느려졌습니다. 작업 환경이 다르다면 실제 파일로 측정하세요.
 
-- 정수 인수와 numeric option은 소수, NaN, infinity, safe integer를 넘는 값, 범위를 벗어난 값을 잘라내거나 wrap하지 않고 거부합니다.
-- 알 수 없는 style 및 conditional format enum 문자열은 허용되는 값 목록과 함께 오류를 발생시킵니다.
-- `toHTML`은 최종 UTF-8 HTML 크기를 `limits.maxOutputBytes`에 반영합니다.
-- `StreamWriter.addMergeCell`은 range를 canonical 형태로 저장하며 겹치는 range에는 오류를 발생시킵니다.
-- Stream reader는 잘린 worksheet에서 일부 행을 반환하지 않고 오류를 발생시킵니다.
-- Table 이름은 Excel 규칙을 따릅니다. 길이는 1~255자이며 cell reference처럼 보이는 이름은 사용할 수 없고, table과 defined name 전체에서 대소문자 구분 없이 고유해야 합니다. 자세한 내용은 [API parity matrix](../../security/v1-api-parity-matrix.md)를 참고하세요.
+## 업그레이드 체크리스트
 
-### 암호화와 VBA
-
-- Agile decryption은 password key와 package key의 크기가 다른 파일도 읽습니다. 잘못된 numeric attribute와 1..=65536 범위를 벗어난 `saltSize`는 거부합니다.
-- VBA module 이름은 Unicode stream-name record를 우선 사용합니다. CP932, CP949, CP936 source code는 lossy하게 decode됩니다. ASCII와 CP932의 반각 가타카나는 유지되며 그 밖의 double-byte 문자는 U+FFFD로 바뀝니다. 영향을 받은 module마다 project의 `warnings` 목록에 warning이 추가됩니다.
+1. Rust와 Node.js 패키지를 함께 업그레이드하고, 다시 빌드하고, TypeScript를 다시 컴파일하세요. Node.js 24 이상을 사용하세요.
+2. 오류 메시지 비교를 `Error::ResourceLimitExceeded`나 `isResourceLimitError`로 바꾸세요.
+3. 필요한 신뢰할 수 있는 파일에 한해서만 제한을 높이세요.
+4. Lazy와 eager 열기 중 무엇을 쓸지 정하고 날짜 처리를 확인하세요.
+5. `DateValue`와 `FormulaValue`에 맞게 타입 가드와 직렬화 코드를 수정하세요.
+6. 행을 사용하는 코드를 절대 좌표 기반 sparse 출력에 맞게 수정하세요.
+7. 수식, 구조 편집, 숫자 서식, SVG 출력의 기대값을 갱신하세요.
+8. CSV 수식 정책을 명시하고, CLI에서는 JSON 출력을 사용하세요.
+9. 비동기 저장이 끝난 뒤에 워크북을 수정하세요.
+10. 전원이 끊겨도 남아야 하는 저장에는 `durable: true`를 전달하세요.
+11. 매크로 워크북은 `.xlsm`, `.xltm`, `.xlam`으로 저장하세요.
+12. 표, 피벗, 차트, 슬라이서, 컨트롤, 메모, 그림이 있는 대표 파일을 저장한 뒤 다시 열어 확인하세요.
