@@ -6,7 +6,11 @@ packages:
 ignoredOptionalDependencies:
   - '@sheetkit/node-*'
 
-onlyBuiltDependencies: []
+minimumReleaseAgeExclude:
+  - tsdown@0.23.2
+
+allowBuilds:
+  esbuild: false
 
 overrides:
   exceljs>uuid: ^11.1.1

@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "license": "MIT OR Apache-2.0",
-  "packageManager": "pnpm@10.34.8",
+  "packageManager": "pnpm@12.15.0",
   "scripts": {
     "lint": "oxlint",
     "lint:fix": "oxlint --fix",

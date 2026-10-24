@@ -3,14 +3,15 @@
 ## Prerequisites
 
 - **Rust toolchain** (rustc, cargo) -- latest stable release
-- **Node.js** >= 18
-- **pnpm** >= 9
+- **[mise](https://mise.jdx.dev/)** -- installs the pinned Node.js (`.node-version`) and pnpm (`mise.toml`) versions
+- Without mise: **Node.js** >= 24 and the **pnpm** version named in `package.json` `packageManager`
 
 ## Repository Setup
 
 ```bash
 git clone <repo-url>
 cd sheetkit
+mise install
 pnpm install
 cargo build --workspace
 ```
@@ -165,7 +166,7 @@ The pnpm workspace includes:
 ## Key Dependencies
 
 | Crate | Purpose |
-|---|---|
+| --- | --- |
 | `quick-xml` | XML parsing and serialization (with `serialize` and `overlapped-lists` features) |
 | `serde` | Derive-based (de)serialization for XML types |
 | `zip` | ZIP archive handling for .xlsx files (with `deflate` feature) |

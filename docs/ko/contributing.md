@@ -3,14 +3,15 @@
 ## 사전 요구 사항
 
 - **Rust 툴체인** (rustc, cargo) -- 최신 안정 릴리스
-- **Node.js** >= 18
-- **pnpm** >= 9
+- **[mise](https://mise.jdx.dev/)** -- 고정된 Node.js(`.node-version`)와 pnpm(`mise.toml`) 버전을 설치합니다
+- mise를 사용하지 않는 경우: **Node.js** >= 24와 `package.json`의 `packageManager`에 명시된 **pnpm** 버전이 필요합니다
 
 ## 저장소 설정
 
 ```bash
 git clone <repo-url>
 cd sheetkit
+mise install
 pnpm install
 cargo build --workspace
 ```
@@ -165,7 +166,7 @@ pnpm 워크스페이스에는 다음이 포함됩니다:
 ## 주요 의존성
 
 | 크레이트 | 용도 |
-|---|---|
+| --- | --- |
 | `quick-xml` | XML 파싱 및 직렬화 (`serialize` 및 `overlapped-lists` 기능 포함) |
 | `serde` | XML 타입을 위한 파생 기반 (역)직렬화 |
 | `zip` | .xlsx 파일을 위한 ZIP 아카이브 처리 (`deflate` 기능 포함) |
