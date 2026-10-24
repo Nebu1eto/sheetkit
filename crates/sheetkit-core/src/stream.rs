@@ -23,6 +23,7 @@
 //! // StreamWriter data is applied to a workbook via apply_stream_writer().
 //! ```
 
+use std::fmt::Write as _;
 use std::io::{BufWriter, Write as _};
 
 use crate::cell::CellValue;
@@ -36,6 +37,12 @@ use sheetkit_xml::worksheet::{Col, Cols, MergeCell, MergeCells, Pane, SheetView,
 
 /// Maximum outline level allowed by Excel.
 const MAX_OUTLINE_LEVEL: u8 = 7;
+
+/// Capacity of the buffered writer in front of the row temp file.
+const TEMP_FILE_BUFFER_BYTES: usize = 64 * 1024;
+
+/// Largest row XML buffer capacity retained between rows.
+const RETAINED_ROW_BUFFER_BYTES: usize = 1024 * 1024;
 
 /// Options for a streamed row.
 #[derive(Debug, Clone, Default)]
@@ -127,6 +134,8 @@ pub struct StreamWriter {
     config_count: u64,
     config_bytes: u64,
     write_failure_after_bytes: Option<u64>,
+    /// Reusable buffer holding one rendered row before it reaches the file.
+    row_buf: String,
     col_widths: Vec<(u32, u32, f64)>,
     col_options: Vec<(u32, StreamColOptions)>,
     /// Canonical merge references with their normalized
@@ -172,6 +181,7 @@ impl StreamWriter {
             config_count: 0,
             config_bytes: 0,
             write_failure_after_bytes: None,
+            row_buf: String::new(),
             col_widths: Vec::new(),
             col_options: Vec::new(),
             merge_cells: Vec::new(),
@@ -204,6 +214,7 @@ impl StreamWriter {
             config_count: 0,
             config_bytes: 0,
             write_failure_after_bytes: None,
+            row_buf: String::new(),
             col_widths: Vec::new(),
             col_options: Vec::new(),
             merge_cells: Vec::new(),
@@ -220,7 +231,10 @@ impl StreamWriter {
 
     fn ensure_temp_file(&mut self) -> Result<&mut BufWriter<tempfile::NamedTempFile>> {
         if self.writer.is_none() {
-            self.writer = Some(BufWriter::new(tempfile::NamedTempFile::new()?));
+            self.writer = Some(BufWriter::with_capacity(
+                TEMP_FILE_BUFFER_BYTES,
+                tempfile::NamedTempFile::new()?,
+            ));
         }
         self.writer
             .as_mut()
@@ -377,14 +391,23 @@ impl StreamWriter {
             )?;
         }
         self.formula_usage = next_formula_usage;
+        let mut row_xml = self.take_row_buffer();
+        let mut result = Ok(());
         for (i, values) in rows.iter().enumerate() {
             let offset = u32::try_from(i).map_err(|_| Error::InvalidRowNumber(u32::MAX))?;
             let row_num = start_row
                 .checked_add(offset)
                 .ok_or(Error::InvalidRowNumber(u32::MAX))?;
-            self.write_preflighted_row(row_num, values, None, None)?;
+            // Every row was admitted above, so rendering needs no limit here.
+            row_xml.clear();
+            render_row_xml(&mut row_xml, row_num, values, None, None, u64::MAX)?;
+            result = self.commit_row_xml(row_num, values.len(), &row_xml);
+            if result.is_err() {
+                break;
+            }
         }
-        Ok(())
+        self.restore_row_buffer(row_xml);
+        result
     }
 
     /// Write a row with a specific style ID applied to all cells.
@@ -679,7 +702,8 @@ impl StreamWriter {
     }
 
     /// Internal unified implementation for writing a row.
-    /// Serializes the row to XML and writes it directly to the temp file.
+    /// Renders the row XML once into a reusable buffer, admits it against
+    /// every stream limit, then writes it to the temp file.
     fn write_row_impl(
         &mut self,
         row: u32,
@@ -689,21 +713,47 @@ impl StreamWriter {
     ) -> Result<()> {
         self.validate_row_structure(row, values, options)?;
         let next_formula_usage = self.preflight_formula_values(values.iter())?;
+        validate_stream_values(values)?;
 
-        let mut next_row_count = self.row_count;
-        let mut next_cell_count = self.cell_count;
-        let mut next_bytes = self.bytes_written;
-        self.preflight_row(
+        let mut row_xml = self.take_row_buffer();
+        let result = render_row_xml(
+            &mut row_xml,
             row,
             values,
             cell_style_id,
             options,
-            &mut next_row_count,
-            &mut next_cell_count,
-            &mut next_bytes,
-        )?;
-        self.formula_usage = next_formula_usage;
-        self.write_preflighted_row(row, values, cell_style_id, options)
+            self.limits.row_xml_bytes,
+        )
+        .and_then(|row_xml_bytes| {
+            let mut next_row_count = self.row_count;
+            let mut next_cell_count = self.cell_count;
+            let mut next_bytes = self.bytes_written;
+            self.charge_row_totals(
+                values,
+                row_xml_bytes,
+                &mut next_row_count,
+                &mut next_cell_count,
+                &mut next_bytes,
+            )
+        })
+        .and_then(|()| {
+            self.formula_usage = next_formula_usage;
+            self.commit_row_xml(row, values.len(), &row_xml)
+        });
+        self.restore_row_buffer(row_xml);
+        result
+    }
+
+    fn take_row_buffer(&mut self) -> String {
+        let mut buffer = std::mem::take(&mut self.row_buf);
+        buffer.clear();
+        buffer
+    }
+
+    fn restore_row_buffer(&mut self, buffer: String) {
+        if buffer.capacity() <= RETAINED_ROW_BUFFER_BYTES {
+            self.row_buf = buffer;
+        }
     }
 
     fn preflight_formula_values<'a>(
@@ -760,7 +810,18 @@ impl StreamWriter {
             options,
             self.limits.row_xml_bytes,
         )?;
+        self.charge_row_totals(values, row_xml_bytes, row_count, cell_count, output_bytes)
+    }
 
+    /// Checks the cumulative row, cell, and byte limits for one admitted row.
+    fn charge_row_totals(
+        &self,
+        values: &[CellValue],
+        row_xml_bytes: u64,
+        row_count: &mut u64,
+        cell_count: &mut u64,
+        output_bytes: &mut u64,
+    ) -> Result<()> {
         *row_count = checked_stream_add(
             *row_count,
             1,
@@ -835,23 +896,30 @@ impl StreamWriter {
         Ok(())
     }
 
-    fn write_preflighted_row(
-        &mut self,
-        row: u32,
-        values: &[CellValue],
-        cell_style_id: Option<u32>,
-        options: Option<&StreamRowOptions>,
-    ) -> Result<()> {
-        let (error, row_bytes) = {
-            let failure_after = self.write_failure_after_bytes;
-            let mut output = StreamRowOutput::new(self.ensure_temp_file()?, failure_after);
-            write_row_xml(&mut output, row, values, cell_style_id, options);
-            (output.error, output.written)
+    /// Writes one admitted row's XML to the temp file and records it.
+    fn commit_row_xml(&mut self, row: u32, cell_slots: usize, row_xml: &str) -> Result<()> {
+        let failure_after = self.write_failure_after_bytes;
+        let bytes = row_xml.as_bytes();
+        let writer = self.ensure_temp_file()?;
+        let written = match failure_after {
+            Some(failure_after)
+                if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > failure_after =>
+            {
+                let prefix = usize::try_from(failure_after)
+                    .unwrap_or(usize::MAX)
+                    .min(bytes.len());
+                if prefix > 0 {
+                    let _ = writer.write_all(&bytes[..prefix]);
+                }
+                Err(std::io::Error::other("injected stream output failure"))
+            }
+            _ => writer.write_all(bytes),
         };
-        if let Some(error) = error {
+        if let Err(error) = written {
             self.failed = true;
             return Err(Error::Io(error));
         }
+        let row_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
 
         self.row_count = self
             .row_count
@@ -859,7 +927,7 @@ impl StreamWriter {
             .ok_or_else(|| Error::Internal("stream row count overflow".to_string()))?;
         self.cell_count = self
             .cell_count
-            .checked_add(u64::try_from(values.len()).unwrap_or(u64::MAX))
+            .checked_add(u64::try_from(cell_slots).unwrap_or(u64::MAX))
             .ok_or_else(|| Error::Internal("stream cell count overflow".to_string()))?;
         self.bytes_written = self
             .bytes_written
@@ -949,90 +1017,124 @@ pub(crate) fn write_streamed_sheet<W: std::io::Write + std::io::Seek>(
     Ok(())
 }
 
+/// Destination for rendered row XML that enforces the row byte limit.
+///
+/// `push_str` charges its argument as one unit and `push_chars` charges each
+/// character separately, so the size reported on rejection does not depend on
+/// how plain text is grouped.
 trait RowXmlSink {
     fn push_str(&mut self, value: &str);
-    fn push(&mut self, value: char);
+    fn push_chars(&mut self, value: &str);
+
+    fn push(&mut self, value: char) {
+        let mut encoded = [0u8; 4];
+        self.push_str(value.encode_utf8(&mut encoded));
+    }
 }
 
+/// Running size of one row's XML measured against the row limit.
 struct RowXmlCounter {
     written: u64,
     limit: u64,
     exceeded: bool,
 }
 
+impl RowXmlCounter {
+    fn new(limit: u64) -> Self {
+        Self {
+            written: 0,
+            limit,
+            exceeded: false,
+        }
+    }
+
+    /// Charges `amount` bytes as one unit and returns whether they fit.
+    fn charge(&mut self, amount: usize) -> bool {
+        if self.exceeded {
+            return false;
+        }
+        let observed = self
+            .written
+            .saturating_add(u64::try_from(amount).unwrap_or(u64::MAX));
+        self.written = observed;
+        if observed > self.limit {
+            self.exceeded = true;
+            return false;
+        }
+        true
+    }
+
+    /// Charges `value` one character at a time and returns whether it fits.
+    fn charge_chars(&mut self, value: &str) -> bool {
+        if self.exceeded {
+            return false;
+        }
+        let remaining = self.limit.saturating_sub(self.written);
+        let length = u64::try_from(value.len()).unwrap_or(u64::MAX);
+        if length <= remaining {
+            self.written = self.written.saturating_add(length);
+            return true;
+        }
+        // Record the size at the first character that crosses the limit.
+        let crossing = value
+            .char_indices()
+            .map(|(start, ch)| u64::try_from(start + ch.len_utf8()).unwrap_or(u64::MAX))
+            .find(|end| *end > remaining)
+            .unwrap_or(length);
+        self.written = self.written.saturating_add(crossing);
+        self.exceeded = true;
+        false
+    }
+
+    /// Returns the admitted row size, or the row XML limit error.
+    fn finish(&self) -> Result<u64> {
+        if self.exceeded {
+            return Err(resource_limit(
+                ResourceOperation::StreamWrite,
+                ResourceCategory::Streaming,
+                ResourceDimension::XmlBytes,
+                self.limit,
+                self.written,
+                ResourceStage::Serialize,
+            ));
+        }
+        Ok(self.written)
+    }
+}
+
 impl RowXmlSink for RowXmlCounter {
     fn push_str(&mut self, value: &str) {
-        if self.exceeded {
-            return;
-        }
-        let amount = u64::try_from(value.len()).unwrap_or(u64::MAX);
-        let observed = self.written.saturating_add(amount);
-        if observed > self.limit {
-            self.written = observed;
-            self.exceeded = true;
-        } else {
-            self.written = observed;
-        }
+        self.charge(value.len());
     }
 
-    fn push(&mut self, value: char) {
-        let mut encoded = [0u8; 4];
-        self.push_str(value.encode_utf8(&mut encoded));
+    fn push_chars(&mut self, value: &str) {
+        self.charge_chars(value);
     }
 }
 
-struct StreamRowOutput<'a> {
-    writer: &'a mut BufWriter<tempfile::NamedTempFile>,
-    written: u64,
-    error: Option<std::io::Error>,
-    failure_after: Option<u64>,
+/// Row XML sink that keeps the admitted bytes in memory.
+struct RowXmlBuffer<'a> {
+    counter: RowXmlCounter,
+    out: &'a mut String,
 }
 
-impl<'a> StreamRowOutput<'a> {
-    fn new(writer: &'a mut BufWriter<tempfile::NamedTempFile>, failure_after: Option<u64>) -> Self {
-        Self {
-            writer,
-            written: 0,
-            error: None,
-            failure_after,
-        }
-    }
-}
-
-impl RowXmlSink for StreamRowOutput<'_> {
+impl RowXmlSink for RowXmlBuffer<'_> {
     fn push_str(&mut self, value: &str) {
-        if self.error.is_some() {
-            return;
+        if self.counter.charge(value.len()) {
+            self.out.push_str(value);
         }
-        if let Some(failure_after) = self.failure_after {
-            let amount = u64::try_from(value.len()).unwrap_or(u64::MAX);
-            if self.written.saturating_add(amount) > failure_after {
-                let remaining = failure_after.saturating_sub(self.written);
-                let prefix = usize::try_from(remaining)
-                    .unwrap_or(usize::MAX)
-                    .min(value.len());
-                if prefix > 0 {
-                    let _ = self.writer.write_all(&value.as_bytes()[..prefix]);
-                    self.written = self
-                        .written
-                        .saturating_add(u64::try_from(prefix).unwrap_or(u64::MAX));
-                }
-                self.error = Some(std::io::Error::other("injected stream output failure"));
-                return;
-            }
+    }
+
+    fn push_chars(&mut self, value: &str) {
+        if self.counter.charge_chars(value) {
+            self.out.push_str(value);
         }
-        if let Err(error) = self.writer.write_all(value.as_bytes()) {
-            self.error = Some(error);
-            return;
-        }
-        self.written = self
-            .written
-            .saturating_add(u64::try_from(value.len()).unwrap_or(u64::MAX));
     }
 
     fn push(&mut self, value: char) {
-        let mut encoded = [0u8; 4];
-        self.push_str(value.encode_utf8(&mut encoded));
+        if self.counter.charge(value.len_utf8()) {
+            self.out.push(value);
+        }
     }
 }
 
@@ -1043,23 +1145,27 @@ fn measure_row_xml(
     options: Option<&StreamRowOptions>,
     limit: u64,
 ) -> Result<u64> {
-    let mut counter = RowXmlCounter {
-        written: 0,
-        limit,
-        exceeded: false,
-    };
+    let mut counter = RowXmlCounter::new(limit);
     write_row_xml(&mut counter, row, values, cell_style_id, options);
-    if counter.exceeded {
-        return Err(resource_limit(
-            ResourceOperation::StreamWrite,
-            ResourceCategory::Streaming,
-            ResourceDimension::XmlBytes,
-            limit,
-            counter.written,
-            ResourceStage::Serialize,
-        ));
-    }
-    Ok(counter.written)
+    counter.finish()
+}
+
+/// Render one row's XML into `out`, rejecting rows above `limit` bytes.
+/// Returns the rendered size, which equals the bytes appended to `out`.
+fn render_row_xml(
+    out: &mut String,
+    row: u32,
+    values: &[CellValue],
+    cell_style_id: Option<u32>,
+    options: Option<&StreamRowOptions>,
+    limit: u64,
+) -> Result<u64> {
+    let mut sink = RowXmlBuffer {
+        counter: RowXmlCounter::new(limit),
+        out,
+    };
+    write_row_xml(&mut sink, row, values, cell_style_id, options);
+    sink.counter.finish()
 }
 
 fn checked_stream_add(
@@ -1152,8 +1258,14 @@ fn write_row_xml<W: RowXmlSink>(
     cell_style_id: Option<u32>,
     options: Option<&StreamRowOptions>,
 ) {
+    // Row number and style are formatted once per row; numbers and cell
+    // references reuse one scratch buffer instead of allocating per cell.
+    let row_text = row.to_string();
+    let style_text = cell_style_id.map(|sid| sid.to_string());
+    let mut scratch = String::new();
+
     xml.push_str("<row r=\"");
-    xml.push_str(&row.to_string());
+    xml.push_str(&row_text);
     xml.push('"');
 
     // Row-level attributes from options.
@@ -1188,17 +1300,17 @@ fn write_row_xml<W: RowXmlSink>(
             continue;
         }
 
-        let cell_ref = crate::utils::cell_ref::coordinates_to_cell_name(col, row)
-            .unwrap_or_else(|_| format!("{col}:{row}"));
+        scratch.clear();
+        push_cell_name(&mut scratch, col, row, &row_text);
 
         xml.push_str("<c r=\"");
-        xml.push_str(&cell_ref);
+        xml.push_str(&scratch);
         xml.push('"');
 
         // Style attribute.
-        if let Some(sid) = cell_style_id {
+        if let Some(sid) = &style_text {
             xml.push_str(" s=\"");
-            xml.push_str(&sid.to_string());
+            xml.push_str(sid);
             xml.push('"');
         }
 
@@ -1210,7 +1322,7 @@ fn write_row_xml<W: RowXmlSink>(
             }
             CellValue::Number(n) => {
                 xml.push_str("><v>");
-                xml.push_str(&n.to_string());
+                push_display(xml, &mut scratch, n);
                 xml.push_str("</v></c>");
             }
             CellValue::Date(serial) => {
@@ -1252,7 +1364,7 @@ fn write_row_xml<W: RowXmlSink>(
                         }
                         CellValue::Number(n) => {
                             xml.push_str("<v>");
-                            xml.push_str(&n.to_string());
+                            push_display(xml, &mut scratch, n);
                             xml.push_str("</v>");
                         }
                         CellValue::Bool(b) => {
@@ -1298,21 +1410,62 @@ fn write_row_xml<W: RowXmlSink>(
     xml.push_str("</row>");
 }
 
-/// Escape XML special characters into an existing string buffer.
+/// Escape XML special characters into an existing string buffer, dropping
+/// characters XML cannot represent. Unchanged text is pushed in runs.
 fn xml_escape_into<W: RowXmlSink>(buf: &mut W, s: &str) {
-    for ch in s.chars() {
-        if !crate::utils::is_xml_char(ch) {
-            continue;
+    let mut run_start = 0;
+    for (index, ch) in s.char_indices() {
+        let replacement = match ch {
+            '&' => "&amp;",
+            '<' => "&lt;",
+            '>' => "&gt;",
+            '"' => "&quot;",
+            '\'' => "&apos;",
+            _ if !crate::utils::is_xml_char(ch) => "",
+            _ => continue,
+        };
+        if run_start < index {
+            buf.push_chars(&s[run_start..index]);
         }
-        match ch {
-            '&' => buf.push_str("&amp;"),
-            '<' => buf.push_str("&lt;"),
-            '>' => buf.push_str("&gt;"),
-            '"' => buf.push_str("&quot;"),
-            '\'' => buf.push_str("&apos;"),
-            _ => buf.push(ch),
+        if !replacement.is_empty() {
+            buf.push_str(replacement);
         }
+        run_start = index + ch.len_utf8();
     }
+    if run_start < s.len() {
+        buf.push_chars(&s[run_start..]);
+    }
+}
+
+/// Append the A1 name of (`col`, `row`) to `out`, reusing the row's
+/// formatted number. Matches `coordinates_to_cell_name`, including its
+/// fallback text for coordinates outside the sheet.
+fn push_cell_name(out: &mut String, col: u32, row: u32, row_text: &str) {
+    if !(1..=MAX_COLUMNS).contains(&col) || !(1..=MAX_ROWS).contains(&row) {
+        let _ = write!(out, "{col}:{row}");
+        return;
+    }
+    // MAX_COLUMNS (XFD) needs at most three letters.
+    let mut letters = [0u8; 3];
+    let mut length = 0;
+    let mut remaining = col;
+    while remaining > 0 {
+        remaining -= 1;
+        letters[length] = b'A' + (remaining % 26) as u8;
+        length += 1;
+        remaining /= 26;
+    }
+    for &letter in letters[..length].iter().rev() {
+        out.push(char::from(letter));
+    }
+    out.push_str(row_text);
+}
+
+/// Push `value` formatted with `Display` as one token, using `scratch`.
+fn push_display<W: RowXmlSink>(xml: &mut W, scratch: &mut String, value: impl std::fmt::Display) {
+    scratch.clear();
+    let _ = write!(scratch, "{value}");
+    xml.push_str(scratch);
 }
 
 fn validate_stream_values(values: &[CellValue]) -> Result<()> {
@@ -2926,5 +3079,101 @@ mod tests {
             .is_err());
         assert!(writer.into_streamed_data().is_err());
         assert!(!path.exists());
+    }
+
+    /// Charges every character of a run separately, as the escape loop did
+    /// before plain text was pushed in runs.
+    struct PerCharCounter(RowXmlCounter);
+
+    impl RowXmlSink for PerCharCounter {
+        fn push_str(&mut self, value: &str) {
+            self.0.charge(value.len());
+        }
+
+        fn push_chars(&mut self, value: &str) {
+            for ch in value.chars() {
+                self.0.charge(ch.len_utf8());
+            }
+        }
+    }
+
+    #[test]
+    fn cell_names_match_coordinates_to_cell_name() {
+        for row in [1, 9, 10, 1_048_576] {
+            let row_text = row.to_string();
+            for col in 1..=MAX_COLUMNS {
+                let mut name = String::new();
+                push_cell_name(&mut name, col, row, &row_text);
+                assert_eq!(name, coordinates_to_cell_name(col, row).unwrap());
+            }
+        }
+        let mut fallback = String::new();
+        push_cell_name(&mut fallback, MAX_COLUMNS + 1, 1, "1");
+        assert_eq!(fallback, format!("{}:1", MAX_COLUMNS + 1));
+    }
+
+    #[test]
+    fn rendered_row_limit_matches_per_character_accounting() {
+        let values = vec![
+            CellValue::String("ab\u{d55c}c&d\u{1}e\u{1f600}f<g".to_string()),
+            CellValue::Number(12.5),
+            CellValue::Formula {
+                expr: "A1&\"\u{e9}\"".to_string(),
+                result: Some(Box::new(CellValue::String("x\u{ae00}y".to_string()))),
+            },
+        ];
+        let full = measure_row_xml(7, &values, Some(3), None, u64::MAX).unwrap();
+        for limit in 1..=full + 2 {
+            let mut reference = PerCharCounter(RowXmlCounter::new(limit));
+            write_row_xml(&mut reference, 7, &values, Some(3), None);
+            let expected = reference.0.finish();
+
+            let mut rendered = String::new();
+            let actual = render_row_xml(&mut rendered, 7, &values, Some(3), None, limit);
+            let measured = measure_row_xml(7, &values, Some(3), None, limit);
+            for result in [&actual, &measured] {
+                match (&expected, result) {
+                    (Ok(e), Ok(a)) => assert_eq!(e, a),
+                    (Err(e), Err(a)) => {
+                        let (e, a) = (
+                            e.resource_metadata().unwrap(),
+                            a.resource_metadata().unwrap(),
+                        );
+                        assert_eq!(e.observed(), a.observed(), "limit {limit}");
+                        assert_eq!(e.limit(), a.limit());
+                    }
+                    _ => panic!("limit {limit}: outcome differs"),
+                }
+            }
+            if let Ok(size) = actual {
+                assert_eq!(size, rendered.len() as u64);
+            }
+        }
+    }
+
+    #[test]
+    fn write_row_reuses_one_render_for_limit_and_output() {
+        let values = vec![CellValue::String("a&b".to_string()), CellValue::Number(1.5)];
+        let mut expected = String::new();
+        let size = render_row_xml(&mut expected, 1, &values, None, None, u64::MAX).unwrap();
+
+        let limits = crate::save::StreamLimits {
+            row_xml_bytes: size,
+            ..crate::save::StreamLimits::default()
+        };
+        let mut exact = StreamWriter::new_with_limits("Exact", limits).unwrap();
+        exact.write_row(1, &values).unwrap();
+        assert_eq!(exact.bytes_written, size);
+        let xml = finish_and_get_xml(exact);
+        assert!(xml.contains(&expected));
+
+        let limits = crate::save::StreamLimits {
+            row_xml_bytes: size - 1,
+            ..crate::save::StreamLimits::default()
+        };
+        let mut rejected = StreamWriter::new_with_limits("Rejected", limits).unwrap();
+        assert!(rejected.write_row(1, &values).is_err());
+        assert_eq!(rejected.bytes_written, 0);
+        assert!(rejected.writer.is_none());
     }
 }

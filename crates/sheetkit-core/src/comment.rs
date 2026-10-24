@@ -20,6 +20,17 @@ pub struct CommentConfig {
 ///
 /// If `comments` is `None`, a new `Comments` structure is created.
 pub fn add_comment(comments: &mut Option<Comments>, config: &CommentConfig) {
+    add_comment_with_existing(comments, config, true);
+}
+
+/// Add a comment, scanning for an existing comment on the same cell only
+/// when `may_exist` is true. Callers that already searched the cell pass the
+/// search result to avoid a second full scan.
+pub(crate) fn add_comment_with_existing(
+    comments: &mut Option<Comments>,
+    config: &CommentConfig,
+    may_exist: bool,
+) {
     let c = comments.get_or_insert_with(|| Comments {
         xmlns: namespaces::SPREADSHEET_ML.to_string(),
         authors: Authors {
@@ -40,9 +51,11 @@ pub fn add_comment(comments: &mut Option<Comments>, config: &CommentConfig) {
     };
 
     // Remove existing comment on the same cell if any.
-    c.comment_list
-        .comments
-        .retain(|comment| comment.r#ref != config.cell);
+    if may_exist {
+        c.comment_list
+            .comments
+            .retain(|comment| comment.r#ref != config.cell);
+    }
 
     // Add the new comment.
     c.comment_list.comments.push(Comment {
@@ -61,8 +74,27 @@ pub fn add_comment(comments: &mut Option<Comments>, config: &CommentConfig) {
 ///
 /// Returns `None` if there is no comment on the cell.
 pub fn get_comment(comments: &Option<Comments>, cell: &str) -> Option<CommentConfig> {
+    let index = find_comment_index(comments, cell)?;
+    comment_config_at(comments, index)
+}
+
+/// Index of the first comment on `cell`, if any.
+pub(crate) fn find_comment_index(comments: &Option<Comments>, cell: &str) -> Option<usize> {
+    comments
+        .as_ref()?
+        .comment_list
+        .comments
+        .iter()
+        .position(|cm| cm.r#ref == cell)
+}
+
+/// Build the configuration of the comment at `index`.
+pub(crate) fn comment_config_at(
+    comments: &Option<Comments>,
+    index: usize,
+) -> Option<CommentConfig> {
     let c = comments.as_ref()?;
-    let comment = c.comment_list.comments.iter().find(|cm| cm.r#ref == cell)?;
+    let comment = c.comment_list.comments.get(index)?;
 
     let author = c
         .authors
@@ -80,7 +112,7 @@ pub fn get_comment(comments: &Option<Comments>, cell: &str) -> Option<CommentCon
         .join("");
 
     Some(CommentConfig {
-        cell: cell.to_string(),
+        cell: comment.r#ref.clone(),
         author,
         text,
     })

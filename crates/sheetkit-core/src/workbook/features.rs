@@ -171,8 +171,17 @@ impl Workbook {
         let idx = self.sheet_index(sheet)?;
         self.hydrate_comments(idx);
         self.hydrate_form_controls(idx);
-        self.reject_note_change_on_threaded_cell(idx, &config.cell)?;
-        crate::comment::add_comment(&mut self.sheet_comments[idx], config);
+        // One scan serves both the thread-twin check and the replacement.
+        let existing = crate::comment::find_comment_index(&self.sheet_comments[idx], &config.cell);
+        if let Some(index) = existing {
+            let current = crate::comment::comment_config_at(&self.sheet_comments[idx], index);
+            reject_threaded_twin(current.as_ref(), &config.cell)?;
+        }
+        crate::comment::add_comment_with_existing(
+            &mut self.sheet_comments[idx],
+            config,
+            existing.is_some(),
+        );
         self.mark_sheet_dirty(idx);
         if idx < self.sheet_vml.len() {
             self.sheet_vml[idx] = self.sheet_vml[idx]
@@ -260,14 +269,8 @@ impl Workbook {
     /// Reject note edits on a cell whose legacy comment is a thread twin, so
     /// the thread keeps the twin Excel needs; delete the thread instead.
     fn reject_note_change_on_threaded_cell(&self, idx: usize, cell: &str) -> Result<()> {
-        let is_twin = crate::comment::get_comment(&self.sheet_comments[idx], cell)
-            .is_some_and(|c| crate::threaded_comment::is_legacy_twin(&c.author, &c.text));
-        if is_twin {
-            return Err(Error::InvalidArgument(format!(
-                "cell {cell} holds a threaded comment; delete the thread instead of editing its note"
-            )));
-        }
-        Ok(())
+        let current = crate::comment::get_comment(&self.sheet_comments[idx], cell);
+        reject_threaded_twin(current.as_ref(), cell)
     }
 
     /// Rewrite the legacy comment that mirrors the thread on `cell`.
@@ -1184,6 +1187,17 @@ impl Workbook {
             limits,
         )
     }
+}
+
+/// Reject a note edit when the cell's current legacy comment is the twin of
+/// a threaded comment.
+fn reject_threaded_twin(current: Option<&CommentConfig>, cell: &str) -> Result<()> {
+    if current.is_some_and(|c| crate::threaded_comment::is_legacy_twin(&c.author, &c.text)) {
+        return Err(Error::InvalidArgument(format!(
+            "cell {cell} holds a threaded comment; delete the thread instead of editing its note"
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
