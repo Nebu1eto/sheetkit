@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 echo "==> Building Rust API docs (cargo doc)..."
-cargo doc --no-deps --workspace
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace
 mkdir -p "$ROOT_DIR/docs/public/rustdoc"
 cp -r "$ROOT_DIR/target/doc/"* "$ROOT_DIR/docs/public/rustdoc/"
 

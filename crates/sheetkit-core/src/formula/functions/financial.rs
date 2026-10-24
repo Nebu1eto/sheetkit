@@ -26,7 +26,7 @@ fn optional_i32_arg(
     Ok(checked_trunc_i32(value))
 }
 
-/// FV(rate, nper, pmt, [pv], [type])
+/// FV(rate, nper, pmt, \[pv\], \[type\])
 pub fn fn_fv(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("FV", args, 3, 5)?;
     let rate = coerce_to_number(&ctx.eval_expr(&args[0])?)?;
@@ -44,7 +44,7 @@ pub fn fn_fv(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     Ok(CellValue::Number(fv))
 }
 
-/// PV(rate, nper, pmt, [fv], [type])
+/// PV(rate, nper, pmt, \[fv\], \[type\])
 pub fn fn_pv(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("PV", args, 3, 5)?;
     let rate = coerce_to_number(&ctx.eval_expr(&args[0])?)?;
@@ -62,7 +62,7 @@ pub fn fn_pv(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     Ok(CellValue::Number(pv))
 }
 
-/// NPV(rate, value1, [value2], ...)
+/// NPV(rate, value1, \[value2\], ...)
 pub fn fn_npv(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("NPV", args, 2, 255)?;
     let rate = coerce_to_number(&ctx.eval_expr(&args[0])?)?;
@@ -74,7 +74,7 @@ pub fn fn_npv(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     Ok(CellValue::Number(npv))
 }
 
-/// IRR(values, [guess])
+/// IRR(values, \[guess\])
 pub fn fn_irr(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("IRR", args, 1, 2)?;
     let values = ctx.collect_numbers(&args[0..1])?;
@@ -89,7 +89,7 @@ pub fn fn_irr(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     }
 }
 
-/// PMT(rate, nper, pv, [fv], [type])
+/// PMT(rate, nper, pv, \[fv\], \[type\])
 pub fn fn_pmt(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("PMT", args, 3, 5)?;
     let rate = coerce_to_number(&ctx.eval_expr(&args[0])?)?;
@@ -107,7 +107,7 @@ pub fn fn_pmt(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     Ok(CellValue::Number(pmt))
 }
 
-/// IPMT(rate, per, nper, pv, [fv], [type])
+/// IPMT(rate, per, nper, pv, \[fv\], \[type\])
 pub fn fn_ipmt(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("IPMT", args, 4, 6)?;
     let rate = coerce_to_number(&ctx.eval_expr(&args[0])?)?;
@@ -129,7 +129,7 @@ pub fn fn_ipmt(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     Ok(CellValue::Number(ipmt))
 }
 
-/// PPMT(rate, per, nper, pv, [fv], [type])
+/// PPMT(rate, per, nper, pv, \[fv\], \[type\])
 pub fn fn_ppmt(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("PPMT", args, 4, 6)?;
     let rate = coerce_to_number(&ctx.eval_expr(&args[0])?)?;
@@ -152,7 +152,7 @@ pub fn fn_ppmt(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     Ok(CellValue::Number(pmt - ipmt))
 }
 
-/// RATE(nper, pmt, pv, [fv], [type], [guess])
+/// RATE(nper, pmt, pv, \[fv\], \[type\], \[guess\])
 pub fn fn_rate(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("RATE", args, 3, 6)?;
     let nper = coerce_to_number(&ctx.eval_expr(&args[0])?)?;
@@ -177,7 +177,7 @@ pub fn fn_rate(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     }
 }
 
-/// NPER(rate, pmt, pv, [fv], [type])
+/// NPER(rate, pmt, pv, \[fv\], \[type\])
 pub fn fn_nper(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("NPER", args, 3, 5)?;
     let rate = coerce_to_number(&ctx.eval_expr(&args[0])?)?;
@@ -209,7 +209,7 @@ pub fn fn_nper(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     Ok(CellValue::Number((numer / denom).ln() / (1.0 + rate).ln()))
 }
 
-/// DB(cost, salvage, life, period, [month])
+/// DB(cost, salvage, life, period, \[month\])
 pub fn fn_db(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("DB", args, 4, 5)?;
     let cost = coerce_to_number(&ctx.eval_expr(&args[0])?)?;
@@ -278,7 +278,7 @@ pub fn fn_db(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     finite_number_or_num_error(dep)
 }
 
-/// DDB(cost, salvage, life, period, [factor])
+/// DDB(cost, salvage, life, period, \[factor\])
 pub fn fn_ddb(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("DDB", args, 4, 5)?;
     let cost = coerce_to_number(&ctx.eval_expr(&args[0])?)?;
@@ -564,7 +564,7 @@ pub fn fn_xnpv(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     Ok(CellValue::Number(npv))
 }
 
-/// XIRR(values, dates, [guess])
+/// XIRR(values, dates, \[guess\])
 pub fn fn_xirr(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("XIRR", args, 2, 3)?;
     let values = ctx.collect_numbers(&args[0..1])?;

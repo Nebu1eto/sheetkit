@@ -26,7 +26,7 @@ pub fn fn_bin2dec(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     Ok(CellValue::Number(result as f64))
 }
 
-/// BIN2HEX(number, [places])
+/// BIN2HEX(number, \[places\])
 pub fn fn_bin2hex(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("BIN2HEX", args, 1, 2)?;
     let s = coerce_to_string(&ctx.eval_expr(&args[0])?);
@@ -43,7 +43,7 @@ pub fn fn_bin2hex(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     format_hex(result, args, ctx, 1)
 }
 
-/// BIN2OCT(number, [places])
+/// BIN2OCT(number, \[places\])
 pub fn fn_bin2oct(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("BIN2OCT", args, 1, 2)?;
     let s = coerce_to_string(&ctx.eval_expr(&args[0])?);
@@ -60,7 +60,7 @@ pub fn fn_bin2oct(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     format_oct(result, args, ctx, 1)
 }
 
-/// DEC2BIN(number, [places])
+/// DEC2BIN(number, \[places\])
 pub fn fn_dec2bin(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("DEC2BIN", args, 1, 2)?;
     let value = coerce_to_number(&ctx.eval_expr(&args[0])?)?;
@@ -70,7 +70,7 @@ pub fn fn_dec2bin(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     format_bin(n, args, ctx, 1)
 }
 
-/// DEC2HEX(number, [places])
+/// DEC2HEX(number, \[places\])
 pub fn fn_dec2hex(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("DEC2HEX", args, 1, 2)?;
     let value = coerce_to_number(&ctx.eval_expr(&args[0])?)?;
@@ -80,7 +80,7 @@ pub fn fn_dec2hex(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     format_hex(n, args, ctx, 1)
 }
 
-/// DEC2OCT(number, [places])
+/// DEC2OCT(number, \[places\])
 pub fn fn_dec2oct(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("DEC2OCT", args, 1, 2)?;
     let value = coerce_to_number(&ctx.eval_expr(&args[0])?)?;
@@ -90,7 +90,7 @@ pub fn fn_dec2oct(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     format_oct(n, args, ctx, 1)
 }
 
-/// HEX2BIN(number, [places])
+/// HEX2BIN(number, \[places\])
 pub fn fn_hex2bin(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("HEX2BIN", args, 1, 2)?;
     let s = coerce_to_string(&ctx.eval_expr(&args[0])?);
@@ -127,7 +127,7 @@ pub fn fn_hex2dec(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     Ok(CellValue::Number(result as f64))
 }
 
-/// HEX2OCT(number, [places])
+/// HEX2OCT(number, \[places\])
 pub fn fn_hex2oct(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("HEX2OCT", args, 1, 2)?;
     let s = coerce_to_string(&ctx.eval_expr(&args[0])?);
@@ -147,7 +147,7 @@ pub fn fn_hex2oct(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     format_oct(result, args, ctx, 1)
 }
 
-/// OCT2BIN(number, [places])
+/// OCT2BIN(number, \[places\])
 pub fn fn_oct2bin(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("OCT2BIN", args, 1, 2)?;
     let s = coerce_to_string(&ctx.eval_expr(&args[0])?);
@@ -186,7 +186,7 @@ pub fn fn_oct2dec(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     Ok(CellValue::Number(result as f64))
 }
 
-/// OCT2HEX(number, [places])
+/// OCT2HEX(number, \[places\])
 pub fn fn_oct2hex(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("OCT2HEX", args, 1, 2)?;
     let s = coerce_to_string(&ctx.eval_expr(&args[0])?);
@@ -204,7 +204,7 @@ pub fn fn_oct2hex(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     format_hex(result, args, ctx, 1)
 }
 
-/// DELTA(number1, [number2])
+/// DELTA(number1, \[number2\])
 pub fn fn_delta(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("DELTA", args, 1, 2)?;
     let n1 = coerce_to_number(&ctx.eval_expr(&args[0])?)?;
@@ -217,7 +217,7 @@ pub fn fn_delta(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     Ok(CellValue::Number(if n1 == n2 { 1.0 } else { 0.0 }))
 }
 
-/// GESTEP(number, [step])
+/// GESTEP(number, \[step\])
 pub fn fn_gestep(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("GESTEP", args, 1, 2)?;
     let n = coerce_to_number(&ctx.eval_expr(&args[0])?)?;
@@ -229,7 +229,7 @@ pub fn fn_gestep(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     Ok(CellValue::Number(if n >= step { 1.0 } else { 0.0 }))
 }
 
-/// ERF(lower_limit, [upper_limit])
+/// ERF(lower_limit, \[upper_limit\])
 pub fn fn_erf(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("ERF", args, 1, 2)?;
     let lower = coerce_to_number(&ctx.eval_expr(&args[0])?)?;
@@ -248,7 +248,7 @@ pub fn fn_erfc(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     Ok(CellValue::Number(1.0 - erf_approx(x)))
 }
 
-/// COMPLEX(real_num, i_num, [suffix])
+/// COMPLEX(real_num, i_num, \[suffix\])
 pub fn fn_complex(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("COMPLEX", args, 2, 3)?;
     let real = coerce_to_number(&ctx.eval_expr(&args[0])?)?;
@@ -320,7 +320,7 @@ pub fn fn_imconjugate(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     }
 }
 
-/// IMSUM(inumber1, [inumber2], ...)
+/// IMSUM(inumber1, \[inumber2\], ...)
 pub fn fn_imsum(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("IMSUM", args, 1, 255)?;
     let mut real_sum = 0.0;
@@ -352,7 +352,7 @@ pub fn fn_imsub(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     }
 }
 
-/// IMPRODUCT(inumber1, [inumber2], ...)
+/// IMPRODUCT(inumber1, \[inumber2\], ...)
 pub fn fn_improduct(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("IMPRODUCT", args, 1, 255)?;
     let values = ctx.flatten_args_to_values(args)?;

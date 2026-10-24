@@ -1,4 +1,4 @@
-//! [Content_Types].xml schema structures.
+//! \[Content_Types\].xml schema structures.
 //!
 //! Defines the content types for all parts in the OOXML package.
 

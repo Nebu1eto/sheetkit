@@ -644,7 +644,7 @@ impl Workbook {
 
     /// Evaluate a single formula string in the context of `sheet`.
     ///
-    /// A [`CellSnapshot`] is built from the current workbook state so
+    /// A [`CellSnapshot`](crate::formula::eval::CellSnapshot) is built from the current workbook state so
     /// that cell references within the formula can be resolved.
     pub fn evaluate_formula(&self, sheet: &str, formula: &str) -> Result<CellValue> {
         self.evaluate_formula_with_limits(

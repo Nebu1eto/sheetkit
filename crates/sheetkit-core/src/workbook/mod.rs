@@ -745,7 +745,7 @@ impl Workbook {
 
     /// Create an owned forward-only streaming reader for the named sheet.
     ///
-    /// Unlike [`open_sheet_reader`], the returned reader owns a disk-backed
+    /// Unlike [`Self::open_sheet_reader`], the returned reader owns a disk-backed
     /// source and an O(1) copy-on-write shared-string snapshot, so it has no
     /// lifetime tied to the workbook. This is suitable for FFI contexts.
     pub fn open_sheet_reader_owned(

@@ -1,7 +1,7 @@
 //! Sparkline XML schema structures.
 //!
 //! Sparklines are stored in worksheet extension lists (extLst) using the
-//! x14 namespace (http://schemas.microsoft.com/office/spreadsheetml/2009/9/main).
+//! x14 namespace (<http://schemas.microsoft.com/office/spreadsheetml/2009/9/main>).
 
 use serde::{Deserialize, Serialize};
 

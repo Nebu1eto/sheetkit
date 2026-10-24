@@ -64,7 +64,7 @@ pub fn fn_ifs(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     Ok(CellValue::Error("#N/A".to_string()))
 }
 
-/// SWITCH(expression, value1, result1, [value2, result2], ..., [default]) - matches a value.
+/// SWITCH(expression, value1, result1, \[value2, result2\], ..., \[default\]) - matches a value.
 pub fn fn_switch(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     if args.len() < 3 {
         return Err(Error::WrongArgCount {
@@ -106,7 +106,7 @@ fn values_equal(a: &CellValue, b: &CellValue) -> bool {
     }
 }
 
-/// XOR(logical1, [logical2], ...) - returns TRUE if an odd number of arguments are TRUE.
+/// XOR(logical1, \[logical2\], ...) - returns TRUE if an odd number of arguments are TRUE.
 pub fn fn_xor(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("XOR", args, 1, 255)?;
     let values = ctx.flatten_args_to_values(args)?;

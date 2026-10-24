@@ -10,7 +10,7 @@ use crate::formula::functions::{
     check_arg_count, collect_criteria_range_values, matches_prepared_criteria, prepare_criteria,
 };
 
-/// AVERAGEIF(range, criteria, [average_range])
+/// AVERAGEIF(range, criteria, \[average_range\])
 pub fn fn_averageif(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("AVERAGEIF", args, 2, 3)?;
     let range_vals = collect_criteria_range_values(&args[0], ctx)?;
@@ -218,7 +218,7 @@ pub fn fn_small(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     Ok(CellValue::Number(nums[k - 1]))
 }
 
-/// RANK(number, ref, [order]) - rank of a number in a list.
+/// RANK(number, ref, \[order\]) - rank of a number in a list.
 /// order=0 or omitted: descending (largest=1). order=nonzero: ascending (smallest=1).
 pub fn fn_rank(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("RANK", args, 2, 3)?;

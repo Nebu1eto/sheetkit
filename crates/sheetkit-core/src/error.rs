@@ -1,6 +1,6 @@
 //! Error types for the SheetKit core library.
 //!
-//! Provides a comprehensive [`Error`] enum covering all failure modes
+//! Provides a comprehensive [`Error`](enum@Error) enum covering all failure modes
 //! encountered when reading, writing, and manipulating Excel workbooks.
 
 use thiserror::Error;

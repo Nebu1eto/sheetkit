@@ -20,7 +20,7 @@ macro_rules! text_arg {
 /// Largest REPLACE start position or length Excel accepts.
 const REPLACE_MAX_ARGUMENT: usize = 32_767;
 
-/// CONCAT(text1, [text2], ...) - concatenates multiple values.
+/// CONCAT(text1, \[text2\], ...) - concatenates multiple values.
 pub fn fn_concat(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("CONCAT", args, 1, 255)?;
     let mut result = String::new();
@@ -30,7 +30,7 @@ pub fn fn_concat(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     Ok(CellValue::String(result))
 }
 
-/// FIND(find_text, within_text, [start_num]) - case-sensitive search.
+/// FIND(find_text, within_text, \[start_num\]) - case-sensitive search.
 pub fn fn_find(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("FIND", args, 2, 3)?;
     let find_text = text_arg!(&args[0], ctx);
@@ -56,7 +56,7 @@ pub fn fn_find(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     }
 }
 
-/// SEARCH(find_text, within_text, [start_num]) - case-insensitive search with wildcards.
+/// SEARCH(find_text, within_text, \[start_num\]) - case-insensitive search with wildcards.
 pub fn fn_search(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("SEARCH", args, 2, 3)?;
     let find_text = text_arg!(&args[0], ctx);
@@ -86,7 +86,7 @@ fn character_position_to_byte_offset(text: &str, position: usize) -> usize {
         .map_or(text.len(), |(byte_offset, _)| byte_offset)
 }
 
-/// SUBSTITUTE(text, old_text, new_text, [instance_num]) - replaces occurrences.
+/// SUBSTITUTE(text, old_text, new_text, \[instance_num\]) - replaces occurrences.
 pub fn fn_substitute(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("SUBSTITUTE", args, 3, 4)?;
     let text = text_arg!(&args[0], ctx);

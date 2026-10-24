@@ -86,7 +86,7 @@ pub(crate) fn round_to_digits(n: f64, digits: f64, mode: RoundMode) -> CellValue
     }
 }
 
-/// SUMIF(range, criteria, [sum_range])
+/// SUMIF(range, criteria, \[sum_range\])
 pub fn fn_sumif(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("SUMIF", args, 2, 3)?;
     let range_vals = collect_criteria_range_values(&args[0], ctx)?;
@@ -253,7 +253,7 @@ pub fn fn_pi(args: &[Expr], _ctx: &mut Evaluator) -> Result<CellValue> {
     Ok(CellValue::Number(std::f64::consts::PI))
 }
 
-/// LOG(number, [base]) - logarithm with optional base (default 10)
+/// LOG(number, \[base\]) - logarithm with optional base (default 10)
 pub fn fn_log(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("LOG", args, 1, 2)?;
     let n = coerce_to_number(&ctx.eval_expr(&args[0])?)?;

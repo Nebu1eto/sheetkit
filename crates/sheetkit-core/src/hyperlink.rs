@@ -14,7 +14,7 @@ use crate::error::{Error, Result};
 /// Type of hyperlink target.
 #[derive(Debug, Clone, PartialEq)]
 pub enum HyperlinkType {
-    /// External URL (e.g., "https://example.com" or "file:///path").
+    /// External URL (e.g., `https://example.com` or `file:///path`).
     External(String),
     /// Internal sheet reference (e.g., "Sheet2!A1").
     Internal(String),

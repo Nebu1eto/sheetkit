@@ -444,7 +444,7 @@ impl Workbook {
 
     /// Set a formula on a cell.
     ///
-    /// This is a convenience wrapper around [`set_cell_value`] with
+    /// This is a convenience wrapper around [`Self::set_cell_value`] with
     /// [`CellValue::Formula`].
     pub fn set_cell_formula(&mut self, sheet: &str, cell: &str, formula: &str) -> Result<()> {
         self.set_cell_formula_with_limits(

@@ -28,6 +28,11 @@ export default withMermaid(
       },
     },
     vite: {
+      build: {
+        // The local search index (about 1.1 MB for the English docs) and the mermaid
+        // layout engines are single chunks by construction; keep the limit above them.
+        chunkSizeWarningLimit: 1200,
+      },
       plugins: [
         llmstxt({
           ignoreFiles: ['README.md'],

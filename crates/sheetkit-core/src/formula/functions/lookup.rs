@@ -36,7 +36,7 @@ fn read_range(expr: &Expr, ctx: &mut Evaluator) -> Result<(Vec<CellValue>, usize
     Ok((values, num_cols, num_rows))
 }
 
-/// VLOOKUP(lookup_value, table_array, col_index_num, [range_lookup])
+/// VLOOKUP(lookup_value, table_array, col_index_num, \[range_lookup\])
 pub fn fn_vlookup(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("VLOOKUP", args, 3, 4)?;
     let lookup_val = ctx.eval_expr(&args[0])?;
@@ -82,7 +82,7 @@ pub fn fn_vlookup(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     }
 }
 
-/// HLOOKUP(lookup_value, table_array, row_index_num, [range_lookup])
+/// HLOOKUP(lookup_value, table_array, row_index_num, \[range_lookup\])
 pub fn fn_hlookup(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("HLOOKUP", args, 3, 4)?;
     let lookup_val = ctx.eval_expr(&args[0])?;
@@ -124,7 +124,7 @@ pub fn fn_hlookup(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     }
 }
 
-/// INDEX(array, row_num, [col_num])
+/// INDEX(array, row_num, \[col_num\])
 pub fn fn_index(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("INDEX", args, 2, 3)?;
     let (values, num_cols, num_rows) = read_range(&args[0], ctx)?;
@@ -141,7 +141,7 @@ pub fn fn_index(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     Ok(values[(row_num - 1) * num_cols + (col_num - 1)].clone())
 }
 
-/// MATCH(lookup_value, lookup_array, [match_type])
+/// MATCH(lookup_value, lookup_array, \[match_type\])
 pub fn fn_match(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("MATCH", args, 2, 3)?;
     let lookup_val = ctx.eval_expr(&args[0])?;
@@ -203,7 +203,7 @@ pub fn fn_match(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     }
 }
 
-/// LOOKUP(lookup_value, lookup_vector, [result_vector]) - vector form.
+/// LOOKUP(lookup_value, lookup_vector, \[result_vector\]) - vector form.
 pub fn fn_lookup(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("LOOKUP", args, 2, 3)?;
     let lookup_val = ctx.eval_expr(&args[0])?;
@@ -293,7 +293,7 @@ pub fn fn_columns(args: &[Expr], _ctx: &mut Evaluator) -> Result<CellValue> {
     }
 }
 
-/// CHOOSE(index_num, value1, [value2], ...) - returns value at given index.
+/// CHOOSE(index_num, value1, \[value2\], ...) - returns value at given index.
 pub fn fn_choose(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("CHOOSE", args, 2, 255)?;
     let index = checked_trunc_count(coerce_to_number(&ctx.eval_expr(&args[0])?)?).unwrap_or(0);
@@ -303,7 +303,7 @@ pub fn fn_choose(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     ctx.eval_expr(&args[index])
 }
 
-/// ADDRESS(row_num, column_num, [abs_num], [a1], [sheet_text])
+/// ADDRESS(row_num, column_num, \[abs_num\], \[a1\], \[sheet_text\])
 pub fn fn_address(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("ADDRESS", args, 2, 5)?;
     let row = coerce_to_number(&ctx.eval_expr(&args[0])?)?;

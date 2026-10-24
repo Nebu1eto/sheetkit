@@ -565,7 +565,7 @@ pub fn fn_datevalue(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     }
 }
 
-/// WEEKDAY(serial_number, [return_type]) - day of the week.
+/// WEEKDAY(serial_number, \[return_type\]) - day of the week.
 pub fn fn_weekday(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("WEEKDAY", args, 1, 2)?;
     let v = ctx.eval_expr(&args[0])?;
@@ -597,7 +597,7 @@ pub fn fn_weekday(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     Ok(CellValue::Number(result as f64))
 }
 
-/// WEEKNUM(serial_number, [return_type]) - week number of the year.
+/// WEEKNUM(serial_number, \[return_type\]) - week number of the year.
 pub fn fn_weeknum(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("WEEKNUM", args, 1, 2)?;
     let v = ctx.eval_expr(&args[0])?;
@@ -633,7 +633,7 @@ pub fn fn_weeknum(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     Ok(CellValue::Number(week as f64))
 }
 
-/// NETWORKDAYS(start_date, end_date, [holidays]) - working days between two dates.
+/// NETWORKDAYS(start_date, end_date, \[holidays\]) - working days between two dates.
 pub fn fn_networkdays(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     check_arg_count("NETWORKDAYS", args, 2, 3)?;
     let d1 = match workday_date(&ctx.eval_expr(&args[0])?) {
@@ -662,7 +662,7 @@ pub fn fn_networkdays(args: &[Expr], ctx: &mut Evaluator) -> Result<CellValue> {
     Ok(CellValue::Number((count * i64::from(sign)) as f64))
 }
 
-/// WORKDAY(start_date, days, [holidays]) - date after N working days.
+/// WORKDAY(start_date, days, \[holidays\]) - date after N working days.
 ///
 /// Weekdays follow Excel's serial calendar, where serial 0 is a Saturday and
 /// serial 60 (1900-02-29) is a Wednesday. `days` is truncated toward zero;
