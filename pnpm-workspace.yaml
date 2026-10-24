@@ -15,3 +15,10 @@ allowBuilds:
 overrides:
   exceljs>uuid: ^11.1.1
   vitepress>vite: ^6.4.4
+
+# vitepress-plugin-llms imports Vite types without declaring Vite, so it
+# would resolve the root Vite 8 instead of the Vite that VitePress runs on.
+packageExtensions:
+  vitepress-plugin-llms:
+    dependencies:
+      vite: ^6.4.4
