@@ -61,7 +61,7 @@ Do **not** modify generated files (e.g., `packages/sheetkit/index.js`,
 
 ### Cargo workspace
 
-In `Cargo.toml` (workspace root), update **three** version fields:
+In `Cargo.toml` (workspace root), update **four** version fields:
 
 ~~~~ toml
 [workspace.package]
@@ -70,7 +70,20 @@ version = "X.Y.Z"
 [workspace.dependencies]
 sheetkit-xml = { version = "X.Y.Z", path = "crates/sheetkit-xml" }
 sheetkit-core = { version = "X.Y.Z", path = "crates/sheetkit-core" }
+zip = { package = "sheetkit-zip", version = "=X.Y.Z", path = "vendor/zip", ... }
 ~~~~
+
+### Vendored ZIP fork
+
+`sheetkit-zip` is versioned in lockstep with SheetKit. In both
+`vendor/zip/Cargo.toml` and `vendor/zip/Cargo.toml.orig`, update:
+
+~~~~ toml
+version = "X.Y.Z"
+~~~~
+
+The release workflow fails before publishing anything when the fork
+version or the `=X.Y.Z` requirement differs from the workspace version.
 
 ### Node.js native addon crate
 
@@ -190,6 +203,8 @@ Files to stage:
 
 ~~~~ bash
 git add Cargo.toml Cargo.lock \
+  vendor/zip/Cargo.toml \
+  vendor/zip/Cargo.toml.orig \
   packages/sheetkit/Cargo.toml \
   packages/sheetkit/package.json \
   packages/darwin-arm64/package.json \
@@ -319,7 +334,9 @@ A complete list for quick reference:
 
 | File | Fields to update |
 |------|-----------------|
-| `Cargo.toml` | `workspace.package.version`, `workspace.dependencies.sheetkit-xml.version`, `workspace.dependencies.sheetkit-core.version` |
+| `Cargo.toml` | `workspace.package.version`, `workspace.dependencies.sheetkit-xml.version`, `workspace.dependencies.sheetkit-core.version`, `workspace.dependencies.zip.version` (`=X.Y.Z`) |
+| `vendor/zip/Cargo.toml` | `version` |
+| `vendor/zip/Cargo.toml.orig` | `version` |
 | `packages/sheetkit/Cargo.toml` | `version` |
 | `packages/sheetkit/package.json` | `version`, 8x `optionalDependencies` |
 | `packages/darwin-arm64/package.json` | `version` |

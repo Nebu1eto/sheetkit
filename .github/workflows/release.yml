@@ -141,6 +141,21 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Check sheetkit-zip version
+        run: |
+          workspace=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "sheetkit-core") | .version')
+          requirement=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "sheetkit-core")
+              | .dependencies[] | select(.name == "sheetkit-zip") | .req')
+          fork=$(cargo metadata --no-deps --format-version 1 \
+            --manifest-path vendor/zip/Cargo.toml | jq -r '.packages[0].version')
+          echo "workspace=$workspace fork=$fork requirement=$requirement"
+          if [ "$fork" != "$workspace" ] || [ "$requirement" != "=$workspace" ]; then
+            echo "::error::sheetkit-zip must be $workspace and pinned as =$workspace"
+            exit 1
+          fi
+
       - name: Build JS wrapper
         working-directory: packages/sheetkit
         run: pnpm build
@@ -163,7 +178,26 @@ jobs:
         working-directory: packages/sheetkit
         run: pnpm publish --access public --provenance --no-git-checks --recursive
 
+      - name: Authenticate with crates.io
+        id: crates-io-auth
+        uses: rust-lang/crates-io-auth-action@v1
+
+      - name: Publish sheetkit-zip to crates.io
+        run: |
+          version=$(cargo metadata --no-deps --format-version 1 \
+            --manifest-path vendor/zip/Cargo.toml | jq -r '.packages[0].version')
+          status=$(curl -s -o /dev/null -w '%{http_code}' \
+            -A 'sheetkit-release (https://github.com/Nebu1eto/sheetkit)' \
+            "https://crates.io/api/v1/crates/sheetkit-zip/$version")
+          case "$status" in
+            200) echo "sheetkit-zip $version already exists; skipping" ;;
+            404) cargo publish --manifest-path vendor/zip/Cargo.toml --allow-dirty ;;
+            *) echo "::error::crates.io lookup returned HTTP $status"; exit 1 ;;
+          esac
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates-io-auth.outputs.token }}
+
       - name: Publish to crates.io
         run: cargo publish --workspace --allow-dirty
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates-io-auth.outputs.token }}
