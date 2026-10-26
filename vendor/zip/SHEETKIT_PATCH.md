@@ -16,10 +16,15 @@ It also cross-checks unsaturated ZIP32 fields against ZIP64 metadata and bounds
 the retained ZIP64 extensible data sector before allocation.
 It retains the upstream source and licenses. Publication links identify the
 SheetKit repository; this document records the upstream provenance.
+The fork drops the `clap` dev-dependency, which only the unvendored upstream
+examples used; its exact pin conflicted with the SheetKit workspace.
+It also corrects four intra-doc link paths in `read.rs` and `spec.rs` so the
+workspace rustdoc build passes with warnings denied.
 
 SheetKit uses an exact path-and-version dependency during development. A
 published SheetKit package resolves the same exact `sheetkit-zip` version from
-the registry, so the fork must be published before SheetKit release packages.
-The release workflow verifies that the fork version and the exact dependency
-requirement match the SheetKit workspace version, then publishes the fork
-first and skips it when that version already exists on crates.io.
+the registry. The fork is a workspace member, so the release workflow publishes
+it with the SheetKit crates in one `cargo publish` run, which uploads it first.
+The workflow verifies that the fork version and the exact dependency
+requirement match the SheetKit workspace version, and skips any crate whose
+version already exists on crates.io.

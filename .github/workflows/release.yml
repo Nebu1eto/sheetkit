@@ -189,22 +189,27 @@ jobs:
         id: crates-io-auth
         uses: rust-lang/crates-io-auth-action@v1
 
-      - name: Publish sheetkit-zip to crates.io
-        run: |
-          version=$(cargo metadata --no-deps --format-version 1 \
-            --manifest-path vendor/zip/Cargo.toml | jq -r '.packages[0].version')
-          status=$(curl -s -o /dev/null -w '%{http_code}' \
-            -A 'sheetkit-release (https://github.com/Nebu1eto/sheetkit)' \
-            "https://crates.io/api/v1/crates/sheetkit-zip/$version")
-          case "$status" in
-            200) echo "sheetkit-zip $version already exists; skipping" ;;
-            404) cargo publish --manifest-path vendor/zip/Cargo.toml --allow-dirty ;;
-            *) echo "::error::crates.io lookup returned HTTP $status"; exit 1 ;;
-          esac
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ steps.crates-io-auth.outputs.token }}
-
+      # One cargo publish packages every crate, sheetkit-zip included, against
+      # the local copies, so it does not depend on the index catching up.
+      # Crates already on crates.io are skipped so a rerun uploads the rest.
       - name: Publish to crates.io
-        run: cargo publish --workspace --allow-dirty
+        run: |
+          packages=()
+          while read -r name version; do
+            status=$(curl -s -o /dev/null -w '%{http_code}' \
+              -A 'sheetkit-release (https://github.com/Nebu1eto/sheetkit)' \
+              "https://crates.io/api/v1/crates/$name/$version")
+            case "$status" in
+              200) echo "$name $version already exists; skipping" ;;
+              404) packages+=(--package "$name") ;;
+              *) echo "::error::crates.io lookup for $name returned HTTP $status"; exit 1 ;;
+            esac
+          done < <(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.publish != []) | "\(.name) \(.version)"')
+          if [ ${#packages[@]} -eq 0 ]; then
+            echo "All workspace crates are already published"
+          else
+            cargo publish "${packages[@]}" --allow-dirty
+          fi
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.crates-io-auth.outputs.token }}

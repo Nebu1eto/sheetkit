@@ -8,8 +8,8 @@ members = [
     "examples/rust",
     "benchmarks/rust",
     "benchmarks/rust-comparison",
+    "vendor/zip",
 ]
-exclude = ["vendor/zip"]
 
 [workspace.package]
 version = "1.0.1"
