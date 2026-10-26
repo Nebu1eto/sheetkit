@@ -13,7 +13,7 @@
 edition = "2021"
 rust-version = "1.73.0"
 name = "sheetkit-zip"
-version = "1.0.0"
+version = "1.0.1"
 authors = [
     "Mathijs van de Nes <git@mathijs.vd-nes.nl>",
     "Marli Frost <marli@frost.red>",

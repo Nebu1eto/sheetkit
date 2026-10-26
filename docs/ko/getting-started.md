@@ -24,7 +24,7 @@ cargo add sheetkit
 
 ```toml
 [dependencies]
-sheetkit = { version = "1.0.0" }
+sheetkit = { version = "1.0.1" }
 ```
 
 암호화 기능이 필요한 경우:

@@ -1,6 +1,6 @@
 {
   "name": "@sheetkit/node",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "license": "MIT OR Apache-2.0",
   "engines": {
     "node": ">=24"
@@ -65,13 +65,13 @@
     "typescript": "^6.0.3"
   },
   "optionalDependencies": {
-    "@sheetkit/node-darwin-arm64": "1.0.0",
-    "@sheetkit/node-darwin-x64": "1.0.0",
-    "@sheetkit/node-linux-arm64-gnu": "1.0.0",
-    "@sheetkit/node-linux-arm64-musl": "1.0.0",
-    "@sheetkit/node-linux-x64-gnu": "1.0.0",
-    "@sheetkit/node-linux-x64-musl": "1.0.0",
-    "@sheetkit/node-win32-arm64-msvc": "1.0.0",
-    "@sheetkit/node-win32-x64-msvc": "1.0.0"
+    "@sheetkit/node-darwin-arm64": "1.0.1",
+    "@sheetkit/node-darwin-x64": "1.0.1",
+    "@sheetkit/node-linux-arm64-gnu": "1.0.1",
+    "@sheetkit/node-linux-arm64-musl": "1.0.1",
+    "@sheetkit/node-linux-x64-gnu": "1.0.1",
+    "@sheetkit/node-linux-x64-musl": "1.0.1",
+    "@sheetkit/node-win32-arm64-msvc": "1.0.1",
+    "@sheetkit/node-win32-x64-msvc": "1.0.1"
   }
 }

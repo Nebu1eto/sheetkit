@@ -81,7 +81,7 @@ Or add to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-sheetkit = "1.0.0"
+sheetkit = "1.0.1"
 ```
 
 [View on crates.io](https://crates.io/crates/sheetkit)

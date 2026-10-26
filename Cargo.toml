@@ -12,7 +12,7 @@ members = [
 exclude = ["vendor/zip"]
 
 [workspace.package]
-version = "1.0.0"
+version = "1.0.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Nebu1eto/sheetkit"
@@ -21,11 +21,11 @@ keywords = ["excel", "xlsx", "spreadsheet", "ooxml"]
 categories = ["parser-implementations", "encoding"]
 
 [workspace.dependencies]
-sheetkit-xml = { version = "1.0.0", path = "crates/sheetkit-xml" }
-sheetkit-core = { version = "1.0.0", path = "crates/sheetkit-core" }
+sheetkit-xml = { version = "1.0.1", path = "crates/sheetkit-xml" }
+sheetkit-core = { version = "1.0.1", path = "crates/sheetkit-core" }
 quick-xml = { version = "0.36", features = ["serialize", "overlapped-lists"] }
 serde = { version = "1.0", features = ["derive"] }
-zip = { package = "sheetkit-zip", version = "=1.0.0", path = "vendor/zip", default-features = false, features = ["deflate"] }
+zip = { package = "sheetkit-zip", version = "=1.0.1", path = "vendor/zip", default-features = false, features = ["deflate"] }
 thiserror = "2.0"
 chrono = { version = "0.4", features = ["serde"] }
 regex = "1.10"

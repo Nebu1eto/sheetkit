@@ -67,7 +67,7 @@ cargo add sheetkit
 
 ```toml
 [dependencies]
-sheetkit = "1.0.0"
+sheetkit = "1.0.1"
 ```
 
 [crates.io에서 보기](https://crates.io/crates/sheetkit)
