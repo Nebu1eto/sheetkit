@@ -4,6 +4,15 @@ SheetKit 1.0은 모든 작업에 유한한 제한을 적용하고, 0.5.1에서 �
 
 이 문서는 Rust crate, `@sheetkit/node` 패키지, CLI를 다룹니다. 업그레이드한 뒤에는 native addon을 다시 빌드하고 새 declaration으로 TypeScript를 다시 컴파일하세요. Node.js 패키지는 Node.js 24 이상이 필요합니다.
 
+## 1.0.0에서 업그레이드
+
+SheetKit 1.0.1은 1.0.0에서 이 문서와 다르게 동작하던 수식 읽기를 바로잡습니다.
+
+- Node.js `getCellValue`는 수식 셀에 `FormulaValue`를 반환합니다. 1.0.0은 식을 문자열로 반환했습니다. 이 문자열을 읽던 코드는 `value.type === 'formula'`를 확인한 뒤 `value.formula`를 읽으세요.
+- Node.js `getRows`와 `getRowsIterator`는 수식 셀에 `formula`를 설정합니다. 1.0.0에서는 설정하지 않았습니다.
+- Excel에서 아래나 옆으로 채운 shared formula cell은 해당 cell 위치에 맞게 이동된 수식으로 읽힙니다. 예를 들어 master cell이 `A2*2`이면 바로 아래 cell은 `A3*2`로 읽힙니다. 1.0.0은 빈 식을 반환했습니다. Rust의 `get_cell_value`, `get_rows`, `get_cols`와 이에 대응하는 Node.js 읽기 API에 적용됩니다. Streaming reader는 여전히 이 cell을 해석하지 않습니다. 자세한 내용은 [알려진 제한 사항](./known-limitations.md)을 참고하세요.
+- 시트에 수식 셀이 있으면 Node.js `getRows`와 `getRowsIterator`는 `formula` 객체를 `limits.maxOutputBytes`에 포함해 계산합니다. 1.0.0에서 제한에 가깝던 읽기는 이제 제한 오류로 실패할 수 있습니다.
+
 ## 먼저 확인할 사항
 
 - **자원 제한.** 열기, 수식, 순회, 스트림, 저장, 암호화, VBA 작업에 유한한 기본 제한이 적용됩니다. 신뢰할 수 있는 입력에 한해 제한을 높일 수 있지만 제한을 없앨 수는 없습니다.

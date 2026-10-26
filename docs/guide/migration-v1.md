@@ -9,6 +9,25 @@ This guide covers the Rust crates, the `@sheetkit/node` package, and the CLI.
 After upgrading, rebuild the native addon and recompile TypeScript against the
 new declarations. The Node.js package requires Node.js 24 or later.
 
+## Upgrading from 1.0.0
+
+SheetKit 1.0.1 fixes formula reads that did not match this guide in 1.0.0:
+
+- Node.js `getCellValue` returns a `FormulaValue` for a formula cell. 1.0.0
+  returned the expression as a string. Code that read that string should check
+  `value.type === 'formula'` and read `value.formula`.
+- Node.js `getRows` and `getRowsIterator` set `formula` on formula cells.
+  1.0.0 left it unset.
+- A cell that shares a formula filled down or across in Excel reads as the
+  formula shifted to that cell. For example, the cell below a master `A2*2`
+  reads `A3*2`. 1.0.0 returned an empty expression. This applies to Rust
+  `get_cell_value`, `get_rows`, and `get_cols` and to the matching Node.js
+  reads. The streaming reader still does not resolve these cells; see
+  [Known Limitations](./known-limitations.md).
+- When a sheet has formula cells, Node.js `getRows` and `getRowsIterator`
+  count the `formula` objects against `limits.maxOutputBytes`. A read that was
+  close to the limit in 1.0.0 can now fail with a limit error.
+
 ## What to check first
 
 - **Resource limits.** Open, formula, traversal, stream, save, encryption, and
