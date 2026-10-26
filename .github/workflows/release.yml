@@ -191,7 +191,8 @@ jobs:
 
       # One cargo publish packages every crate, sheetkit-zip included, against
       # the local copies, so it does not depend on the index catching up.
-      # Crates already on crates.io are skipped so a rerun uploads the rest.
+      # Crates already on crates.io are skipped so a rerun uploads the rest;
+      # the patch keeps a skipped sheetkit-zip resolving to vendor/zip.
       - name: Publish to crates.io
         run: |
           packages=()
@@ -209,7 +210,8 @@ jobs:
           if [ ${#packages[@]} -eq 0 ]; then
             echo "All workspace crates are already published"
           else
-            cargo publish "${packages[@]}" --allow-dirty
+            cargo publish "${packages[@]}" --allow-dirty \
+              --config 'patch.crates-io.sheetkit-zip.path="vendor/zip"'
           fi
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.crates-io-auth.outputs.token }}
